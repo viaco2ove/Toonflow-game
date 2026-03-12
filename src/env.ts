@@ -73,8 +73,9 @@ if (!env) {
       const key = line.slice(0, idx).trim();
       const value = line.slice(idx + 1).trim();
       const current = process.env[key];
-      // 允许命令行/脚本提前注入的环境变量覆盖 env 文件配置
-      if (typeof current === "undefined" || current === "") {
+      // 默认以 env 文件为准；仅当显式开启 PREFER_PROCESS_ENV=1 时，保留外部注入值
+      const preserveProcessEnv = (process.env.PREFER_PROCESS_ENV || "").trim() === "1";
+      if (!preserveProcessEnv || typeof current === "undefined" || current === "") {
         process.env[key] = value;
       }
     }
