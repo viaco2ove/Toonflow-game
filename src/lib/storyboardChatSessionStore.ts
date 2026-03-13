@@ -97,13 +97,14 @@ const normalizeSessionMetaList = (raw: unknown): StoryboardChatSessionMeta[] => 
     if (!id || dedup.has(id)) continue;
     const createdAt = Number.isFinite(item?.createdAt) ? Number(item!.createdAt) : now;
     const updatedAt = Number.isFinite(item?.updatedAt) ? Number(item!.updatedAt) : createdAt;
+    const parsedScriptId = Number(item?.scriptId);
     dedup.set(id, {
       id,
       title: normalizeTitle(item?.title, i),
       createdAt,
       updatedAt,
       preview: typeof item?.preview === "string" ? item.preview : "",
-      scriptId: Number.isFinite(item?.scriptId as number) ? Number(item!.scriptId) : null,
+      scriptId: Number.isFinite(parsedScriptId) ? parsedScriptId : null,
     });
   }
   return Array.from(dedup.values()).sort((a, b) => b.updatedAt - a.updatedAt);
@@ -130,11 +131,14 @@ const pickSessionsForScript = (
   sessions: StoryboardChatSessionMeta[],
   scriptId?: number | null,
 ): StoryboardChatSessionMeta[] => {
-  if (!Number.isFinite(scriptId as number)) return sessions;
   const currentScriptId = Number(scriptId);
-  const exact = sessions.filter((item) => Number.isFinite(item.scriptId as number) && Number(item.scriptId) === currentScriptId);
+  if (!Number.isFinite(currentScriptId)) return sessions;
+  const exact = sessions.filter((item) => {
+    const sid = Number(item.scriptId);
+    return Number.isFinite(sid) && sid === currentScriptId;
+  });
   if (exact.length > 0) return exact;
-  const legacy = sessions.filter((item) => !Number.isFinite(item.scriptId as number));
+  const legacy = sessions.filter((item) => !Number.isFinite(Number(item.scriptId)));
   if (legacy.length > 0) return legacy;
   return sessions;
 };

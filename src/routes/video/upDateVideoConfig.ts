@@ -10,6 +10,8 @@ export default router.post(
   "/",
   validateFields({
     id: z.number(),
+    aiConfigId: z.number().optional(),
+    mode: z.enum(["startEnd", "multi", "single", "text", ""]).optional(),
     resolution: z.string().optional(),
     duration: z.number().optional(),
     prompt: z.string().optional(),
@@ -20,7 +22,7 @@ export default router.post(
     audioEnabled: z.boolean().optional(),
   }),
   async (req, res) => {
-    const { id, resolution, duration, prompt, selectedResultId, startFrame, endFrame, images, audioEnabled } = req.body;
+    const { id, aiConfigId, mode, resolution, duration, prompt, selectedResultId, startFrame, endFrame, images, audioEnabled } = req.body;
 
     // 检查配置是否存在
     const existingConfig = await u.db("t_videoConfig").where({ id }).first();
@@ -33,6 +35,17 @@ export default router.post(
       updateTime: Date.now(),
     };
 
+    if (aiConfigId !== undefined) {
+      const aiConfig = await u.db("t_config").where({ id: aiConfigId }).first();
+      if (!aiConfig) {
+        return res.status(404).send(error("模型配置不存在"));
+      }
+      updateData.aiConfigId = aiConfigId;
+      updateData.manufacturer = aiConfig.manufacturer || "";
+    }
+    if (mode !== undefined) {
+      updateData.mode = mode;
+    }
     if (resolution !== undefined) {
       updateData.resolution = resolution;
     }
@@ -70,6 +83,7 @@ export default router.post(
             id: updatedConfig.id,
             scriptId: updatedConfig.scriptId,
             projectId: updatedConfig.projectId,
+            aiConfigId: updatedConfig.aiConfigId,
             manufacturer: updatedConfig.manufacturer,
             mode: updatedConfig.mode,
             startFrame: updatedConfig.startFrame ? JSON.parse(updatedConfig.startFrame) : null,

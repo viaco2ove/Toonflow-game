@@ -68,17 +68,31 @@ export const validateVideoConfig = (input: VideoConfig, config: AIConfig, custom
 };
 
 export const pollTask = async (
-  queryFn: () => Promise<{ completed: boolean; url?: string; error?: string }>,
+  queryFn: () => Promise<{ completed: boolean; url?: string; error?: string; status?: string }>,
   maxAttempts = 500,
   interval = 2000,
+  options?: {
+    label?: string;
+    debug?: boolean;
+    logEvery?: number;
+  },
 ): Promise<string> => {
-  for (let i = 0; i < maxAttempts; i++) {
-    await new Promise((resolve) => setTimeout(resolve, interval));
-    const { completed, url, error } = await queryFn();
+  const envMaxAttempts = Number.parseInt((process.env.AI_VIDEO_POLL_MAX_ATTEMPTS || "").trim(), 10);
+  const envInterval = Number.parseInt((process.env.AI_VIDEO_POLL_INTERVAL_MS || "").trim(), 10);
+  const finalMaxAttempts = Number.isFinite(envMaxAttempts) && envMaxAttempts > 0 ? envMaxAttempts : maxAttempts;
+  const finalInterval = Number.isFinite(envInterval) && envInterval > 0 ? envInterval : interval;
+  const debug = Boolean(options?.debug);
+  const logEvery = Number.isFinite(options?.logEvery as number) ? Number(options!.logEvery) : 10;
+  const label = options?.label || "pollTask";
+
+  for (let i = 0; i < finalMaxAttempts; i++) {
+    await new Promise((resolve) => setTimeout(resolve, finalInterval));
+    const { completed, url, error, status } = await queryFn();
+    if (debug && (i < 5 || (i + 1) % logEvery === 0 || completed || error)) {
+      console.log(`[${label}] attempt ${i + 1}/${finalMaxAttempts} status=${status || "unknown"} completed=${completed} hasUrl=${Boolean(url)}`);
+    }
     if (error) throw new Error(error);
     if (completed && url) return url;
   }
-  throw new Error(`任务轮询超时，已尝试 ${maxAttempts} 次`);
+  throw new Error(`任务轮询超时，已尝试 ${finalMaxAttempts} 次`);
 };
-
-

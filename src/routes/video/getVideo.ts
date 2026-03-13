@@ -4,6 +4,7 @@ import { z } from "zod";
 import { success } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
 const router = express.Router();
+const VIDEO_DEBUG = (process.env.AI_VIDEO_DEBUG || "").trim() === "1";
 interface TempAsset {
   videoId: number;
   filePath: string;
@@ -15,10 +16,21 @@ export default router.post(
   "/",
   validateFields({
     scriptId: z.number(),
-    specifyIds: z.array(z.number()).optional(),
+    specifyIds: z
+      .preprocess((value) => {
+        if (typeof value === "number") return [value];
+        return value;
+      }, z.array(z.number()))
+      .optional(),
   }),
   async (req, res) => {
     const { scriptId, specifyIds } = req.body;
+    if (VIDEO_DEBUG) {
+      console.log("[video] /video/getVideo request", {
+        scriptId,
+        specifyIdsCount: Array.isArray(specifyIds) ? specifyIds.length : 0,
+      });
+    }
 
     const videos = await u
       .db("t_video")
@@ -78,6 +90,12 @@ export default router.post(
         };
       }),
     );
+    if (VIDEO_DEBUG) {
+      console.log("[video] /video/getVideo response", {
+        scriptId,
+        resultCount: data.length,
+      });
+    }
     res.status(200).send(success(data));
   },
 );

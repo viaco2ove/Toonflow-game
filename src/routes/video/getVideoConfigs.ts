@@ -20,15 +20,19 @@ export default router.post(
       .leftJoin("t_config", "t_config.id", "t_videoConfig.aiConfigId")
       .where({ scriptId })
       .orderBy("createTime", "desc")
-      .select("t_videoConfig.*", "t_config.manufacturer as manufacturer", "t_config.model");
+      .select(
+        "t_videoConfig.*",
+        u.db.raw("COALESCE(t_config.manufacturer, t_videoConfig.manufacturer) as manufacturer"),
+        "t_config.model as model",
+      );
     // 解析 JSON 字段
     const result = configs.map((config: any) => ({
       id: config.id,
       scriptId: config.scriptId,
       projectId: config.projectId,
       aiConfigId: config.aiConfigId,
-      manufacturer: config.manufacturer,
-      model: config.model,
+      manufacturer: config.manufacturer || config.t_videoConfig_manufacturer || "",
+      model: config.model || "",
       mode: config.mode,
       startFrame: config.startFrame ? JSON.parse(config.startFrame) : null,
       endFrame: config.endFrame ? JSON.parse(config.endFrame) : null,

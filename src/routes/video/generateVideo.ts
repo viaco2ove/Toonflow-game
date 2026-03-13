@@ -10,6 +10,7 @@ import fs from "fs";
 import path from "path";
 
 const router = express.Router();
+const VIDEO_DEBUG = (process.env.AI_VIDEO_DEBUG || "").trim() === "1";
 
 export type VideoGenerateMode = "startEnd" | "multi" | "single" | "text";
 
@@ -42,6 +43,18 @@ export async function createVideoTask(input: CreateVideoTaskInput): Promise<{ id
 
   const configData = await u.db("t_videoConfig").where("id", configId).first();
   if (!configData) throw new Error("视频配置不存在");
+  if (VIDEO_DEBUG) {
+    console.log("[video] create task config", {
+      configId,
+      aiConfigIdFromInput: aiConfigId,
+      aiConfigIdFromConfig: configData?.aiConfigId,
+      manufacturer: configData?.manufacturer,
+      mode,
+      filePathCount: filePath.length,
+      resolution,
+      duration,
+    });
+  }
 
   if (configData.manufacturer === "runninghub" && filePath.length > 1) {
     const gridUrl = await sharpProcessingImage(filePath, projectId);
@@ -60,6 +73,14 @@ export async function createVideoTask(input: CreateVideoTaskInput): Promise<{ id
     aiConfigData = await u.db("t_config").where("id", aiConfigId).first();
   }
   if (!aiConfigData) throw new Error("模型配置不存在");
+  if (VIDEO_DEBUG) {
+    console.log("[video] selected ai config", {
+      id: aiConfigData?.id,
+      manufacturer: aiConfigData?.manufacturer,
+      model: aiConfigData?.model,
+      baseUrl: aiConfigData?.baseUrl,
+    });
+  }
 
   // 过滤掉空值
   let fileUrl = filePath.filter((p: string) => p && p.trim() !== "");
@@ -126,6 +147,20 @@ export default router.post(
   async (req, res) => {
     const { mode, scriptId, projectId, configId, aiConfigId, resolution, filePath, duration, prompt, audioEnabled } = req.body;
     try {
+      if (VIDEO_DEBUG) {
+        console.log("[video] /video/generateVideo request", {
+          projectId,
+          scriptId,
+          configId: configId ?? null,
+          aiConfigId,
+          mode,
+          resolution,
+          duration,
+          audioEnabled,
+          promptLength: String(prompt || "").length,
+          filePathCount: Array.isArray(filePath) ? filePath.length : 0,
+        });
+      }
       const task = await createVideoTask({
         projectId,
         scriptId,
@@ -138,9 +173,23 @@ export default router.post(
         mode,
         audioEnabled,
       });
+      if (VIDEO_DEBUG) {
+        console.log("[video] /video/generateVideo response", {
+          id: task.id,
+          configId: task.configId,
+        });
+      }
       res.status(200).send(success(task));
     } catch (err: any) {
       const message = u.error(err).message || "视频生成失败";
+      if (VIDEO_DEBUG) {
+        console.log("[video] /video/generateVideo error", {
+          projectId,
+          scriptId,
+          configId: configId ?? null,
+          message,
+        });
+      }
       res.status(500).send(error(message));
     }
   },
@@ -160,6 +209,19 @@ async function generateVideoAsync(
   mode: string,
 ) {
   try {
+    if (VIDEO_DEBUG) {
+      console.log("[video] generate async start", {
+        videoId,
+        projectId,
+        mode,
+        fileUrlCount: fileUrl.length,
+        duration,
+        resolution,
+        audioEnabled,
+        model: aiConfigData?.model,
+        manufacturer: aiConfigData?.manufacturer,
+      });
+    }
     const projectData = await u.db("t_project").where("id", projectId).select("artStyle", "videoRatio").first();
 
     // 提取路径名的辅助函数
@@ -215,12 +277,18 @@ ${prompt}
         filePath: videoPath,
         state: 1,
       });
+      if (VIDEO_DEBUG) {
+        console.log("[video] generate async success", { videoId, videoPath });
+      }
     } else {
       // 生成失败，更新状态为 -1
       await u.db("t_video").where("id", videoId).update({ state: -1 });
+      if (VIDEO_DEBUG) {
+        console.log("[video] generate async failed without path", { videoId });
+      }
     }
   } catch (err) {
-    console.error(`视频生成失败 videoId=${videoId}:`, err);
+    console.error(`video generation failed videoId=${videoId}:`, err);
     await u
       .db("t_video")
       .where("id", videoId)

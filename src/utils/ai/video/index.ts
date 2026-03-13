@@ -25,6 +25,14 @@ const modelInstance = {
   grsai: grsai,
   t8star: t8star,
 } as const;
+const VIDEO_DEBUG = (process.env.AI_VIDEO_DEBUG || "").trim() === "1";
+
+function maskKey(input?: string): string {
+  const value = String(input || "").trim();
+  if (!value) return "";
+  if (value.length <= 8) return `${value.slice(0, 2)}***${value.slice(-2)}`;
+  return `${value.slice(0, 4)}***${value.slice(-4)}`;
+}
 
 export default async (input: VideoConfig, config?: AIConfig) => {
   const { model, apiKey, baseURL, manufacturer } = { ...config };
@@ -59,9 +67,31 @@ export default async (input: VideoConfig, config?: AIConfig) => {
     });
   }
 
+  if (VIDEO_DEBUG) {
+    console.log("[video] invoke", {
+      manufacturer,
+      model,
+      baseURL,
+      apiKey: maskKey(apiKey),
+      imageCount: Array.isArray(input.imageBase64) ? input.imageBase64.length : 0,
+      duration: input.duration,
+      resolution: input.resolution,
+      mode: input.mode,
+    });
+  }
+
   let videoUrl = await manufacturerFn(input, { model, apiKey, baseURL });
+  if (VIDEO_DEBUG) {
+    console.log("[video] provider returned url", videoUrl || "");
+  }
   if (videoUrl) {
     const response = await axios.get(videoUrl, { responseType: "stream" });
+    if (VIDEO_DEBUG) {
+      console.log("[video] download response", {
+        status: response.status,
+        contentType: response.headers?.["content-type"] || "",
+      });
+    }
     await u.oss.writeFile(input.savePath, response.data);
     return input.savePath;
   }

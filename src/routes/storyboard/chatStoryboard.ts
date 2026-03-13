@@ -57,10 +57,19 @@ router.ws("/", async (ws, req) => {
       console.error("ws send error:", err?.message || String(err));
     }
   };
+  const appendHistory = (role: "user" | "assistant", content: string) => {
+    if (!isVideoMode) return;
+    const text = String(content || "").trim();
+    if (!text) return;
+    const next = [...(Array.isArray(agent.history) ? agent.history : []), { role, content: text }];
+    // 控制历史长度，避免会话无限增长
+    agent.history = next.slice(-400);
+  };
   // 兼容旧前端：部分版本不会展示 notice，这里同步发送 response_end 让消息进入聊天流。
   const sendNotice = (text: string) => {
     send("notice", text);
     send("response_end", text);
+    appendHistory("assistant", text);
   };
   const sendSessionHistory = () => {
     send("sessionHistory", { history: agent.history || [] });
@@ -69,7 +78,10 @@ router.ws("/", async (ws, req) => {
   const listExactScopedSessions = async (): Promise<StoryboardChatSessionMeta[]> => {
     const all = await listStoryboardChatSessions(projectIdNum);
     return all
-      .filter((item) => Number.isFinite(item.scriptId as number) && Number(item.scriptId) === sessionScopeScriptId)
+      .filter((item) => {
+        const sid = Number(item.scriptId);
+        return Number.isFinite(sid) && sid === sessionScopeScriptId;
+      })
       .sort((a, b) => b.updatedAt - a.updatedAt);
   };
   const loadScopedSessions = async (): Promise<StoryboardChatSessionMeta[]> =>
@@ -188,6 +200,23 @@ router.ws("/", async (ws, req) => {
     fragmentContent: string;
     assetsTags: string[];
   };
+  type VideoFrameRef = {
+    id: number;
+    filePath: string;
+    prompt: string;
+  };
+  type VideoConfigRow = {
+    id: number;
+    aiConfigId: number;
+    mode: string;
+    resolution: string;
+    duration: number;
+    prompt: string;
+    audioEnabled: boolean;
+    startFrame: VideoFrameRef | null;
+    endFrame: VideoFrameRef | null;
+    images: VideoFrameRef[];
+  };
 
   let videoConfigsCache: VideoConfigSummary[] = [];
   let selectedVideoAiConfigId: number | null = null;
@@ -269,7 +298,7 @@ router.ws("/", async (ws, req) => {
     sendNotice(
       `可用视频模型（来自设置）：\n${lines.join(
         "\n",
-      )}\n\n当前模式：${currentModeText}\n请回复模型序号或模型ID（例如：1）。\n命令：\n/选择视频模型 <序号或模型ID>\n/视频模式 <单图|首尾帧>\n/生成视频 <分镜ID>\n/全部生成视频`,
+      )}\n\n当前模式：${currentModeText}\n请回复模型序号或模型ID（例如：1）。\n命令：\n/选择视频模型 <序号或模型ID>\n/视频模式 <单图|首尾帧>\n/生成视频配置\n/生成视频 <视频配置ID>`,
     );
   };
 
@@ -344,6 +373,21 @@ router.ws("/", async (ws, req) => {
     return frames;
   };
 
+  const buildAutoVideoPrompt = (first: FrameItem, second?: FrameItem): string => {
+    const firstPrompt = first.prompt || `分镜${first.segmentId} 镜头${first.cellIndex}`;
+    if (!second) {
+      return `${firstPrompt}\n保持主体一致与构图稳定，生成自然镜头运动与细节变化。`;
+    }
+    const secondPrompt = second.prompt || `分镜${second.segmentId} 镜头${second.cellIndex}`;
+    return `起始画面：${firstPrompt}\n结束画面：${secondPrompt}\n要求从起始到结束平滑过渡，保持角色与光影连续，动作自然。`;
+  };
+
+  const toFrameRef = (frame: FrameItem): VideoFrameRef => ({
+    id: frame.shotId * 100 + frame.cellIndex,
+    filePath: frame.src,
+    prompt: frame.prompt || "",
+  });
+
   const getSelectedVideoConfig = async (): Promise<VideoConfigSummary | null> => {
     if (!videoConfigsCache.length) await loadVideoConfigs();
     if (!selectedVideoAiConfigId && videoConfigsCache.length > 0) {
@@ -405,7 +449,292 @@ router.ws("/", async (ws, req) => {
     return plans;
   };
 
-  const publishVideoPlanToCanvas = () => {
+  const buildVideoPlansFromConfigRows = (configs: VideoConfigRow[]): VideoPlanShot[] => {
+    const toPos = (index: number) => {
+      const col = index % 3;
+      const row = Math.floor(index / 3);
+      return { x: 50 + col * 850, y: 50 + row * 450 };
+    };
+
+    const plans: VideoPlanShot[] = [];
+    let index = 0;
+    for (const cfg of configs) {
+      const mode = parseMode(cfg.mode) || "single";
+      const cells: Array<{ id: number; prompt: string; src: string }> = [];
+      if (mode === "startEnd") {
+        const startSrc = String(cfg.startFrame?.filePath || "").trim();
+        const endSrc = String(cfg.endFrame?.filePath || "").trim();
+        if (startSrc) {
+          cells.push({
+            id: 1,
+            prompt: String(cfg.startFrame?.prompt || "起始帧").trim(),
+            src: startSrc,
+          });
+        }
+        if (endSrc) {
+          cells.push({
+            id: 2,
+            prompt: String(cfg.endFrame?.prompt || "结束帧").trim(),
+            src: endSrc,
+          });
+        }
+      } else if (mode === "multi") {
+        const list = Array.isArray(cfg.images) ? cfg.images : [];
+        list.forEach((item, i) => {
+          const src = String(item?.filePath || "").trim();
+          if (!src) return;
+          cells.push({
+            id: i + 1,
+            prompt: String(item?.prompt || `参考图${i + 1}`).trim(),
+            src,
+          });
+        });
+      } else {
+        const src = String(cfg.startFrame?.filePath || "").trim();
+        if (src) {
+          cells.push({
+            id: 1,
+            prompt: String(cfg.startFrame?.prompt || "单图").trim(),
+            src,
+          });
+        }
+      }
+
+      if (!cells.length) continue;
+      const pos = toPos(index++);
+      const modeText = mode === "startEnd" ? "首尾帧" : mode === "multi" ? "多图" : mode === "text" ? "文本" : "单图";
+      plans.push({
+        id: cfg.id,
+        segmentId: cfg.id,
+        title: `视频配置 ${cfg.id}`,
+        x: pos.x,
+        y: pos.y,
+        cells,
+        fragmentContent: cfg.prompt || `模式：${modeText} ${cfg.resolution}/${cfg.duration}s`,
+        assetsTags: ["视频", modeText],
+      });
+    }
+    return plans;
+  };
+
+  const listScriptVideoConfigs = async (): Promise<VideoConfigRow[]> => {
+    const rows = await u
+      .db("t_videoConfig")
+      .where({
+        scriptId: scriptIdNum,
+        projectId: projectIdNum,
+      })
+      .modify((qb) => {
+        if (selectedVideoAiConfigId) qb.where("aiConfigId", selectedVideoAiConfigId);
+      })
+      .orderBy("id", "asc")
+      .select(
+        "id",
+        "aiConfigId",
+        "mode",
+        "resolution",
+        "duration",
+        "prompt",
+        "audioEnabled",
+        "startFrame",
+        "endFrame",
+        "images",
+      );
+
+    return rows.map((row: any) => {
+      const parseJson = (value: any): any => {
+        if (!value) return null;
+        if (typeof value === "object") return value;
+        try {
+          return JSON.parse(value);
+        } catch {
+          return null;
+        }
+      };
+      return {
+        id: Number(row.id || 0),
+        aiConfigId: Number(row.aiConfigId || 0),
+        mode: String(row.mode || "single"),
+        resolution: String(row.resolution || "720p"),
+        duration: Number(row.duration || 5),
+        prompt: String(row.prompt || ""),
+        audioEnabled: Boolean(row.audioEnabled),
+        startFrame: parseJson(row.startFrame),
+        endFrame: parseJson(row.endFrame),
+        images: Array.isArray(parseJson(row.images)) ? parseJson(row.images) : [],
+      } as VideoConfigRow;
+    });
+  };
+
+  const createVideoConfigPlans = async (): Promise<VideoConfigRow[]> => {
+    const config = await getSelectedVideoConfig();
+    if (!config) {
+      sendNotice("请先选择视频模型。可发送 /视频模型 查看列表。");
+      return [];
+    }
+    const mode = selectedVideoMode;
+    const frames = collectFrames();
+    if (!frames.length) return [];
+
+    const exists = await listScriptVideoConfigs();
+    const existingKeySet = new Set<string>();
+    for (const item of exists) {
+      const itemMode = parseMode(item.mode) || "single";
+      if (Number(item.aiConfigId) !== Number(config.aiConfigId)) continue;
+      if (itemMode !== mode) continue;
+      if (itemMode === "startEnd") {
+        const start = String(item.startFrame?.filePath || "").trim();
+        const end = String(item.endFrame?.filePath || "").trim();
+        if (start && end) existingKeySet.add(`startEnd|${start}|${end}`);
+      } else {
+        const start = String(item.startFrame?.filePath || "").trim();
+        if (start) existingKeySet.add(`single|${start}`);
+      }
+    }
+
+    const now = Date.now();
+    const maxIdResult: any = await u.db("t_videoConfig").max("id as maxId").first();
+    let nextId = Number(maxIdResult?.maxId || 0) + 1;
+    const inserts: any[] = [];
+
+    if (mode === "startEnd") {
+      for (let i = 0; i < frames.length - 1; i++) {
+        const first = frames[i];
+        const second = frames[i + 1];
+        const startFrame = toFrameRef(first);
+        const endFrame = toFrameRef(second);
+        const key = `startEnd|${startFrame.filePath}|${endFrame.filePath}`;
+        if (existingKeySet.has(key)) continue;
+        existingKeySet.add(key);
+        inserts.push({
+          id: nextId++,
+          scriptId: scriptIdNum,
+          projectId: projectIdNum,
+          aiConfigId: config.aiConfigId,
+          manufacturer: config.manufacturer || "",
+          mode: "startEnd",
+          startFrame: JSON.stringify(startFrame),
+          endFrame: JSON.stringify(endFrame),
+          images: null,
+          resolution: config.resolution || "720p",
+          duration: Number(config.duration || 5),
+          prompt: buildAutoVideoPrompt(first, second),
+          selectedResultId: null,
+          createTime: now,
+          updateTime: now,
+          audioEnabled: config.audioEnabled ? 1 : 0,
+        });
+      }
+    } else {
+      for (let i = 0; i < frames.length; i++) {
+        const frame = frames[i];
+        const startFrame = toFrameRef(frame);
+        const key = `single|${startFrame.filePath}`;
+        if (existingKeySet.has(key)) continue;
+        existingKeySet.add(key);
+        inserts.push({
+          id: nextId++,
+          scriptId: scriptIdNum,
+          projectId: projectIdNum,
+          aiConfigId: config.aiConfigId,
+          manufacturer: config.manufacturer || "",
+          mode: "single",
+          startFrame: JSON.stringify(startFrame),
+          endFrame: null,
+          images: null,
+          resolution: config.resolution || "720p",
+          duration: Number(config.duration || 5),
+          prompt: buildAutoVideoPrompt(frame),
+          selectedResultId: null,
+          createTime: now,
+          updateTime: now,
+          audioEnabled: config.audioEnabled ? 1 : 0,
+        });
+      }
+    }
+
+    if (inserts.length > 0) {
+      await u.db("t_videoConfig").insert(inserts);
+    }
+    return listScriptVideoConfigs();
+  };
+
+  const getConfigFilePaths = (config: VideoConfigRow): string[] => {
+    const mode = parseMode(config.mode) || "single";
+    if (mode === "startEnd") {
+      const list = [config.startFrame?.filePath, config.endFrame?.filePath].filter((item) => Boolean(item && String(item).trim()));
+      return list as string[];
+    }
+    const list = [config.startFrame?.filePath].filter((item) => Boolean(item && String(item).trim()));
+    return list as string[];
+  };
+
+  const submitVideoTasksFromConfigs = async (input?: { configId?: number; index?: number }) => {
+    const configs = await listScriptVideoConfigs();
+    if (!configs.length) {
+      sendNotice("当前没有视频配置。请先发送 /生成视频配置。");
+      return;
+    }
+
+    if (!input?.configId && !input?.index) {
+      sendNotice("已禁用“全部生成视频”。请指定配置ID，例如：/生成视频 12，或在配置卡片中逐个点击生成。");
+      return;
+    }
+
+    let targets = configs;
+    if (input?.configId) {
+      const byId = configs.filter((item) => item.id === input.configId);
+      if (byId.length > 0) targets = byId;
+      else targets = configs[input.configId - 1] ? [configs[input.configId - 1]] : [];
+    } else if (input?.index && input.index > 0) {
+      targets = configs[input.index - 1] ? [configs[input.index - 1]] : [];
+    }
+
+    if (!targets.length) {
+      sendNotice("未找到对应的视频配置。请先发送 /生成视频配置 或检查配置序号。");
+      return;
+    }
+
+    let successCount = 0;
+    let failCount = 0;
+    const failMessages: string[] = [];
+    for (let i = 0; i < targets.length; i++) {
+      const item = targets[i];
+      try {
+        const filePath = getConfigFilePaths(item);
+        const mode = parseMode(item.mode) || selectedVideoMode;
+        if (mode !== "text" && filePath.length === 0) {
+          failCount++;
+          if (failMessages.length < 3) failMessages.push(`配置${item.id}: 缺少可用图片`);
+          continue;
+        }
+        await createVideoTask({
+          projectId: projectIdNum,
+          scriptId: scriptIdNum,
+          configId: item.id,
+          aiConfigId: item.aiConfigId,
+          resolution: item.resolution || "720p",
+          filePath,
+          duration: Number(item.duration || 5),
+          prompt: item.prompt || "",
+          mode,
+          audioEnabled: Boolean(item.audioEnabled),
+        });
+        successCount++;
+      } catch (err: any) {
+        failCount++;
+        if (failMessages.length < 3) {
+          failMessages.push(`配置${item.id}: ${u.error(err).message}`);
+        }
+      }
+    }
+
+    let summary = `已提交视频任务：成功 ${successCount} 条，失败 ${failCount} 条。`;
+    if (failMessages.length) summary += `\n失败示例：\n${failMessages.join("\n")}`;
+    sendNotice(summary);
+  };
+
+  const publishVideoPlanToCanvasAsync = async () => {
     if (!isVideoMode) return;
     const mode = selectedVideoMode;
     const plans = buildVideoPlanShots(mode);
@@ -415,11 +744,35 @@ router.ws("/", async (ws, req) => {
       return;
     }
     videoPlanShots = plans;
-    send("shotsUpdated", plans);
+
+    const createdConfigs = await createVideoConfigPlans();
+    if (!createdConfigs.length) {
+      send("shotsUpdated", plans);
+      sendNotice("已整理出视频计划，但未成功写入视频配置。请检查视频模型后重试。");
+      return;
+    }
+
+    // 视频模式展示“视频配置画布”
+    const canvasPlans = buildVideoPlansFromConfigRows(createdConfigs);
+    send("shotsUpdated", canvasPlans.length ? canvasPlans : plans);
+    send("refresh", "videoConfigs");
     const modeText = mode === "startEnd" ? "首尾帧（1-2,2-3串联）" : "单图（每图一个视频）";
     sendNotice(
-      `已生成 ${plans.length} 条视频配置到画布（模式：${modeText}）。\n下一步：可在对话中输入 /生成视频 <分镜ID> 或 /全部生成视频。`,
+      `已生成 ${createdConfigs.length} 条视频配置并同步到画布（模式：${modeText}）。\n下一步：请在配置卡片中逐条生成，或发送 /生成视频 <视频配置ID>。`,
     );
+  };
+
+  const syncVideoCanvasAsync = async () => {
+    if (!isVideoMode) return;
+    const existed = await listScriptVideoConfigs();
+    const canvasPlans = buildVideoPlansFromConfigRows(existed);
+    if (canvasPlans.length > 0) {
+      send("shotsUpdated", canvasPlans);
+      return;
+    }
+    // 没有视频配置时，回退显示分镜计划卡片，避免画布空白。
+    const fallbackPlans = buildVideoPlanShots(selectedVideoMode || "single");
+    send("shotsUpdated", fallbackPlans);
   };
 
   const ensureVideoConfigForScript = async (config: VideoConfigSummary): Promise<VideoConfigSummary> => {
@@ -601,6 +954,8 @@ router.ws("/", async (ws, req) => {
     agent.novelChapters = Array.isArray(loaded.novelChapters) ? loaded.novelChapters : [];
     agent.restoreShotsFromSession(loaded.shots, loaded.shotIdCounter);
     sendSessionHistory();
+    if (isVideoMode) await syncVideoCanvasAsync();
+    else send("shotsUpdated", agent.getShotsSnapshot().shots);
     sendNotice(`已切换到会话「${target.title}」。你可以继续提问。`);
   };
 
@@ -613,10 +968,17 @@ router.ws("/", async (ws, req) => {
     });
     sessionsCache = await loadScopedSessions();
     currentSessionId = created.sessionId;
+    const snapshot = agent.getShotsSnapshot();
     agent.history = [];
     agent.novelChapters = [];
-    agent.restoreShotsFromSession([], 0);
+    if (isVideoMode) {
+      agent.restoreShotsFromSession(snapshot.shots, snapshot.shotIdCounter);
+    } else {
+      agent.restoreShotsFromSession([], 0);
+    }
     sendSessionHistory();
+    if (isVideoMode) await syncVideoCanvasAsync();
+    else send("shotsUpdated", agent.getShotsSnapshot().shots);
     sendNotice(`已创建并切换到新会话「${getCurrentSessionTitle()}」。`);
   };
 
@@ -641,11 +1003,18 @@ router.ws("/", async (ws, req) => {
 
     sessionsCache = await loadScopedSessions();
     if (sessionsCache.length <= 1 && sessionsCache[0]?.id === targetId) {
+      const snapshot = agent.getShotsSnapshot();
       agent.history = [];
       agent.novelChapters = [];
-      agent.restoreShotsFromSession([], 0);
+      if (isVideoMode) {
+        agent.restoreShotsFromSession(snapshot.shots, snapshot.shotIdCounter);
+      } else {
+        agent.restoreShotsFromSession([], 0);
+      }
       await saveHistory();
       sendSessionHistory();
+      if (isVideoMode) await syncVideoCanvasAsync();
+      else send("shotsUpdated", agent.getShotsSnapshot().shots);
       sendNotice("当前只有一个会话，已清空其历史内容。");
       return;
     }
@@ -668,6 +1037,8 @@ router.ws("/", async (ws, req) => {
         agent.novelChapters = loaded?.novelChapters ?? [];
         agent.restoreShotsFromSession(loaded?.shots ?? [], loaded?.shotIdCounter ?? 0);
         sendSessionHistory();
+        if (isVideoMode) await syncVideoCanvasAsync();
+        else send("shotsUpdated", agent.getShotsSnapshot().shots);
         sendNotice(`已删除当前会话，自动切换到「${next.title}」。`);
       } else {
         await createAndSwitchSession("默认会话");
@@ -683,7 +1054,7 @@ router.ws("/", async (ws, req) => {
 
     if (isVideoMode && /^\/?(开始|start)$/i.test(input)) {
       videoFlowStep = "selectConfig";
-      send("shotsUpdated", []);
+      await syncVideoCanvasAsync();
       await listVideoConfigs();
       return true;
     }
@@ -715,7 +1086,7 @@ router.ws("/", async (ws, req) => {
       if (freeMode) {
         selectedVideoMode = freeMode;
         videoFlowStep = "idle";
-        publishVideoPlanToCanvas();
+        await publishVideoPlanToCanvasAsync();
         return true;
       }
       if (videoFlowStep === "selectConfig") {
@@ -737,33 +1108,35 @@ router.ws("/", async (ws, req) => {
       }
       selectedVideoMode = nextMode;
       videoFlowStep = "idle";
-      publishVideoPlanToCanvas();
+      await publishVideoPlanToCanvasAsync();
       return true;
     }
 
-    if (/^\/?(生成视频配置|刷新视频配置|预览视频配置)$/i.test(input)) {
-      publishVideoPlanToCanvas();
+    if (/^\/?(生成视频配置|全部生成视频配置|批量生成视频配置|刷新视频配置|预览视频配置)$/i.test(input)) {
+      await publishVideoPlanToCanvasAsync();
       return true;
     }
 
     const batchGenerateMatch = input.match(/^\/?(全部生成视频|批量生成视频|全部生成\s*视频|批量生成\s*视频)$/i);
     if (batchGenerateMatch) {
-      const frames = collectFrames();
-      await generateVideoTasks(frames);
+      sendNotice("已禁用“全部生成视频”，避免批量消耗额度。请改用 /生成视频 <视频配置ID> 逐条生成。");
       return true;
     }
 
     const singleGenerateMatch = input.match(/^\/?(生成视频|生成分镜视频)\s*(?:分镜)?\s*(\d+)?$/i);
     if (singleGenerateMatch) {
-      const shotId = Number(singleGenerateMatch[2] || 0);
-      const frames = shotId > 0 ? collectFrames(shotId) : collectFrames();
-      await generateVideoTasks(frames);
+      const inputId = Number(singleGenerateMatch[2] || 0);
+      if (inputId > 0) {
+        await submitVideoTasksFromConfigs({ configId: inputId, index: inputId });
+      } else {
+        sendNotice("请指定视频配置ID。例如：/生成视频 12");
+      }
       return true;
     }
 
     if (/^\/?(视频帮助|video-help|help-video)$/i.test(input)) {
       sendNotice(
-        "视频命令：\n/视频模型（或 /视频配置）\n/选择视频模型 <序号或模型ID>\n/视频模式 <单图|首尾帧>\n/生成视频配置\n/生成视频 <分镜ID>\n/全部生成视频（或 /批量生成视频）",
+        "视频命令：\n/视频模型（或 /视频配置）\n/选择视频模型 <序号或模型ID>\n/视频模式 <单图|首尾帧>\n/生成视频配置\n/生成视频 <视频配置ID>\n说明：已禁用 /全部生成视频",
       );
       return true;
     }
@@ -877,6 +1250,8 @@ router.ws("/", async (ws, req) => {
   });
   if (!isVideoMode) {
     send("shotsUpdated", agent.getShotsSnapshot().shots);
+  } else {
+    await syncVideoCanvasAsync();
   }
   sendSessionHistory();
 
@@ -884,12 +1259,13 @@ router.ws("/", async (ws, req) => {
     sendNotice(
       `已进入AI视频会话「${getCurrentSessionTitle()}」。发送“开始”进入流程：选择视频模型 -> 选择模式（首尾帧/单图）-> 生成视频。`,
     );
+    await listSessions();
   } else {
     sendNotice(
-      `已进入会话「${getCurrentSessionTitle()}」。发送 /会话 可查看并切换历史会话。视频生成可用命令：/视频配置 /选择视频配置 /视频模式 /全部生成视频。`,
+      `已进入会话「${getCurrentSessionTitle()}」。发送 /会话 可查看并切换历史会话。视频生成可用命令：/视频配置 /选择视频配置 /视频模式 /生成视频配置 /生成视频 <视频配置ID>。`,
     );
+    await listSessions();
   }
-  await listSessions();
 
   type DataTyype =
     | "msg"
@@ -925,9 +1301,14 @@ router.ws("/", async (ws, req) => {
         case "msg": {
           const prompt = msg.data;
           if (msg.type === "user") {
-            if (await handleSessionCommand(prompt)) return;
+            appendHistory("user", prompt);
+            if (await handleSessionCommand(prompt)) {
+              await saveHistory();
+              return;
+            }
             if (isVideoMode) {
               sendNotice("当前为AI视频模式。请先发送“开始”，我会引导你完成：选配置 -> 选模式 -> 生成视频。");
+              await saveHistory();
               return;
             }
             await agent.call(prompt);

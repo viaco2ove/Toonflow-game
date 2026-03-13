@@ -40,9 +40,14 @@ export default router.post(
     for (const filePath of filesToDelete) {
       try {
         await u.oss.deleteFile(filePath);
-        console.log("[删除视频配置] 删除文件:", filePath);
-      } catch (err) {
-        console.error("[删除视频配置] 删除文件失败:", filePath, err);
+        console.log("[deleteVideoConfig] deleted file:", filePath);
+      } catch (err: any) {
+        if (err?.code === "ENOENT") {
+          // 文件不存在属于幂等场景，忽略即可
+          console.warn("[deleteVideoConfig] file already missing:", filePath);
+          continue;
+        }
+        console.error("[deleteVideoConfig] delete file failed:", filePath, err);
       }
     }
 

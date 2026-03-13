@@ -3,9 +3,9 @@ import path from "path";
 
 // 默认环境变量（当 env 文件不存在时自动创建）
 const defaultEnvValues: Record<string, string> = {
-  dev: `NODE_ENV=dev\nPORT=60000\nOSSURL=http://127.0.0.1:60000/\nDB_PATH=\nUPLOAD_DIR=`,
-  local: `NODE_ENV=local\nPORT=60000\nOSSURL=http://127.0.0.1:60000/\nDB_PATH=\nUPLOAD_DIR=`,
-  prod: `NODE_ENV=prod\nPORT=60000\nOSSURL=http://127.0.0.1:60000/\nDB_PATH=\nUPLOAD_DIR=`,
+  dev: `NODE_ENV=dev\nPORT=60000\nOSSURL=http://127.0.0.1:60000/\nDB_PATH=\nUPLOAD_DIR=\nAI_VIDEO_DEBUG=0\nAI_VIDEO_POLL_MAX_ATTEMPTS=500\nAI_VIDEO_POLL_INTERVAL_MS=2000`,
+  local: `NODE_ENV=local\nPORT=60000\nOSSURL=http://127.0.0.1:60000/\nDB_PATH=\nUPLOAD_DIR=\nAI_VIDEO_DEBUG=0\nAI_VIDEO_POLL_MAX_ATTEMPTS=500\nAI_VIDEO_POLL_INTERVAL_MS=2000`,
+  prod: `NODE_ENV=prod\nPORT=60000\nOSSURL=http://127.0.0.1:60000/\nDB_PATH=\nUPLOAD_DIR=\nAI_VIDEO_DEBUG=0\nAI_VIDEO_POLL_MAX_ATTEMPTS=500\nAI_VIDEO_POLL_INTERVAL_MS=2000`,
 };
 
 // 判断是否为打包后的 Electron 环境
@@ -59,6 +59,9 @@ if (!env) {
     { key: "OSSURL", value: "http://127.0.0.1:60000/" },
     { key: "DB_PATH", value: "" },
     { key: "UPLOAD_DIR", value: "" },
+    { key: "AI_VIDEO_DEBUG", value: "0" },
+    { key: "AI_VIDEO_POLL_MAX_ATTEMPTS", value: "500" },
+    { key: "AI_VIDEO_POLL_INTERVAL_MS", value: "2000" },
   ];
   const missing = requiredKeys.filter((item) => !new RegExp(`^\\s*${item.key}=`, "m").test(text));
   if (missing.length > 0) {
