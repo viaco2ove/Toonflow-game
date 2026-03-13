@@ -7,6 +7,81 @@ import axios from "axios";
 
 const router = express.Router();
 const LOCAL_HOSTS = new Set(["127.0.0.1", "localhost", "0.0.0.0", "::1"]);
+const TOKEN_COOLDOWN_PATTERN = /invalid tokens multiple times/i;
+const WAIT_SECONDS_PATTERN = /please wait:\s*(\d+)\s*seconds/i;
+const REQUEST_ID_PATTERN = /request id:\s*([a-zA-Z0-9_-]+)/i;
+const INVALID_TOKEN_PATTERNS = [
+  /invalid token/i,
+  /invalid api key/i,
+  /api key invalid/i,
+  /authentication failed/i,
+  /unauthorized/i,
+  /forbidden/i,
+  /token无效|无效token|密钥无效|apikey无效/i,
+];
+const localPromptCooldownUntilMap = new Map<string, number>();
+
+function toMessage(err: unknown): string {
+  if (typeof err === "string") return err;
+  if (err instanceof Error) return err.message || "未知错误";
+  return String(err ?? "未知错误");
+}
+
+function stripPromptErrorPrefix(message: string): string {
+  return message.replace(/^生成视频提示词失败:\s*/i, "").trim();
+}
+
+function extractWaitSeconds(message: string): number | null {
+  const match = message.match(WAIT_SECONDS_PATTERN);
+  if (!match) return null;
+  const seconds = Number.parseInt(match[1], 10);
+  return Number.isFinite(seconds) && seconds > 0 ? seconds : null;
+}
+
+function extractRequestId(message: string): string {
+  const match = message.match(REQUEST_ID_PATTERN);
+  return match?.[1] || "";
+}
+
+function isTokenCooldownError(message: string): boolean {
+  return TOKEN_COOLDOWN_PATTERN.test(message) || extractWaitSeconds(message) !== null;
+}
+
+function isInvalidTokenError(message: string): boolean {
+  return INVALID_TOKEN_PATTERNS.some((pattern) => pattern.test(message));
+}
+
+function buildPromptCooldownMessage(waitSeconds: number, requestId = ""): string {
+  const safeWait = Math.max(1, Math.ceil(waitSeconds));
+  const rid = requestId ? `（request id: ${requestId}）` : "";
+  return `上游接口触发风控/限流，请等待 ${safeWait} 秒后重试，并检查 API Key 是否可用。${rid}`;
+}
+
+function getPromptConfigKey(config: any): string | null {
+  if (!config || typeof config !== "object") return null;
+  const manufacturer = String(config.manufacturer || "").trim();
+  const model = String(config.model || "").trim();
+  const apiKey = String(config.apiKey || "").trim();
+  if (!manufacturer || !model || !apiKey) return null;
+  return `${manufacturer}::${model}::${apiKey}`;
+}
+
+function getLocalCooldownSeconds(configKey: string | null): number {
+  if (!configKey) return 0;
+  const until = localPromptCooldownUntilMap.get(configKey) || 0;
+  const remainMs = until - Date.now();
+  if (remainMs <= 0) {
+    localPromptCooldownUntilMap.delete(configKey);
+    return 0;
+  }
+  return Math.ceil(remainMs / 1000);
+}
+
+function setLocalCooldown(configKey: string | null, waitSeconds: number): void {
+  if (!configKey) return;
+  const safeWait = Math.max(1, Math.ceil(waitSeconds));
+  localPromptCooldownUntilMap.set(configKey, Date.now() + safeWait * 1000);
+}
 
 const prompt = `
 你是一名资深动画导演，擅长将静态分镜转化为简洁、专业、详尽的 Motion Prompt（视频生成动作提示）。你理解镜头语言、情绪节奏，能补充丰富但不重复静态元素，只突出变化与动态。
@@ -164,13 +239,21 @@ async function generateSingleVideoPrompt({
       ],
     },
   ];
+  const apiConfig = await u.getPromptAi("videoPrompt");
+  const configKey = getPromptConfigKey(apiConfig);
 
   try {
-    const apiConfig = await u.getPromptAi("videoPrompt");
+    const localCooldownSeconds = getLocalCooldownSeconds(configKey);
+    if (localCooldownSeconds > 0) {
+      const cooldownError: any = new Error(buildPromptCooldownMessage(localCooldownSeconds));
+      cooldownError.statusCode = 429;
+      throw cooldownError;
+    }
 
     const result = await u.ai.text.invoke(
       {
         messages,
+        maxRetries: 0,
         output: {
           time: z.number().describe("时长,镜头时长 1-15"),
           content: z.string().describe("提示词内容"),
@@ -191,8 +274,32 @@ async function generateSingleVideoPrompt({
 
     return result;
   } catch (err: any) {
-    console.error("generateSingleVideoPrompt 调用失败:", err?.message || err);
-    throw new Error(`生成视频提示词失败: ${err?.message || "未知错误"}`);
+    const rawMessage = stripPromptErrorPrefix(toMessage(err));
+    if (Number.isInteger(err?.statusCode)) {
+      console.error("generateSingleVideoPrompt 调用失败:", rawMessage);
+      throw err;
+    }
+
+    if (isTokenCooldownError(rawMessage)) {
+      const waitSeconds = extractWaitSeconds(rawMessage) ?? 120;
+      const requestId = extractRequestId(rawMessage);
+      setLocalCooldown(configKey, waitSeconds);
+
+      const cooldownError: any = new Error(buildPromptCooldownMessage(waitSeconds, requestId));
+      cooldownError.statusCode = 429;
+      console.error("generateSingleVideoPrompt 冷却命中:", rawMessage);
+      throw cooldownError;
+    }
+
+    if (isInvalidTokenError(rawMessage)) {
+      const authError: any = new Error(`当前视频提示词 API Key 无效或已失效，请在设置中更新后重试。${rawMessage}`);
+      authError.statusCode = 401;
+      console.error("generateSingleVideoPrompt 鉴权失败:", rawMessage);
+      throw authError;
+    }
+
+    console.error("generateSingleVideoPrompt 调用失败:", rawMessage);
+    throw new Error(rawMessage || "未知错误");
   }
 }
 // 主路由 - 单张图片处理
@@ -235,8 +342,11 @@ export default router.post(
         }),
       );
     } catch (err: any) {
-      console.error("生成视频提示词失败:", err?.message || err);
-      res.status(500).send(error(err?.message || "生成视频提示词失败"));
+      const rawMessage = stripPromptErrorPrefix(toMessage(err));
+      const statusCode = Number.isInteger(err?.statusCode) ? Number(err.statusCode) : 500;
+      const finalMessage = `生成视频提示词失败: ${rawMessage || "未知错误"}`;
+      console.error("生成视频提示词失败:", finalMessage);
+      res.status(statusCode).send(error(finalMessage));
     }
   },
 );

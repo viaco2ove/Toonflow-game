@@ -446,6 +446,59 @@ const modelList: Owned[] = [
     type: ["text", "singleImage"],
     audio: false,
   },
+  // ================== T8Star Veo 统一接口 ==================
+  {
+    manufacturer: "t8star",
+    model: "veo-3.1-generate-preview",
+    durationResolutionMap: [
+      { duration: [4, 6], resolution: ["720p"] },
+      { duration: [8], resolution: ["720p", "1080p"] },
+    ],
+    aspectRatio: ["16:9", "9:16"],
+    type: ["text", "singleImage", "startEndRequired", "endFrameOptional", "reference"],
+    audio: true,
+  },
+  {
+    manufacturer: "t8star",
+    model: "veo-3.1-fast-generate-preview",
+    durationResolutionMap: [
+      { duration: [4, 6], resolution: ["720p"] },
+      { duration: [8], resolution: ["720p", "1080p"] },
+    ],
+    aspectRatio: ["16:9", "9:16"],
+    type: ["text", "singleImage", "startEndRequired", "endFrameOptional", "reference"],
+    audio: true,
+  },
+  {
+    manufacturer: "t8star",
+    model: "veo-3.0-generate-preview",
+    durationResolutionMap: [
+      { duration: [4, 6], resolution: ["720p"] },
+      { duration: [8], resolution: ["720p", "1080p"] },
+    ],
+    aspectRatio: ["16:9", "9:16"],
+    type: ["text", "singleImage"],
+    audio: true,
+  },
+  {
+    manufacturer: "t8star",
+    model: "veo-3.0-fast-generate-preview",
+    durationResolutionMap: [
+      { duration: [4, 6], resolution: ["720p"] },
+      { duration: [8], resolution: ["720p", "1080p"] },
+    ],
+    aspectRatio: ["16:9", "9:16"],
+    type: ["text", "singleImage"],
+    audio: true,
+  },
+  {
+    manufacturer: "t8star",
+    model: "veo-2.0-generate-001",
+    durationResolutionMap: [{ duration: [5, 6, 7, 8], resolution: ["720p"] }],
+    aspectRatio: ["16:9", "9:16"],
+    type: ["text", "singleImage"],
+    audio: false,
+  },
   // ================== RunningHub 系列 ==================
   // sora
   {

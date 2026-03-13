@@ -88,6 +88,30 @@ export default class Storyboard {
     this.shots[shotIndex].cells[cellIndex] = { ...this.shots[shotIndex].cells[cellIndex], ...cell };
   }
 
+  // 获取当前分镜快照（用于会话持久化）
+  public getShotsSnapshot(): { shots: Shot[]; shotIdCounter: number } {
+    return {
+      shots: JSON.parse(JSON.stringify(this.shots || [])),
+      shotIdCounter: this.shotIdCounter || 0,
+    };
+  }
+
+  // 从会话恢复分镜，并刷新前端画布
+  public restoreShotsFromSession(shots: Shot[] | undefined | null, shotIdCounter?: number): void {
+    const nextShots = Array.isArray(shots) ? JSON.parse(JSON.stringify(shots)) : [];
+    this.shots = nextShots;
+    this.generatingShots.clear();
+
+    const maxShotId = this.shots.reduce((max, item) => {
+      const id = Number(item?.id);
+      return Number.isFinite(id) ? Math.max(max, id) : max;
+    }, 0);
+
+    const safeCounter = Number.isFinite(shotIdCounter as number) ? Number(shotIdCounter) : 0;
+    this.shotIdCounter = Math.max(maxShotId, safeCounter);
+    this.emit("shotsUpdated", this.shots);
+  }
+
   // ==================== 公共方法 ====================
 
   get events() {

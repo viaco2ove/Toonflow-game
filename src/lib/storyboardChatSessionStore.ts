@@ -12,6 +12,14 @@ export interface StoryboardChatSessionMeta {
 export interface StoryboardChatSessionData {
   history: any[];
   novelChapters: any[];
+  shots: any[];
+  shotIdCounter: number;
+}
+
+interface SessionNovelPayload {
+  novelChapters: any[];
+  shots: any[];
+  shotIdCounter: number;
 }
 
 const LEGACY_TYPE = "storyboardAgent";
@@ -27,6 +35,51 @@ const safeParseJson = <T>(value: string | null | undefined, fallback: T): T => {
   } catch {
     return fallback;
   }
+};
+
+const normalizeHistoryArray = (raw: unknown): any[] => {
+  let value = raw;
+  for (let i = 0; i < 3; i++) {
+    if (typeof value !== "string") break;
+    const text = value.trim();
+    if (!text) return [];
+    try {
+      value = JSON.parse(text);
+    } catch {
+      return [];
+    }
+  }
+
+  if (Array.isArray(value)) return value;
+  if (value && typeof value === "object") {
+    const objectValue = value as Record<string, any>;
+    if (Array.isArray(objectValue.history)) return objectValue.history;
+    if (Array.isArray(objectValue.messages)) return objectValue.messages;
+  }
+  return [];
+};
+
+const parseSessionNovelPayload = (rawNovel: string | null | undefined): SessionNovelPayload => {
+  const parsed = safeParseJson<any>(rawNovel, []);
+  if (Array.isArray(parsed)) {
+    return {
+      novelChapters: parsed,
+      shots: [],
+      shotIdCounter: 0,
+    };
+  }
+  if (parsed && typeof parsed === "object") {
+    return {
+      novelChapters: Array.isArray(parsed.novelChapters) ? parsed.novelChapters : [],
+      shots: Array.isArray(parsed.shots) ? parsed.shots : [],
+      shotIdCounter: Number.isFinite(parsed.shotIdCounter as number) ? Number(parsed.shotIdCounter) : 0,
+    };
+  }
+  return {
+    novelChapters: [],
+    shots: [],
+    shotIdCounter: 0,
+  };
 };
 
 const normalizeTitle = (title: unknown, index: number): string => {
@@ -120,11 +173,18 @@ const upsertSessionRow = async (
   sessionId: string,
   history: any[],
   novelChapters: any[],
+  shots: any[] = [],
+  shotIdCounter = 0,
 ): Promise<void> => {
   const existing = await getSessionRow(projectId, sessionId);
+  const novelPayload: SessionNovelPayload = {
+    novelChapters: novelChapters ?? [],
+    shots: shots ?? [],
+    shotIdCounter: Number.isFinite(shotIdCounter) ? shotIdCounter : 0,
+  };
   const payload = {
     data: JSON.stringify(history ?? []),
-    novel: JSON.stringify(novelChapters ?? []),
+    novel: JSON.stringify(novelPayload),
   };
   if (existing) {
     await u.db("t_chatHistory").where({ projectId, type: toSessionType(sessionId) }).update(payload);
@@ -165,9 +225,12 @@ export const listStoryboardChatSessions = async (
 export const loadStoryboardChatSession = async (projectId: number, sessionId: string): Promise<StoryboardChatSessionData | null> => {
   const row = await getSessionRow(projectId, sessionId);
   if (!row) return null;
+  const novelPayload = parseSessionNovelPayload(row.novel);
   return {
-    history: safeParseJson<any[]>(row.data, []),
-    novelChapters: safeParseJson<any[]>(row.novel, []),
+    history: normalizeHistoryArray(row.data),
+    novelChapters: novelPayload.novelChapters,
+    shots: novelPayload.shots,
+    shotIdCounter: novelPayload.shotIdCounter,
   };
 };
 
@@ -177,12 +240,14 @@ export const saveStoryboardChatSession = async (params: {
   scriptId?: number | null;
   history: any[];
   novelChapters: any[];
+  shots?: any[];
+  shotIdCounter?: number;
   titleIfMissing?: string;
 }): Promise<StoryboardChatSessionMeta[]> => {
-  const { projectId, sessionId, scriptId = null, history, novelChapters, titleIfMissing } = params;
+  const { projectId, sessionId, scriptId = null, history, novelChapters, shots = [], shotIdCounter = 0, titleIfMissing } = params;
   const now = Date.now();
 
-  await upsertSessionRow(projectId, sessionId, history, novelChapters);
+  await upsertSessionRow(projectId, sessionId, history, novelChapters, shots, shotIdCounter);
   await upsertLegacyRow(projectId, history, novelChapters);
 
   const sessions = await getMetaList(projectId);
@@ -229,7 +294,7 @@ export const createStoryboardChatSession = async (params: {
     scriptId,
   };
 
-  await upsertSessionRow(projectId, sessionId, [], []);
+  await upsertSessionRow(projectId, sessionId, [], [], [], 0);
   const next = [sessionMeta, ...sessions];
   await upsertMetaList(projectId, next);
   return { sessionId, sessions: next };
@@ -264,7 +329,7 @@ export const deleteStoryboardChatSession = async (
 export const ensureStoryboardChatBootstrap = async (params: {
   projectId: number;
   scriptId?: number | null;
-}): Promise<{ sessionId: string; sessions: StoryboardChatSessionMeta[]; history: any[]; novelChapters: any[] }> => {
+}): Promise<{ sessionId: string; sessions: StoryboardChatSessionMeta[]; history: any[]; novelChapters: any[]; shots: any[]; shotIdCounter: number }> => {
   const { projectId, scriptId = null } = params;
   const sessions = await getMetaList(projectId);
   const scopedSessions = pickSessionsForScript(sessions, scriptId);
@@ -272,7 +337,14 @@ export const ensureStoryboardChatBootstrap = async (params: {
     const active = scopedSessions[0];
     const loaded = await loadStoryboardChatSession(projectId, active.id);
     if (loaded) {
-      return { sessionId: active.id, sessions, history: loaded.history, novelChapters: loaded.novelChapters };
+      return {
+        sessionId: active.id,
+        sessions,
+        history: loaded.history,
+        novelChapters: loaded.novelChapters,
+        shots: loaded.shots,
+        shotIdCounter: loaded.shotIdCounter,
+      };
     }
     const fixed = await saveStoryboardChatSession({
       projectId,
@@ -282,11 +354,11 @@ export const ensureStoryboardChatBootstrap = async (params: {
       novelChapters: [],
       titleIfMissing: active.title,
     });
-    return { sessionId: active.id, sessions: fixed, history: [], novelChapters: [] };
+    return { sessionId: active.id, sessions: fixed, history: [], novelChapters: [], shots: [], shotIdCounter: 0 };
   }
 
   const legacy = await u.db("t_chatHistory").where({ projectId, type: LEGACY_TYPE }).first();
-  const legacyHistory = safeParseJson<any[]>(legacy?.data, []);
+  const legacyHistory = normalizeHistoryArray(legacy?.data);
   const legacyNovel = safeParseJson<any[]>(legacy?.novel, []);
 
   const sessionId = createSessionId();
@@ -304,5 +376,7 @@ export const ensureStoryboardChatBootstrap = async (params: {
     sessions: created,
     history: legacyHistory,
     novelChapters: legacyNovel,
+    shots: [],
+    shotIdCounter: 0,
   };
 };

@@ -12,6 +12,7 @@ import gemini from "./owned/gemini";
 import apimart from "./owned/apimart";
 import other from "./owned/other";
 import grsai from "./owned/grsai";
+import t8star from "./owned/t8star";
 const modelInstance = {
   volcengine: volcengine,
   kling: kling,
@@ -21,7 +22,8 @@ const modelInstance = {
   runninghub: runninghub,
   apimart: apimart,
   other: other,
-  grsai:grsai
+  grsai: grsai,
+  t8star: t8star,
 } as const;
 
 export default async (input: VideoConfig, config?: AIConfig) => {

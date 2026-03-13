@@ -11,6 +11,102 @@ import path from "path";
 
 const router = express.Router();
 
+export type VideoGenerateMode = "startEnd" | "multi" | "single" | "text";
+
+export interface CreateVideoTaskInput {
+  projectId: number;
+  scriptId: number;
+  configId?: number;
+  aiConfigId?: number;
+  resolution: string;
+  filePath: string[];
+  duration: number;
+  prompt: string;
+  mode: VideoGenerateMode;
+  audioEnabled: boolean;
+}
+
+const getPathname = (url: string): string => {
+  if (url.startsWith("http://") || url.startsWith("https://")) {
+    return new URL(url).pathname;
+  }
+  return url;
+};
+
+export async function createVideoTask(input: CreateVideoTaskInput): Promise<{ id: number; configId: number | null }> {
+  const { mode, scriptId, projectId, configId, aiConfigId, resolution, duration, prompt, audioEnabled } = input;
+  const filePath = Array.isArray(input.filePath) ? [...input.filePath] : [];
+
+  if (mode === "text") filePath.length = 0;
+  else if (!filePath.length) throw new Error("请先选择图片");
+
+  const configData = await u.db("t_videoConfig").where("id", configId).first();
+  if (!configData) throw new Error("视频配置不存在");
+
+  if (configData.manufacturer === "runninghub" && filePath.length > 1) {
+    const gridUrl = await sharpProcessingImage(filePath, projectId);
+    if (gridUrl) {
+      filePath.length = 0;
+      filePath.push(gridUrl);
+    }
+  }
+
+  // 优先使用视频配置中的AI配置ID查询,查不到再使用传入的aiConfigId
+  let aiConfigData = null;
+  if (configData.aiConfigId) {
+    aiConfigData = await u.db("t_config").where("id", configData.aiConfigId).first();
+  }
+  if (!aiConfigData && aiConfigId) {
+    aiConfigData = await u.db("t_config").where("id", aiConfigId).first();
+  }
+  if (!aiConfigData) throw new Error("模型配置不存在");
+
+  // 过滤掉空值
+  let fileUrl = filePath.filter((p: string) => p && p.trim() !== "");
+
+  // 处理文件路径，如果是 base64 则上传到 OSS
+  if (fileUrl.length) {
+    const match = fileUrl[0].match(/base64,([A-Za-z0-9+/=]+)/);
+    if (match && match.length >= 2) {
+      const imagePath = `/${projectId}/assets/${uuidv4()}.jpg`;
+      const buffer = Buffer.from(match[1], "base64");
+      await u.oss.writeFile(imagePath, buffer);
+      fileUrl = [await u.oss.getFileUrl(imagePath)];
+    }
+  }
+
+  if (fileUrl.length) {
+    const fileExistsResults = await Promise.all(
+      fileUrl.map(async (url: string) => {
+        const pathname = getPathname(url);
+        return u.oss.fileExists(pathname);
+      }),
+    );
+    if (!fileExistsResults.every(Boolean)) throw new Error("选择分镜文件不存在");
+  }
+
+  const firstFrame = fileUrl.length ? getPathname(fileUrl[0]) : "";
+  const storyboardImgs = fileUrl.map((itemPath: string) => getPathname(itemPath));
+  const savePath = `/${projectId}/video/${uuidv4()}.mp4`;
+
+  // 先插入记录，state 默认为 0
+  const [videoId] = await u.db("t_video").insert({
+    scriptId,
+    configId: configId || null,
+    time: duration,
+    resolution,
+    prompt,
+    firstFrame,
+    storyboardImgs: JSON.stringify(storyboardImgs),
+    filePath: savePath,
+    state: 0,
+  });
+
+  // 异步生成
+  generateVideoAsync(videoId, projectId, fileUrl, savePath, prompt, duration, resolution, audioEnabled, aiConfigData, mode);
+  return { id: videoId, configId: configId || null };
+}
+
 // 生成视频
 export default router.post(
   "/",
@@ -28,98 +124,25 @@ export default router.post(
     audioEnabled: z.boolean(),
   }),
   async (req, res) => {
-    const { type, mode, scriptId, projectId, configId, aiConfigId, resolution, filePath, duration, prompt, audioEnabled } = req.body;
-
-    if (mode == "text") filePath.length = 0;
-    else if (!filePath.length) {
-      return res.status(500).send(error("请先选择图片"));
+    const { mode, scriptId, projectId, configId, aiConfigId, resolution, filePath, duration, prompt, audioEnabled } = req.body;
+    try {
+      const task = await createVideoTask({
+        projectId,
+        scriptId,
+        configId,
+        aiConfigId,
+        resolution,
+        filePath,
+        duration,
+        prompt,
+        mode,
+        audioEnabled,
+      });
+      res.status(200).send(success(task));
+    } catch (err: any) {
+      const message = u.error(err).message || "视频生成失败";
+      res.status(500).send(error(message));
     }
-    const configData = await u.db("t_videoConfig").where("id", configId).first();
-
-    if (!configData) {
-      return res.status(500).send(error("视频配置不存在"));
-    }
-    if (configData.manufacturer == "runninghub") {
-      if (filePath.length > 1) {
-        const gridUrl = await sharpProcessingImage(filePath, projectId);
-        if (gridUrl) {
-          filePath.length = 0;
-          filePath.push(gridUrl);
-        }
-      }
-    }
-
-    // 优先使用视频配置中的AI配置ID查询,查不到再使用传入的aiConfigId
-    let aiConfigData = null;
-    if (configData.aiConfigId) {
-      aiConfigData = await u.db("t_config").where("id", configData.aiConfigId).first();
-    }
-    if (!aiConfigData) {
-      aiConfigData = await u.db("t_config").where("id", aiConfigId).first();
-    }
-
-    if (!aiConfigData) {
-      return res.status(500).send(error("模型配置不存在"));
-    }
-    // 过滤掉空值
-    let fileUrl = filePath.filter((p: string) => p && p.trim() !== "");
-
-    // 处理文件路径，如果是 base64 则上传到 OSS
-    if (fileUrl.length) {
-      const match = fileUrl[0].match(/base64,([A-Za-z0-9+/=]+)/);
-      if (match && match.length >= 2) {
-        const imagePath = `/${projectId}/assets/${uuidv4()}.jpg`;
-        const buffer = Buffer.from(match[1], "base64");
-        await u.oss.writeFile(imagePath, buffer);
-        fileUrl = [await u.oss.getFileUrl(imagePath)];
-      }
-    }
-
-    // 提取路径名的辅助函数
-    const getPathname = (url: string): string => {
-      // 如果是完整 URL，提取 pathname
-      if (url.startsWith("http://") || url.startsWith("https://")) {
-        return new URL(url).pathname;
-      }
-      // 否则认为已经是路径
-      return url;
-    };
-    if (fileUrl.length) {
-      // 校验文件是否存在
-      const fileExistsResults = await Promise.all(
-        fileUrl.map(async (url: string) => {
-          const path = getPathname(url);
-          return u.oss.fileExists(path);
-        }),
-      );
-
-      if (!fileExistsResults.every(Boolean)) {
-        return res.status(400).send(error("选择分镜文件不存在"));
-      }
-    }
-
-    const firstFrame = fileUrl.length ? getPathname(fileUrl[0]) : "";
-    const storyboardImgs = fileUrl.map((path: string) => getPathname(path));
-    const savePath = `/${projectId}/video/${uuidv4()}.mp4`;
-
-    // 先插入记录，state 默认为 0
-    const [videoId] = await u.db("t_video").insert({
-      scriptId,
-      configId: configId || null, // 关联的视频配置ID
-      time: duration,
-      resolution,
-      prompt,
-      firstFrame,
-      storyboardImgs: JSON.stringify(storyboardImgs),
-      filePath: savePath,
-      state: 0,
-    });
-
-    // 立即返回，不等待视频生成
-    res.status(200).send(success({ id: videoId, configId: configId || null }));
-
-    // 异步生成视频
-    generateVideoAsync(videoId, projectId, fileUrl, savePath, prompt, duration, resolution, audioEnabled, aiConfigData, mode);
   },
 );
 

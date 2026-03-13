@@ -10,6 +10,7 @@ interface AIInput<T extends Record<string, z.ZodTypeAny> | undefined = undefined
   system?: string;
   tools?: Record<string, Tool>;
   maxStep?: number;
+  maxRetries?: number;
   output?: T;
   prompt?: string;
   messages?: Array<ModelMessage>;
@@ -64,6 +65,7 @@ const buildOptions = async (input: AIInput<any>, config: AIConfig = {}) => {
       ...(input.prompt ? { prompt: input.prompt } : { messages: input.messages! }),
       ...(input.tools && owned.tool && { tools: input.tools }),
       ...(maxStep && { stopWhen: stepCountIs(maxStep) }),
+      ...(input.maxRetries !== undefined && { maxRetries: input.maxRetries }),
       ...(output && { output }),
     },
     responseFormat: owned.responseFormat,

@@ -81,6 +81,76 @@ export default async (knex: Knex): Promise<void> => {
       customValue: null,
     });
   }
+
+  // 兼容老库：补齐 t8star 视频模型
+  if (await knex.schema.hasTable("t_videoModel")) {
+    const t8starModels = [
+      {
+        manufacturer: "t8star",
+        model: "veo-3.1-generate-preview",
+        durationResolutionMap: JSON.stringify([
+          { duration: [4, 6], resolution: ["720p"] },
+          { duration: [8], resolution: ["720p", "1080p"] },
+        ]),
+        aspectRatio: JSON.stringify(["16:9", "9:16"]),
+        audio: 1,
+        type: JSON.stringify(["text", "singleImage", "startEndRequired", "endFrameOptional", "reference"]),
+      },
+      {
+        manufacturer: "t8star",
+        model: "veo-3.1-fast-generate-preview",
+        durationResolutionMap: JSON.stringify([
+          { duration: [4, 6], resolution: ["720p"] },
+          { duration: [8], resolution: ["720p", "1080p"] },
+        ]),
+        aspectRatio: JSON.stringify(["16:9", "9:16"]),
+        audio: 1,
+        type: JSON.stringify(["text", "singleImage", "startEndRequired", "endFrameOptional", "reference"]),
+      },
+      {
+        manufacturer: "t8star",
+        model: "veo-3.0-generate-preview",
+        durationResolutionMap: JSON.stringify([
+          { duration: [4, 6], resolution: ["720p"] },
+          { duration: [8], resolution: ["720p", "1080p"] },
+        ]),
+        aspectRatio: JSON.stringify(["16:9", "9:16"]),
+        audio: 1,
+        type: JSON.stringify(["text", "singleImage"]),
+      },
+      {
+        manufacturer: "t8star",
+        model: "veo-3.0-fast-generate-preview",
+        durationResolutionMap: JSON.stringify([
+          { duration: [4, 6], resolution: ["720p"] },
+          { duration: [8], resolution: ["720p", "1080p"] },
+        ]),
+        aspectRatio: JSON.stringify(["16:9", "9:16"]),
+        audio: 1,
+        type: JSON.stringify(["text", "singleImage"]),
+      },
+      {
+        manufacturer: "t8star",
+        model: "veo-2.0-generate-001",
+        durationResolutionMap: JSON.stringify([{ duration: [5, 6, 7, 8], resolution: ["720p"] }]),
+        aspectRatio: JSON.stringify(["16:9", "9:16"]),
+        audio: 0,
+        type: JSON.stringify(["text", "singleImage"]),
+      },
+    ];
+
+    for (const item of t8starModels) {
+      const exists = await knex("t_videoModel").where({ manufacturer: item.manufacturer, model: item.model }).first();
+      if (exists) continue;
+      const maxIdResult = (await knex("t_videoModel").max("id as maxId").first()) as { maxId?: number } | undefined;
+      const nextId = (maxIdResult?.maxId || 0) + 1;
+      await knex("t_videoModel").insert({
+        id: nextId,
+        ...item,
+      });
+    }
+  }
+
   const aiModels = [
     { name: "分镜Agent", key: "storyboardAgent" },
     { name: "分镜Agent图片生成", key: "storyboardImage" },

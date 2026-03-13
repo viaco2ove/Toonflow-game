@@ -20,7 +20,7 @@ interface ImageResData extends BaseConfig {
 
 interface VideoResData extends BaseConfig {
   baseURL: string;
-  manufacturer: "openAi" | "volcengine" | "runninghub" | "apimart" | "confyUI";
+  manufacturer: "openAi" | "volcengine" | "runninghub" | "apimart" | "confyUI" | "t8star";
 }
 
 type ResDataMap = {
