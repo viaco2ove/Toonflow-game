@@ -11,11 +11,17 @@ import {
   renameStoryboardChatSession,
   saveStoryboardChatSession,
   StoryboardChatSessionMeta,
+  StoryboardPendingPlan,
+  StoryboardPendingPlanSnapshot,
+  StoryboardVideoDraft,
+  StoryboardVideoDraftConfig,
 } from "@/lib/storyboardChatSessionStore";
 import { createVideoTask, VideoGenerateMode } from "@/routes/video/generateVideo";
 
 const router = express.Router();
 expressWs(router as unknown as Application);
+// 默认开启分镜计划确认；仅当显式设置为 0 时关闭
+const STORYBOARD_PLAN_CONFIRM = (process.env.STORYBOARD_PLAN_CONFIRM || "").trim() !== "0";
 
 const formatSessionListText = (sessions: StoryboardChatSessionMeta[], currentSessionId: string): string => {
   if (sessions.length === 0) {
@@ -94,6 +100,8 @@ router.ws("/", async (ws, req) => {
     novelChapters: [] as any[],
     shots: [] as any[],
     shotIdCounter: 0,
+    videoDraft: null as StoryboardVideoDraft | null,
+    pendingStoryboardPlan: null as StoryboardPendingPlan | null,
   };
 
   if (isVideoMode) {
@@ -122,6 +130,8 @@ router.ws("/", async (ws, req) => {
         novelChapters: Array.isArray(loaded.novelChapters) ? loaded.novelChapters : [],
         shots: Array.isArray(loaded.shots) ? loaded.shots : [],
         shotIdCounter: Number.isFinite(loaded.shotIdCounter) ? loaded.shotIdCounter : 0,
+        videoDraft: loaded.videoDraft || null,
+        pendingStoryboardPlan: loaded.pendingStoryboardPlan || null,
       };
     }
   } else {
@@ -137,6 +147,8 @@ router.ws("/", async (ws, req) => {
       novelChapters: bootstrap.novelChapters,
       shots: bootstrap.shots,
       shotIdCounter: bootstrap.shotIdCounter,
+      videoDraft: bootstrap.videoDraft || null,
+      pendingStoryboardPlan: bootstrap.pendingStoryboardPlan || null,
     };
 
     if (requestedSessionId) {
@@ -217,12 +229,53 @@ router.ws("/", async (ws, req) => {
     endFrame: VideoFrameRef | null;
     images: VideoFrameRef[];
   };
+  let pendingStoryboardPlan: StoryboardPendingPlan | null = sessionData.pendingStoryboardPlan || null;
 
   let videoConfigsCache: VideoConfigSummary[] = [];
   let selectedVideoAiConfigId: number | null = null;
   let selectedVideoMode: VideoGenerateMode = "single";
   let videoFlowStep: "idle" | "selectConfig" | "selectMode" = "idle";
   let videoPlanShots: VideoPlanShot[] = [];
+  let draftConfigCounter = 1;
+  let videoDraftState: StoryboardVideoDraft = sessionData.videoDraft || {
+    selectedAiConfigId: null,
+    selectedMode: "single",
+    configs: [],
+    updatedAt: Date.now(),
+  };
+  if (videoDraftState.selectedAiConfigId) selectedVideoAiConfigId = videoDraftState.selectedAiConfigId;
+  if (videoDraftState.selectedMode) selectedVideoMode = videoDraftState.selectedMode as VideoGenerateMode;
+
+  const makeDraftId = () => `d_${Date.now()}_${draftConfigCounter++}`;
+  const draftIdToVirtualId = (draftId: string): number => {
+    let hash = 0;
+    for (let i = 0; i < draftId.length; i++) {
+      hash = (hash * 31 + draftId.charCodeAt(i)) | 0;
+    }
+    return -Math.max(1, Math.abs(hash));
+  };
+  const toVirtualConfigId = (cfg: StoryboardVideoDraftConfig): number => draftIdToVirtualId(cfg.draftId);
+  const isVirtualConfigId = (id: number): boolean => Number.isFinite(id) && id < 0;
+  const getDraftConfigByVirtualId = (id: number): StoryboardVideoDraftConfig | null => {
+    return videoDraftState.configs.find((item) => toVirtualConfigId(item) === id) || null;
+  };
+  const touchVideoDraft = () => {
+    videoDraftState.updatedAt = Date.now();
+    videoDraftState.selectedAiConfigId = selectedVideoAiConfigId || null;
+    videoDraftState.selectedMode = selectedVideoMode === "startEnd" ? "startEnd" : "single";
+  };
+  const createEmptyVideoDraft = (): StoryboardVideoDraft => ({
+    selectedAiConfigId: selectedVideoAiConfigId || null,
+    selectedMode: selectedVideoMode === "startEnd" ? "startEnd" : "single",
+    configs: [],
+    updatedAt: Date.now(),
+  });
+  const applyVideoDraftFromSession = (draft: StoryboardVideoDraft | null | undefined) => {
+    videoDraftState = draft || createEmptyVideoDraft();
+    const sid = Number(videoDraftState.selectedAiConfigId || 0);
+    if (sid > 0) selectedVideoAiConfigId = sid;
+    selectedVideoMode = videoDraftState.selectedMode === "startEnd" ? "startEnd" : "single";
+  };
 
   const parseMode = (text: string): VideoGenerateMode | null => {
     const raw = text.trim().toLowerCase();
@@ -298,7 +351,7 @@ router.ws("/", async (ws, req) => {
     sendNotice(
       `可用视频模型（来自设置）：\n${lines.join(
         "\n",
-      )}\n\n当前模式：${currentModeText}\n请回复模型序号或模型ID（例如：1）。\n命令：\n/选择视频模型 <序号或模型ID>\n/视频模式 <单图|首尾帧>\n/生成视频配置\n/生成视频 <视频配置ID>`,
+      )}\n\n当前模式：${currentModeText}\n请回复模型序号或模型ID（例如：1）。\n命令：\n/选择视频模型 <序号或模型ID>\n/视频模式 <单图|首尾帧>\n/生成视频配置\n/导出视频配置\n/生成视频 <视频配置ID>`,
     );
   };
 
@@ -334,6 +387,7 @@ router.ws("/", async (ws, req) => {
     }
     selectedVideoAiConfigId = target.aiConfigId;
     selectedVideoMode = target.mode === "startEnd" ? "startEnd" : "single";
+    touchVideoDraft();
     sendNotice(
       `已选择视频模型 #${target.aiConfigId}（${target.manufacturer || "未知厂商"} ${target.model || ""}）。请继续选择视频模式：首尾帧 或 单图。当前默认模式：${
         selectedVideoMode === "startEnd" ? "首尾帧" : "单图"
@@ -517,7 +571,7 @@ router.ws("/", async (ws, req) => {
     return plans;
   };
 
-  const listScriptVideoConfigs = async (): Promise<VideoConfigRow[]> => {
+  const listPersistedVideoConfigs = async (): Promise<VideoConfigRow[]> => {
     const rows = await u
       .db("t_videoConfig")
       .where({
@@ -576,9 +630,8 @@ router.ws("/", async (ws, req) => {
     const frames = collectFrames();
     if (!frames.length) return [];
 
-    const exists = await listScriptVideoConfigs();
     const existingKeySet = new Set<string>();
-    for (const item of exists) {
+    for (const item of videoDraftState.configs) {
       const itemMode = parseMode(item.mode) || "single";
       if (Number(item.aiConfigId) !== Number(config.aiConfigId)) continue;
       if (itemMode !== mode) continue;
@@ -592,11 +645,7 @@ router.ws("/", async (ws, req) => {
       }
     }
 
-    const now = Date.now();
-    const maxIdResult: any = await u.db("t_videoConfig").max("id as maxId").first();
-    let nextId = Number(maxIdResult?.maxId || 0) + 1;
-    const inserts: any[] = [];
-
+    const nextDrafts: StoryboardVideoDraftConfig[] = [];
     if (mode === "startEnd") {
       for (let i = 0; i < frames.length - 1; i++) {
         const first = frames[i];
@@ -606,23 +655,19 @@ router.ws("/", async (ws, req) => {
         const key = `startEnd|${startFrame.filePath}|${endFrame.filePath}`;
         if (existingKeySet.has(key)) continue;
         existingKeySet.add(key);
-        inserts.push({
-          id: nextId++,
-          scriptId: scriptIdNum,
-          projectId: projectIdNum,
+        nextDrafts.push({
+          draftId: makeDraftId(),
           aiConfigId: config.aiConfigId,
           manufacturer: config.manufacturer || "",
+          model: config.model || "",
           mode: "startEnd",
-          startFrame: JSON.stringify(startFrame),
-          endFrame: JSON.stringify(endFrame),
-          images: null,
           resolution: config.resolution || "720p",
           duration: Number(config.duration || 5),
           prompt: buildAutoVideoPrompt(first, second),
-          selectedResultId: null,
-          createTime: now,
-          updateTime: now,
-          audioEnabled: config.audioEnabled ? 1 : 0,
+          audioEnabled: Boolean(config.audioEnabled),
+          startFrame,
+          endFrame,
+          images: [],
         });
       }
     } else {
@@ -632,31 +677,39 @@ router.ws("/", async (ws, req) => {
         const key = `single|${startFrame.filePath}`;
         if (existingKeySet.has(key)) continue;
         existingKeySet.add(key);
-        inserts.push({
-          id: nextId++,
-          scriptId: scriptIdNum,
-          projectId: projectIdNum,
+        nextDrafts.push({
+          draftId: makeDraftId(),
           aiConfigId: config.aiConfigId,
           manufacturer: config.manufacturer || "",
+          model: config.model || "",
           mode: "single",
-          startFrame: JSON.stringify(startFrame),
-          endFrame: null,
-          images: null,
           resolution: config.resolution || "720p",
           duration: Number(config.duration || 5),
           prompt: buildAutoVideoPrompt(frame),
-          selectedResultId: null,
-          createTime: now,
-          updateTime: now,
-          audioEnabled: config.audioEnabled ? 1 : 0,
+          audioEnabled: Boolean(config.audioEnabled),
+          startFrame,
+          endFrame: null,
+          images: [],
         });
       }
     }
 
-    if (inserts.length > 0) {
-      await u.db("t_videoConfig").insert(inserts);
+    if (nextDrafts.length > 0) {
+      videoDraftState.configs = [...videoDraftState.configs, ...nextDrafts];
+      touchVideoDraft();
     }
-    return listScriptVideoConfigs();
+    return videoDraftState.configs.map((item) => ({
+      id: toVirtualConfigId(item),
+      aiConfigId: item.aiConfigId,
+      mode: item.mode,
+      resolution: item.resolution,
+      duration: item.duration,
+      prompt: item.prompt,
+      audioEnabled: item.audioEnabled,
+      startFrame: item.startFrame,
+      endFrame: item.endFrame,
+      images: item.images,
+    })) as VideoConfigRow[];
   };
 
   const getConfigFilePaths = (config: VideoConfigRow): string[] => {
@@ -669,8 +722,29 @@ router.ws("/", async (ws, req) => {
     return list as string[];
   };
 
+  const listDraftVideoConfigs = (): VideoConfigRow[] => {
+    return videoDraftState.configs.map((item) => ({
+      id: toVirtualConfigId(item),
+      aiConfigId: item.aiConfigId,
+      mode: item.mode,
+      resolution: item.resolution,
+      duration: item.duration,
+      prompt: item.prompt,
+      audioEnabled: item.audioEnabled,
+      startFrame: item.startFrame,
+      endFrame: item.endFrame,
+      images: item.images,
+    })) as VideoConfigRow[];
+  };
+
+  const listExecutableVideoConfigs = async (): Promise<VideoConfigRow[]> => {
+    const draftRows = listDraftVideoConfigs();
+    if (draftRows.length > 0) return draftRows;
+    return listPersistedVideoConfigs();
+  };
+
   const submitVideoTasksFromConfigs = async (input?: { configId?: number; index?: number }) => {
-    const configs = await listScriptVideoConfigs();
+    const configs = await listExecutableVideoConfigs();
     if (!configs.length) {
       sendNotice("当前没有视频配置。请先发送 /生成视频配置。");
       return;
@@ -708,18 +782,33 @@ router.ws("/", async (ws, req) => {
           if (failMessages.length < 3) failMessages.push(`配置${item.id}: 缺少可用图片`);
           continue;
         }
-        await createVideoTask({
-          projectId: projectIdNum,
-          scriptId: scriptIdNum,
-          configId: item.id,
-          aiConfigId: item.aiConfigId,
-          resolution: item.resolution || "720p",
-          filePath,
-          duration: Number(item.duration || 5),
-          prompt: item.prompt || "",
-          mode,
-          audioEnabled: Boolean(item.audioEnabled),
-        });
+        if (isVirtualConfigId(item.id)) {
+          await createVideoTask({
+            projectId: projectIdNum,
+            scriptId: scriptIdNum,
+            configId: item.id,
+            aiConfigId: item.aiConfigId,
+            resolution: item.resolution || "720p",
+            filePath,
+            duration: Number(item.duration || 5),
+            prompt: item.prompt || "",
+            mode,
+            audioEnabled: Boolean(item.audioEnabled),
+          });
+        } else {
+          await createVideoTask({
+            projectId: projectIdNum,
+            scriptId: scriptIdNum,
+            configId: item.id,
+            aiConfigId: item.aiConfigId,
+            resolution: item.resolution || "720p",
+            filePath,
+            duration: Number(item.duration || 5),
+            prompt: item.prompt || "",
+            mode,
+            audioEnabled: Boolean(item.audioEnabled),
+          });
+        }
         successCount++;
       } catch (err: any) {
         failCount++;
@@ -745,34 +834,114 @@ router.ws("/", async (ws, req) => {
     }
     videoPlanShots = plans;
 
-    const createdConfigs = await createVideoConfigPlans();
-    if (!createdConfigs.length) {
+    const draftConfigs = await createVideoConfigPlans();
+    if (!draftConfigs.length) {
       send("shotsUpdated", plans);
-      sendNotice("已整理出视频计划，但未成功写入视频配置。请检查视频模型后重试。");
+      sendNotice("已整理出视频计划，但没有新增可用的视频配置。");
       return;
     }
 
     // 视频模式展示“视频配置画布”
-    const canvasPlans = buildVideoPlansFromConfigRows(createdConfigs);
+    const canvasPlans = buildVideoPlansFromConfigRows(draftConfigs);
     send("shotsUpdated", canvasPlans.length ? canvasPlans : plans);
-    send("refresh", "videoConfigs");
     const modeText = mode === "startEnd" ? "首尾帧（1-2,2-3串联）" : "单图（每图一个视频）";
     sendNotice(
-      `已生成 ${createdConfigs.length} 条视频配置并同步到画布（模式：${modeText}）。\n下一步：请在配置卡片中逐条生成，或发送 /生成视频 <视频配置ID>。`,
+      `已生成 ${draftConfigs.length} 条视频配置并同步到画布（模式：${modeText}）。\n下一步：请在配置卡片中逐条生成，或发送 /生成视频 <视频配置ID>。`,
     );
   };
 
   const syncVideoCanvasAsync = async () => {
     if (!isVideoMode) return;
-    const existed = await listScriptVideoConfigs();
+    const existed = listDraftVideoConfigs();
     const canvasPlans = buildVideoPlansFromConfigRows(existed);
     if (canvasPlans.length > 0) {
       send("shotsUpdated", canvasPlans);
       return;
     }
-    // 没有视频配置时，回退显示分镜计划卡片，避免画布空白。
-    const fallbackPlans = buildVideoPlanShots(selectedVideoMode || "single");
-    send("shotsUpdated", fallbackPlans);
+    // AI视频画布只展示视频配置；无配置时保持空画布。
+    send("shotsUpdated", []);
+  };
+
+  const exportVideoDraftConfigsToDb = async () => {
+    if (!isVideoMode) return;
+    if (!videoDraftState.configs.length) {
+      sendNotice("当前会话没有可导出的草稿视频配置。");
+      return;
+    }
+
+    const existingRows = await listPersistedVideoConfigs();
+    const keyOf = (cfg: {
+      aiConfigId: number;
+      mode: string;
+      startFrame: VideoFrameRef | null;
+      endFrame: VideoFrameRef | null;
+    }) => {
+      const mode = parseMode(cfg.mode) || "single";
+      const start = String(cfg.startFrame?.filePath || "").trim();
+      const end = String(cfg.endFrame?.filePath || "").trim();
+      return `${cfg.aiConfigId}|${mode}|${start}|${end}`;
+    };
+
+    const existingByKey = new Map<string, VideoConfigRow>();
+    for (const row of existingRows) {
+      existingByKey.set(keyOf(row), row);
+    }
+
+    const maxIdResult: any = await u.db("t_videoConfig").max("id as maxId").first();
+    let nextId = Number(maxIdResult?.maxId || 0) + 1;
+    const now = Date.now();
+    let inserted = 0;
+    let updated = 0;
+
+    for (const draft of videoDraftState.configs) {
+      const mode = parseMode(draft.mode) || "single";
+      const rowLike: VideoConfigRow = {
+        id: 0,
+        aiConfigId: draft.aiConfigId,
+        mode,
+        resolution: draft.resolution || "720p",
+        duration: Number(draft.duration || 5),
+        prompt: draft.prompt || "",
+        audioEnabled: Boolean(draft.audioEnabled),
+        startFrame: draft.startFrame,
+        endFrame: draft.endFrame,
+        images: draft.images || [],
+      };
+      const key = keyOf(rowLike);
+      const existing = existingByKey.get(key);
+
+      const payload = {
+        scriptId: scriptIdNum,
+        projectId: projectIdNum,
+        aiConfigId: draft.aiConfigId,
+        manufacturer: draft.manufacturer || "",
+        mode,
+        startFrame: draft.startFrame ? JSON.stringify(draft.startFrame) : null,
+        endFrame: draft.endFrame ? JSON.stringify(draft.endFrame) : null,
+        images: draft.images?.length ? JSON.stringify(draft.images) : null,
+        resolution: draft.resolution || "720p",
+        duration: Number(draft.duration || 5),
+        prompt: draft.prompt || "",
+        audioEnabled: draft.audioEnabled ? 1 : 0,
+        updateTime: now,
+      };
+
+      if (existing?.id) {
+        await u.db("t_videoConfig").where({ id: existing.id }).update(payload);
+        updated += 1;
+      } else {
+        await u.db("t_videoConfig").insert({
+          id: nextId++,
+          ...payload,
+          selectedResultId: null,
+          createTime: now,
+        });
+        inserted += 1;
+      }
+    }
+
+    send("refresh", "videoConfigs");
+    sendNotice(`视频配置导出完成：新增 ${inserted} 条，更新 ${updated} 条。`);
   };
 
   const ensureVideoConfigForScript = async (config: VideoConfigSummary): Promise<VideoConfigSummary> => {
@@ -915,6 +1084,85 @@ router.ws("/", async (ws, req) => {
     sendNotice(summary);
   };
 
+  const clonePlanSnapshot = (snapshot: { shots: any[]; shotIdCounter: number }): StoryboardPendingPlanSnapshot => {
+    return {
+      shots: JSON.parse(JSON.stringify(Array.isArray(snapshot.shots) ? snapshot.shots : [])),
+      shotIdCounter: Number.isFinite(snapshot.shotIdCounter) ? snapshot.shotIdCounter : 0,
+    };
+  };
+
+  const hasShotSnapshotChanged = (before: StoryboardPendingPlanSnapshot, after: StoryboardPendingPlanSnapshot): boolean => {
+    if (before.shotIdCounter !== after.shotIdCounter) return true;
+    return JSON.stringify(before.shots) !== JSON.stringify(after.shots);
+  };
+
+  const buildStoryboardPlanSummary = (before: StoryboardPendingPlanSnapshot, after: StoryboardPendingPlanSnapshot): string => {
+    const beforeMap = new Map<number, any>();
+    for (const shot of before.shots || []) {
+      const id = Number(shot?.id || 0);
+      if (id > 0) beforeMap.set(id, shot);
+    }
+    const afterList = Array.isArray(after.shots) ? after.shots : [];
+    const changed = afterList.filter((shot: any) => {
+      const id = Number(shot?.id || 0);
+      const prev = beforeMap.get(id);
+      if (!prev) return true;
+      return JSON.stringify(prev) !== JSON.stringify(shot);
+    });
+    const previewList = changed.length ? changed : afterList;
+    const lines = previewList.slice(0, 8).map((shot: any, index: number) => {
+      const segId = Number(shot?.segmentId || shot?.id || index + 1);
+      const title = String(shot?.title || `分镜${segId}`).trim();
+      const cellCount = Array.isArray(shot?.cells) ? shot.cells.length : 0;
+      const firstPrompt = String(shot?.cells?.[0]?.prompt || "").replace(/\s+/g, " ").trim();
+      const promptPreview = firstPrompt ? `，首镜头：${firstPrompt.slice(0, 40)}${firstPrompt.length > 40 ? "..." : ""}` : "";
+      return `${index + 1}. 分镜${segId}《${title}》${cellCount}镜头${promptPreview}`;
+    });
+    const changedCount = changed.length;
+    const totalAfter = afterList.length;
+    const omitted = Math.max(0, (previewList.length || 0) - lines.length);
+    const head = `分镜计划预览：共 ${totalAfter} 个分镜，新增/变更 ${changedCount} 个。`;
+    const tail = omitted > 0 ? `\n...其余 ${omitted} 个分镜已省略预览` : "";
+    return `${head}\n${lines.join("\n")}${tail}`;
+  };
+
+  const shouldUseStoryboardPlanConfirm = (prompt: string): boolean => {
+    if (isVideoMode || !STORYBOARD_PLAN_CONFIRM) return false;
+    const text = String(prompt || "").trim();
+    if (!text || text.startsWith("/")) return false;
+    return true;
+  };
+
+  const runStoryboardWithPlanConfirm = async (prompt: string): Promise<boolean> => {
+    if (!shouldUseStoryboardPlanConfirm(prompt)) return false;
+    if (pendingStoryboardPlan) {
+      sendNotice("当前有待确认的分镜计划。请先发送 /确认分镜计划 或 /取消分镜计划。");
+      return true;
+    }
+
+    const before = clonePlanSnapshot(agent.getShotsSnapshot());
+    await agent.call(prompt);
+    const after = clonePlanSnapshot(agent.getShotsSnapshot());
+
+    if (!hasShotSnapshotChanged(before, after)) {
+      return true;
+    }
+
+    const summary = buildStoryboardPlanSummary(before, after);
+    pendingStoryboardPlan = {
+      sourcePrompt: prompt,
+      createdAt: Date.now(),
+      before,
+      after,
+      summary,
+    };
+
+    // 回退到旧画布，等待用户确认后再应用计划。
+    agent.restoreShotsFromSession(before.shots, before.shotIdCounter);
+    sendNotice(`${summary}\n\n请发送 /确认分镜计划 以写入画布，或发送 /取消分镜计划 放弃本次计划。`);
+    return true;
+  };
+
   const listSessions = async () => {
     sessionsCache = await loadScopedSessions();
     sendNotice(formatSessionListText(sessionsCache, currentSessionId));
@@ -953,6 +1201,12 @@ router.ws("/", async (ws, req) => {
     agent.history = Array.isArray(loaded.history) ? loaded.history : [];
     agent.novelChapters = Array.isArray(loaded.novelChapters) ? loaded.novelChapters : [];
     agent.restoreShotsFromSession(loaded.shots, loaded.shotIdCounter);
+    if (isVideoMode) {
+      pendingStoryboardPlan = null;
+      applyVideoDraftFromSession(loaded.videoDraft);
+    } else {
+      pendingStoryboardPlan = loaded.pendingStoryboardPlan || null;
+    }
     sendSessionHistory();
     if (isVideoMode) await syncVideoCanvasAsync();
     else send("shotsUpdated", agent.getShotsSnapshot().shots);
@@ -973,8 +1227,10 @@ router.ws("/", async (ws, req) => {
     agent.novelChapters = [];
     if (isVideoMode) {
       agent.restoreShotsFromSession(snapshot.shots, snapshot.shotIdCounter);
+      videoDraftState = createEmptyVideoDraft();
     } else {
       agent.restoreShotsFromSession([], 0);
+      pendingStoryboardPlan = null;
     }
     sendSessionHistory();
     if (isVideoMode) await syncVideoCanvasAsync();
@@ -1008,8 +1264,10 @@ router.ws("/", async (ws, req) => {
       agent.novelChapters = [];
       if (isVideoMode) {
         agent.restoreShotsFromSession(snapshot.shots, snapshot.shotIdCounter);
+        videoDraftState = createEmptyVideoDraft();
       } else {
         agent.restoreShotsFromSession([], 0);
+        pendingStoryboardPlan = null;
       }
       await saveHistory();
       sendSessionHistory();
@@ -1036,6 +1294,12 @@ router.ws("/", async (ws, req) => {
         agent.history = loaded?.history ?? [];
         agent.novelChapters = loaded?.novelChapters ?? [];
         agent.restoreShotsFromSession(loaded?.shots ?? [], loaded?.shotIdCounter ?? 0);
+        if (isVideoMode) {
+          pendingStoryboardPlan = null;
+          applyVideoDraftFromSession(loaded?.videoDraft);
+        } else {
+          pendingStoryboardPlan = loaded?.pendingStoryboardPlan || null;
+        }
         sendSessionHistory();
         if (isVideoMode) await syncVideoCanvasAsync();
         else send("shotsUpdated", agent.getShotsSnapshot().shots);
@@ -1051,6 +1315,28 @@ router.ws("/", async (ws, req) => {
   const handleSessionCommand = async (prompt: string): Promise<boolean> => {
     const input = prompt.trim();
     if (!input) return false;
+
+    if (!isVideoMode && /^\/?(确认分镜计划|确认计划|confirm-shot-plan)$/i.test(input)) {
+      if (!pendingStoryboardPlan) {
+        sendNotice("当前没有待确认的分镜计划。");
+        return true;
+      }
+      agent.restoreShotsFromSession(pendingStoryboardPlan.after.shots, pendingStoryboardPlan.after.shotIdCounter);
+      const summary = pendingStoryboardPlan.summary;
+      pendingStoryboardPlan = null;
+      sendNotice(`${summary}\n\n已确认并写入画布。`);
+      return true;
+    }
+
+    if (!isVideoMode && /^\/?(取消分镜计划|取消计划|discard-shot-plan)$/i.test(input)) {
+      if (!pendingStoryboardPlan) {
+        sendNotice("当前没有待取消的分镜计划。");
+        return true;
+      }
+      pendingStoryboardPlan = null;
+      sendNotice("已取消本次分镜计划，画布保持不变。");
+      return true;
+    }
 
     if (isVideoMode && /^\/?(开始|start)$/i.test(input)) {
       videoFlowStep = "selectConfig";
@@ -1085,6 +1371,7 @@ router.ws("/", async (ws, req) => {
       const freeMode = parseMode(input);
       if (freeMode) {
         selectedVideoMode = freeMode;
+        touchVideoDraft();
         videoFlowStep = "idle";
         await publishVideoPlanToCanvasAsync();
         return true;
@@ -1107,6 +1394,7 @@ router.ws("/", async (ws, req) => {
         return true;
       }
       selectedVideoMode = nextMode;
+      touchVideoDraft();
       videoFlowStep = "idle";
       await publishVideoPlanToCanvasAsync();
       return true;
@@ -1114,6 +1402,11 @@ router.ws("/", async (ws, req) => {
 
     if (/^\/?(生成视频配置|全部生成视频配置|批量生成视频配置|刷新视频配置|预览视频配置)$/i.test(input)) {
       await publishVideoPlanToCanvasAsync();
+      return true;
+    }
+
+    if (/^\/?(导出视频配置|导出全部视频配置)$/i.test(input)) {
+      await exportVideoDraftConfigsToDb();
       return true;
     }
 
@@ -1136,7 +1429,7 @@ router.ws("/", async (ws, req) => {
 
     if (/^\/?(视频帮助|video-help|help-video)$/i.test(input)) {
       sendNotice(
-        "视频命令：\n/视频模型（或 /视频配置）\n/选择视频模型 <序号或模型ID>\n/视频模式 <单图|首尾帧>\n/生成视频配置\n/生成视频 <视频配置ID>\n说明：已禁用 /全部生成视频",
+        "视频命令：\n/视频模型（或 /视频配置）\n/选择视频模型 <序号或模型ID>\n/视频模式 <单图|首尾帧>\n/生成视频配置\n/导出视频配置\n/生成视频 <视频配置ID>\n说明：已禁用 /全部生成视频",
       );
       return true;
     }
@@ -1174,12 +1467,20 @@ router.ws("/", async (ws, req) => {
 
     if (/^\/(会话帮助|session-help|help-session)$/i.test(input)) {
       sendNotice(
-        "会话命令：\n/会话\n/新建会话 [标题]\n/切换会话 <ID或序号>\n/重命名会话 <ID或序号> <新标题>\n/删除会话 <ID或序号>",
+        "会话命令：\n/会话\n/新建会话 [标题]\n/切换会话 <ID或序号>\n/重命名会话 <ID或序号> <新标题>\n/删除会话 <ID或序号>\n/确认分镜计划\n/取消分镜计划",
       );
       return true;
     }
 
     return false;
+  };
+
+  const isMixedGridRequest = (text: string): boolean => {
+    const input = String(text || "").toLowerCase();
+    const has4 = /4\s*宫格|四\s*宫格|2x2|2×2/.test(input);
+    const has8 = /8\s*宫格|八\s*宫格|2x4|4x2|2×4|4×2/.test(input);
+    const hasSceneFightMix = /(剧情|文戏|叙事).*(打斗|战斗|动作)|(?:打斗|战斗|动作).*(剧情|文戏|叙事)/.test(input);
+    return has4 && has8 && hasSceneFightMix;
   };
 
   // 监听各类事件
@@ -1239,6 +1540,27 @@ router.ws("/", async (ws, req) => {
 
   agent.emitter.on("shotImageGenerateError", (data) => {
     send("shotImageGenerateError", data);
+    if (!isVideoMode) {
+      const shotId = Number(data?.shotId || 0);
+      const errorText = String(data?.error || "分镜图生成失败");
+      send("notice", shotId > 0 ? `分镜 ${shotId} 生成失败：${errorText}` : `分镜图生成失败：${errorText}`);
+    }
+  });
+
+  agent.emitter.on("shotImageGenerateSummary", (data) => {
+    send("shotImageGenerateSummary", data);
+    if (!isVideoMode) {
+      const successCount = Number(data?.successCount || 0);
+      const failedCount = Number(data?.failedCount || 0);
+      const failed = Array.isArray(data?.failed) ? data.failed.slice(0, 3) : [];
+      let summary = `分镜图任务结束：成功 ${successCount} 条，失败 ${failedCount} 条。`;
+      if (failed.length > 0) {
+        const lines = failed.map((item: any) => `分镜 ${Number(item?.shotId || 0)}：${String(item?.error || "失败")}`);
+        summary += `\n失败示例：\n${lines.join("\n")}`;
+      }
+      send("notice", summary);
+      send("response_end", summary);
+    }
   });
 
   send("init", {
@@ -1257,12 +1579,15 @@ router.ws("/", async (ws, req) => {
 
   if (isVideoMode) {
     sendNotice(
-      `已进入AI视频会话「${getCurrentSessionTitle()}」。发送“开始”进入流程：选择视频模型 -> 选择模式（首尾帧/单图）-> 生成视频。`,
+      `已进入AI视频会话「${getCurrentSessionTitle()}」。发送“开始”进入流程：选择视频模型 -> 选择模式（首尾帧/单图）-> 生成视频配置 -> 逐条生成视频。`,
     );
     await listSessions();
   } else {
+    const confirmHint = STORYBOARD_PLAN_CONFIRM
+      ? " 当前启用分镜计划确认：生成后需 /确认分镜计划 才会写入画布。"
+      : "";
     sendNotice(
-      `已进入会话「${getCurrentSessionTitle()}」。发送 /会话 可查看并切换历史会话。视频生成可用命令：/视频配置 /选择视频配置 /视频模式 /生成视频配置 /生成视频 <视频配置ID>。`,
+      `已进入会话「${getCurrentSessionTitle()}」。发送 /会话 可查看并切换历史会话。视频生成可用命令：/视频配置 /选择视频配置 /视频模式 /生成视频配置 /生成视频 <视频配置ID>。${confirmHint}`,
     );
     await listSessions();
   }
@@ -1311,6 +1636,17 @@ router.ws("/", async (ws, req) => {
               await saveHistory();
               return;
             }
+            if (isMixedGridRequest(prompt)) {
+              sendNotice(
+                "检测到“剧情4宫格 + 打斗8宫格”的混合需求。建议分两步生成更稳定：\n1. 先选择剧情片段，生成4宫格。\n2. 再选择打斗片段，生成8宫格。\n请直接告诉我：哪些片段走4宫格，哪些片段走8宫格（例如：1-3用4宫格，4-6用8宫格）。",
+              );
+              await saveHistory();
+              return;
+            }
+            if (await runStoryboardWithPlanConfirm(prompt)) {
+              await saveHistory();
+              return;
+            }
             await agent.call(prompt);
           }
           break;
@@ -1318,8 +1654,14 @@ router.ws("/", async (ws, req) => {
         case "cleanHistory":
           agent.history = [];
           agent.novelChapters = [];
+          if (isVideoMode) {
+            videoDraftState = createEmptyVideoDraft();
+          } else {
+            pendingStoryboardPlan = null;
+          }
           await saveHistory();
           sendSessionHistory();
+          if (isVideoMode) await syncVideoCanvasAsync();
           sendNotice("当前会话历史已清空");
           break;
         case "generateShotImage":
@@ -1361,6 +1703,8 @@ router.ws("/", async (ws, req) => {
     const history = agent?.history || [];
     const novelChapters = agent?.novelChapters || [];
     const { shots, shotIdCounter } = agent.getShotsSnapshot();
+    const videoDraft = isVideoMode ? videoDraftState : null;
+    const pendingPlan = isVideoMode ? null : pendingStoryboardPlan;
     sessionsCache = await saveStoryboardChatSession({
       projectId: projectIdNum,
       scriptId: sessionScopeScriptId,
@@ -1369,6 +1713,8 @@ router.ws("/", async (ws, req) => {
       novelChapters,
       shots,
       shotIdCounter,
+      videoDraft,
+      pendingStoryboardPlan: pendingPlan,
       titleIfMissing: getCurrentSessionTitle(),
     });
     sessionsCache = await loadScopedSessions();

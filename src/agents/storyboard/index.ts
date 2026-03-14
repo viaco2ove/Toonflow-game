@@ -211,23 +211,6 @@ export default class Storyboard {
     return this.normalizeSegments(Array.from(segmentsMap.values()));
   }
 
-  private parseSegmentsFromHistoryData(rawData?: string | null): Segment[] {
-    if (!rawData) return [];
-    try {
-      const messages = JSON.parse(rawData);
-      if (!Array.isArray(messages)) return [];
-      for (let i = messages.length - 1; i >= 0; i--) {
-        const msg = messages[i];
-        if (msg?.role !== "assistant" || typeof msg?.content !== "string") continue;
-        const parsed = this.parseSegmentsFromText(msg.content);
-        if (parsed.length > 0) return parsed;
-      }
-    } catch (err: any) {
-      this.log("解析历史片段失败", err?.message || String(err));
-    }
-    return [];
-  }
-
   private async loadSegmentsFromStore(): Promise<void> {
     if (this.segmentsLoadedFromStore) return;
     this.segmentsLoadedFromStore = true;
@@ -245,14 +228,6 @@ export default class Storyboard {
           }
         }
       }
-
-      const historyRow = await u.db("t_chatHistory").where({ projectId: this.projectId, type: "storyboardAgent" }).first();
-      const recovered = this.parseSegmentsFromHistoryData(historyRow?.data);
-      if (!recovered.length) return;
-      this.segments = recovered;
-      await this.saveSegmentsToStore();
-      this.emit("segmentsUpdated", this.segments);
-      this.log("加载片段数据", `从历史对话恢复 ${recovered.length} 个片段`);
     } catch (err: any) {
       this.log('加载片段数据失败', err?.message || String(err));
     }
@@ -437,7 +412,7 @@ ${sections.join("\n\n")}
         this.shots.push({
           id: shotId,
           segmentId: item.segmentIndex,
-          title: `分镜 ${shotId}`,
+          title: `片段 ${item.segmentIndex}`,
           x: 0,
           y: 0,
           cells: item.prompts.map((prompt) => ({ id: u.uuid(), prompt })),
@@ -602,22 +577,37 @@ ${sections.join("\n\n")}
    * 每个分镜包含多个镜头，所有镜头的提示词合并生成一张宫格图，再分割为单张镜头图片
    */
   async executeShotImageGeneration(shotIds: number[]): Promise<void> {
+    const successIds: number[] = [];
+    const failed: Array<{ shotId: number; error: string }> = [];
     // WSL + Electron 环境下并发过高容易触发渲染层不稳定，改为串行生成以优先保证稳定性
     for (let i = 0; i < shotIds.length; i++) {
       const shotId = shotIds[i];
       try {
         await this.generateSingleShotImage(shotId);
+        successIds.push(shotId);
       } catch (err) {
         const errorMessage = this.normalizeShotImageError(err);
+        failed.push({ shotId, error: errorMessage });
         if (this.isQuotaExhaustedMessage(errorMessage)) {
           const remainingShotIds = shotIds.slice(i + 1);
           if (remainingShotIds.length > 0) {
             this.cancelRemainingShotImageGeneration(remainingShotIds, errorMessage);
+            for (const remainId of remainingShotIds) {
+              failed.push({ shotId: remainId, error: `已取消：${errorMessage}` });
+            }
           }
+          break;
         }
-        throw new Error(errorMessage);
       }
     }
+
+    this.emit("shotImageGenerateSummary", {
+      shotIds,
+      successIds,
+      failed,
+      successCount: successIds.length,
+      failedCount: failed.length,
+    });
   }
 
   /**
@@ -651,6 +641,9 @@ ${sections.join("\n\n")}
 
       // 分割宫格图片为单张镜头图片
       const imageBuffers = await imageSplitting(gridImage, prompts.length);
+      if (!Array.isArray(imageBuffers) || imageBuffers.length !== prompts.length) {
+        throw new Error(`宫格分割结果异常：期望 ${prompts.length} 张，实际 ${imageBuffers?.length || 0} 张`);
+      }
 
       // 通知前端正在保存图片
       this.emit("shotImageGenerateProgress", { shotId, status: "saving", message: `正在保存 ${imageBuffers.length} 张镜头图片` });
@@ -674,6 +667,10 @@ ${sections.join("\n\n")}
         });
       }
 
+      if (imagePaths.length !== prompts.length) {
+        throw new Error(`分镜图保存不完整：期望 ${prompts.length} 张，实际保存 ${imagePaths.length} 张`);
+      }
+
       // 更新每个镜头的 src 字段
       shot.cells = shot.cells.map((cell, i) => ({
         id: u.uuid(),
@@ -691,9 +688,7 @@ ${sections.join("\n\n")}
       this.generatingShots.delete(shotId);
       this.emit("shotImageGenerateError", { shotId, error: errorMessage });
       this.log("分镜图生成失败", `分镜 ${shotId}: ${errorMessage}`);
-      if (this.isQuotaExhaustedMessage(errorMessage)) {
-        throw new Error(errorMessage);
-      }
+      throw new Error(errorMessage);
     }
   }
 
@@ -717,8 +712,9 @@ ${sections.join("\n\n")}
 
   private async buildEnvironmentContext(): Promise<string> {
     const projectInfo = await u.db("t_project").where({ id: this.projectId }).first();
-
-    const row = await u.db("t_outline").where({ id: this.scriptId, projectId: this.projectId }).first();
+    const scriptData = await u.db("t_script").where({ id: this.scriptId, projectId: this.projectId }).first();
+    const outlineId = Number(scriptData?.outlineId || 0);
+    const row = outlineId > 0 ? await u.db("t_outline").where({ id: outlineId, projectId: this.projectId }).first() : null;
     const outline: any | null = row?.data ? JSON.parse(row.data) : null;
 
     // 分类提取资源名称
@@ -741,6 +737,8 @@ ${sections.join("\n\n")}
 
 项目名称: ${projectInfo?.name || "未知"}
 项目简介: ${projectInfo?.intro || "无"}
+当前剧集: ${scriptData?.name || `脚本${this.scriptId}`}
+当前剧集ID: ${this.scriptId}
 类型: ${projectInfo?.type || "未知"}
 风格: ${projectInfo?.artStyle || "未知"}
 视频比例: ${projectInfo?.videoRatio || "未知"}
@@ -786,7 +784,7 @@ ${task}
           updateSegments: this.updateSegments,
         };
       case "shotAgent":
-        // shotAgent 可以获取剧本、资产和片段，并可使用 add/update/delete 操作分镜，以及生成分镜图
+        // shotAgent 可以获取剧本、资产和片段，并可使用 add/update/delete 操作分镜
         return {
           getScript: this.getScript,
           getAssets: this.getAssets,
@@ -794,7 +792,6 @@ ${task}
           addShots: this.addShots,
           updateShots: this.updateShots,
           deleteShots: this.deleteShots,
-          generateShotImage: this.generateShotImage,
         };
       default:
         return {
@@ -909,7 +906,6 @@ ${task}
       // this.createSubAgentTool("director", "调用导演。负责审核故事线和大纲，会自行调用 updateOutline 或 saveStoryline 进行修改。"),
       getScript: this.getScript,
       getSegments: this.getSegments,
-      generateShotImage: this.generateShotImage,
       ...this.getSubAgentTools("segmentAgent"),
       ...this.getSubAgentTools("shotAgent"),
     };

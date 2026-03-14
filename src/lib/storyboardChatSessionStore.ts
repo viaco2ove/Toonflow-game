@@ -14,12 +14,52 @@ export interface StoryboardChatSessionData {
   novelChapters: any[];
   shots: any[];
   shotIdCounter: number;
+  videoDraft: StoryboardVideoDraft | null;
+  pendingStoryboardPlan: StoryboardPendingPlan | null;
+}
+
+export interface StoryboardVideoDraftConfig {
+  draftId: string;
+  aiConfigId: number;
+  manufacturer: string;
+  model: string;
+  mode: "single" | "startEnd" | "multi" | "text";
+  resolution: string;
+  duration: number;
+  prompt: string;
+  audioEnabled: boolean;
+  startFrame: { id: number; filePath: string; prompt: string } | null;
+  endFrame: { id: number; filePath: string; prompt: string } | null;
+  images: Array<{ id: number; filePath: string; prompt: string }>;
+  resultPreview?: string;
+}
+
+export interface StoryboardVideoDraft {
+  selectedAiConfigId: number | null;
+  selectedMode: "single" | "startEnd";
+  configs: StoryboardVideoDraftConfig[];
+  updatedAt: number;
+}
+
+export interface StoryboardPendingPlanSnapshot {
+  shots: any[];
+  shotIdCounter: number;
+}
+
+export interface StoryboardPendingPlan {
+  sourcePrompt: string;
+  createdAt: number;
+  before: StoryboardPendingPlanSnapshot;
+  after: StoryboardPendingPlanSnapshot;
+  summary: string;
 }
 
 interface SessionNovelPayload {
   novelChapters: any[];
   shots: any[];
   shotIdCounter: number;
+  videoDraft?: StoryboardVideoDraft | null;
+  pendingStoryboardPlan?: StoryboardPendingPlan | null;
 }
 
 const LEGACY_TYPE = "storyboardAgent";
@@ -73,12 +113,102 @@ const parseSessionNovelPayload = (rawNovel: string | null | undefined): SessionN
       novelChapters: Array.isArray(parsed.novelChapters) ? parsed.novelChapters : [],
       shots: Array.isArray(parsed.shots) ? parsed.shots : [],
       shotIdCounter: Number.isFinite(parsed.shotIdCounter as number) ? Number(parsed.shotIdCounter) : 0,
+      videoDraft: normalizeVideoDraft((parsed as any).videoDraft),
+      pendingStoryboardPlan: normalizePendingStoryboardPlan((parsed as any).pendingStoryboardPlan),
     };
   }
   return {
     novelChapters: [],
     shots: [],
     shotIdCounter: 0,
+    videoDraft: null,
+    pendingStoryboardPlan: null,
+  };
+};
+
+const normalizeVideoDraft = (raw: unknown): StoryboardVideoDraft | null => {
+  if (!raw || typeof raw !== "object") return null;
+  const value = raw as Record<string, any>;
+  const selectedAiConfigIdRaw = Number(value.selectedAiConfigId);
+  const selectedAiConfigId = Number.isFinite(selectedAiConfigIdRaw) && selectedAiConfigIdRaw > 0 ? selectedAiConfigIdRaw : null;
+  const selectedMode = value.selectedMode === "startEnd" ? "startEnd" : "single";
+  const configsRaw = Array.isArray(value.configs) ? value.configs : [];
+  const configs: StoryboardVideoDraftConfig[] = configsRaw
+    .map((item: any) => {
+      if (!item || typeof item !== "object") return null;
+      const draftId = String(item.draftId || "").trim();
+      if (!draftId) return null;
+      const aiConfigId = Number(item.aiConfigId || 0);
+      return {
+        draftId,
+        aiConfigId: Number.isFinite(aiConfigId) ? aiConfigId : 0,
+        manufacturer: String(item.manufacturer || ""),
+        model: String(item.model || ""),
+        mode: item.mode === "startEnd" ? "startEnd" : item.mode === "multi" ? "multi" : item.mode === "text" ? "text" : "single",
+        resolution: String(item.resolution || "720p"),
+        duration: Number(item.duration || 5),
+        prompt: String(item.prompt || ""),
+        audioEnabled: Boolean(item.audioEnabled),
+        startFrame: normalizeFrameRef(item.startFrame),
+        endFrame: normalizeFrameRef(item.endFrame),
+        images: normalizeFrameRefList(item.images),
+        resultPreview: typeof item.resultPreview === "string" ? item.resultPreview : undefined,
+      } as StoryboardVideoDraftConfig;
+    })
+    .filter(Boolean) as StoryboardVideoDraftConfig[];
+  return {
+    selectedAiConfigId,
+    selectedMode,
+    configs,
+    updatedAt: Number.isFinite(Number(value.updatedAt)) ? Number(value.updatedAt) : Date.now(),
+  };
+};
+
+const normalizeFrameRef = (raw: unknown): { id: number; filePath: string; prompt: string } | null => {
+  if (!raw || typeof raw !== "object") return null;
+  const item = raw as Record<string, any>;
+  const filePath = String(item.filePath || "").trim();
+  if (!filePath) return null;
+  const id = Number(item.id || 0);
+  return {
+    id: Number.isFinite(id) ? id : 0,
+    filePath,
+    prompt: String(item.prompt || ""),
+  };
+};
+
+const normalizeFrameRefList = (raw: unknown): Array<{ id: number; filePath: string; prompt: string }> => {
+  if (!Array.isArray(raw)) return [];
+  return raw.map((item) => normalizeFrameRef(item)).filter(Boolean) as Array<{ id: number; filePath: string; prompt: string }>;
+};
+
+const normalizePlanSnapshot = (raw: unknown): StoryboardPendingPlanSnapshot | null => {
+  if (!raw || typeof raw !== "object") return null;
+  const value = raw as Record<string, any>;
+  const shots = Array.isArray(value.shots) ? value.shots : [];
+  const shotIdCounter = Number(value.shotIdCounter || 0);
+  return {
+    shots,
+    shotIdCounter: Number.isFinite(shotIdCounter) ? shotIdCounter : 0,
+  };
+};
+
+const normalizePendingStoryboardPlan = (raw: unknown): StoryboardPendingPlan | null => {
+  if (!raw || typeof raw !== "object") return null;
+  const value = raw as Record<string, any>;
+  const before = normalizePlanSnapshot(value.before);
+  const after = normalizePlanSnapshot(value.after);
+  if (!before || !after) return null;
+  const sourcePrompt = String(value.sourcePrompt || "").trim();
+  const summary = String(value.summary || "").trim();
+  if (!summary) return null;
+  const createdAt = Number(value.createdAt || 0);
+  return {
+    sourcePrompt,
+    createdAt: Number.isFinite(createdAt) && createdAt > 0 ? createdAt : Date.now(),
+    before,
+    after,
+    summary,
   };
 };
 
@@ -133,14 +263,10 @@ const pickSessionsForScript = (
 ): StoryboardChatSessionMeta[] => {
   const currentScriptId = Number(scriptId);
   if (!Number.isFinite(currentScriptId)) return sessions;
-  const exact = sessions.filter((item) => {
+  return sessions.filter((item) => {
     const sid = Number(item.scriptId);
     return Number.isFinite(sid) && sid === currentScriptId;
   });
-  if (exact.length > 0) return exact;
-  const legacy = sessions.filter((item) => !Number.isFinite(Number(item.scriptId)));
-  if (legacy.length > 0) return legacy;
-  return sessions;
 };
 
 const getMetaRow = async (projectId: number) => {
@@ -179,12 +305,16 @@ const upsertSessionRow = async (
   novelChapters: any[],
   shots: any[] = [],
   shotIdCounter = 0,
+  videoDraft: StoryboardVideoDraft | null = null,
+  pendingStoryboardPlan: StoryboardPendingPlan | null = null,
 ): Promise<void> => {
   const existing = await getSessionRow(projectId, sessionId);
   const novelPayload: SessionNovelPayload = {
     novelChapters: novelChapters ?? [],
     shots: shots ?? [],
     shotIdCounter: Number.isFinite(shotIdCounter) ? shotIdCounter : 0,
+    videoDraft: videoDraft || null,
+    pendingStoryboardPlan: pendingStoryboardPlan || null,
   };
   const payload = {
     data: JSON.stringify(history ?? []),
@@ -235,6 +365,8 @@ export const loadStoryboardChatSession = async (projectId: number, sessionId: st
     novelChapters: novelPayload.novelChapters,
     shots: novelPayload.shots,
     shotIdCounter: novelPayload.shotIdCounter,
+    videoDraft: novelPayload.videoDraft || null,
+    pendingStoryboardPlan: novelPayload.pendingStoryboardPlan || null,
   };
 };
 
@@ -246,12 +378,25 @@ export const saveStoryboardChatSession = async (params: {
   novelChapters: any[];
   shots?: any[];
   shotIdCounter?: number;
+  videoDraft?: StoryboardVideoDraft | null;
+  pendingStoryboardPlan?: StoryboardPendingPlan | null;
   titleIfMissing?: string;
 }): Promise<StoryboardChatSessionMeta[]> => {
-  const { projectId, sessionId, scriptId = null, history, novelChapters, shots = [], shotIdCounter = 0, titleIfMissing } = params;
+  const {
+    projectId,
+    sessionId,
+    scriptId = null,
+    history,
+    novelChapters,
+    shots = [],
+    shotIdCounter = 0,
+    videoDraft = null,
+    pendingStoryboardPlan = null,
+    titleIfMissing,
+  } = params;
   const now = Date.now();
 
-  await upsertSessionRow(projectId, sessionId, history, novelChapters, shots, shotIdCounter);
+  await upsertSessionRow(projectId, sessionId, history, novelChapters, shots, shotIdCounter, videoDraft, pendingStoryboardPlan);
   await upsertLegacyRow(projectId, history, novelChapters);
 
   const sessions = await getMetaList(projectId);
@@ -333,7 +478,16 @@ export const deleteStoryboardChatSession = async (
 export const ensureStoryboardChatBootstrap = async (params: {
   projectId: number;
   scriptId?: number | null;
-}): Promise<{ sessionId: string; sessions: StoryboardChatSessionMeta[]; history: any[]; novelChapters: any[]; shots: any[]; shotIdCounter: number }> => {
+}): Promise<{
+  sessionId: string;
+  sessions: StoryboardChatSessionMeta[];
+  history: any[];
+  novelChapters: any[];
+  shots: any[];
+  shotIdCounter: number;
+  videoDraft: StoryboardVideoDraft | null;
+  pendingStoryboardPlan: StoryboardPendingPlan | null;
+}> => {
   const { projectId, scriptId = null } = params;
   const sessions = await getMetaList(projectId);
   const scopedSessions = pickSessionsForScript(sessions, scriptId);
@@ -348,6 +502,8 @@ export const ensureStoryboardChatBootstrap = async (params: {
         novelChapters: loaded.novelChapters,
         shots: loaded.shots,
         shotIdCounter: loaded.shotIdCounter,
+        videoDraft: loaded.videoDraft || null,
+        pendingStoryboardPlan: loaded.pendingStoryboardPlan || null,
       };
     }
     const fixed = await saveStoryboardChatSession({
@@ -358,29 +514,36 @@ export const ensureStoryboardChatBootstrap = async (params: {
       novelChapters: [],
       titleIfMissing: active.title,
     });
-    return { sessionId: active.id, sessions: fixed, history: [], novelChapters: [], shots: [], shotIdCounter: 0 };
+    return {
+      sessionId: active.id,
+      sessions: fixed,
+      history: [],
+      novelChapters: [],
+      shots: [],
+      shotIdCounter: 0,
+      videoDraft: null,
+      pendingStoryboardPlan: null,
+    };
   }
-
-  const legacy = await u.db("t_chatHistory").where({ projectId, type: LEGACY_TYPE }).first();
-  const legacyHistory = normalizeHistoryArray(legacy?.data);
-  const legacyNovel = safeParseJson<any[]>(legacy?.novel, []);
 
   const sessionId = createSessionId();
   const created = await saveStoryboardChatSession({
     projectId,
     sessionId,
     scriptId,
-    history: legacyHistory,
-    novelChapters: legacyNovel,
+    history: [],
+    novelChapters: [],
     titleIfMissing: "默认会话",
   });
 
   return {
     sessionId,
     sessions: created,
-    history: legacyHistory,
-    novelChapters: legacyNovel,
+    history: [],
+    novelChapters: [],
     shots: [],
     shotIdCounter: 0,
+    videoDraft: null,
+    pendingStoryboardPlan: null,
   };
 };

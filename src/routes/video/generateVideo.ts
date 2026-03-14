@@ -42,15 +42,21 @@ const getPathname = (url: string): string => {
 export async function createVideoTask(input: CreateVideoTaskInput): Promise<{ id: number; configId: number | null }> {
   const { mode, scriptId, projectId, configId, aiConfigId, resolution, duration, prompt, audioEnabled } = input;
   const filePath = Array.isArray(input.filePath) ? [...input.filePath] : [];
+  const normalizedConfigIdRaw = Number.isFinite(Number(configId)) ? Number(configId) : null;
+  const normalizedConfigId = normalizedConfigIdRaw && normalizedConfigIdRaw !== 0 ? normalizedConfigIdRaw : null;
+  const persistedConfigId = normalizedConfigId && normalizedConfigId > 0 ? normalizedConfigId : null;
 
   if (mode === "text") filePath.length = 0;
   else if (!filePath.length) throw new Error("请先选择图片");
 
-  const configData = await u.db("t_videoConfig").where("id", configId).first();
-  if (!configData) throw new Error("视频配置不存在");
+  const configData = persistedConfigId
+    ? await u.db("t_videoConfig").where("id", persistedConfigId).first()
+    : null;
+  if (persistedConfigId && !configData) throw new Error("视频配置不存在");
   if (VIDEO_DEBUG) {
     console.log("[video] create task config", {
-      configId,
+      configId: normalizedConfigId,
+      persistedConfigId,
       aiConfigIdFromInput: aiConfigId,
       aiConfigIdFromConfig: configData?.aiConfigId,
       manufacturer: configData?.manufacturer,
@@ -61,7 +67,8 @@ export async function createVideoTask(input: CreateVideoTaskInput): Promise<{ id
     });
   }
 
-  if (configData.manufacturer === "runninghub" && filePath.length > 1) {
+  const providerManufacturer = String(configData?.manufacturer || "").toLowerCase();
+  if (providerManufacturer === "runninghub" && filePath.length > 1) {
     const gridUrl = await sharpProcessingImage(filePath, projectId);
     if (gridUrl) {
       filePath.length = 0;
@@ -71,7 +78,7 @@ export async function createVideoTask(input: CreateVideoTaskInput): Promise<{ id
 
   // 优先使用视频配置中的AI配置ID查询,查不到再使用传入的aiConfigId
   let aiConfigData = null;
-  if (configData.aiConfigId) {
+  if (configData?.aiConfigId) {
     aiConfigData = await u.db("t_config").where("id", configData.aiConfigId).first();
   }
   if (!aiConfigData && aiConfigId) {
@@ -118,7 +125,7 @@ export async function createVideoTask(input: CreateVideoTaskInput): Promise<{ id
   // 先插入记录，state 默认为 0
   const [videoId] = await u.db("t_video").insert({
     scriptId,
-    configId: configId || null,
+    configId: normalizedConfigId,
     aiConfigId: aiConfigData?.id || null,
     time: duration,
     resolution,
@@ -132,7 +139,7 @@ export async function createVideoTask(input: CreateVideoTaskInput): Promise<{ id
 
   // 异步生成
   generateVideoAsync(videoId, projectId, fileUrl, savePath, prompt, duration, resolution, audioEnabled, aiConfigData, mode);
-  return { id: videoId, configId: configId || null };
+  return { id: videoId, configId: normalizedConfigId };
 }
 
 // 生成视频
