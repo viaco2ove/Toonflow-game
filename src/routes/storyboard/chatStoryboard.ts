@@ -1132,6 +1132,29 @@ router.ws("/", async (ws, req) => {
     return Array.from(new Set(nums));
   };
 
+  const parsePrefixedIdsFromText = (text: string, prefix: "片段" | "分镜"): number[] => {
+    const raw = String(text || "");
+    const ids: number[] = [];
+    const single = new RegExp(`${prefix}\\s*(\\d+)`, "g");
+    let match: RegExpExecArray | null = null;
+    while ((match = single.exec(raw)) !== null) {
+      const num = Math.trunc(Number(match[1]));
+      if (Number.isFinite(num) && num > 0) ids.push(num);
+    }
+
+    const range = new RegExp(`${prefix}\\s*(\\d+)\\s*[-~到至]\\s*(\\d+)`, "g");
+    while ((match = range.exec(raw)) !== null) {
+      const start = Math.trunc(Number(match[1]));
+      const end = Math.trunc(Number(match[2]));
+      if (!Number.isFinite(start) || !Number.isFinite(end) || start <= 0 || end <= 0) continue;
+      const from = Math.min(start, end);
+      const to = Math.max(start, end);
+      for (let i = from; i <= to; i++) ids.push(i);
+    }
+
+    return Array.from(new Set(ids));
+  };
+
   const isGenerateStoryboardImageCommand = (text: string): boolean => {
     const raw = String(text || "").trim();
     if (!raw) return false;
@@ -1142,6 +1165,110 @@ router.ws("/", async (ws, req) => {
     return hasAction && hasTarget;
   };
 
+  const isCheckStoryboardImageCommand = (text: string): boolean => {
+    const raw = String(text || "").trim();
+    if (!raw) return false;
+    if (/^\/?(检查分镜图|检查分镜图片|检查分镜生成|检查生图|查看分镜图状态|查看分镜状态|分镜图状态|分镜状态)$/i.test(raw)) {
+      return true;
+    }
+    const compact = raw.replace(/\s+/g, "");
+    const hasCheckAction = /(检查|核对|查看|状态|统计)/.test(compact);
+    const hasTarget = /(分镜图|分镜图片|镜头图|生图)/.test(compact);
+    return hasCheckAction && hasTarget;
+  };
+
+  const isRetryMissingStoryboardImageCommand = (text: string): boolean => {
+    const raw = String(text || "").trim();
+    if (!raw) return false;
+    if (/^\/?(补齐分镜图|补全分镜图|重试失败分镜图|重试分镜图|补齐生图|补全生图)$/i.test(raw)) {
+      return true;
+    }
+    const compact = raw.replace(/\s+/g, "");
+    const hasRetryAction = /(补齐|补全|重试|继续生成|继续生图)/.test(compact);
+    const hasTarget = /(分镜图|分镜图片|镜头图|生图)/.test(compact);
+    return hasRetryAction && hasTarget;
+  };
+
+  const collectStoryboardImageStatus = () => {
+    const shots = agent.getShotsSnapshot().shots || [];
+    const generatingIds = new Set(agent.getGeneratingShotIds());
+    const completeIds: number[] = [];
+    const generating: number[] = [];
+    const pendingIds: number[] = [];
+    const noPromptIds: number[] = [];
+
+    for (const shot of shots) {
+      const shotId = Math.trunc(Number(shot?.id || 0));
+      if (shotId <= 0) continue;
+      const cells = Array.isArray(shot?.cells) ? shot.cells : [];
+      const promptCells = cells.filter((cell: any) => String(cell?.prompt || "").trim().length > 0);
+      const promptCount = promptCells.length;
+      const imageCount = promptCells.filter((cell: any) => String(cell?.src || "").trim().length > 0).length;
+
+      if (generatingIds.has(shotId)) {
+        generating.push(shotId);
+        continue;
+      }
+      if (promptCount === 0) {
+        noPromptIds.push(shotId);
+        continue;
+      }
+      if (imageCount < promptCount) {
+        pendingIds.push(shotId);
+        continue;
+      }
+      completeIds.push(shotId);
+    }
+
+    return {
+      total: shots.length,
+      completeIds,
+      generating,
+      pendingIds,
+      noPromptIds,
+    };
+  };
+
+  const reportStoryboardImageStatus = async (): Promise<void> => {
+    const status = collectStoryboardImageStatus();
+    if (!status.total) {
+      sendNotice("当前没有分镜，请先生成分镜提示词。");
+      return;
+    }
+
+    const lines: string[] = [
+      `分镜图状态：共 ${status.total} 个分镜。`,
+      `已完成 ${status.completeIds.length}，生成中 ${status.generating.length}，待补齐 ${status.pendingIds.length}，无提示词 ${status.noPromptIds.length}。`,
+    ];
+
+    if (status.generating.length) {
+      lines.push(`生成中分镜：${status.generating.slice(0, 20).join(", ")}${status.generating.length > 20 ? " ..." : ""}`);
+    }
+    if (status.pendingIds.length) {
+      lines.push(`待补齐分镜：${status.pendingIds.slice(0, 20).join(", ")}${status.pendingIds.length > 20 ? " ..." : ""}`);
+      lines.push("可发送：/补齐分镜图（仅重试缺失分镜，不会全量重跑）。");
+    }
+    if (status.noPromptIds.length) {
+      lines.push(`无提示词分镜：${status.noPromptIds.slice(0, 20).join(", ")}${status.noPromptIds.length > 20 ? " ..." : ""}`);
+      lines.push("这些分镜需要先补提示词，再生图。");
+    }
+    sendNotice(lines.join("\n"));
+  };
+
+  const startMissingStoryboardImageGeneration = async (): Promise<void> => {
+    const status = collectStoryboardImageStatus();
+    if (!status.total) {
+      sendNotice("当前没有分镜，请先生成分镜提示词。");
+      return;
+    }
+    if (!status.pendingIds.length) {
+      sendNotice("当前没有需要补齐的分镜图。");
+      return;
+    }
+    const result = await agent.startGenerateShotImages(status.pendingIds);
+    sendNotice(`${result}\n已按缺失状态重试分镜：${status.pendingIds.join(", ")}`);
+  };
+
   const startStoryboardImageGeneration = async (inputText: string, explicitShotIds: number[] = []): Promise<void> => {
     const shots = agent.getShotsSnapshot().shots || [];
     const existingShotIds = shots.map((item: any) => Math.trunc(Number(item?.id || 0))).filter((id: number) => id > 0);
@@ -1150,11 +1277,42 @@ router.ws("/", async (ws, req) => {
       return;
     }
 
-    const fromText = parsePositiveIdsFromText(inputText);
-    const fromPayload = Array.from(new Set((explicitShotIds || []).map((id) => Math.trunc(Number(id))).filter((id) => id > 0)));
-    const targetIds = fromPayload.length || fromText.length ? Array.from(new Set([...fromPayload, ...fromText])) : existingShotIds;
+    const fromPayloadShotIds = Array.from(new Set((explicitShotIds || []).map((id) => Math.trunc(Number(id))).filter((id) => id > 0)));
+    const segmentIdsFromText = parsePrefixedIdsFromText(inputText, "片段");
+    const shotIdsFromText = parsePrefixedIdsFromText(inputText, "分镜");
+    const genericIdsFromText = parsePositiveIdsFromText(inputText);
 
+    const mapSegmentToShotIds = (segmentIds: number[]): number[] =>
+      shots
+        .filter((shot: any) => segmentIds.includes(Math.trunc(Number(shot?.segmentId || 0))))
+        .map((shot: any) => Math.trunc(Number(shot?.id || 0)))
+        .filter((id: number) => id > 0);
+
+    const targetIdsSet = new Set<number>();
+    fromPayloadShotIds.forEach((id) => targetIdsSet.add(id));
+    shotIdsFromText.forEach((id) => targetIdsSet.add(id));
+    mapSegmentToShotIds(segmentIdsFromText).forEach((id) => targetIdsSet.add(id));
+
+    // 兜底：未显式写“分镜/片段”时，默认按分镜ID处理；若语句包含“片段”且未写分镜ID，则按片段ID处理
+    if (targetIdsSet.size === 0 && genericIdsFromText.length > 0) {
+      const text = String(inputText || "");
+      const hasSegmentWord = /片段/.test(text);
+      const hasShotWordWithNumber = /分镜\s*\d+/.test(text);
+      const fallbackShotIds = hasSegmentWord && !hasShotWordWithNumber ? mapSegmentToShotIds(genericIdsFromText) : genericIdsFromText;
+      fallbackShotIds.forEach((id) => targetIdsSet.add(id));
+    }
+
+    const targetIds = targetIdsSet.size > 0 ? Array.from(targetIdsSet) : existingShotIds;
     const result = await agent.startGenerateShotImages(targetIds);
+
+    if (targetIdsSet.size === 0 && segmentIdsFromText.length > 0) {
+      sendNotice(`未找到片段 ${segmentIdsFromText.join(", ")} 对应的分镜，已回退为全部分镜生图。\n${result}`);
+      return;
+    }
+    if (targetIdsSet.size === 0 && (segmentIdsFromText.length > 0 || shotIdsFromText.length > 0 || genericIdsFromText.length > 0)) {
+      sendNotice(`未匹配到有效分镜ID，已回退为全部分镜生图。\n${result}`);
+      return;
+    }
     sendNotice(result);
   };
 
@@ -1163,6 +1321,8 @@ router.ws("/", async (ws, req) => {
     const text = String(prompt || "").trim();
     if (!text || text.startsWith("/")) return false;
     if (isGenerateStoryboardImageCommand(text)) return false;
+    if (isCheckStoryboardImageCommand(text)) return false;
+    if (isRetryMissingStoryboardImageCommand(text)) return false;
     if (pendingStoryboardPlan && /^\/?(确认|同意|应用|保存|取消|放弃|不要了)$/.test(text)) return false;
     const hasStoryboardTarget = /(片段|分镜|镜头|宫格|剧情|文戏|打斗|动作)/.test(text);
     const hasPlanningAction = /(生成|创建|重做|重生成|重新|改|调整|优化|补充|细化|拆分|合并|增加|减少|删除|规划|设计|改成|变成)/.test(text);
@@ -1374,8 +1534,18 @@ router.ws("/", async (ws, req) => {
       return true;
     }
 
+    if (!isVideoMode && isRetryMissingStoryboardImageCommand(input)) {
+      await startMissingStoryboardImageGeneration();
+      return true;
+    }
+
     if (!isVideoMode && isGenerateStoryboardImageCommand(input)) {
       await startStoryboardImageGeneration(input);
+      return true;
+    }
+
+    if (!isVideoMode && isCheckStoryboardImageCommand(input)) {
+      await reportStoryboardImageStatus();
       return true;
     }
 

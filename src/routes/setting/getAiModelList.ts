@@ -28,6 +28,20 @@ export default router.post(
       }
       result[row.manufacturer].push({ label: row.model, value: row.model });
     }
+
+    // 兼容旧库：确保文本模型列表始终包含 t8star 选项
+    if (type === "text") {
+      const t8starDefaults = [
+        { label: "gpt-5.4-pro", value: "gpt-5.4-pro" },
+        { label: "gemini-2.5-pro", value: "gemini-2.5-pro" },
+      ];
+      if (!result.t8star) result.t8star = [];
+      for (const item of t8starDefaults) {
+        const exists = result.t8star.some((model) => String(model?.value || "") === item.value);
+        if (!exists) result.t8star.push(item);
+      }
+    }
+
     res.status(200).send(success(result));
   },
 );

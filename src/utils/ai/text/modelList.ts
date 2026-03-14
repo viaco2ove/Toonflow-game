@@ -40,6 +40,7 @@ const instanceMap = {
   xai: createXai,
   other: createOpenAI,
   grsai: createOpenAI,
+  t8star: createOpenAI,
 };
 
 const modelList: Owned[] = [
@@ -476,13 +477,32 @@ const modelList: Owned[] = [
     instance: createXai,
     tool: true,
   },
-   {
+  {
     manufacturer: "xai",
     model: "grok-4.1",
     responseFormat: "schema",
     image: true,
     think: false,
     instance: createXai,
+    tool: true,
+  },
+  // T8Star (OpenAI-Compatible)
+  {
+    manufacturer: "t8star",
+    model: "gpt-5.4-pro",
+    responseFormat: "object",
+    image: true,
+    think: true,
+    instance: createOpenAI,
+    tool: true,
+  },
+  {
+    manufacturer: "t8star",
+    model: "gemini-2.5-pro",
+    responseFormat: "object",
+    image: true,
+    think: true,
+    instance: createOpenAI,
     tool: true,
   },
   //其他
@@ -509,7 +529,7 @@ export const getModelList = async () => {
         return {
           manufacturer,
           model: model.model,
-          responseFormat: model.responseFormat === "object" ? "object" : "schema",
+          responseFormat: manufacturer === "t8star" ? "object" : model.responseFormat === "object" ? "object" : "schema",
           image: model.image == 1,
           think: model.think == 1,
           tool: model.tool == 1,

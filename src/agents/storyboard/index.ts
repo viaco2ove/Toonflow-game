@@ -675,15 +675,17 @@ ${sections.join("\n\n")}
   private async generateSingleShotImage(shotId: number): Promise<void> {
     try {
       const shot = this.shots.find((f) => f.id === shotId);
-      if (!shot) return;
+      if (!shot) {
+        throw new Error(`分镜 ${shotId} 不存在，无法生成分镜图`);
+      }
 
       // 提取所有镜头的有效提示词
-      const prompts: string[] = shot.cells.map((c) => c.prompt).filter((p): p is string => Boolean(p));
+      const prompts: string[] = shot.cells
+        .map((c) => (typeof c.prompt === "string" ? c.prompt.trim() : ""))
+        .filter((p): p is string => Boolean(p));
 
       if (prompts.length === 0) {
-        this.log("跳过分镜图生成", `分镜 ${shotId} 没有有效的镜头提示词`);
-        this.generatingShots.delete(shotId);
-        return;
+        throw new Error(`分镜 ${shotId} 没有有效的镜头提示词，无法生成分镜图`);
       }
 
       // 通知前端正在生成该分镜
@@ -765,6 +767,13 @@ ${sections.join("\n\n")}
    */
   getShotsData(): Shot[] {
     return this.shots;
+  }
+
+  /**
+   * 获取正在生成中的分镜 ID 列表
+   */
+  getGeneratingShotIds(): number[] {
+    return Array.from(this.generatingShots.values()).sort((a, b) => a - b);
   }
 
   // ==================== 上下文构建 ====================

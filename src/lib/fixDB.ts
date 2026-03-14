@@ -154,6 +154,20 @@ export default async (knex: Knex): Promise<void> => {
     }
   }
 
+  // 兼容老库：补齐 t8star 文本模型
+  if (await knex.schema.hasTable("t_textModel")) {
+    const t8starTextModels = [
+      { manufacturer: "t8star", model: "gpt-5.4-pro", responseFormat: "schema", image: 1, think: 1, tool: 1 },
+      { manufacturer: "t8star", model: "gemini-2.5-pro", responseFormat: "schema", image: 1, think: 1, tool: 1 },
+    ];
+
+    for (const item of t8starTextModels) {
+      const exists = await knex("t_textModel").where({ manufacturer: item.manufacturer, model: item.model }).first();
+      if (exists) continue;
+      await knex("t_textModel").insert(item);
+    }
+  }
+
   const aiModels = [
     { name: "分镜Agent", key: "storyboardAgent" },
     { name: "分镜Agent图片生成", key: "storyboardImage" },
