@@ -353,7 +353,7 @@ ${sections.join("\n\n")}
       segments: z
         .array(
           z.object({
-            index: z.number().describe("片段序号"),
+            index: z.number().int().min(1).describe("片段序号（从1开始）"),
             description: z.string().describe("片段描述"),
             emotion: z.string().optional().describe("情绪氛围"),
             action: z.string().optional().describe("主要动作"),
@@ -383,7 +383,7 @@ ${sections.join("\n\n")}
       shots: z
         .array(
           z.object({
-            segmentIndex: z.number().describe("对应的片段序号"),
+            segmentIndex: z.number().int().min(1).describe("对应的片段序号（从1开始）"),
             prompts: z.array(z.string()).describe("镜头提示词数组，每个提示词对应一个镜头（中文）"),
             assetsTags: z.array(
               z.object({
@@ -400,10 +400,15 @@ ${sections.join("\n\n")}
       const skipped: number[] = [];
 
       for (const item of shots) {
+        const segmentIndex = Math.trunc(Number(item.segmentIndex || 0));
+        if (!Number.isFinite(segmentIndex) || segmentIndex <= 0) {
+          skipped.push(segmentIndex);
+          continue;
+        }
 
-        const exists = this.shots.some((f) => f.segmentId === item.segmentIndex);
+        const exists = this.shots.some((f) => f.segmentId === segmentIndex);
         if (exists) {
-          skipped.push(item.segmentIndex);
+          skipped.push(segmentIndex);
           continue;
         }
         // 分配独立的分镜ID
@@ -411,15 +416,15 @@ ${sections.join("\n\n")}
         const shotId = this.shotIdCounter;
         this.shots.push({
           id: shotId,
-          segmentId: item.segmentIndex,
-          title: `片段 ${item.segmentIndex}`,
+          segmentId: segmentIndex,
+          title: `片段 ${segmentIndex}`,
           x: 0,
           y: 0,
           cells: item.prompts.map((prompt) => ({ id: u.uuid(), prompt })),
-          fragmentContent: this.segments[item.segmentIndex - 1]?.description,
+          fragmentContent: this.segments[segmentIndex - 1]?.description,
           assetsTags: item.assetsTags,
         });
-        added.push({ id: shotId, segmentIndex: item.segmentIndex });
+        added.push({ id: shotId, segmentIndex });
       }
 
       const addedInfo = added.map((a) => `分镜${a.id}(片段${a.segmentIndex})`).join(", ");
@@ -516,61 +521,75 @@ ${sections.join("\n\n")}
       shotIds: z.array(z.number()).describe("要生成分镜图的分镜ID数组"),
     }),
     execute: async ({ shotIds }: { shotIds: number[] }) => {
-      const toGenerate: number[] = [];
-      const alreadyGenerating: number[] = [];
-      const notFound: number[] = [];
-
-      for (const shotId of shotIds) {
-        const shot = this.shots.find((f) => f.id === shotId);
-        if (!shot) {
-          notFound.push(shotId);
-          continue;
-        }
-        if (this.generatingShots.has(shotId)) {
-          alreadyGenerating.push(shotId);
-          continue;
-        }
-        toGenerate.push(shotId);
-      }
-
-      if (toGenerate.length === 0) {
-        if (notFound.length) {
-          return `分镜 ${notFound.join(", ")} 不存在，请检查分镜ID是否正确`;
-        }
-        if (alreadyGenerating.length) {
-          return `分镜 ${alreadyGenerating.join(", ")} 正在生成中，请稍候`;
-        }
-        return "没有需要生成的分镜";
-      }
-
-      // 标记为正在生成
-      for (const id of toGenerate) {
-        this.generatingShots.add(id);
-      }
-
-      // 通知前端开始生成
-      this.emit("shotImageGenerateStart", { shotIds: toGenerate });
-      this.log("开始生成分镜图", `分镜: [${toGenerate.join(", ")}]`);
-
-      // 异步执行图片生成（不阻塞 Agent 流程）
-      this.executeShotImageGeneration(toGenerate).catch((err) => {
-        const errorMessage = this.normalizeShotImageError(err);
-        this.log("分镜图生成错误", errorMessage);
-        if (!this.isQuotaExhaustedMessage(errorMessage)) {
-          this.emit("shotImageGenerateError", { shotIds: toGenerate, error: errorMessage });
-        }
-      });
-
-      let result = `已开始为分镜 ${toGenerate.join(", ")} 生成分镜图，生成过程在后台进行`;
-      if (alreadyGenerating.length) {
-        result += `；分镜 ${alreadyGenerating.join(", ")} 正在生成中`;
-      }
-      if (notFound.length) {
-        result += `；分镜 ${notFound.join(", ")} 不存在`;
-      }
-      return result;
+      return this.startGenerateShotImages(shotIds);
     },
   });
+
+  /**
+   * 启动分镜图生成任务（异步后台执行）
+   */
+  public async startGenerateShotImages(shotIds: number[]): Promise<string> {
+    const normalizedIds = Array.from(
+      new Set(
+        (Array.isArray(shotIds) ? shotIds : [])
+          .map((id) => Math.trunc(Number(id)))
+          .filter((id) => Number.isFinite(id) && id > 0),
+      ),
+    );
+    const toGenerate: number[] = [];
+    const alreadyGenerating: number[] = [];
+    const notFound: number[] = [];
+
+    for (const shotId of normalizedIds) {
+      const shot = this.shots.find((f) => f.id === shotId);
+      if (!shot) {
+        notFound.push(shotId);
+        continue;
+      }
+      if (this.generatingShots.has(shotId)) {
+        alreadyGenerating.push(shotId);
+        continue;
+      }
+      toGenerate.push(shotId);
+    }
+
+    if (toGenerate.length === 0) {
+      if (notFound.length) {
+        return `分镜 ${notFound.join(", ")} 不存在，请检查分镜ID是否正确`;
+      }
+      if (alreadyGenerating.length) {
+        return `分镜 ${alreadyGenerating.join(", ")} 正在生成中，请稍候`;
+      }
+      return normalizedIds.length ? "没有需要生成的分镜" : "请提供有效的分镜ID";
+    }
+
+    // 标记为正在生成
+    for (const id of toGenerate) {
+      this.generatingShots.add(id);
+    }
+
+    // 通知前端开始生成
+    this.emit("shotImageGenerateStart", { shotIds: toGenerate });
+    this.log("开始生成分镜图", `分镜: [${toGenerate.join(", ")}]`);
+
+    // 异步执行图片生成（不阻塞 Agent 流程）
+    this.executeShotImageGeneration(toGenerate).catch((err) => {
+      const errorMessage = this.normalizeShotImageError(err);
+      this.log("分镜图生成错误", errorMessage);
+      if (!this.isQuotaExhaustedMessage(errorMessage)) {
+        this.emit("shotImageGenerateError", { shotIds: toGenerate, error: errorMessage });
+      }
+    });
+
+    let result = `已开始为分镜 ${toGenerate.join(", ")} 生成分镜图，生成过程在后台进行`;
+    if (alreadyGenerating.length) {
+      result += `；分镜 ${alreadyGenerating.join(", ")} 正在生成中`;
+    }
+    if (notFound.length) {
+      result += `；分镜 ${notFound.join(", ")} 不存在`;
+    }
+    return result;
+  }
 
   /**
    * 执行分镜图生成的具体逻辑（异步串行）

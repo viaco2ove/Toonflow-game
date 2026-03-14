@@ -1126,11 +1126,47 @@ router.ws("/", async (ws, req) => {
     return `${head}\n${lines.join("\n")}${tail}`;
   };
 
+  const parsePositiveIdsFromText = (text: string): number[] => {
+    const matches = String(text || "").match(/\d+/g) || [];
+    const nums = matches.map((item) => Math.trunc(Number(item))).filter((num) => Number.isFinite(num) && num > 0);
+    return Array.from(new Set(nums));
+  };
+
+  const isGenerateStoryboardImageCommand = (text: string): boolean => {
+    const raw = String(text || "").trim();
+    if (!raw) return false;
+    if (/^\/?(生图|generate-shot-image)$/i.test(raw)) return true;
+    const compact = raw.replace(/\s+/g, "");
+    const hasAction = /(生成|重生成|重新生成|开始生成)/.test(compact);
+    const hasTarget = /(分镜图|分镜图片|镜头图)/.test(compact);
+    return hasAction && hasTarget;
+  };
+
+  const startStoryboardImageGeneration = async (inputText: string, explicitShotIds: number[] = []): Promise<void> => {
+    const shots = agent.getShotsSnapshot().shots || [];
+    const existingShotIds = shots.map((item: any) => Math.trunc(Number(item?.id || 0))).filter((id: number) => id > 0);
+    if (!existingShotIds.length) {
+      sendNotice("当前没有可生成的分镜，请先生成分镜提示词。");
+      return;
+    }
+
+    const fromText = parsePositiveIdsFromText(inputText);
+    const fromPayload = Array.from(new Set((explicitShotIds || []).map((id) => Math.trunc(Number(id))).filter((id) => id > 0)));
+    const targetIds = fromPayload.length || fromText.length ? Array.from(new Set([...fromPayload, ...fromText])) : existingShotIds;
+
+    const result = await agent.startGenerateShotImages(targetIds);
+    sendNotice(result);
+  };
+
   const shouldUseStoryboardPlanConfirm = (prompt: string): boolean => {
     if (isVideoMode || !STORYBOARD_PLAN_CONFIRM) return false;
     const text = String(prompt || "").trim();
     if (!text || text.startsWith("/")) return false;
-    return true;
+    if (isGenerateStoryboardImageCommand(text)) return false;
+    if (pendingStoryboardPlan && /^\/?(确认|同意|应用|保存|取消|放弃|不要了)$/.test(text)) return false;
+    const hasStoryboardTarget = /(片段|分镜|镜头|宫格|剧情|文戏|打斗|动作)/.test(text);
+    const hasPlanningAction = /(生成|创建|重做|重生成|重新|改|调整|优化|补充|细化|拆分|合并|增加|减少|删除|规划|设计|改成|变成)/.test(text);
+    return hasStoryboardTarget && hasPlanningAction;
   };
 
   const runStoryboardWithPlanConfirm = async (prompt: string): Promise<boolean> => {
@@ -1316,7 +1352,7 @@ router.ws("/", async (ws, req) => {
     const input = prompt.trim();
     if (!input) return false;
 
-    if (!isVideoMode && /^\/?(确认分镜计划|确认计划|confirm-shot-plan)$/i.test(input)) {
+    if (!isVideoMode && /^\/?(确认分镜计划|确认计划|确认|同意|应用计划|应用|保存计划|accept-shot-plan)$/i.test(input)) {
       if (!pendingStoryboardPlan) {
         sendNotice("当前没有待确认的分镜计划。");
         return true;
@@ -1328,13 +1364,18 @@ router.ws("/", async (ws, req) => {
       return true;
     }
 
-    if (!isVideoMode && /^\/?(取消分镜计划|取消计划|discard-shot-plan)$/i.test(input)) {
+    if (!isVideoMode && /^\/?(取消分镜计划|取消计划|取消|放弃|不要了|discard-shot-plan)$/i.test(input)) {
       if (!pendingStoryboardPlan) {
         sendNotice("当前没有待取消的分镜计划。");
         return true;
       }
       pendingStoryboardPlan = null;
       sendNotice("已取消本次分镜计划，画布保持不变。");
+      return true;
+    }
+
+    if (!isVideoMode && isGenerateStoryboardImageCommand(input)) {
+      await startStoryboardImageGeneration(input);
       return true;
     }
 
@@ -1631,6 +1672,11 @@ router.ws("/", async (ws, req) => {
               await saveHistory();
               return;
             }
+            if (!isVideoMode && pendingStoryboardPlan && !String(prompt || "").trim().startsWith("/")) {
+              sendNotice("当前有待确认的分镜计划。请发送 /确认分镜计划 或 /取消分镜计划。");
+              await saveHistory();
+              return;
+            }
             if (isVideoMode) {
               sendNotice("当前为AI视频模式。请先发送“开始”，我会引导你完成：选配置 -> 选模式 -> 生成视频。");
               await saveHistory();
@@ -1665,7 +1711,45 @@ router.ws("/", async (ws, req) => {
           sendNotice("当前会话历史已清空");
           break;
         case "generateShotImage":
-          sendNotice("请在分镜面板中操作生成分镜图，当前会话历史不会被清空。");
+          if (isVideoMode) {
+            sendNotice("当前为AI视频模式，不支持分镜生图。");
+            break;
+          }
+          {
+            const payload = msg || {};
+            const rawShotIds: any[] = [];
+            if (Array.isArray(payload?.shotIds)) rawShotIds.push(...payload.shotIds);
+            if (typeof payload?.shotId === "number") rawShotIds.push(payload.shotId);
+            if (typeof payload?.id === "number") rawShotIds.push(payload.id);
+            const shotIds = Array.from(
+              new Set(
+                rawShotIds,
+              ),
+            )
+              .map((id: any) => Math.trunc(Number(id)))
+              .filter((id: number) => id > 0);
+
+            const rawSegmentIds: any[] = [];
+            if (Array.isArray(payload?.segmentIds)) rawSegmentIds.push(...payload.segmentIds);
+            if (typeof payload?.segmentId === "number") rawSegmentIds.push(payload.segmentId);
+            const segmentIds = Array.from(
+              new Set(
+                rawSegmentIds,
+              ),
+            )
+              .map((id: any) => Math.trunc(Number(id)))
+              .filter((id: number) => id > 0);
+
+            if (segmentIds.length) {
+              const bySegment = (agent.getShotsSnapshot().shots || [])
+                .filter((shot: any) => segmentIds.includes(Math.trunc(Number(shot?.segmentId || 0))))
+                .map((shot: any) => Math.trunc(Number(shot?.id || 0)))
+                .filter((id: number) => id > 0);
+              shotIds.push(...bySegment);
+            }
+
+            await startStoryboardImageGeneration("", shotIds);
+          }
           break;
         case "replaceShot":
           agent.updatePreShots(msg.segmentId, msg.cellId, msg.cell);
