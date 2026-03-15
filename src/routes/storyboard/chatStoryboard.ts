@@ -210,7 +210,7 @@ router.ws("/", async (ws, req) => {
     y: number;
     cells: Array<{ id: number; prompt: string; src: string }>;
     fragmentContent: string;
-    assetsTags: string[];
+    assetsTags: Array<{ text: string }>;
   };
   type VideoFrameRef = {
     id: number;
@@ -220,6 +220,7 @@ router.ws("/", async (ws, req) => {
   type VideoConfigRow = {
     id: number;
     aiConfigId: number;
+    manufacturer?: string;
     mode: string;
     resolution: string;
     duration: number;
@@ -475,12 +476,10 @@ router.ws("/", async (ws, req) => {
           title: `视频配置 ${i + 1}`,
           x: pos.x,
           y: pos.y,
-          cells: [
-            { id: 1, prompt: first.prompt || `起始帧 ${i + 1}`, src: first.src },
-            { id: 2, prompt: second.prompt || `结束帧 ${i + 2}`, src: second.src },
-          ],
+          // AI视频画布展示“配置卡片”，不在画布中直接展示首尾帧缩略图
+          cells: [{ id: 1, prompt: "", src: "" }],
           fragmentContent: `首尾帧串联：${i + 1} -> ${i + 2}`,
-          assetsTags: ["视频", "首尾帧"],
+          assetsTags: [{ text: "视频" }, { text: "首尾帧" }],
         });
       }
       return plans;
@@ -495,9 +494,9 @@ router.ws("/", async (ws, req) => {
         title: `视频配置 ${i + 1}`,
         x: pos.x,
         y: pos.y,
-        cells: [{ id: 1, prompt: frame.prompt || `单图视频 ${i + 1}`, src: frame.src }],
+        cells: [{ id: 1, prompt: "", src: "" }],
         fragmentContent: `单图模式：配置 ${i + 1}`,
-        assetsTags: ["视频", "单图"],
+        assetsTags: [{ text: "视频" }, { text: "单图" }],
       });
     }
     return plans;
@@ -514,58 +513,21 @@ router.ws("/", async (ws, req) => {
     let index = 0;
     for (const cfg of configs) {
       const mode = parseMode(cfg.mode) || "single";
-      const cells: Array<{ id: number; prompt: string; src: string }> = [];
-      if (mode === "startEnd") {
-        const startSrc = String(cfg.startFrame?.filePath || "").trim();
-        const endSrc = String(cfg.endFrame?.filePath || "").trim();
-        if (startSrc) {
-          cells.push({
-            id: 1,
-            prompt: String(cfg.startFrame?.prompt || "起始帧").trim(),
-            src: startSrc,
-          });
-        }
-        if (endSrc) {
-          cells.push({
-            id: 2,
-            prompt: String(cfg.endFrame?.prompt || "结束帧").trim(),
-            src: endSrc,
-          });
-        }
-      } else if (mode === "multi") {
-        const list = Array.isArray(cfg.images) ? cfg.images : [];
-        list.forEach((item, i) => {
-          const src = String(item?.filePath || "").trim();
-          if (!src) return;
-          cells.push({
-            id: i + 1,
-            prompt: String(item?.prompt || `参考图${i + 1}`).trim(),
-            src,
-          });
-        });
-      } else {
-        const src = String(cfg.startFrame?.filePath || "").trim();
-        if (src) {
-          cells.push({
-            id: 1,
-            prompt: String(cfg.startFrame?.prompt || "单图").trim(),
-            src,
-          });
-        }
-      }
-
-      if (!cells.length) continue;
+      const cells: Array<{ id: number; prompt: string; src: string }> = [{ id: 1, prompt: "", src: "" }];
       const pos = toPos(index++);
       const modeText = mode === "startEnd" ? "首尾帧" : mode === "multi" ? "多图" : mode === "text" ? "文本" : "单图";
+      const manufacturerText = String(cfg.manufacturer || "").trim() || "未知厂商";
+      const resolutionText = String(cfg.resolution || "").trim() || "720p";
+      const durationText = `${Number(cfg.duration || 5)}s`;
       plans.push({
         id: cfg.id,
         segmentId: cfg.id,
-        title: `视频配置 ${cfg.id}`,
+        title: `视频配置 ${index}`,
         x: pos.x,
         y: pos.y,
         cells,
         fragmentContent: cfg.prompt || `模式：${modeText} ${cfg.resolution}/${cfg.duration}s`,
-        assetsTags: ["视频", modeText],
+        assetsTags: [{ text: manufacturerText }, { text: resolutionText }, { text: durationText }, { text: modeText }],
       });
     }
     return plans;
@@ -585,6 +547,7 @@ router.ws("/", async (ws, req) => {
       .select(
         "id",
         "aiConfigId",
+        "manufacturer",
         "mode",
         "resolution",
         "duration",
@@ -608,6 +571,7 @@ router.ws("/", async (ws, req) => {
       return {
         id: Number(row.id || 0),
         aiConfigId: Number(row.aiConfigId || 0),
+        manufacturer: String(row.manufacturer || ""),
         mode: String(row.mode || "single"),
         resolution: String(row.resolution || "720p"),
         duration: Number(row.duration || 5),
@@ -701,6 +665,7 @@ router.ws("/", async (ws, req) => {
     return videoDraftState.configs.map((item) => ({
       id: toVirtualConfigId(item),
       aiConfigId: item.aiConfigId,
+      manufacturer: item.manufacturer,
       mode: item.mode,
       resolution: item.resolution,
       duration: item.duration,
@@ -726,6 +691,7 @@ router.ws("/", async (ws, req) => {
     return videoDraftState.configs.map((item) => ({
       id: toVirtualConfigId(item),
       aiConfigId: item.aiConfigId,
+      manufacturer: item.manufacturer,
       mode: item.mode,
       resolution: item.resolution,
       duration: item.duration,
@@ -844,6 +810,7 @@ router.ws("/", async (ws, req) => {
     // 视频模式展示“视频配置画布”
     const canvasPlans = buildVideoPlansFromConfigRows(draftConfigs);
     send("shotsUpdated", canvasPlans.length ? canvasPlans : plans);
+    send("refresh", "videoConfigs");
     const modeText = mode === "startEnd" ? "首尾帧（1-2,2-3串联）" : "单图（每图一个视频）";
     sendNotice(
       `已生成 ${draftConfigs.length} 条视频配置并同步到画布（模式：${modeText}）。\n下一步：请在配置卡片中逐条生成，或发送 /生成视频 <视频配置ID>。`,
@@ -856,10 +823,12 @@ router.ws("/", async (ws, req) => {
     const canvasPlans = buildVideoPlansFromConfigRows(existed);
     if (canvasPlans.length > 0) {
       send("shotsUpdated", canvasPlans);
+      send("refresh", "videoConfigs");
       return;
     }
     // AI视频画布只展示视频配置；无配置时保持空画布。
     send("shotsUpdated", []);
+    send("refresh", "videoConfigs");
   };
 
   const exportVideoDraftConfigsToDb = async () => {
