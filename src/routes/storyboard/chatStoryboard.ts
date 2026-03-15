@@ -222,6 +222,11 @@ router.ws("/", async (ws, req) => {
     startFrame?: VideoFrameRef | null;
     endFrame?: VideoFrameRef | null;
     images?: VideoFrameRef[];
+    selectedResultId?: number | null;
+    selectedResultState?: number;
+    selectedResultFirstFrame?: string;
+    selectedResultFilePath?: string;
+    selectedResultDuration?: number;
   };
   type VideoFrameRef = {
     id: number;
@@ -241,6 +246,11 @@ router.ws("/", async (ws, req) => {
     startFrame: VideoFrameRef | null;
     endFrame: VideoFrameRef | null;
     images: VideoFrameRef[];
+    selectedResultId?: number | null;
+    selectedResultState?: number;
+    selectedResultFirstFrame?: string;
+    selectedResultFilePath?: string;
+    selectedResultDuration?: number;
   };
   let pendingStoryboardPlan: StoryboardPendingPlan | null = sessionData.pendingStoryboardPlan || null;
 
@@ -525,7 +535,8 @@ router.ws("/", async (ws, req) => {
     let index = 0;
     for (const cfg of configs) {
       const mode = parseMode(cfg.mode) || "single";
-      const cells: Array<{ id: number; prompt: string; src: string }> = [{ id: 1, prompt: "", src: "" }];
+      const selectedCover = String(cfg.selectedResultFirstFrame || cfg.selectedResultFilePath || "");
+      const cells: Array<{ id: number; prompt: string; src: string }> = [{ id: 1, prompt: "", src: selectedCover }];
       const pos = toPos(index++);
       const modeText = mode === "startEnd" ? "首尾帧" : mode === "multi" ? "多图" : mode === "text" ? "文本" : "单图";
       const manufacturerText = String(cfg.manufacturer || "").trim() || "未知厂商";
@@ -551,6 +562,11 @@ router.ws("/", async (ws, req) => {
         startFrame: cfg.startFrame,
         endFrame: cfg.endFrame,
         images: cfg.images,
+        selectedResultId: Number(cfg.selectedResultId || 0) || null,
+        selectedResultState: Number(cfg.selectedResultState ?? 1),
+        selectedResultFirstFrame: String(cfg.selectedResultFirstFrame || ""),
+        selectedResultFilePath: String(cfg.selectedResultFilePath || ""),
+        selectedResultDuration: Number(cfg.selectedResultDuration || 0),
       });
     }
     return plans;
@@ -576,12 +592,35 @@ router.ws("/", async (ws, req) => {
         "duration",
         "prompt",
         "audioEnabled",
+        "selectedResultId",
         "startFrame",
         "endFrame",
         "images",
       );
 
-    return rows.map((row: any) => {
+    const selectedResultIds: number[] = Array.from(
+      new Set(rows.map((row: any) => Number(row.selectedResultId || 0)).filter((id: number) => Number.isFinite(id) && id > 0)),
+    );
+    const selectedVideoRows =
+      selectedResultIds.length > 0
+        ? await u
+            .db("t_video")
+            .where((qb: any) => qb.whereIn("id", selectedResultIds as any))
+            .select("id", "state", "firstFrame", "filePath", "time")
+        : [];
+    const selectedVideoById = new Map<number, any>();
+    for (const item of selectedVideoRows) {
+      const id = Number(item?.id || 0);
+      if (!id) continue;
+      selectedVideoById.set(id, item);
+    }
+
+    return Promise.all(
+      rows.map(async (row: any) => {
+        const selectedResultId = Number(row.selectedResultId || 0);
+        const selected = selectedVideoById.get(selectedResultId);
+        const selectedResultFirstFrame = selected?.firstFrame ? await u.oss.getFileUrl(String(selected.firstFrame)) : "";
+        const selectedResultFilePath = selected?.filePath ? await u.oss.getFileUrl(String(selected.filePath)) : "";
       const parseJson = (value: any): any => {
         if (!value) return null;
         if (typeof value === "object") return value;
@@ -603,8 +642,14 @@ router.ws("/", async (ws, req) => {
         startFrame: parseJson(row.startFrame),
         endFrame: parseJson(row.endFrame),
         images: Array.isArray(parseJson(row.images)) ? parseJson(row.images) : [],
+        selectedResultId: selectedResultId > 0 ? selectedResultId : null,
+        selectedResultState: Number(selected?.state ?? (selectedResultId > 0 ? 1 : 0)),
+        selectedResultFirstFrame,
+        selectedResultFilePath,
+        selectedResultDuration: Number(selected?.time || 0),
       } as VideoConfigRow;
-    });
+      }),
+    );
   };
 
   const createVideoConfigPlans = async (): Promise<VideoConfigRow[]> => {

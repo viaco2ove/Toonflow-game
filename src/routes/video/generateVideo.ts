@@ -49,6 +49,29 @@ export async function createVideoTask(input: CreateVideoTaskInput): Promise<{ id
   if (mode === "text") filePath.length = 0;
   else if (!filePath.length) throw new Error("请先选择图片");
 
+  if (normalizedConfigId) {
+    const pendingRows = await u
+      .db("t_video")
+      .where({
+        scriptId,
+        configId: normalizedConfigId,
+        state: 0,
+      })
+      .orderBy("id", "desc")
+      .select("id");
+    const activePending = pendingRows.find((row: any) => isVideoTaskActive(Number(row.id)));
+    if (activePending) {
+      if (VIDEO_DEBUG) {
+        console.log("[video] reuse active pending task", {
+          scriptId,
+          configId: normalizedConfigId,
+          reusedVideoId: Number(activePending.id),
+        });
+      }
+      return { id: Number(activePending.id), configId: normalizedConfigId };
+    }
+  }
+
   const configData = persistedConfigId
     ? await u.db("t_videoConfig").where("id", persistedConfigId).first()
     : null;
