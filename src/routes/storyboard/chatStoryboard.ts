@@ -211,6 +211,17 @@ router.ws("/", async (ws, req) => {
     cells: Array<{ id: number; prompt: string; src: string }>;
     fragmentContent: string;
     assetsTags: Array<{ text: string }>;
+    aiConfigId?: number;
+    manufacturer?: string;
+    model?: string;
+    mode?: string;
+    resolution?: string;
+    duration?: number;
+    prompt?: string;
+    audioEnabled?: boolean;
+    startFrame?: VideoFrameRef | null;
+    endFrame?: VideoFrameRef | null;
+    images?: VideoFrameRef[];
   };
   type VideoFrameRef = {
     id: number;
@@ -221,6 +232,7 @@ router.ws("/", async (ws, req) => {
     id: number;
     aiConfigId: number;
     manufacturer?: string;
+    model?: string;
     mode: string;
     resolution: string;
     duration: number;
@@ -528,6 +540,17 @@ router.ws("/", async (ws, req) => {
         cells,
         fragmentContent: cfg.prompt || `模式：${modeText} ${cfg.resolution}/${cfg.duration}s`,
         assetsTags: [{ text: manufacturerText }, { text: resolutionText }, { text: durationText }, { text: modeText }],
+        aiConfigId: cfg.aiConfigId,
+        manufacturer: cfg.manufacturer || "",
+        model: cfg.model || "",
+        mode,
+        resolution: cfg.resolution,
+        duration: cfg.duration,
+        prompt: cfg.prompt,
+        audioEnabled: cfg.audioEnabled,
+        startFrame: cfg.startFrame,
+        endFrame: cfg.endFrame,
+        images: cfg.images,
       });
     }
     return plans;
@@ -666,6 +689,7 @@ router.ws("/", async (ws, req) => {
       id: toVirtualConfigId(item),
       aiConfigId: item.aiConfigId,
       manufacturer: item.manufacturer,
+      model: item.model,
       mode: item.mode,
       resolution: item.resolution,
       duration: item.duration,
@@ -692,6 +716,7 @@ router.ws("/", async (ws, req) => {
       id: toVirtualConfigId(item),
       aiConfigId: item.aiConfigId,
       manufacturer: item.manufacturer,
+      model: item.model,
       mode: item.mode,
       resolution: item.resolution,
       duration: item.duration,
