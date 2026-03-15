@@ -52,3 +52,15 @@ This repo is an Electron + Node/Express + TypeScript app.
 ## 不允许ai 修改的标注
 文件第一行: @no_modify
 或者 # @no_modify
+
+## index.html 说明
+scripts/web/index.html 只是构建后的html文件
+是Toonflow-web 构建出来的，不允许修改
+要改的前端是Toonflow-web 构建的 也就是web_project指定的路径
+
+开发时修改Toonflow-web 的文件，直接运行查看web 端的效果。
+
+发行版才是直接使用构建后的文件：scripts/web/index.html
+
+# 系统环境配置
+[system.yml](system/system.yml)
