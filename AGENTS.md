@@ -62,5 +62,7 @@ scripts/web/index.html 只是构建后的html文件
 
 发行版才是直接使用构建后的文件：scripts/web/index.html
 
+开发前端请查阅{web_project}/AGENTS.md, 同时开发时不要进行yarn build ，yarn dev 即可
+
 # 系统环境配置
 [system.yml](system/system.yml)
