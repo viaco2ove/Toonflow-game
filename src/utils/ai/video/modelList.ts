@@ -499,6 +499,39 @@ const modelList: Owned[] = [
     type: ["text", "singleImage"],
     audio: false,
   },
+  // ================== QingyunTop Veo 统一接口 ==================
+  {
+    manufacturer: "qingyuntop",
+    model: "veo3.1-fast",
+    durationResolutionMap: [{ duration: [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12], resolution: ["480p", "720p", "1080p", "2K", "4K"] }],
+    aspectRatio: ["16:9", "9:16", "1:1", "4:3", "3:4", "21:9"],
+    type: ["text", "singleImage", "startEndRequired", "endFrameOptional", "reference"],
+    audio: true,
+  },
+  {
+    manufacturer: "qingyuntop",
+    model: "veo3.1-fast-4k",
+    durationResolutionMap: [{ duration: [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12], resolution: ["4K", "2K", "1080p"] }],
+    aspectRatio: ["16:9", "9:16", "1:1", "4:3", "3:4", "21:9"],
+    type: ["text", "singleImage", "startEndRequired", "endFrameOptional", "reference"],
+    audio: true,
+  },
+  {
+    manufacturer: "qingyuntop",
+    model: "veo3.1-pro",
+    durationResolutionMap: [{ duration: [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12], resolution: ["720p", "1080p", "2K"] }],
+    aspectRatio: ["16:9", "9:16", "1:1", "4:3", "3:4", "21:9"],
+    type: ["text", "singleImage", "startEndRequired", "endFrameOptional", "reference"],
+    audio: true,
+  },
+  {
+    manufacturer: "qingyuntop",
+    model: "veo3.1-pro-4k",
+    durationResolutionMap: [{ duration: [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12], resolution: ["4K", "2K", "1080p"] }],
+    aspectRatio: ["16:9", "9:16", "1:1", "4:3", "3:4", "21:9"],
+    type: ["text", "singleImage", "startEndRequired", "endFrameOptional", "reference"],
+    audio: true,
+  },
   // ================== RunningHub 系列 ==================
   // sora
   {
