@@ -926,14 +926,46 @@ router.ws("/", async (ws, req) => {
       existingByKey.set(keyOf(row), row);
     }
 
+    const virtualIds = videoDraftState.configs.map((item) => toVirtualConfigId(item)).filter((id) => isVirtualConfigId(id));
+    const draftVideoRows =
+      virtualIds.length > 0
+        ? await u
+            .db("t_video")
+            .where({ scriptId: scriptIdNum })
+            .whereIn("configId", virtualIds as any)
+            .orderBy("id", "desc")
+            .select("id", "configId", "state")
+        : [];
+    const draftVideosByConfigId = new Map<number, Array<{ id: number; state: number }>>();
+    for (const row of draftVideoRows) {
+      const key = Number(row?.configId || 0);
+      if (!key) continue;
+      const list = draftVideosByConfigId.get(key) || [];
+      list.push({
+        id: Number(row?.id || 0),
+        state: Number(row?.state || 0),
+      });
+      draftVideosByConfigId.set(key, list);
+    }
+    const pickSelectedResultIdFromDraft = (virtualId: number): number | null => {
+      const list = draftVideosByConfigId.get(virtualId) || [];
+      if (!list.length) return null;
+      const success = list.find((item) => item.state === 1);
+      if (success?.id) return Number(success.id);
+      const first = list[0];
+      return first?.id ? Number(first.id) : null;
+    };
+
     const maxIdResult: any = await u.db("t_videoConfig").max("id as maxId").first();
     let nextId = Number(maxIdResult?.maxId || 0) + 1;
     const now = Date.now();
     let inserted = 0;
     let updated = 0;
+    let relinked = 0;
 
     for (const draft of videoDraftState.configs) {
       const mode = parseMode(draft.mode) || "single";
+      const virtualId = toVirtualConfigId(draft);
       const rowLike: VideoConfigRow = {
         id: 0,
         aiConfigId: draft.aiConfigId,
@@ -948,6 +980,9 @@ router.ws("/", async (ws, req) => {
       };
       const key = keyOf(rowLike);
       const existing = existingByKey.get(key);
+      const draftSelectedResultId = pickSelectedResultIdFromDraft(virtualId);
+      const existingSelectedResultId = Number(existing?.selectedResultId || 0);
+      const selectedResultId = draftSelectedResultId || (existingSelectedResultId > 0 ? existingSelectedResultId : null);
 
       const payload = {
         scriptId: scriptIdNum,
@@ -962,25 +997,44 @@ router.ws("/", async (ws, req) => {
         duration: Number(draft.duration || 5),
         prompt: draft.prompt || "",
         audioEnabled: draft.audioEnabled ? 1 : 0,
+        selectedResultId,
         updateTime: now,
       };
 
+      let persistedId = 0;
       if (existing?.id) {
         await u.db("t_videoConfig").where({ id: existing.id }).update(payload);
+        persistedId = Number(existing.id);
         updated += 1;
       } else {
+        persistedId = nextId;
         await u.db("t_videoConfig").insert({
           id: nextId++,
           ...payload,
-          selectedResultId: null,
           createTime: now,
         });
         inserted += 1;
       }
+
+      if (isVirtualConfigId(virtualId) && persistedId > 0) {
+        const changed = await u
+          .db("t_video")
+          .where({
+            scriptId: scriptIdNum,
+            configId: virtualId,
+          })
+          .update({ configId: persistedId });
+        relinked += Number(changed || 0);
+      }
     }
 
+    videoDraftState.configs = [];
+    touchVideoDraft();
+    const persistedRows = await listPersistedVideoConfigs();
+    const persistedPlans = buildVideoPlansFromConfigRows(persistedRows);
+    send("shotsUpdated", persistedPlans);
     send("refresh", "videoConfigs");
-    sendNotice(`视频配置导出完成：新增 ${inserted} 条，更新 ${updated} 条。`);
+    sendNotice(`视频配置导出完成：新增 ${inserted} 条，更新 ${updated} 条，关联历史生成结果 ${relinked} 条。`);
   };
 
   const ensureVideoConfigForScript = async (config: VideoConfigSummary): Promise<VideoConfigSummary> => {
