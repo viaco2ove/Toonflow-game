@@ -1621,11 +1621,14 @@ router.ws("/", async (ws, req) => {
       return true;
     }
 
-    const singleGenerateMatch = input.match(/^\/?(生成视频|生成分镜视频)\s*(?:分镜)?\s*(\d+)?$/i);
+    const singleGenerateMatch = input.match(/^\/?(生成视频|生成分镜视频)\s*(?:分镜)?\s*(-?\d+)?$/i);
     if (singleGenerateMatch) {
       const inputId = Number(singleGenerateMatch[2] || 0);
-      if (inputId > 0) {
-        await submitVideoTasksFromConfigs({ configId: inputId, index: inputId });
+      if (Number.isFinite(inputId) && inputId !== 0) {
+        await submitVideoTasksFromConfigs({
+          configId: inputId,
+          index: inputId > 0 ? inputId : undefined,
+        });
       } else {
         sendNotice("请指定视频配置ID。例如：/生成视频 12");
       }
