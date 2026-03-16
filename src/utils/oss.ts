@@ -1,6 +1,8 @@
 import isPathInside from "is-path-inside";
 import fs from "node:fs/promises";
 import path from "node:path";
+import axios from "axios";
+import FormData from "form-data";
 import { getUploadRootDir } from "@/lib/runtimePaths";
 
 // 规范化路径：去除前导斜杠，并将路径分隔符统一转换为系统分隔符
@@ -25,6 +27,7 @@ function resolveSafeLocalPath(userPath: string, rootDir: string): string {
 class OSS {
   private rootDir: string;
   private initPromise: Promise<void>;
+  private tempUrlCache = new Map<string, string>();
 
   constructor() {
     this.rootDir = getUploadRootDir();
@@ -51,6 +54,76 @@ class OSS {
     // URL 始终使用 /，所以这里需要将系统分隔符转回 /
     const url = (process.env.OSSURL || "").trim() || `http://127.0.0.1:${process.env.PORT || "60000"}/`;
     return `${url}${safePath.split(path.sep).join("/")}`;
+  }
+
+  /**
+   * 获取可对外访问的临时URL（当配置 TEMP_OSS 时）。
+   * 未配置或上传失败时回退到本地服务 URL。
+   */
+  async getExternalUrl(userRelPath: string): Promise<string> {
+    await this.ensureInit();
+    const provider = (process.env.TEMP_OSS || "").trim().toLowerCase();
+    if (!provider) {
+      return this.getFileUrl(userRelPath);
+    }
+
+    const cached = this.tempUrlCache.get(userRelPath);
+    if (cached) return cached;
+
+    const buffer = await this.getFile(userRelPath);
+    const filename = path.basename(userRelPath);
+    const tempUrl = await this.uploadToTempOss(provider, buffer, filename);
+    if (tempUrl) {
+      this.tempUrlCache.set(userRelPath, tempUrl);
+      return tempUrl;
+    }
+    return this.getFileUrl(userRelPath);
+  }
+
+  /**
+   * 将 Buffer 上传到临时文件服务，返回公网 URL（若未配置 TEMP_OSS 则返回 null）
+   */
+  async uploadTemp(buffer: Buffer, filename: string): Promise<string | null> {
+    const provider = (process.env.TEMP_OSS || "").trim().toLowerCase();
+    if (!provider) return null;
+    return this.uploadToTempOss(provider, buffer, filename);
+  }
+
+  private async uploadToTempOss(provider: string, buffer: Buffer, filename: string): Promise<string | null> {
+    try {
+      if (provider.includes("tmpfiles")) {
+        const form = new FormData();
+        form.append("file", buffer, { filename });
+        const res = await axios.post("https://tmpfiles.org/api/v1/upload", form, { headers: form.getHeaders() });
+        const url = res.data?.data?.url || res.data?.data?.link || res.data?.url || res.data?.link;
+        if (typeof url === "string" && url.trim()) {
+          return url.trim();
+        }
+      }
+
+      if (provider.includes("file.io")) {
+        const form = new FormData();
+        form.append("file", buffer, { filename });
+        const res = await axios.post("https://file.io", form, { headers: form.getHeaders() });
+        const url = res.data?.link || res.data?.url;
+        if (typeof url === "string" && url.trim()) {
+          return url.trim();
+        }
+      }
+
+      if (provider.includes("transfer.sh")) {
+        const base = provider.startsWith("http") ? provider : "https://transfer.sh";
+        const endpoint = `${base.replace(/\/+$/, "")}/${encodeURIComponent(filename)}`;
+        const res = await axios.put(endpoint, buffer, { headers: { "Content-Type": "application/octet-stream" } });
+        if (typeof res.data === "string" && res.data.trim()) {
+          return res.data.trim();
+        }
+      }
+    } catch (err) {
+      console.warn("[TEMP_OSS] upload failed:", err instanceof Error ? err.message : String(err));
+    }
+
+    return null;
   }
 
   /**

@@ -195,7 +195,13 @@ async function normalizeImageUrls(images?: string[]): Promise<string[]> {
     }
     try {
       const buffer = Buffer.from(base64Data, "base64");
-      const relPath = path.posix.join("tmp", "qingyuntop", `${Date.now()}_${idx}.${ext}`);
+      const filename = `${Date.now()}_${idx}.${ext}`;
+      const tempUrl = await u.oss.uploadTemp(buffer, filename);
+      if (tempUrl) {
+        output.push(tempUrl);
+        continue;
+      }
+      const relPath = path.posix.join("tmp", "qingyuntop", filename);
       await u.oss.writeFile(relPath, buffer);
       const url = await u.oss.getFileUrl(relPath);
       output.push(url);
