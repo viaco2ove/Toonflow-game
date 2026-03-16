@@ -14,6 +14,7 @@ import other from "./owned/other";
 import grsai from "./owned/grsai";
 import t8star from "./owned/t8star";
 import qingyuntop from "./owned/qingyuntop";
+import kieai from "./owned/kieai";
 const modelInstance = {
   volcengine: volcengine,
   kling: kling,
@@ -26,6 +27,7 @@ const modelInstance = {
   grsai: grsai,
   t8star: t8star,
   qingyuntop: qingyuntop,
+  kieai: kieai,
 } as const;
 const VIDEO_DEBUG = (process.env.AI_VIDEO_DEBUG || "").trim() === "1";
 

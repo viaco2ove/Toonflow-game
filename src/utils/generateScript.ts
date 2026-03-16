@@ -109,12 +109,13 @@ export async function generateScript(episode: Episode, novelData: string): Promi
 2. ⚠️ 严格按【剧情主干】顺序展开剧情，这是剧本的唯一权威
 3. ⚠️ 【剧情节点】四步必须严格按顺序呈现：起→承→转→合，不输出标记
 4. emotionalCurve必须在对应剧情节点体现
-5. classicQuotes必须原文出现在高潮段落
-6. endingHook必须作为收尾
-7. scenes/characters/props必须全部使用，按出场顺序
-8. visualHighlights中的镜头必须按剧情主干顺序全部呈现
-9. 500-800字
-10. 以【黑屏】结尾
+5. ✅ 对白可参考原文风格：若原文有对白，保留关键台词并合理补充；若原文对白少，以叙述为主、对白为辅，保持节奏自然。对白格式：角色名：台词（每行一条）。
+6. classicQuotes必须原文出现在高潮段落
+7. endingHook必须作为收尾
+8. scenes/characters/props必须全部使用，按出场顺序
+9. visualHighlights中的镜头必须按剧情主干顺序全部呈现
+10. 500-800字
+11. 以【黑屏】结尾
 
 ═══════════════════════════════════════
 大纲数据
@@ -124,7 +125,9 @@ ${episodePrompt}
 ═══════════════════════════════════════
 原文参考（仅用于补充细节和对话优化）
 ═══════════════════════════════════════
-${novelData}`;
+${novelData}
+
+（本次生成标识：${Date.now()}）`;
 
   const prompts = await u.db("t_prompts").where("code", "script").first();
   const promptConfig = await u.getPromptAi("generateScript");

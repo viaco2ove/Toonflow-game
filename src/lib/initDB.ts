@@ -1272,6 +1272,17 @@ export default async (knex: Knex, forceInit: boolean = false): Promise<void> => 
             audio: 1,
             type: JSON.stringify(["text", "singleImage", "startEndRequired", "endFrameOptional", "reference"]),
           },
+          {
+            id: 64,
+            manufacturer: "kieai",
+            model: "veo3_fast",
+            durationResolutionMap: JSON.stringify([
+              { duration: [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15], resolution: ["720p"] },
+            ]),
+            aspectRatio: JSON.stringify(["16:9"]),
+            audio: 1,
+            type: JSON.stringify(["text", "singleImage", "startEndRequired", "endFrameOptional", "reference"]),
+          },
         ]);
       },
     },

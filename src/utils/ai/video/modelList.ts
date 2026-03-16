@@ -532,6 +532,15 @@ const modelList: Owned[] = [
     type: ["text", "singleImage", "startEndRequired", "endFrameOptional", "reference"],
     audio: true,
   },
+  // ================== Kie AI Veo 系列 ==================
+  {
+    manufacturer: "kieai",
+    model: "veo3_fast",
+    durationResolutionMap: [{ duration: [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15], resolution: ["720p"] }],
+    aspectRatio: ["16:9"],
+    type: ["text", "singleImage", "startEndRequired", "endFrameOptional", "reference"],
+    audio: true,
+  },
   // ================== RunningHub 系列 ==================
   // sora
   {

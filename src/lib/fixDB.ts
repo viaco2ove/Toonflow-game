@@ -203,6 +203,33 @@ export default async (knex: Knex): Promise<void> => {
     }
   }
 
+  // 兼容老库：补齐 kieai 视频模型
+  if (await knex.schema.hasTable("t_videoModel")) {
+    const kieaiModels = [
+      {
+        manufacturer: "kieai",
+        model: "veo3_fast",
+        durationResolutionMap: JSON.stringify([
+          { duration: [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15], resolution: ["720p"] },
+        ]),
+        aspectRatio: JSON.stringify(["16:9"]),
+        audio: 1,
+        type: JSON.stringify(["text", "singleImage", "startEndRequired", "endFrameOptional", "reference"]),
+      },
+    ];
+
+    for (const item of kieaiModels) {
+      const exists = await knex("t_videoModel").where({ manufacturer: item.manufacturer, model: item.model }).first();
+      if (exists) continue;
+      const maxIdResult = (await knex("t_videoModel").max("id as maxId").first()) as { maxId?: number } | undefined;
+      const nextId = (maxIdResult?.maxId || 0) + 1;
+      await knex("t_videoModel").insert({
+        id: nextId,
+        ...item,
+      });
+    }
+  }
+
   // 兼容老库：补齐 t8star 文本模型
   if (await knex.schema.hasTable("t_textModel")) {
     const t8starTextModels = [
