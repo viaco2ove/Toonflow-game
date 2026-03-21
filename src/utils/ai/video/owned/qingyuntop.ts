@@ -175,6 +175,96 @@ function pickError(payload: any): string {
   return candidate ? String(candidate) : "";
 }
 
+export interface QingyunTaskQueryResult {
+  status: string;
+  completed: boolean;
+  url?: string;
+  error?: string;
+}
+
+export async function queryQingyunTaskOnce(
+  taskId: string,
+  options: {
+    apiKey?: string;
+    baseURL?: string;
+    queryUrl?: string;
+  },
+): Promise<QingyunTaskQueryResult> {
+  if (!taskId) {
+    return { status: "UNKNOWN", completed: false, error: "缺少任务ID" };
+  }
+  if (!options.apiKey) {
+    return { status: "UNKNOWN", completed: false, error: "缺少API Key" };
+  }
+
+  const openAiFormat = isOpenAiFormat(options.baseURL);
+  const authorization = `Bearer ${options.apiKey.replace(/^Bearer\\s*/i, "").trim()}`;
+
+  let queryTemplate = "";
+  let contentUrl = "";
+
+  if (openAiFormat) {
+    const resolved = resolveOpenAiUrls(options.baseURL);
+    queryTemplate = resolved.queryUrl;
+    contentUrl = resolved.contentUrl;
+  } else {
+    const resolved = resolveUrls(options.baseURL);
+    queryTemplate = resolved.queryUrl;
+  }
+
+  if (options.queryUrl && options.queryUrl.includes("{taskId}")) {
+    queryTemplate = options.queryUrl;
+  }
+
+  const queryUrlFinal = queryTemplate.includes("{taskId}")
+    ? queryTemplate.replace("{taskId}", taskId)
+    : `${queryTemplate}${queryTemplate.includes("?") ? "&" : "?"}id=${taskId}`;
+
+  const queryRes = await axios.get(queryUrlFinal, {
+    headers: {
+      Authorization: authorization,
+      "Content-Type": "application/json",
+    },
+  });
+
+  const payload = queryRes.data;
+  const statusRaw = pickStatus(payload);
+  const status = String(statusRaw || "").toUpperCase();
+  let url = pickVideoUrl(payload);
+  const errorText = pickError(payload);
+
+  if (["SUCCESS", "SUCCEEDED", "COMPLETED"].includes(status)) {
+    if (!url && contentUrl) {
+      const contentId = pickContentId(payload);
+      if (contentId) {
+        const contentRes = await axios.get(contentUrl.replace("{videoId}", contentId), {
+          headers: {
+            Authorization: authorization,
+            "Content-Type": "application/json",
+          },
+        });
+        url = pickVideoUrl(contentRes.data);
+      }
+    }
+    if (!url) return { status, completed: false };
+    return { status, completed: true, url };
+  }
+
+  if (["FAILURE", "FAILED", "ERROR", "CANCELLED", "CANCELED"].includes(status)) {
+    return { status, completed: false, error: errorText || `任务失败: ${status}` };
+  }
+
+  if (url) {
+    return { status: status || "SUCCESS", completed: true, url };
+  }
+
+  if (errorText) {
+    return { status: status || "FAILED", completed: false, error: errorText };
+  }
+
+  return { status: status || "PENDING", completed: false };
+}
+
 async function normalizeImageUrls(images?: string[]): Promise<string[]> {
   if (!images || images.length === 0) return [];
   const output: string[] = [];

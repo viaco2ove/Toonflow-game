@@ -17,9 +17,10 @@ export default router.post(
     prompt: z.string(),
     remark: z.string().optional().nullable(),
     episode: z.string().optional().nullable(),
+    voiceConfig: z.string().optional().nullable(),
   }),
   async (req, res) => {
-    const { projectId, name, intro, type, prompt, remark, episode, scriptId } = req.body;
+    const { projectId, name, intro, type, prompt, remark, episode, scriptId, voiceConfig } = req.body;
 
     await u.db("t_assets").insert({
       projectId,
@@ -30,6 +31,7 @@ export default router.post(
       remark,
       episode,
       scriptId,
+      voiceConfig: voiceConfig ?? null,
     });
 
     res.status(200).send(success({ message: "新增资产成功" }));

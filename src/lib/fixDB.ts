@@ -1,6 +1,12 @@
 import { Knex } from "knex";
 
 export default async (knex: Knex): Promise<void> => {
+  const ensureTable = async (table: string, builder: (table: Knex.CreateTableBuilder) => void) => {
+    if (!(await knex.schema.hasTable(table))) {
+      await knex.schema.createTable(table, builder);
+    }
+  };
+
   const addColumn = async (table: string, column: string, type: string) => {
     if (!(await knex.schema.hasTable(table))) return;
     if (!(await knex.schema.hasColumn(table, column))) {
@@ -24,6 +30,65 @@ export default async (knex: Knex): Promise<void> => {
     }
   };
 
+  const upsertVideoModels = async (
+    models: Array<{
+      manufacturer: string;
+      model: string;
+      durationResolutionMap: string;
+      aspectRatio: string;
+      audio: number;
+      type: string;
+    }>,
+  ) => {
+    if (!(await knex.schema.hasTable("t_videoModel"))) return;
+    for (const item of models) {
+      const exists = await knex("t_videoModel")
+        .where({ manufacturer: item.manufacturer, model: item.model })
+        .first();
+      if (exists) {
+        await knex("t_videoModel")
+          .where({ id: (exists as any).id })
+          .update({
+            durationResolutionMap: item.durationResolutionMap,
+            aspectRatio: item.aspectRatio,
+            audio: item.audio,
+            type: item.type,
+          });
+        continue;
+      }
+      const maxIdResult = (await knex("t_videoModel").max("id as maxId").first()) as { maxId?: number } | undefined;
+      const nextId = (maxIdResult?.maxId || 0) + 1;
+      await knex("t_videoModel").insert({
+        id: nextId,
+        ...item,
+      });
+    }
+  };
+
+  await ensureTable("t_scriptSegment", (table) => {
+    table.integer("id").notNullable();
+    table.integer("scriptId").notNullable();
+    table.integer("projectId").notNullable();
+    table.integer("sort").notNullable();
+    table.text("title");
+    table.text("content");
+    table.text("summary");
+    table.text("startAnchor");
+    table.text("endAnchor");
+    table.integer("createTime");
+    table.integer("updateTime");
+    table.primary(["id"]);
+    table.unique(["id"]);
+  });
+  await ensureTable("t_voiceModel", (table) => {
+    table.integer("id").notNullable();
+    table.text("manufacturer");
+    table.text("model");
+    table.text("mode");
+    table.primary(["id"]);
+    table.unique(["id"]);
+  });
+
   //添加字段
   await addColumn("t_video", "time", "integer");
   await addColumn("t_video", "aiConfigId", "integer");
@@ -33,6 +98,20 @@ export default async (knex: Knex): Promise<void> => {
   await addColumn("t_video", "providerTaskId", "text");
   await addColumn("t_video", "providerQueryUrl", "text");
   await addColumn("t_video", "providerManufacturer", "text");
+  await addColumn("t_scriptSegment", "summary", "text");
+  await addColumn("t_scriptSegment", "startAnchor", "text");
+  await addColumn("t_scriptSegment", "endAnchor", "text");
+  await addColumn("t_scriptSegment", "createTime", "integer");
+  await addColumn("t_scriptSegment", "updateTime", "integer");
+  await addColumn("t_assets", "voiceConfig", "text");
+  await addColumn("t_videoConfig", "voiceConfigId", "integer");
+  await addColumn("t_videoConfig", "voicePresetId", "text");
+  await addColumn("t_videoConfig", "dialogue", "text");
+  await addColumn("t_videoConfig", "audioPath", "text");
+  await addColumn("t_videoConfig", "ttsAudioPath", "text");
+  await addColumn("t_videoConfig", "sort", "integer");
+  await addColumn("t_videoConfig", "audioTrack", "integer");
+  await addColumn("t_videoConfig", "dialogueTrack", "integer");
 
   //更正字段
   await alterColumnType("t_config", "modelType", "text");
@@ -86,77 +165,96 @@ export default async (knex: Knex): Promise<void> => {
   }
 
   // 兼容老库：补齐 t8star 视频模型
-  if (await knex.schema.hasTable("t_videoModel")) {
-    const t8starModels = [
-      {
-        manufacturer: "t8star",
-        model: "veo-3.1-generate-preview",
-        durationResolutionMap: JSON.stringify([
-          { duration: [4, 6], resolution: ["720p"] },
-          { duration: [8], resolution: ["720p", "1080p"] },
-        ]),
-        aspectRatio: JSON.stringify(["16:9", "9:16"]),
-        audio: 1,
-        type: JSON.stringify(["text", "singleImage", "startEndRequired", "endFrameOptional", "reference"]),
-      },
-      {
-        manufacturer: "t8star",
-        model: "veo-3.1-fast-generate-preview",
-        durationResolutionMap: JSON.stringify([
-          { duration: [4, 6], resolution: ["720p"] },
-          { duration: [8], resolution: ["720p", "1080p"] },
-        ]),
-        aspectRatio: JSON.stringify(["16:9", "9:16"]),
-        audio: 1,
-        type: JSON.stringify(["text", "singleImage", "startEndRequired", "endFrameOptional", "reference"]),
-      },
-      {
-        manufacturer: "t8star",
-        model: "veo-3.0-generate-preview",
-        durationResolutionMap: JSON.stringify([
-          { duration: [4, 6], resolution: ["720p"] },
-          { duration: [8], resolution: ["720p", "1080p"] },
-        ]),
-        aspectRatio: JSON.stringify(["16:9", "9:16"]),
-        audio: 1,
-        type: JSON.stringify(["text", "singleImage"]),
-      },
-      {
-        manufacturer: "t8star",
-        model: "veo-3.0-fast-generate-preview",
-        durationResolutionMap: JSON.stringify([
-          { duration: [4, 6], resolution: ["720p"] },
-          { duration: [8], resolution: ["720p", "1080p"] },
-        ]),
-        aspectRatio: JSON.stringify(["16:9", "9:16"]),
-        audio: 1,
-        type: JSON.stringify(["text", "singleImage"]),
-      },
-      {
-        manufacturer: "t8star",
-        model: "veo-2.0-generate-001",
-        durationResolutionMap: JSON.stringify([{ duration: [5, 6, 7, 8], resolution: ["720p"] }]),
-        aspectRatio: JSON.stringify(["16:9", "9:16"]),
-        audio: 0,
-        type: JSON.stringify(["text", "singleImage"]),
-      },
-    ];
-
-    for (const item of t8starModels) {
-      const exists = await knex("t_videoModel").where({ manufacturer: item.manufacturer, model: item.model }).first();
-      if (exists) continue;
-      const maxIdResult = (await knex("t_videoModel").max("id as maxId").first()) as { maxId?: number } | undefined;
-      const nextId = (maxIdResult?.maxId || 0) + 1;
-      await knex("t_videoModel").insert({
-        id: nextId,
-        ...item,
-      });
-    }
-  }
+  const t8starModels = [
+    {
+      manufacturer: "t8star",
+      model: "veo-3.1-generate-preview",
+      durationResolutionMap: JSON.stringify([
+        { duration: [4, 6], resolution: ["720p"] },
+        { duration: [8], resolution: ["720p", "1080p"] },
+      ]),
+      aspectRatio: JSON.stringify(["16:9", "9:16"]),
+      audio: 1,
+      type: JSON.stringify(["text", "singleImage", "startEndRequired", "endFrameOptional", "reference"]),
+    },
+    {
+      manufacturer: "t8star",
+      model: "veo-3.1-fast-generate-preview",
+      durationResolutionMap: JSON.stringify([
+        { duration: [4, 6], resolution: ["720p"] },
+        { duration: [8], resolution: ["720p", "1080p"] },
+      ]),
+      aspectRatio: JSON.stringify(["16:9", "9:16"]),
+      audio: 1,
+      type: JSON.stringify(["text", "singleImage", "startEndRequired", "endFrameOptional", "reference"]),
+    },
+    {
+      manufacturer: "t8star",
+      model: "veo-3.0-generate-preview",
+      durationResolutionMap: JSON.stringify([
+        { duration: [4, 6], resolution: ["720p"] },
+        { duration: [8], resolution: ["720p", "1080p"] },
+      ]),
+      aspectRatio: JSON.stringify(["16:9", "9:16"]),
+      audio: 1,
+      type: JSON.stringify(["text", "singleImage"]),
+    },
+    {
+      manufacturer: "t8star",
+      model: "veo-3.0-fast-generate-preview",
+      durationResolutionMap: JSON.stringify([
+        { duration: [4, 6], resolution: ["720p"] },
+        { duration: [8], resolution: ["720p", "1080p"] },
+      ]),
+      aspectRatio: JSON.stringify(["16:9", "9:16"]),
+      audio: 1,
+      type: JSON.stringify(["text", "singleImage"]),
+    },
+    {
+      manufacturer: "t8star",
+      model: "veo-2.0-generate-001",
+      durationResolutionMap: JSON.stringify([{ duration: [5, 6, 7, 8], resolution: ["720p"] }]),
+      aspectRatio: JSON.stringify(["16:9", "9:16"]),
+      audio: 0,
+      type: JSON.stringify(["text", "singleImage"]),
+    },
+    {
+      manufacturer: "t8star",
+      model: "veo3.1-fast",
+      durationResolutionMap: JSON.stringify([{ duration: [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12], resolution: ["480p", "720p", "1080p", "2K", "4K"] }]),
+      aspectRatio: JSON.stringify(["16:9", "9:16", "1:1", "4:3", "3:4", "21:9"]),
+      audio: 1,
+      type: JSON.stringify(["text", "singleImage", "startEndRequired", "endFrameOptional", "reference"]),
+    },
+    {
+      manufacturer: "t8star",
+      model: "veo3.1-fast-4k",
+      durationResolutionMap: JSON.stringify([{ duration: [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12], resolution: ["4K", "2K", "1080p"] }]),
+      aspectRatio: JSON.stringify(["16:9", "9:16", "1:1", "4:3", "3:4", "21:9"]),
+      audio: 1,
+      type: JSON.stringify(["text", "singleImage", "startEndRequired", "endFrameOptional", "reference"]),
+    },
+    {
+      manufacturer: "t8star",
+      model: "veo3.1-pro",
+      durationResolutionMap: JSON.stringify([{ duration: [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12], resolution: ["720p", "1080p", "2K"] }]),
+      aspectRatio: JSON.stringify(["16:9", "9:16", "1:1", "4:3", "3:4", "21:9"]),
+      audio: 1,
+      type: JSON.stringify(["text", "singleImage", "startEndRequired", "endFrameOptional", "reference"]),
+    },
+    {
+      manufacturer: "t8star",
+      model: "veo3.1-pro-4k",
+      durationResolutionMap: JSON.stringify([{ duration: [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12], resolution: ["4K", "2K", "1080p"] }]),
+      aspectRatio: JSON.stringify(["16:9", "9:16", "1:1", "4:3", "3:4", "21:9"]),
+      audio: 1,
+      type: JSON.stringify(["text", "singleImage", "startEndRequired", "endFrameOptional", "reference"]),
+    },
+  ];
+  await upsertVideoModels(t8starModels);
 
   // 兼容老库：补齐 qingyuntop 视频模型
-  if (await knex.schema.hasTable("t_videoModel")) {
-    const qingyunModels = [
+  const qingyunModels = [
       {
         manufacturer: "qingyuntop",
         model: "veo3.1-fast",
@@ -191,21 +289,10 @@ export default async (knex: Knex): Promise<void> => {
       },
     ];
 
-    for (const item of qingyunModels) {
-      const exists = await knex("t_videoModel").where({ manufacturer: item.manufacturer, model: item.model }).first();
-      if (exists) continue;
-      const maxIdResult = (await knex("t_videoModel").max("id as maxId").first()) as { maxId?: number } | undefined;
-      const nextId = (maxIdResult?.maxId || 0) + 1;
-      await knex("t_videoModel").insert({
-        id: nextId,
-        ...item,
-      });
-    }
-  }
+  await upsertVideoModels(qingyunModels);
 
   // 兼容老库：补齐 kieai 视频模型
-  if (await knex.schema.hasTable("t_videoModel")) {
-    const kieaiModels = [
+  const kieaiModels = [
       {
         manufacturer: "kieai",
         model: "veo3_fast",
@@ -218,17 +305,7 @@ export default async (knex: Knex): Promise<void> => {
       },
     ];
 
-    for (const item of kieaiModels) {
-      const exists = await knex("t_videoModel").where({ manufacturer: item.manufacturer, model: item.model }).first();
-      if (exists) continue;
-      const maxIdResult = (await knex("t_videoModel").max("id as maxId").first()) as { maxId?: number } | undefined;
-      const nextId = (maxIdResult?.maxId || 0) + 1;
-      await knex("t_videoModel").insert({
-        id: nextId,
-        ...item,
-      });
-    }
-  }
+  await upsertVideoModels(kieaiModels);
 
   // 兼容老库：补齐 t8star 文本模型
   if (await knex.schema.hasTable("t_textModel")) {
@@ -241,6 +318,20 @@ export default async (knex: Knex): Promise<void> => {
       const exists = await knex("t_textModel").where({ manufacturer: item.manufacturer, model: item.model }).first();
       if (exists) continue;
       await knex("t_textModel").insert(item);
+    }
+  }
+
+  if (await knex.schema.hasTable("t_voiceModel")) {
+    const voiceDefault = {
+      manufacturer: "ai_voice_tts",
+      model: "ai_voice_tts",
+      mode: JSON.stringify(["text", "clone", "mix", "prompt_voice"]),
+    };
+    const exists = await knex("t_voiceModel").where({ manufacturer: voiceDefault.manufacturer, model: voiceDefault.model }).first();
+    if (!exists) {
+      const maxIdResult = (await knex("t_voiceModel").max("id as maxId").first()) as { maxId?: number } | undefined;
+      const nextId = (maxIdResult?.maxId || 0) + 1;
+      await knex("t_voiceModel").insert({ id: nextId, ...voiceDefault });
     }
   }
 

@@ -9,7 +9,7 @@ export default router.post(
   "/",
   validateFields({
     id: z.number(),
-    type: z.enum(["text", "video", "image"]),
+    type: z.enum(["text", "video", "image", "voice"]),
     model: z.string(),
     baseUrl: z.string(),
     modelType: z.string(),

@@ -27,14 +27,44 @@ export default router.post(
     resolution: z.string().optional(),
     duration: z.number().optional(),
     prompt: z.string().optional(),
+    dialogue: z.string().optional(),
+    audioPath: z.string().optional(),
+    ttsAudioPath: z.string().optional(),
     selectedResultId: z.number().nullable().optional(),
     startFrame: z.object().nullable().optional(),
     endFrame: z.object().nullable().optional(),
     images: z.array(z.object()).optional(),
     audioEnabled: z.boolean().optional(),
+    voiceConfigId: z.number().optional(),
+    voicePresetId: z.string().optional(),
+    sort: z.number().optional(),
+    audioTrack: z.number().optional(),
+    dialogueTrack: z.number().optional(),
   }),
   async (req, res) => {
-    const { id, scriptId, projectId, aiConfigId, mode, resolution, duration, prompt, selectedResultId, startFrame, endFrame, images, audioEnabled } = req.body;
+    const {
+      id,
+      scriptId,
+      projectId,
+      aiConfigId,
+      mode,
+      resolution,
+      duration,
+      prompt,
+      dialogue,
+      audioPath,
+      ttsAudioPath,
+      selectedResultId,
+      startFrame,
+      endFrame,
+      images,
+      audioEnabled,
+      voiceConfigId,
+      voicePresetId,
+      sort,
+      audioTrack,
+      dialogueTrack,
+    } = req.body;
 
     // 会话草稿配置（负ID）更新：写回会话，不写 t_videoConfig
     if (id < 0) {
@@ -79,10 +109,18 @@ export default router.post(
           if (resolution !== undefined) nextConfig.resolution = resolution;
           if (duration !== undefined) nextConfig.duration = duration;
           if (prompt !== undefined) nextConfig.prompt = prompt;
+          if (dialogue !== undefined) nextConfig.dialogue = dialogue;
+          if (audioPath !== undefined) nextConfig.audioPath = audioPath;
+          if (ttsAudioPath !== undefined) nextConfig.ttsAudioPath = ttsAudioPath;
           if (startFrame !== undefined) nextConfig.startFrame = startFrame;
           if (endFrame !== undefined) nextConfig.endFrame = endFrame;
           if (images !== undefined) nextConfig.images = images || [];
           if (audioEnabled !== undefined) nextConfig.audioEnabled = audioEnabled;
+          if (voiceConfigId !== undefined) nextConfig.voiceConfigId = voiceConfigId;
+          if (voicePresetId !== undefined) nextConfig.voicePresetId = voicePresetId;
+          if (sort !== undefined) nextConfig.sort = sort;
+          if (audioTrack !== undefined) nextConfig.audioTrack = audioTrack;
+          if (dialogueTrack !== undefined) nextConfig.dialogueTrack = dialogueTrack;
 
           const nextConfigs = [...configs];
           nextConfigs[index] = nextConfig;
@@ -122,9 +160,17 @@ export default router.post(
                 resolution: nextConfig.resolution || "720p",
                 duration: Number(nextConfig.duration || 5),
                 prompt: nextConfig.prompt || "",
+                dialogue: nextConfig.dialogue || "",
                 selectedResultId: selectedResultId ?? null,
                 createdAt: new Date(nextDraft.updatedAt).toISOString(),
                 audioEnabled: !!nextConfig.audioEnabled,
+                voiceConfigId: nextConfig.voiceConfigId ?? null,
+                voicePresetId: nextConfig.voicePresetId ?? "",
+                audioPath: nextConfig.audioPath || "",
+                ttsAudioPath: nextConfig.ttsAudioPath || "",
+                sort: Number.isFinite(Number(nextConfig.sort)) ? Number(nextConfig.sort) : null,
+                audioTrack: Number.isFinite(Number(nextConfig.audioTrack)) ? Number(nextConfig.audioTrack) : 1,
+                dialogueTrack: Number.isFinite(Number(nextConfig.dialogueTrack)) ? Number(nextConfig.dialogueTrack) : 1,
                 isDraft: true,
               },
             }),
@@ -197,6 +243,15 @@ export default router.post(
     if (prompt !== undefined) {
       updateData.prompt = prompt;
     }
+    if (dialogue !== undefined) {
+      updateData.dialogue = dialogue;
+    }
+    if (audioPath !== undefined) {
+      updateData.audioPath = audioPath;
+    }
+    if (ttsAudioPath !== undefined) {
+      updateData.ttsAudioPath = ttsAudioPath;
+    }
     if (selectedResultId !== undefined) {
       updateData.selectedResultId = selectedResultId;
     }
@@ -211,6 +266,21 @@ export default router.post(
     }
     if (audioEnabled !== undefined) {
       updateData.audioEnabled = audioEnabled;
+    }
+    if (voiceConfigId !== undefined) {
+      updateData.voiceConfigId = voiceConfigId;
+    }
+    if (voicePresetId !== undefined) {
+      updateData.voicePresetId = voicePresetId;
+    }
+    if (sort !== undefined) {
+      updateData.sort = sort;
+    }
+    if (audioTrack !== undefined) {
+      updateData.audioTrack = audioTrack;
+    }
+    if (dialogueTrack !== undefined) {
+      updateData.dialogueTrack = dialogueTrack;
     }
     // 更新数据
     await u.db("t_videoConfig").where({ id }).update(updateData);
@@ -234,9 +304,17 @@ export default router.post(
             resolution: updatedConfig.resolution,
             duration: updatedConfig.duration,
             prompt: updatedConfig.prompt,
+            dialogue: updatedConfig.dialogue || "",
             selectedResultId: updatedConfig.selectedResultId,
             createdAt: new Date(updatedConfig.createTime!).toISOString(),
             audioEnabled: updatedConfig.audioEnabled,
+            voiceConfigId: updatedConfig.voiceConfigId ?? null,
+            voicePresetId: updatedConfig.voicePresetId ?? "",
+            audioPath: updatedConfig.audioPath ? await u.oss.getFileUrl(updatedConfig.audioPath) : "",
+            ttsAudioPath: updatedConfig.ttsAudioPath ? await u.oss.getFileUrl(updatedConfig.ttsAudioPath) : "",
+            sort: Number.isFinite(Number(updatedConfig.sort)) ? Number(updatedConfig.sort) : null,
+            audioTrack: Number.isFinite(Number(updatedConfig.audioTrack)) ? Number(updatedConfig.audioTrack) : 1,
+            dialogueTrack: Number.isFinite(Number(updatedConfig.dialogueTrack)) ? Number(updatedConfig.dialogueTrack) : 1,
           },
         }),
       );

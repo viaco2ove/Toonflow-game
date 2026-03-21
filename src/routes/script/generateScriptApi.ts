@@ -50,6 +50,7 @@ export default router.post(
       await u.db("t_script").where("id", scriptId).update({
         content: data,
       });
+      await u.db("t_scriptSegment").where("scriptId", scriptId).delete();
 
       res.status(200).send(success({ message: "生成剧本成功" }));
     } catch (e) {

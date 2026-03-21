@@ -1,6 +1,6 @@
 import u from "@/utils";
 
-type AIType = "text" | "image" | "video";
+type AIType = "text" | "image" | "video" | "voice";
 
 interface BaseConfig {
   model: string;
@@ -23,19 +23,26 @@ interface VideoResData extends BaseConfig {
   manufacturer: "openAi" | "volcengine" | "runninghub" | "apimart" | "confyUI" | "t8star";
 }
 
+interface VoiceResData extends BaseConfig {
+  baseURL: string;
+  manufacturer: "ai_voice_tts" | "other";
+}
+
 type ResDataMap = {
   text: TextResData;
   image: ImageResData;
   video: VideoResData;
+  voice: VoiceResData;
 };
 
 const errorMessages: Record<AIType, string> = {
   text: "文本模型配置不存在",
   image: "图像模型配置不存在",
   video: "视频模型配置不存在",
+  voice: "语音模型配置不存在",
 };
 
-const needBaseURL: AIType[] = ["text", "video", "image"];
+const needBaseURL: AIType[] = ["text", "video", "image", "voice"];
 
 export default async function getConfig<T extends AIType>(aiType: T, manufacturer?: string): Promise<ResDataMap[T]> {
   const config = await u

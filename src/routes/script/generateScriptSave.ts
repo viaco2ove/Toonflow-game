@@ -20,6 +20,7 @@ export default router.post(
     await u.db("t_script").where("id", scriptId).update({
       content: content,
     });
+    await u.db("t_scriptSegment").where("scriptId", scriptId).delete();
 
     res.status(200).send(success({ message: "保存成功" }));
   },

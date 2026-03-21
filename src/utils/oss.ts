@@ -50,6 +50,9 @@ class OSS {
    */
   async getFileUrl(userRelPath: string): Promise<string> {
     await this.ensureInit();
+    if (/^https?:\/\//i.test(userRelPath)) {
+      return userRelPath;
+    }
     const safePath = normalizeUserPath(userRelPath);
     // URL 始终使用 /，所以这里需要将系统分隔符转回 /
     const url = (process.env.OSSURL || "").trim() || `http://127.0.0.1:${process.env.PORT || "60000"}/`;
@@ -62,6 +65,9 @@ class OSS {
    */
   async getExternalUrl(userRelPath: string): Promise<string> {
     await this.ensureInit();
+    if (/^https?:\/\//i.test(userRelPath)) {
+      return userRelPath;
+    }
     const provider = (process.env.TEMP_OSS || "").trim().toLowerCase();
     if (!provider) {
       return this.getFileUrl(userRelPath);
@@ -187,6 +193,9 @@ class OSS {
    */
   async deleteFile(userRelPath: string): Promise<void> {
     await this.ensureInit();
+    if (/^https?:\/\//i.test(userRelPath)) {
+      return;
+    }
     await fs.unlink(resolveSafeLocalPath(userRelPath, this.rootDir));
   }
 
@@ -226,6 +235,9 @@ class OSS {
    */
   async fileExists(userRelPath: string): Promise<boolean> {
     await this.ensureInit();
+    if (/^https?:\/\//i.test(userRelPath)) {
+      return true;
+    }
     try {
       const stat = await fs.stat(resolveSafeLocalPath(userRelPath, this.rootDir));
       return stat.isFile();

@@ -47,6 +47,10 @@ export default router.post(
     const now = Date.now();
     const configData = await u.db("t_config").where("id", configId).first();
     if (!configData) return res.status(500).send(error("不存在的模型"));
+    const maxSortResult: any = await u.db("t_videoConfig").where({ scriptId }).max("sort as maxSort").first();
+    const nextSort = (maxSortResult?.maxSort || 0) + 1;
+    const defaultAudioTrack = 1;
+    const defaultDialogueTrack = 1;
     // 插入数据
     await u.db("t_videoConfig").insert({
       id: newId,
@@ -65,6 +69,9 @@ export default router.post(
       createTime: now,
       updateTime: now,
       audioEnabled: audioEnabled ? 1 : 0,
+      sort: nextSort,
+      audioTrack: defaultAudioTrack,
+      dialogueTrack: defaultDialogueTrack,
     });
 
     res.status(200).send(
@@ -87,6 +94,14 @@ export default router.post(
           selectedResultId: null,
           createdAt: new Date(now).toISOString(),
           audioEnabled: audioEnabled,
+          dialogue: "",
+          audioPath: "",
+          ttsAudioPath: "",
+          voiceConfigId: null,
+          voicePresetId: "",
+          sort: nextSort,
+          audioTrack: defaultAudioTrack,
+          dialogueTrack: defaultDialogueTrack,
         },
       }),
     );

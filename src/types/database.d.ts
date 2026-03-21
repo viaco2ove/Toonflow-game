@@ -1,4 +1,4 @@
-// @db-hash dfc25bc59f57e02267612afb993b59a7
+// @db-hash cd394e59c1935dbe48042ddbefe1d51b
 //该文件由脚本自动生成，请勿手动修改
 
 export interface t_aiModelMap {
@@ -23,6 +23,7 @@ export interface t_assets {
   'state'?: string | null;
   'type'?: string | null;
   'videoPrompt'?: string | null;
+  'voiceConfig'?: string | null;
 }
 export interface t_chatHistory {
   'data'?: string | null;
@@ -100,6 +101,19 @@ export interface t_script {
   'outlineId'?: number | null;
   'projectId'?: number | null;
 }
+export interface t_scriptSegment {
+  'content'?: string | null;
+  'createTime'?: number | null;
+  'endAnchor'?: string | null;
+  'id'?: number;
+  'projectId': number;
+  'scriptId': number;
+  'sort': number;
+  'startAnchor'?: string | null;
+  'summary'?: string | null;
+  'title'?: string | null;
+  'updateTime'?: number | null;
+}
 export interface t_setting {
   'id'?: number;
   'imageModel'?: string | null;
@@ -159,7 +173,11 @@ export interface t_video {
 export interface t_videoConfig {
   'aiConfigId'?: number | null;
   'audioEnabled'?: number | null;
+  'audioPath'?: string | null;
+  'audioTrack'?: number | null;
   'createTime'?: number | null;
+  'dialogue'?: string | null;
+  'dialogueTrack'?: number | null;
   'duration'?: number | null;
   'endFrame'?: string | null;
   'id'?: number;
@@ -171,8 +189,12 @@ export interface t_videoConfig {
   'resolution'?: string | null;
   'scriptId'?: number | null;
   'selectedResultId'?: number | null;
+  'sort'?: number | null;
   'startFrame'?: string | null;
+  'ttsAudioPath'?: string | null;
   'updateTime'?: number | null;
+  'voiceConfigId'?: number | null;
+  'voicePresetId'?: string | null;
 }
 export interface t_videoModel {
   'aspectRatio'?: string | null;
@@ -182,6 +204,12 @@ export interface t_videoModel {
   'manufacturer'?: string | null;
   'model'?: string | null;
   'type'?: string | null;
+}
+export interface t_voiceModel {
+  'id'?: number;
+  'manufacturer'?: string | null;
+  'mode'?: string | null;
+  'model'?: string | null;
 }
 
 export interface DB {
@@ -196,6 +224,7 @@ export interface DB {
   "t_project": t_project;
   "t_prompts": t_prompts;
   "t_script": t_script;
+  "t_scriptSegment": t_scriptSegment;
   "t_setting": t_setting;
   "t_storyline": t_storyline;
   "t_taskList": t_taskList;
@@ -204,4 +233,5 @@ export interface DB {
   "t_video": t_video;
   "t_videoConfig": t_videoConfig;
   "t_videoModel": t_videoModel;
+  "t_voiceModel": t_voiceModel;
 }

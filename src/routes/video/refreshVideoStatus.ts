@@ -5,6 +5,8 @@ import { z } from "zod";
 import { success } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
 import { queryT8StarTaskOnce } from "@/utils/ai/video/owned/t8star";
+import { queryQingyunTaskOnce } from "@/utils/ai/video/owned/qingyuntop";
+import { queryKieAiTaskOnce } from "@/utils/ai/video/owned/kieai";
 
 const router = express.Router();
 const VIDEO_DEBUG = (process.env.AI_VIDEO_DEBUG || "").trim() === "1";
@@ -15,6 +17,42 @@ function toPathname(value: string): string {
     return new URL(value).pathname;
   }
   return value;
+}
+
+async function persistVideoResult(
+  id: number,
+  rawFilePath: string,
+  remoteUrl: string,
+  debug: boolean,
+): Promise<void> {
+  const trimmed = String(rawFilePath || "").trim();
+  const savePath = trimmed && !/^https?:\/\//i.test(trimmed) ? toPathname(trimmed) : "";
+
+  if (savePath) {
+    try {
+      const response = await axios.get(remoteUrl, { responseType: "stream" });
+      await u.oss.writeFile(savePath, response.data);
+      await u.db("t_video").where({ id }).update({
+        state: 1,
+        filePath: savePath,
+        errorReason: null,
+      } as any);
+      return;
+    } catch (err) {
+      if (debug) {
+        console.warn("[video] refresh download failed, fallback to remote url", {
+          id,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+  }
+
+  await u.db("t_video").where({ id }).update({
+    state: 1,
+    filePath: remoteUrl,
+    errorReason: null,
+  } as any);
 }
 
 // 刷新远端任务状态（模型接口）
@@ -97,12 +135,6 @@ export default router.post(
       }
 
       const manufacturer = String(providerManufacturer || configRow.manufacturer || "").toLowerCase();
-      if (manufacturer !== "t8star") {
-        unsupportedCount += 1;
-        details.push({ id, status: "unsupported", reason: `暂不支持 ${manufacturer || "unknown"} 的远端刷新` });
-        continue;
-      }
-
       if (!providerTaskId) {
         unsupportedCount += 1;
         details.push({ id, status: "unsupported", reason: "缺少 providerTaskId（历史任务可能不支持远端刷新）" });
@@ -110,32 +142,38 @@ export default router.post(
       }
 
       try {
-        const remote = await queryT8StarTaskOnce(providerTaskId, {
-          apiKey: String(configRow.apiKey || ""),
-          baseURL: String(configRow.baseUrl || ""),
-          queryUrl: providerQueryUrl || undefined,
-        });
+        let remote:
+          | { completed: boolean; url?: string; error?: string; status?: string }
+          | null = null;
+
+        if (manufacturer === "t8star") {
+          remote = await queryT8StarTaskOnce(providerTaskId, {
+            apiKey: String(configRow.apiKey || ""),
+            baseURL: String(configRow.baseUrl || ""),
+            queryUrl: providerQueryUrl || undefined,
+          });
+        } else if (manufacturer === "qingyuntop") {
+          remote = await queryQingyunTaskOnce(providerTaskId, {
+            apiKey: String(configRow.apiKey || ""),
+            baseURL: String(configRow.baseUrl || ""),
+            queryUrl: providerQueryUrl || undefined,
+          });
+        } else if (manufacturer === "kieai") {
+          remote = await queryKieAiTaskOnce(providerTaskId, {
+            apiKey: String(configRow.apiKey || ""),
+            baseURL: String(configRow.baseUrl || ""),
+            queryUrl: providerQueryUrl || undefined,
+          });
+        }
+
+        if (!remote) {
+          unsupportedCount += 1;
+          details.push({ id, status: "unsupported", reason: `暂不支持 ${manufacturer || "unknown"} 的远端刷新` });
+          continue;
+        }
 
         if (remote.completed && remote.url) {
-          const savePath = toPathname(String(item.filePath || "").trim());
-          if (!savePath) {
-            await u.db("t_video").where({ id }).update({
-              state: -1,
-              errorReason: "远端任务成功但本地保存路径为空",
-            } as any);
-            failedCount += 1;
-            details.push({ id, status: "failed", reason: "本地保存路径为空" });
-            continue;
-          }
-
-          const response = await axios.get(remote.url, { responseType: "stream" });
-          await u.oss.writeFile(savePath, response.data);
-
-          await u.db("t_video").where({ id }).update({
-            state: 1,
-            filePath: savePath,
-            errorReason: null,
-          } as any);
+          await persistVideoResult(id, String(item.filePath || ""), remote.url, VIDEO_DEBUG);
 
           successCount += 1;
           details.push({ id, status: "success" });

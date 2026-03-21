@@ -107,6 +107,70 @@ function pickError(payload: any): string {
   return candidate ? String(candidate) : "";
 }
 
+export interface KieAiTaskQueryResult {
+  status: string;
+  completed: boolean;
+  url?: string;
+  error?: string;
+}
+
+export async function queryKieAiTaskOnce(
+  taskId: string,
+  options: {
+    apiKey?: string;
+    baseURL?: string;
+    queryUrl?: string;
+  },
+): Promise<KieAiTaskQueryResult> {
+  if (!taskId) {
+    return { status: "UNKNOWN", completed: false, error: "缺少任务ID" };
+  }
+  if (!options.apiKey) {
+    return { status: "UNKNOWN", completed: false, error: "缺少API Key" };
+  }
+
+  const { queryUrl } = resolveUrls(options.baseURL);
+  const queryTemplate =
+    options.queryUrl && options.queryUrl.includes("{taskId}") ? options.queryUrl : queryUrl;
+  const queryUrlFinal = queryTemplate.includes("{taskId}")
+    ? queryTemplate.replace("{taskId}", taskId)
+    : `${queryTemplate}${queryTemplate.includes("?") ? "&" : "?"}taskId=${taskId}`;
+  const authorization = `Bearer ${options.apiKey.replace(/^Bearer\\s*/i, "").trim()}`;
+
+  const queryRes = await axios.get(queryUrlFinal, {
+    headers: {
+      Authorization: authorization,
+      "Content-Type": "application/json",
+    },
+  });
+
+  const payload = queryRes.data;
+  const successFlag = Number(payload?.data?.successFlag ?? payload?.successFlag ?? 0);
+  const url = pickVideoUrl(payload);
+  const errorText = pickError(payload);
+
+  if (payload?.code && Number(payload.code) !== 200) {
+    return { status: "FAILED", completed: false, error: errorText || String(payload?.msg || "任务失败") };
+  }
+
+  if (successFlag === 1) {
+    if (!url) {
+      return { status: "SUCCESS", completed: false };
+    }
+    return { status: "SUCCESS", completed: true, url };
+  }
+
+  if (errorText) {
+    return { status: "FAILED", completed: false, error: errorText };
+  }
+
+  if (url) {
+    return { status: "SUCCESS", completed: true, url };
+  }
+
+  return { status: "PENDING", completed: false };
+}
+
 async function normalizeImageUrls(images?: string[]): Promise<string[]> {
   if (!images || images.length === 0) return [];
   const output: string[] = [];

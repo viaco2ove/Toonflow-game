@@ -8,7 +8,7 @@ const router = express.Router();
 export default router.post(
   "/",
   validateFields({
-    type: z.enum(["text", "image", "video"]),
+    type: z.enum(["text", "image", "video", "voice"]),
   }),
   async (req, res) => {
     const { type } = req.body;
@@ -16,9 +16,10 @@ export default router.post(
       text: "t_textModel",
       image: "t_imageModel",
       video: "t_videoModel",
+      voice: "t_voiceModel",
     };
     const modelLists = await u
-      .db(sqlTableMap[type as "image" | "text" | "video"])
+      .db(sqlTableMap[type as "image" | "text" | "video" | "voice"])
       .whereNot("manufacturer", "other")
       .select("id", "manufacturer", "model");
     const result: Record<string, any[]> = {};

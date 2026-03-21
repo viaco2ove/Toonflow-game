@@ -35,6 +35,18 @@ export default router.post(
       .where("t_outline.projectId", projectId)
       .select("t_script.id", "t_script.name", "t_script.content", "t_script.outlineId", "t_script.projectId", "t_outline.data");
 
+    const scriptIds = rows.map((item) => item.id).filter((item) => Number.isFinite(item));
+    const segmentRows = scriptIds.length
+      ? await u.db("t_scriptSegment").whereIn("scriptId", scriptIds).orderBy("sort", "asc").select("*")
+      : [];
+    const segmentMap = new Map<number, any[]>();
+    for (const item of segmentRows) {
+      const key = Number(item.scriptId);
+      const list = segmentMap.get(key) || [];
+      list.push(item);
+      segmentMap.set(key, list);
+    }
+
     // 查询所有的资产
     const assets: Asset[] = await u
       .db("t_assets")
@@ -49,6 +61,7 @@ export default router.post(
       const sceneData = parseData.scenes.map((i: Asset) => i.name);
       return {
         ...item,
+        segments: segmentMap.get(Number(item.id)) || [],
         element: [
           ...assets.filter((i) => i.type == "道具" && propsData.includes(i.name)),
           ...assets.filter((i) => i.type == "角色" && charData.includes(i.name)),

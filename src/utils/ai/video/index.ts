@@ -89,15 +89,24 @@ export default async (input: VideoConfig, config?: AIConfig) => {
     console.log("[video] provider returned url", videoUrl || "");
   }
   if (videoUrl) {
-    const response = await axios.get(videoUrl, { responseType: "stream" });
-    if (VIDEO_DEBUG) {
-      console.log("[video] download response", {
-        status: response.status,
-        contentType: response.headers?.["content-type"] || "",
-      });
+    try {
+      const response = await axios.get(videoUrl, { responseType: "stream" });
+      if (VIDEO_DEBUG) {
+        console.log("[video] download response", {
+          status: response.status,
+          contentType: response.headers?.["content-type"] || "",
+        });
+      }
+      await u.oss.writeFile(input.savePath, response.data);
+      return input.savePath;
+    } catch (err) {
+      if (VIDEO_DEBUG) {
+        console.warn("[video] download failed, fallback to remote url", {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      return videoUrl;
     }
-    await u.oss.writeFile(input.savePath, response.data);
-    return input.savePath;
   }
   return videoUrl;
 };

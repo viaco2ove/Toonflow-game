@@ -16,6 +16,7 @@ import {
   StoryboardVideoDraft,
   StoryboardVideoDraftConfig,
 } from "@/lib/storyboardChatSessionStore";
+import { getScriptSegments } from "@/lib/scriptSegment";
 import { createVideoTask, VideoGenerateMode } from "@/routes/video/generateVideo";
 
 const router = express.Router();
@@ -253,11 +254,32 @@ router.ws("/", async (ws, req) => {
     selectedResultDuration?: number;
   };
   let pendingStoryboardPlan: StoryboardPendingPlan | null = sessionData.pendingStoryboardPlan || null;
+  let currentScriptSegmentCount = 0;
 
   let videoConfigsCache: VideoConfigSummary[] = [];
   let selectedVideoAiConfigId: number | null = null;
   let selectedVideoMode: VideoGenerateMode = "single";
   let videoFlowStep: "idle" | "selectConfig" | "selectMode" = "idle";
+
+  const refreshStoryboardSegmentState = async () => {
+    if (isVideoMode) return 0;
+    const rows = await getScriptSegments(scriptIdNum);
+    currentScriptSegmentCount = rows.length;
+    send("segmentRequirement", {
+      scriptId: scriptIdNum,
+      count: currentScriptSegmentCount,
+      ready: currentScriptSegmentCount > 0,
+    });
+    return currentScriptSegmentCount;
+  };
+
+  const ensureStoryboardSegmentsReady = async (reason?: string) => {
+    const count = await refreshStoryboardSegmentState();
+    if (count > 0) return true;
+    const hint = reason ? `当前剧集还没有正式剧情片段，暂时不能${reason}。` : "当前剧集还没有正式剧情片段。";
+    sendNotice(`${hint}\n请先点击“生成剧情片段”，或先调用 /script/generateScriptSegments 再继续。`);
+    return false;
+  };
   let videoPlanShots: VideoPlanShot[] = [];
   let draftConfigCounter = 1;
   let videoDraftState: StoryboardVideoDraft = sessionData.videoDraft || {
@@ -1628,11 +1650,13 @@ router.ws("/", async (ws, req) => {
     }
 
     if (!isVideoMode && isRetryMissingStoryboardImageCommand(input)) {
+      if (!(await ensureStoryboardSegmentsReady("补生成缺失分镜图"))) return true;
       await startMissingStoryboardImageGeneration();
       return true;
     }
 
     if (!isVideoMode && isGenerateStoryboardImageCommand(input)) {
+      if (!(await ensureStoryboardSegmentsReady("生成分镜图"))) return true;
       await startStoryboardImageGeneration(input);
       return true;
     }
@@ -1878,6 +1902,7 @@ router.ws("/", async (ws, req) => {
     mode: isVideoMode ? "video" : "storyboard",
   });
   if (!isVideoMode) {
+    await refreshStoryboardSegmentState();
     send("shotsUpdated", agent.getShotsSnapshot().shots);
   } else {
     await syncVideoCanvasAsync();
@@ -1945,6 +1970,10 @@ router.ws("/", async (ws, req) => {
             }
             if (isVideoMode) {
               sendNotice("当前为AI视频模式。请先发送“开始”，我会引导你完成：选配置 -> 选模式 -> 生成视频。");
+              await saveHistory();
+              return;
+            }
+            if (!(await ensureStoryboardSegmentsReady("生成分镜"))) {
               await saveHistory();
               return;
             }

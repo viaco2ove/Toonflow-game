@@ -27,27 +27,44 @@ export default router.post(
       .select("t_videoConfig.*", "t_videoConfig.manufacturer as configManufacturer", "t_config.manufacturer as aiManufacturer", "t_config.model as aiModel");
 
     // 解析数据库字段
-    const dbResult = configs.map((config: any) => ({
-      id: config.id,
-      scriptId: config.scriptId,
-      projectId: config.projectId,
-      aiConfigId: config.aiConfigId,
-      manufacturer: String(config.aiManufacturer || config.configManufacturer || "").trim() || "unknown",
-      model: String(config.aiModel || "").trim() || "unknown-model",
-      mode: config.mode,
-      startFrame: config.startFrame ? JSON.parse(config.startFrame) : null,
-      endFrame: config.endFrame ? JSON.parse(config.endFrame) : null,
-      images: config.images ? JSON.parse(config.images) : [],
-      resolution: config.resolution,
-      duration: config.duration,
-      prompt: config.prompt || "",
-      selectedResultId: config.selectedResultId,
-      createdAt: config.createTime ? new Date(config.createTime).toISOString() : new Date().toISOString(),
-      audioEnabled: !!config.audioEnabled,
-      isDraft: false,
-    }));
+    const dbResult = await Promise.all(
+      configs.map(async (config: any) => {
+        const audioPath = config.audioPath ? await u.oss.getFileUrl(config.audioPath) : "";
+        const ttsAudioPath = config.ttsAudioPath ? await u.oss.getFileUrl(config.ttsAudioPath) : "";
+        return {
+          id: config.id,
+          scriptId: config.scriptId,
+          projectId: config.projectId,
+          aiConfigId: config.aiConfigId,
+          manufacturer: String(config.aiManufacturer || config.configManufacturer || "").trim() || "unknown",
+          model: String(config.aiModel || "").trim() || "unknown-model",
+          mode: config.mode,
+          startFrame: config.startFrame ? JSON.parse(config.startFrame) : null,
+          endFrame: config.endFrame ? JSON.parse(config.endFrame) : null,
+          images: config.images ? JSON.parse(config.images) : [],
+          resolution: config.resolution,
+          duration: config.duration,
+          prompt: config.prompt || "",
+          selectedResultId: config.selectedResultId,
+          createdAt: config.createTime ? new Date(config.createTime).toISOString() : new Date().toISOString(),
+          audioEnabled: !!config.audioEnabled,
+          voiceConfigId: config.voiceConfigId ?? null,
+          voicePresetId: config.voicePresetId ?? "",
+          dialogue: config.dialogue || "",
+          audioPath,
+          ttsAudioPath,
+          sort: Number.isFinite(Number(config.sort)) ? Number(config.sort) : null,
+          audioTrack: Number.isFinite(Number(config.audioTrack)) ? Number(config.audioTrack) : 1,
+          dialogueTrack: Number.isFinite(Number(config.dialogueTrack)) ? Number(config.dialogueTrack) : 1,
+          isDraft: false,
+        };
+      }),
+    );
 
     const result = [...dbResult].sort((a, b) => {
+      const sa = Number.isFinite(Number(a.sort)) ? Number(a.sort) : Number.MAX_SAFE_INTEGER;
+      const sb = Number.isFinite(Number(b.sort)) ? Number(b.sort) : Number.MAX_SAFE_INTEGER;
+      if (sa !== sb) return sa - sb;
       const ta = Number(new Date(a?.createdAt || 0).getTime() || 0);
       const tb = Number(new Date(b?.createdAt || 0).getTime() || 0);
       return tb - ta;

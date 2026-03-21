@@ -39,6 +39,7 @@ export default async (knex: Knex, forceInit: boolean = false): Promise<void> => 
         table.integer("segmentId");
         table.integer("shotIndex");
         table.text("state");
+        table.text("voiceConfig");
         table.primary(["id"]);
         table.unique(["id"]);
       },
@@ -114,6 +115,24 @@ export default async (knex: Knex, forceInit: boolean = false): Promise<void> => 
         table.text("content");
         table.integer("projectId");
         table.integer("outlineId");
+        table.primary(["id"]);
+        table.unique(["id"]);
+      },
+    },
+    {
+      name: "t_scriptSegment",
+      builder: (table) => {
+        table.integer("id").notNullable();
+        table.integer("scriptId").notNullable();
+        table.integer("projectId").notNullable();
+        table.integer("sort").notNullable();
+        table.text("title");
+        table.text("content");
+        table.text("summary");
+        table.text("startAnchor");
+        table.text("endAnchor");
+        table.integer("createTime");
+        table.integer("updateTime");
         table.primary(["id"]);
         table.unique(["id"]);
       },
@@ -228,6 +247,14 @@ export default async (knex: Knex, forceInit: boolean = false): Promise<void> => 
         table.integer("duration"); // 时长
         table.text("prompt"); // 提示词
         table.integer("selectedResultId"); // 选中的生成结果ID
+        table.integer("voiceConfigId"); // 语音配置ID
+        table.integer("audioTrack"); // 音频轨道索引
+        table.integer("dialogueTrack"); // 台词轨道索引
+        table.text("voicePresetId"); // 语音预设ID
+        table.text("dialogue"); // 台词文本
+        table.text("audioPath"); // 音频轨道文件
+        table.text("ttsAudioPath"); // 台词生成音频
+        table.integer("sort"); // 时间轴排序
         table.integer("createTime"); // 创建时间
         table.integer("updateTime"); // 更新时间
         table.primary(["id"]);
@@ -1237,6 +1264,42 @@ export default async (knex: Knex, forceInit: boolean = false): Promise<void> => 
             type: JSON.stringify(["text", "singleImage"]),
           },
           {
+            id: 65,
+            manufacturer: "t8star",
+            model: "veo3.1-fast",
+            durationResolutionMap: JSON.stringify([{ duration: [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12], resolution: ["480p", "720p", "1080p", "2K", "4K"] }]),
+            aspectRatio: JSON.stringify(["16:9", "9:16", "1:1", "4:3", "3:4", "21:9"]),
+            audio: 1,
+            type: JSON.stringify(["text", "singleImage", "startEndRequired", "endFrameOptional", "reference"]),
+          },
+          {
+            id: 66,
+            manufacturer: "t8star",
+            model: "veo3.1-fast-4k",
+            durationResolutionMap: JSON.stringify([{ duration: [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12], resolution: ["4K", "2K", "1080p"] }]),
+            aspectRatio: JSON.stringify(["16:9", "9:16", "1:1", "4:3", "3:4", "21:9"]),
+            audio: 1,
+            type: JSON.stringify(["text", "singleImage", "startEndRequired", "endFrameOptional", "reference"]),
+          },
+          {
+            id: 67,
+            manufacturer: "t8star",
+            model: "veo3.1-pro",
+            durationResolutionMap: JSON.stringify([{ duration: [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12], resolution: ["720p", "1080p", "2K"] }]),
+            aspectRatio: JSON.stringify(["16:9", "9:16", "1:1", "4:3", "3:4", "21:9"]),
+            audio: 1,
+            type: JSON.stringify(["text", "singleImage", "startEndRequired", "endFrameOptional", "reference"]),
+          },
+          {
+            id: 68,
+            manufacturer: "t8star",
+            model: "veo3.1-pro-4k",
+            durationResolutionMap: JSON.stringify([{ duration: [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12], resolution: ["4K", "2K", "1080p"] }]),
+            aspectRatio: JSON.stringify(["16:9", "9:16", "1:1", "4:3", "3:4", "21:9"]),
+            audio: 1,
+            type: JSON.stringify(["text", "singleImage", "startEndRequired", "endFrameOptional", "reference"]),
+          },
+          {
             id: 60,
             manufacturer: "qingyuntop",
             model: "veo3.1-fast",
@@ -1283,6 +1346,22 @@ export default async (knex: Knex, forceInit: boolean = false): Promise<void> => 
             audio: 1,
             type: JSON.stringify(["text", "singleImage", "startEndRequired", "endFrameOptional", "reference"]),
           },
+        ]);
+      },
+    },
+    {
+      name: "t_voiceModel",
+      builder: (table) => {
+        table.integer("id").notNullable();
+        table.text("manufacturer");
+        table.text("model");
+        table.text("mode");
+        table.primary(["id"]);
+        table.unique(["id"]);
+      },
+      initData: async (knex) => {
+        await knex("t_voiceModel").insert([
+          { manufacturer: "ai_voice_tts", model: "ai_voice_tts", mode: JSON.stringify(["text", "clone", "mix", "prompt_voice"]) },
         ]);
       },
     },

@@ -8,7 +8,7 @@ const router = express.Router();
 export default router.post(
   "/",
   validateFields({
-    type: z.enum(["text", "video", "image"]),
+    type: z.enum(["text", "video", "image", "voice"]),
     model: z.string(),
     baseUrl: z.string(),
     apiKey: z.string(),

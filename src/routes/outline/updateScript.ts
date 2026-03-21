@@ -18,6 +18,7 @@ export default router.post(
     await u.db("t_script").where("id", id).update({
       content,
     });
+    await u.db("t_scriptSegment").where("scriptId", id).delete();
 
     res.status(200).send(success({ message: "更新前要成功" }));
   }

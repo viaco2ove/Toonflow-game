@@ -8,6 +8,7 @@ import generateImageTool from "./generateImageTool";
 import imageSplitting from "./imageSplitting";
 import path from "path";
 import sharp from "sharp";
+import { getScriptSegments, replaceScriptSegments } from "@/lib/scriptSegment";
 
 // ==================== 类型定义 ====================
 
@@ -230,6 +231,22 @@ export default class Storyboard {
     if (this.segmentsLoadedFromStore) return;
     this.segmentsLoadedFromStore = true;
     try {
+      const rows = await getScriptSegments(this.scriptId);
+      if (rows.length > 0) {
+        const normalized = this.normalizeSegments(
+          rows.map((item) => ({
+            index: Number(item.sort),
+            description: String(item.content || item.summary || item.title || "").trim(),
+          })),
+        );
+        if (normalized.length) {
+          this.segments = normalized;
+          this.emit("segmentsUpdated", this.segments);
+          this.log("加载片段数据", `从正式表恢复 ${normalized.length} 个片段`);
+          return;
+        }
+      }
+
       const row = await u.db('t_chatHistory').where({ projectId: this.projectId, type: this.segmentsStoreType }).first();
       if (row?.data) {
         const parsed = JSON.parse(row.data);
@@ -250,6 +267,20 @@ export default class Storyboard {
 
   private async saveSegmentsToStore(): Promise<void> {
     try {
+      await replaceScriptSegments(
+        u.db,
+        this.scriptId,
+        this.projectId,
+        this.segments.map((item) => ({
+          sort: item.index,
+          title: `片段${item.index}`,
+          content: item.description,
+          summary: item.description.slice(0, 80),
+          startAnchor: item.description.slice(0, 60),
+          endAnchor: item.description.slice(-60),
+        })),
+      );
+
       const payload = JSON.stringify(this.segments);
       const existing = await u.db('t_chatHistory').where({ projectId: this.projectId, type: this.segmentsStoreType }).first();
       if (existing) {
@@ -382,6 +413,18 @@ ${sections.join("\n\n")}
       return JSON.stringify(this.segments, null, 2);
     },
   });
+
+  public async generateSegmentsByAgent(task?: string): Promise<Segment[]> {
+    const instruction = String(task || "").trim() || "请基于当前剧本生成剧情片段，输出清晰的片段描述。";
+    if (this.segments.length === 0) await this.loadSegmentsFromStore();
+    this.segmentUpdatedInCurrentRun = false;
+    await this.invokeSubAgent("segmentAgent", instruction);
+    if (this.segments.length === 0) await this.loadSegmentsFromStore();
+    if (this.segments.length === 0) {
+      throw new Error("片段师未生成有效片段，请重试或调整提示词。");
+    }
+    return this.segments;
+  }
 
   /**
    * 更新/存储片段数据（供 segmentAgent 调用）

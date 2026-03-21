@@ -17,22 +17,28 @@ export default router.post(
     videoPrompt: z.string().optional().nullable(),
     remark: z.string().optional().nullable(),
     duration: z.number().optional().nullable(),
+    voiceConfig: z.string().optional().nullable(),
   }),
   async (req, res) => {
-    const { id, name, intro, type, prompt, remark, duration, videoPrompt } = req.body;
+    const { id, name, intro, type, prompt, remark, duration, videoPrompt, voiceConfig } = req.body;
+
+    const updateData: Record<string, any> = {
+      name,
+      intro,
+      type,
+      prompt,
+      remark,
+      videoPrompt,
+      duration: String(duration),
+    };
+    if (voiceConfig !== undefined) {
+      updateData.voiceConfig = voiceConfig ?? null;
+    }
 
     await u
       .db("t_assets")
       .where("id", id)
-      .update({
-        name,
-        intro,
-        type,
-        prompt,
-        remark,
-        videoPrompt,
-        duration: String(duration),
-      });
+      .update(updateData);
 
     res.status(200).send(success({ message: "更新资产成功" }));
   }
