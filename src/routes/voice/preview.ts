@@ -20,8 +20,7 @@ function normalizeBase64(input?: string | null): string {
   return match ? match[2] || "" : input;
 }
 
-async function getVoiceConfig(configId?: number | null) {
-  const userId = 1;
+async function getVoiceConfig(userId: number, configId?: number | null) {
   if (configId) {
     return u.db("t_config").where({ id: configId, type: "voice", userId }).first();
   }
@@ -68,7 +67,8 @@ export default router.post(
         mixVoices,
       } = req.body;
 
-      const config = await getVoiceConfig(configId);
+      const userId = Number((req as any)?.user?.id || 0);
+      const config = await getVoiceConfig(userId, configId);
       if (!config) {
         return res.status(400).send(error("语音模型配置不存在"));
       }

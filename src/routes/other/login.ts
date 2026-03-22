@@ -6,6 +6,30 @@ import { validateFields } from "@/middleware/middleware";
 import { z } from "zod";
 const router = express.Router();
 
+async function getOrCreateTokenKey(userId: number): Promise<string> {
+  const existed = await u.db("t_setting").where("userId", userId).select("id", "tokenKey").first();
+  const tokenKey = String(existed?.tokenKey || "").trim();
+  if (tokenKey) return tokenKey;
+
+  const nextTokenKey = u.uuid().slice(0, 8);
+  if (existed?.id) {
+    await u.db("t_setting").where("id", existed.id).update({ tokenKey: nextTokenKey });
+    return nextTokenKey;
+  }
+
+  const maxRow = await u.db("t_setting").max({ maxId: "id" }).first();
+  const nextId = Number((maxRow as any)?.maxId || 0) + 1;
+  await u.db("t_setting").insert({
+    id: nextId,
+    userId,
+    tokenKey: nextTokenKey,
+    imageModel: "{}",
+    languageModel: "{}",
+    projectId: null,
+  });
+  return nextTokenKey;
+}
+
 export function setToken(payload: string | object, expiresIn: string | number, secret: string): string {
   if (!payload || typeof secret !== "string" || !secret) {
     throw new Error("参数不合法");
@@ -27,7 +51,7 @@ export default router.post(
     if (!data) return res.status(400).send(error("登录失败"));
 
     if (data!.password == password && data!.name == username) {
-      const tokenSecret = await u.db("t_setting").where("userId", data.id).select("tokenKey").first();
+      const tokenKey = await getOrCreateTokenKey(Number(data.id));
 
       const token = setToken(
         {
@@ -35,7 +59,7 @@ export default router.post(
           name: data!.name,
         },
         "180Days",
-        tokenSecret?.tokenKey as string,
+        tokenKey,
       );
 
       return res.status(200).send(success({ token: "Bearer " + token, name: data!.name, id: data!.id }, "登录成功"));

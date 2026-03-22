@@ -69,6 +69,7 @@ export default router.post(
   }),
   async (req, res) => {
     const { scriptId, specifyIds } = req.body as { scriptId: number; specifyIds?: number[] };
+    const userId = Number((req as any)?.user?.id || 0);
 
     const pendingVideos = await u
       .db("t_video")
@@ -123,7 +124,7 @@ export default router.post(
       }
 
       if (!configCache.has(aiConfigId)) {
-        const configRow = await u.db("t_config").where({ id: aiConfigId }).first();
+        const configRow = await u.db("t_config").where({ id: aiConfigId, userId }).first();
         configCache.set(aiConfigId, configRow || null);
       }
 

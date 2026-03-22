@@ -1,4 +1,5 @@
 import u from "@/utils";
+import { getCurrentUserId } from "@/lib/requestContext";
 
 type AIType = "text" | "image" | "video" | "voice";
 
@@ -44,10 +45,15 @@ const errorMessages: Record<AIType, string> = {
 
 const needBaseURL: AIType[] = ["text", "video", "image", "voice"];
 
-export default async function getConfig<T extends AIType>(aiType: T, manufacturer?: string): Promise<ResDataMap[T]> {
+export default async function getConfig<T extends AIType>(aiType: T, manufacturer?: string, userId?: number): Promise<ResDataMap[T]> {
+  const resolvedUserId = Number.isFinite(Number(userId)) && Number(userId) > 0 ? Number(userId) : getCurrentUserId(0);
+  if (!resolvedUserId) {
+    throw new Error("当前用户上下文缺失，无法读取模型配置");
+  }
   const config = await u
     .db("t_config")
     .where("type", aiType)
+    .where("userId", resolvedUserId)
     .modify((qb) => {
       if (manufacturer) {
         qb.where("manufacturer", manufacturer);

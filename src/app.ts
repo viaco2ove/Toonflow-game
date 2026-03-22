@@ -10,6 +10,8 @@ import fs from "fs";
 import u from "@/utils";
 import jwt from "jsonwebtoken";
 import { getUploadRootDir } from "@/lib/runtimePaths";
+import { runWithRequestContext } from "@/lib/requestContext";
+import { enforceResourceIsolation } from "@/middleware/resourceIsolation";
 
 function ensureNoProxyForLocalhost() {
   const localHosts = ["127.0.0.1", "localhost", "::1"];
@@ -60,24 +62,35 @@ export default async function startServe(randomPort: Boolean = false) {
   app.use(express.static(rootDir));
 
   app.use(async (req, res, next) => {
-    const setting = await u.db("t_setting").where("id", 1).select("tokenKey").first();
-    if (!setting) return res.status(500).send({ message: "服务器未配置，请联系管理员" });
-    const { tokenKey } = setting;
-    // 从 header 或 query 参数获取 token
-    const rawToken = req.headers.authorization || (req.query.token as string) || "";
-    const token = rawToken.replace("Bearer ", "");
     // 白名单路径
     if (req.path === "/other/login") return next();
 
+    // 从 header 或 query 参数获取 token
+    const rawToken = req.headers.authorization || (req.query.token as string) || "";
+    const token = String(rawToken || "").replace("Bearer ", "").trim();
     if (!token) return res.status(401).send({ message: "未提供token" });
+
     try {
-      const decoded = jwt.verify(token, tokenKey as string);
-      (req as any).user = decoded;
-      next();
+      const decodedPayload = jwt.decode(token) as any;
+      const tokenUserId = Number(decodedPayload?.id);
+      if (!Number.isFinite(tokenUserId) || tokenUserId <= 0) {
+        return res.status(401).send({ message: "无效的token" });
+      }
+
+      const setting = await u.db("t_setting").where("userId", tokenUserId).select("tokenKey").first();
+      const tokenKey = String(setting?.tokenKey || "").trim();
+      if (!tokenKey) {
+        return res.status(401).send({ message: "无效的token" });
+      }
+
+      const verified = jwt.verify(token, tokenKey);
+      (req as any).user = verified;
+      return runWithRequestContext({ userId: tokenUserId }, () => next());
     } catch (err) {
       return res.status(401).send({ message: "无效的token" });
     }
   });
+  app.use(enforceResourceIsolation);
 
   const router = await import("@/router");
   await router.default(app);

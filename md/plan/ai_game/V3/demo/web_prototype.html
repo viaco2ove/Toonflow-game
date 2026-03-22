@@ -1,0 +1,743 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Toonflow Web 全流程原型</title>
+    <style>
+        :root {
+            --bg: #070c18;
+            --panel: #121b33;
+            --line: #2b3d67;
+            --text: #eef4ff;
+            --muted: #95aad7;
+            --cyan: #53d9ff;
+            --orange: #ff9f4a;
+            --green: #44d88f;
+            --light-bg: #f4f6fb;
+            --light-line: #d8deea;
+            --light-text: #20283a;
+            --light-muted: #6f7a93;
+        }
+
+        * { box-sizing: border-box; }
+
+        @keyframes rise {
+            from { opacity: 0; transform: translateY(6px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        body {
+            margin: 0;
+            font-family: "Space Grotesk", "Noto Sans SC", "PingFang SC", sans-serif;
+            color: var(--text);
+            min-height: 100vh;
+            background:
+                radial-gradient(1200px 700px at -10% 20%, rgba(83, 217, 255, 0.16), transparent 62%),
+                radial-gradient(1200px 700px at 110% 100%, rgba(255, 159, 74, 0.16), transparent 62%),
+                var(--bg);
+            padding: 16px;
+        }
+
+        .header {
+            max-width: 1800px;
+            margin: 0 auto 12px;
+            border: 1px solid var(--line);
+            border-radius: 16px;
+            padding: 14px 16px;
+            background: linear-gradient(160deg, rgba(17, 25, 47, 0.92), rgba(8, 12, 23, 0.96));
+            animation: rise 0.35s ease;
+        }
+
+        .header h1 {
+            margin: 0;
+            font-size: clamp(20px, 2vw, 30px);
+            letter-spacing: 0.2px;
+        }
+
+        .header p {
+            margin: 7px 0 0;
+            color: var(--muted);
+            font-size: 13px;
+            line-height: 1.5;
+        }
+
+        .chips {
+            margin-top: 10px;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+        }
+
+        .chip {
+            height: 24px;
+            border-radius: 99px;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            background: rgba(255, 255, 255, 0.06);
+            padding: 0 9px;
+            display: inline-flex;
+            align-items: center;
+            font-size: 11px;
+            color: #d9e7ff;
+        }
+
+        .board {
+            max-width: 1800px;
+            margin: 0 auto;
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+            gap: 12px;
+            animation: rise 0.5s ease;
+        }
+
+        .module {
+            border: 1px solid var(--line);
+            border-radius: 16px;
+            background: linear-gradient(160deg, rgba(18, 26, 49, 0.9), rgba(8, 11, 22, 0.96));
+            padding: 11px;
+            min-height: 520px;
+            display: grid;
+            grid-template-rows: auto 1fr;
+            gap: 8px;
+        }
+
+        .module h2 {
+            margin: 0;
+            font-size: 14px;
+        }
+
+        .module p {
+            margin: 3px 0 0;
+            color: var(--muted);
+            font-size: 12px;
+            line-height: 1.42;
+        }
+
+        .window {
+            border-radius: 12px;
+            border: 1px solid #384f80;
+            background: #0f1731;
+            overflow: hidden;
+            display: grid;
+            grid-template-rows: 34px 1fr;
+            min-height: 420px;
+        }
+
+        .window.light {
+            border-color: #bec9df;
+            background: var(--light-bg);
+        }
+
+        .bar {
+            border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+            background: rgba(7, 10, 20, 0.82);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 10px;
+            font-size: 11px;
+            color: #cddcff;
+        }
+
+        .window.light .bar {
+            border-bottom-color: var(--light-line);
+            background: #fff;
+            color: var(--light-muted);
+        }
+
+        .bar .dots {
+            display: inline-flex;
+            gap: 4px;
+        }
+
+        .bar .dots i {
+            width: 8px;
+            height: 8px;
+            border-radius: 999px;
+            background: rgba(255, 255, 255, 0.4);
+            display: inline-block;
+        }
+
+        .win-body {
+            padding: 10px;
+            overflow: auto;
+            min-height: 0;
+        }
+
+        .split {
+            display: grid;
+            grid-template-columns: 180px 1fr;
+            gap: 8px;
+            min-height: 390px;
+        }
+
+        .sidebar {
+            border: 1px solid rgba(255, 255, 255, 0.14);
+            border-radius: 10px;
+            background: rgba(12, 19, 39, 0.82);
+            padding: 8px;
+        }
+
+        .sidebar .item {
+            margin-top: 5px;
+            border-radius: 8px;
+            border: 1px solid rgba(255, 255, 255, 0.14);
+            background: rgba(255, 255, 255, 0.05);
+            padding: 6px;
+            font-size: 11px;
+            color: #d6e4ff;
+        }
+
+        .sidebar .item.active {
+            border-color: rgba(255, 159, 74, 0.45);
+            background: rgba(255, 159, 74, 0.15);
+            color: #ffd6ab;
+        }
+
+        .window.light .sidebar {
+            border-color: var(--light-line);
+            background: #fff;
+        }
+
+        .window.light .sidebar .item {
+            border-color: var(--light-line);
+            background: #fff;
+            color: var(--light-muted);
+        }
+
+        .window.light .sidebar .item.active {
+            background: #fff2e5;
+            border-color: #f2cda8;
+            color: #9b5b16;
+        }
+
+        .panel {
+            border: 1px solid rgba(255, 255, 255, 0.14);
+            border-radius: 10px;
+            background: rgba(12, 19, 40, 0.82);
+            padding: 8px;
+        }
+
+        .window.light .panel {
+            border-color: var(--light-line);
+            background: #fff;
+        }
+
+        .hero {
+            border: 1px solid rgba(255, 255, 255, 0.16);
+            border-radius: 10px;
+            padding: 8px;
+            background: linear-gradient(160deg, rgba(33, 48, 88, 0.85), rgba(12, 19, 39, 0.88));
+        }
+
+        .window.light .hero {
+            border-color: var(--light-line);
+            background: #fff;
+        }
+
+        .hero b { font-size: 12px; }
+
+        .hero span {
+            display: block;
+            margin-top: 4px;
+            font-size: 11px;
+            color: #c2d2f4;
+            line-height: 1.45;
+        }
+
+        .window.light .hero b { color: var(--light-text); }
+        .window.light .hero span { color: var(--light-muted); }
+
+        .row {
+            margin-top: 7px;
+            border: 1px solid rgba(255, 255, 255, 0.14);
+            border-radius: 9px;
+            background: rgba(255, 255, 255, 0.06);
+            padding: 7px;
+            font-size: 11px;
+            color: #d4e2ff;
+        }
+
+        .row b { display: block; color: #eef4ff; }
+
+        .row span {
+            display: block;
+            margin-top: 4px;
+            color: var(--muted);
+        }
+
+        .window.light .row {
+            border-color: var(--light-line);
+            background: #fff;
+            color: var(--light-text);
+        }
+
+        .window.light .row b { color: var(--light-text); }
+        .window.light .row span { color: var(--light-muted); }
+
+        .tags-mini {
+            margin-top: 7px;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 5px;
+        }
+
+        .tags-mini i {
+            height: 21px;
+            border-radius: 999px;
+            border: 1px solid rgba(255, 255, 255, 0.18);
+            display: inline-flex;
+            align-items: center;
+            padding: 0 8px;
+            font-style: normal;
+            font-size: 10px;
+            color: #d6e5ff;
+            background: rgba(255, 255, 255, 0.08);
+        }
+
+        .window.light .tags-mini i {
+            border-color: var(--light-line);
+            color: var(--light-muted);
+            background: #fff;
+        }
+
+        .gallery {
+            margin-top: 8px;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 6px;
+        }
+
+        .tile {
+            border-radius: 9px;
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            min-height: 95px;
+            padding: 7px;
+            font-size: 11px;
+            background: linear-gradient(160deg, rgba(41, 61, 109, 0.88), rgba(14, 21, 42, 0.86));
+        }
+
+        .tile b { display: block; }
+
+        .tile em {
+            margin-top: 4px;
+            display: block;
+            font-style: normal;
+            color: #b9cbee;
+        }
+
+        .window.light .tile {
+            border-color: var(--light-line);
+            background: #fff;
+        }
+
+        .window.light .tile b { color: var(--light-text); }
+        .window.light .tile em { color: var(--light-muted); }
+
+        .toolbar {
+            margin-top: 7px;
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 5px;
+        }
+
+        .btn {
+            min-height: 30px;
+            border-radius: 8px;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            background: rgba(255, 255, 255, 0.09);
+            color: #d4e3ff;
+            font-size: 10px;
+            display: grid;
+            place-items: center;
+        }
+
+        .btn.pri {
+            border-color: rgba(255, 159, 74, 0.45);
+            background: rgba(255, 159, 74, 0.2);
+            color: #ffd7ae;
+        }
+
+        .window.light .btn {
+            border-color: var(--light-line);
+            background: #fff;
+            color: var(--light-muted);
+        }
+
+        .window.light .btn.pri {
+            border-color: #f2c79f;
+            background: #fff0de;
+            color: #995814;
+        }
+
+        .play {
+            border: 1px solid rgba(255, 255, 255, 0.16);
+            border-radius: 12px;
+            padding: 8px;
+            background:
+                radial-gradient(180px 120px at 75% 10%, rgba(83, 217, 255, 0.22), transparent 73%),
+                radial-gradient(160px 110px at 25% 85%, rgba(255, 159, 74, 0.22), transparent 75%),
+                linear-gradient(160deg, #1a274d, #0c1430);
+            min-height: 320px;
+        }
+
+        .bubble {
+            margin-top: 6px;
+            border: 1px solid rgba(255, 255, 255, 0.14);
+            border-radius: 9px;
+            background: rgba(250, 252, 255, 0.9);
+            color: #1f2941;
+            font-size: 11px;
+            line-height: 1.45;
+            padding: 7px;
+        }
+
+        .bubble.r { margin-left: 14%; }
+
+        .toggles {
+            margin-top: 7px;
+            display: inline-flex;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            border-radius: 8px;
+            overflow: hidden;
+        }
+
+        .toggles button {
+            height: 28px;
+            border: 0;
+            padding: 0 10px;
+            font-size: 11px;
+            color: #c9dafb;
+            background: rgba(255, 255, 255, 0.06);
+            cursor: pointer;
+        }
+
+        .toggles button.active {
+            background: rgba(255, 159, 74, 0.2);
+            color: #ffd7ae;
+        }
+
+        .speak {
+            margin-top: 7px;
+            width: 100%;
+            height: 36px;
+            border: 0;
+            border-radius: 9px;
+            font-weight: 800;
+            color: #341700;
+            background: linear-gradient(120deg, #ff9f4a, #ffd6a5);
+        }
+
+        .menu {
+            margin-top: 8px;
+            border: 1px solid rgba(255, 255, 255, 0.17);
+            border-radius: 9px;
+            background: #fff;
+            color: #212b42;
+            display: grid;
+            grid-template-columns: repeat(5, 1fr);
+            gap: 4px;
+            padding: 6px;
+            font-size: 10px;
+            text-align: center;
+        }
+
+        .suggest {
+            margin-top: 7px;
+            border: 1px solid rgba(255, 255, 255, 0.18);
+            border-radius: 9px;
+            padding: 7px;
+            background: rgba(255, 255, 255, 0.08);
+            font-size: 11px;
+            color: #d4e3ff;
+        }
+
+        .suggest div {
+            margin-top: 5px;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            border-radius: 7px;
+            padding: 5px;
+            background: rgba(255, 255, 255, 0.06);
+        }
+
+        .footer {
+            max-width: 1800px;
+            margin: 10px auto 0;
+            color: #7f95c8;
+            font-size: 12px;
+        }
+
+        @media (max-width: 760px) {
+            body { padding: 10px; }
+            .split { grid-template-columns: 1fr; }
+            .module { min-height: auto; }
+            .window { min-height: 380px; }
+        }
+    </style>
+</head>
+<body>
+<header class="header">
+    <h1>Web 端全流程重设计（对齐 `task1/android.md`）</h1>
+    <p>不是只做创作页，而是把 Web 端也按同一业务链路重建：主页、故事大厅、创建故事、聊过、我的、设置、游玩模式、故事设定与交互操作，和安卓端保持数据与行为一致。</p>
+    <div class="chips">
+        <span class="chip">菜单一致：主页 / 创建故事 / 聊过 / 我的</span>
+        <span class="chip">创建故事：角色 + 章节 + 发布</span>
+        <span class="chip">游玩：单条模式 / 历史模式切换</span>
+        <span class="chip">输入方式：语音 / 文字切换</span>
+    </div>
+</header>
+
+<main class="board">
+    <section class="module">
+        <div>
+            <h2>1. 主页 + 故事大厅</h2>
+            <p>随机推荐、输入触发聊过、分类搜索与故事卡瀑布流。</p>
+        </div>
+        <div class="window">
+            <div class="bar"><span>Toonflow / Home</span><span class="dots"><i></i><i></i><i></i></span></div>
+            <div class="win-body split">
+                <aside class="sidebar">
+                    <div class="item active">主页</div>
+                    <div class="item">创建故事</div>
+                    <div class="item">聊过</div>
+                    <div class="item">我的</div>
+                </aside>
+                <div class="panel">
+                    <div class="hero"><b>随机推荐：敢和我争你配吗</b><span>展示点赞/评论/收藏，用户可直接输入开场白进入游玩。</span></div>
+                    <div class="row"><b>输入框</b><span>用户发送首句后，在「聊过」新增记录并置顶。</span></div>
+                    <div class="tags-mini"><i>点赞 6774</i><i>评论 179</i><i>收藏 2031</i></div>
+                    <div class="row"><b>故事大厅入口</b><span>点击后进入分类检索页（校园/都市/古代...）。</span></div>
+                    <div class="gallery">
+                        <div class="tile"><b>黑白往事</b><em>3778 在聊</em></div>
+                        <div class="tile"><b>热血青春</b><em>314 在聊</em></div>
+                        <div class="tile"><b>既定缘分</b><em>5337 在聊</em></div>
+                        <div class="tile"><b>花样男子</b><em>1.3万 在聊</em></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section class="module">
+        <div>
+            <h2>2. 创建故事：角色设定</h2>
+            <p>固定用户角色、旁白仅音色、其他角色可增删改。</p>
+        </div>
+        <div class="window light">
+            <div class="bar"><span>Create Story / Roles</span><span class="dots"><i></i><i></i><i></i></span></div>
+            <div class="win-body split">
+                <aside class="sidebar">
+                    <div class="item active">1. 角色</div>
+                    <div class="item">2. 故事描述</div>
+                    <div class="item">3. 发布信息</div>
+                </aside>
+                <div class="panel">
+                    <div class="row"><b>用户（固定）</b><span>不可删除；字段为空也允许；代表玩家本体。</span></div>
+                    <div class="row"><b>旁白（特殊）</b><span>不出现在角色列表，只允许修改音色。</span></div>
+                    <div class="row"><b>其他角色</b><span>头像(上传/AI)、角色名、设定、音色、台词示例。</span></div>
+                    <div class="row"><b>角色参数卡</b><span>创建阶段不展示；游玩阶段由设定生成 JSON 参数。</span></div>
+                    <div class="tags-mini"><i>AI 头像生成</i><i>音色选择</i><i>台词示例</i></div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section class="module">
+        <div>
+            <h2>3. 创建故事：章节编辑</h2>
+            <p>章节背景图、开场白、章节调试、提及插入、结局条件开关。</p>
+        </div>
+        <div class="window light">
+            <div class="bar"><span>Create Story / Chapter Editor</span><span class="dots"><i></i><i></i><i></i></span></div>
+            <div class="win-body split">
+                <aside class="sidebar">
+                    <div class="item active">Chapter 1</div>
+                    <div class="item">Chapter 2</div>
+                    <div class="item">Chapter 3</div>
+                </aside>
+                <div class="panel">
+                    <div class="hero"><b>章节内容说明</b><span>提及用户扮演角色时必须使用“用户”这个词。</span></div>
+                    <div class="row"><b>章节背景图</b><span>上传 / AI 生成。</span></div>
+                    <div class="row"><b>开场白（仅章节1）</b><span>角色 + 台词结构化输入。</span></div>
+                    <div class="row"><b>章节内容调试</b><span>独立调试当前章节，不影响其他章节。</span></div>
+                    <div class="row"><b>正文编辑区</b><span>支持提及角色快速插入（用户/蒋炎/纳兰嫣然）。</span></div>
+                    <div class="tags-mini"><i>结局条件对用户可见</i><i>背景音乐（可选）</i></div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section class="module">
+        <div>
+            <h2>4. 创建故事：发布信息</h2>
+            <p>故事图标、名称、简介、可见性开关、草稿与发布。</p>
+        </div>
+        <div class="window light">
+            <div class="bar"><span>Create Story / Publish</span><span class="dots"><i></i><i></i><i></i></span></div>
+            <div class="win-body split">
+                <aside class="sidebar">
+                    <div class="item">1. 角色</div>
+                    <div class="item">2. 故事描述</div>
+                    <div class="item active">3. 发布</div>
+                </aside>
+                <div class="panel">
+                    <div class="row"><b>故事图标</b><span>上传 / AI 生成。</span></div>
+                    <div class="row"><b>故事名称</b><span>镜港失落区</span></div>
+                    <div class="row"><b>故事简介</b><span>悬疑冒险，支持语音游玩与章节分支。</span></div>
+                    <div class="row"><b>可见性设置</b><span>他人可查看角色设定 / 他人可分享对话剧情。</span></div>
+                    <div class="toolbar">
+                        <div class="btn">预览</div>
+                        <div class="btn">回退</div>
+                        <div class="btn">存草稿</div>
+                        <div class="btn pri">发布</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section class="module">
+        <div>
+            <h2>5. 聊过 + 我的</h2>
+            <p>聊过按最近置顶；我的页含草稿箱、已发布、编辑与删除。</p>
+        </div>
+        <div class="window light">
+            <div class="bar"><span>Session Record / Profile</span><span class="dots"><i></i><i></i><i></i></span></div>
+            <div class="win-body split">
+                <aside class="sidebar">
+                    <div class="item active">聊过</div>
+                    <div class="item">我的</div>
+                    <div class="item">草稿箱</div>
+                    <div class="item">已发布</div>
+                </aside>
+                <div class="panel">
+                    <div class="row"><b>聊过（最新在前）</b><span>敢和我争你配吗 · 03-22 19:34</span></div>
+                    <div class="row"><b>聊过</b><span>我在西游记世界 · 03-22 18:15</span></div>
+                    <div class="row"><b>我的主页</b><span>头像昵称、创作入口、编辑资料、设置入口。</span></div>
+                    <div class="row"><b>草稿箱(14)</b><span>可继续编辑并发布。</span></div>
+                    <div class="row"><b>已发布作品</b><span>支持游玩 / 编辑 / 删除。</span></div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section class="module">
+        <div>
+            <h2>6. 设置</h2>
+            <p>主题、API、WebSocket、账号配置、退出登录。</p>
+        </div>
+        <div class="window light">
+            <div class="bar"><span>Settings</span><span class="dots"><i></i><i></i><i></i></span></div>
+            <div class="win-body split">
+                <aside class="sidebar">
+                    <div class="item active">设置</div>
+                    <div class="item">主题</div>
+                    <div class="item">网络</div>
+                    <div class="item">账号</div>
+                </aside>
+                <div class="panel">
+                    <div class="row"><b>主题模式</b><span>浅色 / 深色 / 跟随系统</span></div>
+                    <div class="row"><b>API 地址</b><span>http://localhost:60000</span></div>
+                    <div class="row"><b>WebSocket 地址</b><span>ws://localhost:60000</span></div>
+                    <div class="row"><b>登录配置</b><span>用户名：admin；支持改密。</span></div>
+                    <div class="toolbar">
+                        <div class="btn">保存</div>
+                        <div class="btn">重置</div>
+                        <div class="btn pri" style="grid-column: span 2;">退出登录</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section class="module">
+        <div>
+            <h2>7. 游玩模式：单条 / 历史</h2>
+            <p>默认单条强调头像背景；历史模式展示多条记录但可继续对话。</p>
+        </div>
+        <div class="window">
+            <div class="bar"><span>Play Story</span><span class="dots"><i></i><i></i><i></i></span></div>
+            <div class="win-body">
+                <div class="toggles">
+                    <button class="active" data-mode="single">默认单条</button>
+                    <button data-mode="history">历史记录</button>
+                </div>
+                <div class="play" id="play-area">
+                    <span class="chip">青鸾</span>
+                    <div class="bubble r">根据对熊黑怪数据分析，内丹外露概率高达 70.8%，建议立即前往。</div>
+                    <div class="toolbar">
+                        <div class="btn">点赞</div>
+                        <div class="btn">分享</div>
+                        <div class="btn">评论</div>
+                        <div class="btn">历史</div>
+                    </div>
+                </div>
+                <button class="speak">按住说话</button>
+            </div>
+        </div>
+    </section>
+
+    <section class="module">
+        <div>
+            <h2>8. 故事设定 + 长按菜单 + AI提示</h2>
+            <p>包含故事信息弹层、对话长按功能、语音/文字切换与建议回复。</p>
+        </div>
+        <div class="window">
+            <div class="bar"><span>Play Interaction Detail</span><span class="dots"><i></i><i></i><i></i></span></div>
+            <div class="win-body">
+                <div class="play">
+                    <div class="bubble">（点击故事名）弹出故事设定：简介、角色列表、对话模式、分享/回溯/举报。</div>
+                    <div class="menu">
+                        <div>复制</div>
+                        <div>点赞</div>
+                        <div>点踩</div>
+                        <div>改写</div>
+                        <div>重听</div>
+                    </div>
+                    <div class="row"><b>输入模式切换</b><span>语音模式 -> 文本输入模式，手动切换不自动回退。</span></div>
+                    <div class="suggest">
+                        AI 提示可以怎么回答：
+                        <div>1. 我先绕路观察，不直接进攻。</div>
+                        <div>2. 给我成功率更高的步骤方案。</div>
+                        <div>3. 返回上一轮，改写这条发言。</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+</main>
+
+<div class="footer">这个 Web 版本和安卓版 `android_prototype.html` 已对齐同一需求清单，可直接作为前后端联调的页面蓝图。</div>
+
+<script>
+    const buttons = document.querySelectorAll('.toggles button');
+    const play = document.getElementById('play-area');
+
+    const single = `
+        <span class="chip">青鸾</span>
+        <div class="bubble r">根据对熊黑怪数据分析，内丹外露概率高达 70.8%，建议立即前往。</div>
+        <div class="toolbar">
+            <div class="btn">点赞</div>
+            <div class="btn">分享</div>
+            <div class="btn">评论</div>
+            <div class="btn">历史</div>
+        </div>
+    `;
+
+    const history = `
+        <div class="bubble">不定就能用来改造那系统……这比蓝瓜子更有意思。</div>
+        <span class="chip">青鸾</span>
+        <div class="bubble r">宿主，若获得并利用内丹，可对你进行强化并给出新的修炼方向。</div>
+        <div class="bubble">收到，继续前进，保持警戒。</div>
+    `;
+
+    buttons.forEach((btn) => {
+        btn.addEventListener('click', () => {
+            buttons.forEach((b) => b.classList.remove('active'));
+            btn.classList.add('active');
+            play.innerHTML = btn.dataset.mode === 'history' ? history : single;
+        });
+    });
+</script>
+</body>
+</html>

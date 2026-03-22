@@ -7,6 +7,7 @@ const router = express.Router();
 
 // 获取项目
 export default router.post("/", async (req, res) => {
-  const data = await u.db("t_project").select("*");
+  const userId = Number((req as any)?.user?.id || 0);
+  const data = await u.db("t_project").where("userId", userId).select("*");
   res.status(200).send(success(data));
 });

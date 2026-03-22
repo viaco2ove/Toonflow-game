@@ -42,6 +42,7 @@ export default router.post(
   }),
   async (req, res) => {
     const { id, ids, scriptId, projectId } = req.body;
+    const userId = Number((req as any)?.user?.id || 0);
     const targetIds = Array.from(
       new Set([
         ...(Array.isArray(ids) ? ids : []),
@@ -116,11 +117,14 @@ export default router.post(
       }
 
       if (deletedVirtualIdSet.size < virtualIds.length) {
+        const ownedProjectRows = await u.db("t_project").where({ userId }).select("id");
+        const ownedProjectIds = new Set(ownedProjectRows.map((item: any) => Number(item.id)).filter((pid: number) => Number.isFinite(pid) && pid > 0));
         const metaRows = await u.db("t_chatHistory").where({ type: META_TYPE }).select("projectId", "data");
         for (const row of metaRows as any[]) {
           if (deletedVirtualIdSet.size >= virtualIds.length) break;
           const projectIdNum = Number(row?.projectId || 0);
           if (projectIdNum <= 0) continue;
+          if (!ownedProjectIds.has(projectIdNum)) continue;
           const sessions = parseMetaSessionList(String(row?.data || ""));
           for (const session of sessions) {
             await deleteDraftBySession(projectIdNum, session.id, session.scriptId, session.title);

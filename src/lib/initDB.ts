@@ -1350,6 +1350,141 @@ export default async (knex: Knex, forceInit: boolean = false): Promise<void> => 
       },
     },
     {
+      name: "t_storyWorld",
+      builder: (table) => {
+        table.integer("id").notNullable();
+        table.integer("projectId");
+        table.text("name");
+        table.text("intro");
+        table.text("settings");
+        table.text("playerRole");
+        table.text("narratorRole");
+        table.integer("createTime");
+        table.integer("updateTime");
+        table.primary(["id"]);
+        table.unique(["id"]);
+      },
+    },
+    {
+      name: "t_storyChapter",
+      builder: (table) => {
+        table.integer("id").notNullable();
+        table.integer("worldId");
+        table.text("chapterKey");
+        table.text("title");
+        table.text("content");
+        table.text("entryCondition");
+        table.text("completionCondition");
+        table.integer("sort");
+        table.text("status");
+        table.integer("createTime");
+        table.integer("updateTime");
+        table.primary(["id"]);
+        table.unique(["id"]);
+      },
+    },
+    {
+      name: "t_chapterTask",
+      builder: (table) => {
+        table.integer("id").notNullable();
+        table.integer("chapterId");
+        table.integer("parentTaskId");
+        table.text("title");
+        table.text("taskType");
+        table.text("goalType");
+        table.text("successCondition");
+        table.text("failCondition");
+        table.text("rewardAction");
+        table.integer("sort");
+        table.text("status");
+        table.integer("createTime");
+        table.integer("updateTime");
+        table.primary(["id"]);
+        table.unique(["id"]);
+      },
+    },
+    {
+      name: "t_chapterTrigger",
+      builder: (table) => {
+        table.integer("id").notNullable();
+        table.integer("chapterId");
+        table.text("name");
+        table.text("triggerEvent");
+        table.text("conditionExpr");
+        table.text("actionExpr");
+        table.integer("enabled");
+        table.integer("sort");
+        table.integer("createTime");
+        table.integer("updateTime");
+        table.primary(["id"]);
+        table.unique(["id"]);
+      },
+    },
+    {
+      name: "t_gameSession",
+      builder: (table) => {
+        table.integer("id").notNullable();
+        table.text("sessionId");
+        table.integer("worldId");
+        table.integer("projectId");
+        table.integer("chapterId");
+        table.text("title");
+        table.text("status");
+        table.text("stateJson");
+        table.integer("userId");
+        table.integer("createTime");
+        table.integer("updateTime");
+        table.primary(["id"]);
+        table.unique(["id"]);
+        table.unique(["sessionId"]);
+      },
+    },
+    {
+      name: "t_sessionMessage",
+      builder: (table) => {
+        table.integer("id").notNullable();
+        table.text("sessionId");
+        table.text("role");
+        table.text("roleType");
+        table.text("content");
+        table.text("eventType");
+        table.text("meta");
+        table.integer("createTime");
+        table.primary(["id"]);
+        table.unique(["id"]);
+      },
+    },
+    {
+      name: "t_sessionStateSnapshot",
+      builder: (table) => {
+        table.integer("id").notNullable();
+        table.text("sessionId");
+        table.text("stateJson");
+        table.text("reason");
+        table.integer("round");
+        table.integer("createTime");
+        table.primary(["id"]);
+        table.unique(["id"]);
+      },
+    },
+    {
+      name: "t_entityStateDelta",
+      builder: (table) => {
+        table.integer("id").notNullable();
+        table.text("sessionId");
+        table.text("eventId");
+        table.text("entityType");
+        table.text("entityId");
+        table.text("field");
+        table.text("oldValue");
+        table.text("newValue");
+        table.text("source");
+        table.integer("createTime");
+        table.primary(["id"]);
+        table.unique(["id"]);
+      },
+    },
+    {
       name: "t_voiceModel",
       builder: (table) => {
         table.integer("id").notNullable();

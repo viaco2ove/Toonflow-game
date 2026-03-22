@@ -46,9 +46,17 @@ export default router.post(
   async (req, res) => {
     try {
       const { base64Data, fileName, projectId } = req.body;
+      const userId = Number((req as any)?.user?.id || 0);
+      const projectIdNum = Number(projectId || 0);
+      if (projectIdNum > 0) {
+        const owned = await u.db("t_project").where({ id: projectIdNum, userId }).first("id");
+        if (!owned) {
+          return res.status(403).send(error("无权写入该项目目录"));
+        }
+      }
       const { buffer, ext } = parseBase64(base64Data);
       const safeExt = (fileName && path.extname(fileName).slice(1)) || ext || "wav";
-      const folder = Number.isFinite(projectId) ? String(projectId) : "audio";
+      const folder = projectIdNum > 0 ? String(projectIdNum) : `u_${userId || 0}`;
       const savePath = `/${folder}/audio/${uuid()}.${safeExt}`;
       await u.oss.writeFile(savePath, buffer);
       const url = await u.oss.getFileUrl(savePath);

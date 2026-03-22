@@ -42,6 +42,7 @@ export default router.post(
     dialogueTrack: z.number().optional(),
   }),
   async (req, res) => {
+    const userId = Number((req as any)?.user?.id || 0);
     const {
       id,
       scriptId,
@@ -95,9 +96,9 @@ export default router.post(
           const parsedSessionScopeId = Number(session.scriptId);
           const scopeIdToSave = Number.isFinite(parsedSessionScopeId) && parsedSessionScopeId !== 0 ? parsedSessionScopeId : scopedScriptId;
 
-          const nextConfig = { ...configs[index] };
+          const nextConfig: any = { ...configs[index] };
           if (aiConfigId !== undefined) {
-            const aiConfig = await u.db("t_config").where({ id: aiConfigId }).first();
+            const aiConfig = await u.db("t_config").where({ id: aiConfigId, userId }).first();
             if (!aiConfig) {
               return res.status(404).send(error("模型配置不存在"));
             }
@@ -185,10 +186,13 @@ export default router.post(
       }
 
       // 兼容旧前端：未传 scriptId/projectId 时，回退全量会话查找
+      const ownedProjectRows = await u.db("t_project").where({ userId }).select("id");
+      const ownedProjectIds = new Set(ownedProjectRows.map((item: any) => Number(item.id)).filter((pid: number) => Number.isFinite(pid) && pid > 0));
       const metaRows = await u.db("t_chatHistory").where({ type: META_TYPE }).select("projectId", "data");
       for (const row of metaRows) {
         const pid = Number((row as any).projectId || 0);
         if (pid <= 0) continue;
+        if (!ownedProjectIds.has(pid)) continue;
         let sessionItems: Array<{ id: string; scriptId?: number; title?: string }> = [];
         try {
           const parsed = JSON.parse(String((row as any).data || "[]"));
@@ -224,7 +228,7 @@ export default router.post(
     };
 
     if (aiConfigId !== undefined) {
-      const aiConfig = await u.db("t_config").where({ id: aiConfigId }).first();
+      const aiConfig = await u.db("t_config").where({ id: aiConfigId, userId }).first();
       if (!aiConfig) {
         return res.status(404).send(error("模型配置不存在"));
       }

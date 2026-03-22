@@ -1,7 +1,7 @@
 import express from "express";
 import u from "@/utils";
 import { z } from "zod";
-import { success } from "@/lib/responseFormat";
+import { error, success } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
 const router = express.Router();
 
@@ -13,6 +13,12 @@ export default router.post(
   }),
   async (req, res) => {
     const { projectId } = req.body;
+    const userId = Number((req as any)?.user?.id || 0);
+
+    const project = await u.db("t_project").where({ id: projectId, userId }).first("id");
+    if (!project) {
+      return res.status(403).send(error("无权访问该项目"));
+    }
 
     const scripts = await u.db("t_script").where("projectId", projectId).select("id");
     const scriptIds = scripts.map((item: any) => item.id);

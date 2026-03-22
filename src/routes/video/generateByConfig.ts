@@ -25,8 +25,15 @@ export default router.post(
   }),
   async (req, res) => {
     const { configId, force = false } = req.body;
+    const currentUserId = Number((req as any)?.user?.id || 0);
 
-    const config = await u.db("t_videoConfig").where({ id: configId }).first();
+    const config = await u
+      .db("t_videoConfig")
+      .leftJoin("t_project", "t_project.id", "t_videoConfig.projectId")
+      .where("t_videoConfig.id", configId)
+      .where("t_project.userId", currentUserId)
+      .select("t_videoConfig.*")
+      .first();
     if (!config) return res.status(404).send(error("视频配置不存在"));
 
     if (!force) {
@@ -80,6 +87,7 @@ export default router.post(
       const task = await createVideoTask({
         projectId: Number(config.projectId),
         scriptId: Number(config.scriptId),
+        userId: currentUserId,
         configId: Number(config.id),
         aiConfigId: Number(config.aiConfigId || 0),
         resolution: String(config.resolution || "720p"),

@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Toonflow AI Game Prototype</title>
+    <style>
+        :root {
+            --bg: #070b16;
+            --panel: #121933;
+            --line: #2a355f;
+            --text: #f4f7ff;
+            --muted: #9eb0db;
+            --accent: #ff9a3d;
+            --accent-2: #44d3ff;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            font-family: "Space Grotesk", "Noto Sans SC", "PingFang SC", sans-serif;
+            color: var(--text);
+            min-height: 100vh;
+            background:
+                radial-gradient(1200px 600px at 20% -10%, rgba(255, 154, 61, 0.2), transparent 55%),
+                radial-gradient(1000px 600px at 100% 120%, rgba(68, 211, 255, 0.18), transparent 60%),
+                var(--bg);
+            display: grid;
+            place-items: center;
+            padding: 32px;
+        }
+
+        .shell {
+            width: min(1000px, 100%);
+            background: linear-gradient(160deg, rgba(26, 36, 74, 0.88), rgba(10, 15, 31, 0.95));
+            border: 1px solid var(--line);
+            border-radius: 24px;
+            padding: 32px;
+            box-shadow: 0 28px 60px rgba(0, 0, 0, 0.45);
+        }
+
+        h1 {
+            margin: 0;
+            font-size: clamp(28px, 4vw, 42px);
+            line-height: 1.08;
+            letter-spacing: 0.2px;
+        }
+
+        p {
+            margin: 14px 0 0;
+            color: var(--muted);
+            max-width: 700px;
+            line-height: 1.6;
+        }
+
+        .grid {
+            margin-top: 28px;
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+            gap: 18px;
+        }
+
+        .card {
+            background: rgba(15, 23, 50, 0.78);
+            border: 1px solid rgba(76, 95, 148, 0.65);
+            border-radius: 18px;
+            padding: 20px;
+            text-decoration: none;
+            color: var(--text);
+            transition: transform 0.2s ease, border-color 0.2s ease;
+        }
+
+        .card:hover {
+            transform: translateY(-3px);
+            border-color: var(--accent);
+        }
+
+        .tag {
+            display: inline-flex;
+            align-items: center;
+            height: 28px;
+            padding: 0 10px;
+            border-radius: 99px;
+            background: rgba(255, 154, 61, 0.15);
+            color: #ffd2a2;
+            font-size: 12px;
+            font-weight: 700;
+            letter-spacing: 0.2px;
+        }
+
+        .card h2 {
+            margin: 14px 0 0;
+            font-size: 24px;
+        }
+
+        .card p {
+            margin-top: 10px;
+            font-size: 14px;
+        }
+
+        .hint {
+            margin-top: 18px;
+            font-size: 13px;
+            color: #7f92c4;
+        }
+    </style>
+</head>
+<body>
+<div class="shell">
+    <h1>Toonflow AI Game<br/>Prototype Pack</h1>
+    <p>重新设计了 Creator Web 与 Android Player 两套高保真原型。风格上保留了「创作 + 游玩」双端逻辑，但改为更明确的运行时可视化和更强沉浸感的移动端信息层级。</p>
+
+    <div class="grid">
+        <a class="card" href="web_prototype.html">
+            <span class="tag">WEB CREATOR</span>
+            <h2>网页端原型</h2>
+            <p>按安卓清单做了 Web 全流程重构：主页、故事大厅、创建故事（角色/章节/发布）、聊过、我的、设置、游玩交互。</p>
+        </a>
+
+        <a class="card" href="android_prototype.html">
+            <span class="tag" style="background: rgba(68, 211, 255, 0.16); color: #b8ecff;">ANDROID FULL FLOW</span>
+            <h2>安卓版原型</h2>
+            <p>双模式：玩家游玩 + 移动创作。覆盖发现、主游玩、故事工作台、章节编排、触发器编辑、存档管理。</p>
+        </a>
+    </div>
+
+    <div class="hint">建议先看 `android_prototype.html`（完整安卓流程），再回到 `web_prototype.html` 对齐创作端能力。</div>
+</div>
+</body>
+</html>

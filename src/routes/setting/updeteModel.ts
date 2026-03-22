@@ -18,8 +18,9 @@ export default router.post(
   }),
   async (req, res) => {
     const { id, type, model, baseUrl, apiKey, manufacturer, modelType } = req.body;
+    const userId = Number((req as any)?.user?.id || 0);
 
-    await u.db("t_config").where("id", id).update({
+    await u.db("t_config").where({ id, userId }).update({
       type,
       model,
       baseUrl,

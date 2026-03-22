@@ -11,11 +11,12 @@ export default router.post(
   validateFields({
     name: z.string(),
     password: z.string(),
-    id: z.number(),
+    id: z.number().optional().nullable(),
   }),
   async (req, res) => {
-    const { name, password, id } = req.body;
-    await u.db("t_user").where("id", id).update({
+    const { name, password } = req.body;
+    const userId = Number((req as any)?.user?.id || 0);
+    await u.db("t_user").where("id", userId).update({
       name,
       password,
     });

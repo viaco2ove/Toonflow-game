@@ -18,6 +18,7 @@ export type VideoGenerateMode = "startEnd" | "multi" | "single" | "text";
 export interface CreateVideoTaskInput {
   projectId: number;
   scriptId: number;
+  userId?: number;
   configId?: number;
   aiConfigId?: number;
   resolution: string;
@@ -40,11 +41,17 @@ const getPathname = (url: string): string => {
 };
 
 export async function createVideoTask(input: CreateVideoTaskInput): Promise<{ id: number; configId: number | null }> {
-  const { mode, scriptId, projectId, configId, aiConfigId, resolution, duration, prompt, audioEnabled } = input;
+  const { mode, configId, aiConfigId, resolution, duration, prompt, audioEnabled } = input;
+  const currentUserId = Number(input.userId || 0);
+  let scriptId = Number(input.scriptId || 0);
+  let projectId = Number(input.projectId || 0);
   const filePath = Array.isArray(input.filePath) ? [...input.filePath] : [];
   const normalizedConfigIdRaw = Number.isFinite(Number(configId)) ? Number(configId) : null;
   const normalizedConfigId = normalizedConfigIdRaw && normalizedConfigIdRaw !== 0 ? normalizedConfigIdRaw : null;
   const persistedConfigId = normalizedConfigId && normalizedConfigId > 0 ? normalizedConfigId : null;
+
+  if (!Number.isFinite(scriptId) || scriptId <= 0) throw new Error("scriptId 无效");
+  if (!Number.isFinite(projectId) || projectId <= 0) throw new Error("projectId 无效");
 
   if (mode === "text") filePath.length = 0;
   else if (!filePath.length) throw new Error("请先选择图片");
@@ -73,9 +80,20 @@ export async function createVideoTask(input: CreateVideoTaskInput): Promise<{ id
   }
 
   const configData = persistedConfigId
-    ? await u.db("t_videoConfig").where("id", persistedConfigId).first()
+    ? await u
+      .db("t_videoConfig")
+      .where({
+        id: persistedConfigId,
+        scriptId,
+        projectId,
+      })
+      .first()
     : null;
-  if (persistedConfigId && !configData) throw new Error("视频配置不存在");
+  if (persistedConfigId && !configData) throw new Error("视频配置不存在或不属于当前脚本");
+  if (configData) {
+    scriptId = Number(configData.scriptId || scriptId);
+    projectId = Number(configData.projectId || projectId);
+  }
   if (VIDEO_DEBUG) {
     console.log("[video] create task config", {
       configId: normalizedConfigId,
@@ -100,12 +118,22 @@ export async function createVideoTask(input: CreateVideoTaskInput): Promise<{ id
   }
 
   // 优先使用视频配置中的AI配置ID查询,查不到再使用传入的aiConfigId
+  const loadAiConfig = async (idRaw: unknown) => {
+    const id = Number(idRaw || 0);
+    if (!Number.isFinite(id) || id <= 0) return null;
+    const query = u.db("t_config").where("id", id);
+    if (currentUserId > 0) {
+      query.andWhere("userId", currentUserId);
+    }
+    return query.first();
+  };
+
   let aiConfigData = null;
   if (configData?.aiConfigId) {
-    aiConfigData = await u.db("t_config").where("id", configData.aiConfigId).first();
+    aiConfigData = await loadAiConfig(configData.aiConfigId);
   }
   if (!aiConfigData && aiConfigId) {
-    aiConfigData = await u.db("t_config").where("id", aiConfigId).first();
+    aiConfigData = await loadAiConfig(aiConfigId);
   }
   if (!aiConfigData) throw new Error("模型配置不存在");
   if (VIDEO_DEBUG) {
@@ -183,6 +211,7 @@ export default router.post(
   }),
   async (req, res) => {
     const { mode, scriptId, projectId, configId, aiConfigId, resolution, filePath, duration, prompt, audioEnabled } = req.body;
+    const currentUserId = Number((req as any)?.user?.id || 0);
     try {
       if (VIDEO_DEBUG) {
         console.log("[video] /video/generateVideo request", {
@@ -201,6 +230,7 @@ export default router.post(
       const task = await createVideoTask({
         projectId,
         scriptId,
+        userId: currentUserId,
         configId,
         aiConfigId,
         resolution,

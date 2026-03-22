@@ -40,12 +40,13 @@ export default router.post(
   }),
   async (req, res) => {
     const { scriptId, projectId, configId, mode, startFrame, endFrame, images, resolution, duration, prompt, audioEnabled } = req.body;
+    const userId = Number((req as any)?.user?.id || 0);
 
     // 生成新ID
     const maxIdResult: any = await u.db("t_videoConfig").max("id as maxId").first();
     const newId = (maxIdResult?.maxId || 0) + 1;
     const now = Date.now();
-    const configData = await u.db("t_config").where("id", configId).first();
+    const configData = await u.db("t_config").where({ id: configId, userId }).first();
     if (!configData) return res.status(500).send(error("不存在的模型"));
     const maxSortResult: any = await u.db("t_videoConfig").where({ scriptId }).max("sort as maxSort").first();
     const nextSort = (maxSortResult?.maxSort || 0) + 1;

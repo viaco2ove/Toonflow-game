@@ -1,4 +1,4 @@
-// @db-hash cd394e59c1935dbe48042ddbefe1d51b
+// @db-hash 992fcaa234512d6f225d349a4c5e6364
 //该文件由脚本自动生成，请勿手动修改
 
 export interface t_aiModelMap {
@@ -25,6 +25,33 @@ export interface t_assets {
   'videoPrompt'?: string | null;
   'voiceConfig'?: string | null;
 }
+export interface t_chapterTask {
+  'chapterId'?: number | null;
+  'createTime'?: number | null;
+  'failCondition'?: string | null;
+  'goalType'?: string | null;
+  'id'?: number;
+  'parentTaskId'?: number | null;
+  'rewardAction'?: string | null;
+  'sort'?: number | null;
+  'status'?: string | null;
+  'successCondition'?: string | null;
+  'taskType'?: string | null;
+  'title'?: string | null;
+  'updateTime'?: number | null;
+}
+export interface t_chapterTrigger {
+  'actionExpr'?: string | null;
+  'chapterId'?: number | null;
+  'conditionExpr'?: string | null;
+  'createTime'?: number | null;
+  'enabled'?: number | null;
+  'id'?: number;
+  'name'?: string | null;
+  'sort'?: number | null;
+  'triggerEvent'?: string | null;
+  'updateTime'?: number | null;
+}
 export interface t_chatHistory {
   'data'?: string | null;
   'id'?: number;
@@ -42,6 +69,31 @@ export interface t_config {
   'modelType'?: string | null;
   'type'?: string | null;
   'userId'?: number | null;
+}
+export interface t_entityStateDelta {
+  'createTime'?: number | null;
+  'entityId'?: string | null;
+  'entityType'?: string | null;
+  'eventId'?: string | null;
+  'field'?: string | null;
+  'id'?: number;
+  'newValue'?: string | null;
+  'oldValue'?: string | null;
+  'sessionId'?: string | null;
+  'source'?: string | null;
+}
+export interface t_gameSession {
+  'chapterId'?: number | null;
+  'createTime'?: number | null;
+  'id'?: number;
+  'projectId'?: number | null;
+  'sessionId'?: string | null;
+  'stateJson'?: string | null;
+  'status'?: string | null;
+  'title'?: string | null;
+  'updateTime'?: number | null;
+  'userId'?: number | null;
+  'worldId'?: number | null;
 }
 export interface t_image {
   'assetsId'?: number | null;
@@ -114,6 +166,24 @@ export interface t_scriptSegment {
   'title'?: string | null;
   'updateTime'?: number | null;
 }
+export interface t_sessionMessage {
+  'content'?: string | null;
+  'createTime'?: number | null;
+  'eventType'?: string | null;
+  'id'?: number;
+  'meta'?: string | null;
+  'role'?: string | null;
+  'roleType'?: string | null;
+  'sessionId'?: string | null;
+}
+export interface t_sessionStateSnapshot {
+  'createTime'?: number | null;
+  'id'?: number;
+  'reason'?: string | null;
+  'round'?: number | null;
+  'sessionId'?: string | null;
+  'stateJson'?: string | null;
+}
 export interface t_setting {
   'id'?: number;
   'imageModel'?: string | null;
@@ -122,12 +192,36 @@ export interface t_setting {
   'tokenKey'?: string | null;
   'userId'?: number | null;
 }
+export interface t_storyChapter {
+  'chapterKey'?: string | null;
+  'completionCondition'?: string | null;
+  'content'?: string | null;
+  'createTime'?: number | null;
+  'entryCondition'?: string | null;
+  'id'?: number;
+  'sort'?: number | null;
+  'status'?: string | null;
+  'title'?: string | null;
+  'updateTime'?: number | null;
+  'worldId'?: number | null;
+}
 export interface t_storyline {
   'content'?: string | null;
   'id'?: number;
   'name'?: string | null;
   'novelIds'?: string | null;
   'projectId'?: number | null;
+}
+export interface t_storyWorld {
+  'createTime'?: number | null;
+  'id'?: number;
+  'intro'?: string | null;
+  'name'?: string | null;
+  'narratorRole'?: string | null;
+  'playerRole'?: string | null;
+  'projectId'?: number | null;
+  'settings'?: string | null;
+  'updateTime'?: number | null;
 }
 export interface t_taskList {
   'endTime'?: string | null;
@@ -215,8 +309,12 @@ export interface t_voiceModel {
 export interface DB {
   "t_aiModelMap": t_aiModelMap;
   "t_assets": t_assets;
+  "t_chapterTask": t_chapterTask;
+  "t_chapterTrigger": t_chapterTrigger;
   "t_chatHistory": t_chatHistory;
   "t_config": t_config;
+  "t_entityStateDelta": t_entityStateDelta;
+  "t_gameSession": t_gameSession;
   "t_image": t_image;
   "t_imageModel": t_imageModel;
   "t_novel": t_novel;
@@ -225,8 +323,12 @@ export interface DB {
   "t_prompts": t_prompts;
   "t_script": t_script;
   "t_scriptSegment": t_scriptSegment;
+  "t_sessionMessage": t_sessionMessage;
+  "t_sessionStateSnapshot": t_sessionStateSnapshot;
   "t_setting": t_setting;
+  "t_storyChapter": t_storyChapter;
   "t_storyline": t_storyline;
+  "t_storyWorld": t_storyWorld;
   "t_taskList": t_taskList;
   "t_textModel": t_textModel;
   "t_user": t_user;

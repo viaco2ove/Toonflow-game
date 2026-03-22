@@ -45,7 +45,7 @@ export default router.post(
     pageSize: z.number().int().min(1).max(200).optional(),
   }),
   async (req, res) => {
-    const userId = Number((req as any)?.user?.id || 1);
+    const userId = Number((req as any)?.user?.id || 0);
     const keyword = String(req.body.keyword || "").trim().toLowerCase();
     const page = Number(req.body.page || 1);
     const pageSize = Number(req.body.pageSize || 50);

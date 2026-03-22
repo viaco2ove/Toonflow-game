@@ -13,8 +13,9 @@ export default router.post(
   }),
   async (req, res) => {
     const { id } = req.body;
+    const userId = Number((req as any)?.user?.id || 0);
 
-    const data = await u.db("t_project").where("id", id).select("*");
+    const data = await u.db("t_project").where({ id, userId }).select("*");
 
     res.status(200).send(success(data));
   }

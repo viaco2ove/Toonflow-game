@@ -25,14 +25,14 @@ function resolveConfiguredPath(rawValue: string | undefined, fallback: string): 
 
 export function getDbPath(): string {
   const fallback = isElectronRuntime()
-    ? path.join(getUserDataDir(), "db.sqlite")
-    : path.join(process.cwd(), "db.sqlite");
+    ? path.join(getUserDataDir(), "Toonflow-game/db.sqlite")
+    : path.join(process.cwd(), "Toonflow-game/db.sqlite");
   return resolveConfiguredPath(process.env.DB_PATH, fallback);
 }
 
 export function getUploadRootDir(): string {
   const fallback = isElectronRuntime()
-    ? path.join(getUserDataDir(), "uploads")
-    : path.join(process.cwd(), "uploads");
+    ? path.join(getUserDataDir(), "Toonflow-game/uploads")
+    : path.join(process.cwd(), "Toonflow-game/uploads");
   return resolveConfiguredPath(process.env.UPLOAD_DIR, fallback);
 }

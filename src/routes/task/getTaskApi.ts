@@ -15,10 +15,13 @@ export default router.get(
     limit: z.number(),
   }),
   async (req, res) => {
+    const userId = Number((req as any)?.user?.id || 0);
     const { projectName, taskName, state, page = 1, limit = 10 }: any = req.query;
     const offset = (page - 1) * limit;
     const data = await u
       .db("t_taskList")
+      .leftJoin("t_project", "t_project.id", "t_taskList.projectName")
+      .where("t_project.userId", userId)
       .andWhere((qb) => {
         if (projectName) {
           qb.andWhere("t_taskList.projectName", projectName);
@@ -35,6 +38,8 @@ export default router.get(
       .limit(limit);
     const totalQuery = (await u
       .db("t_taskList")
+      .leftJoin("t_project", "t_project.id", "t_taskList.projectName")
+      .where("t_project.userId", userId)
       .andWhere((qb) => {
         if (projectName) {
           qb.andWhere("t_taskList.projectName", projectName);

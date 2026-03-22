@@ -27,7 +27,7 @@ export default router.post(
     id: z.number().int().positive(),
   }),
   async (req, res) => {
-    const userId = Number((req as any)?.user?.id || 1);
+    const userId = Number((req as any)?.user?.id || 0);
     const historyId = Number(req.body.id);
     const projects = await getUserProjects(userId);
     if (!projects.length) {

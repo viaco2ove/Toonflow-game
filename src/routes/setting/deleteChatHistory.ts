@@ -26,7 +26,7 @@ export default router.post(
       .optional(),
   }),
   async (req, res) => {
-    const userId = Number((req as any)?.user?.id || 1);
+    const userId = Number((req as any)?.user?.id || 0);
     const all = Boolean(req.body.all);
     const ids = Array.isArray(req.body.ids) ? req.body.ids.map((item: any) => Number(item)).filter((item: number) => Number.isFinite(item)) : [];
 
@@ -97,4 +97,3 @@ export default router.post(
     return res.status(200).send(success({ deletedCount: deletableIds.length, deletedIds: deletableIds }));
   },
 );
-

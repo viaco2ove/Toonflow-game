@@ -54,6 +54,7 @@ router.ws("/", async (ws, req) => {
 
   const projectIdNum = Number(projectId);
   const scriptIdNum = Number(scriptId);
+  const userId = Number((req as any)?.user?.id || 0);
   const sessionScopeScriptId = isVideoMode ? -Math.abs(scriptIdNum) : scriptIdNum;
   agent = new Storyboard(projectIdNum, scriptIdNum);
 
@@ -334,7 +335,7 @@ router.ws("/", async (ws, req) => {
     const modelRows = await u
       .db("t_config")
       .where("type", "video")
-      .where("userId", 1)
+      .where("userId", userId)
       .orderBy("createTime", "desc")
       .select("id", "manufacturer", "model");
 
@@ -844,6 +845,7 @@ router.ws("/", async (ws, req) => {
           await createVideoTask({
             projectId: projectIdNum,
             scriptId: scriptIdNum,
+            userId,
             configId: item.id,
             aiConfigId: item.aiConfigId,
             resolution: item.resolution || "720p",
@@ -857,6 +859,7 @@ router.ws("/", async (ws, req) => {
           await createVideoTask({
             projectId: projectIdNum,
             scriptId: scriptIdNum,
+            userId,
             configId: item.id,
             aiConfigId: item.aiConfigId,
             resolution: item.resolution || "720p",
@@ -1172,6 +1175,7 @@ router.ws("/", async (ws, req) => {
         await createVideoTask({
           projectId: projectIdNum,
           scriptId: scriptIdNum,
+          userId,
           configId: config.id,
           aiConfigId: config.aiConfigId,
           resolution: config.resolution,

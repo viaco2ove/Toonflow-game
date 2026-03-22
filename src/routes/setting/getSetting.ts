@@ -4,7 +4,7 @@ import { success } from "@/lib/responseFormat";
 const router = express.Router();
 
 export default router.post("/", async (req, res) => {
-  const userId = 1;
+  const userId = Number((req as any)?.user?.id || 0);
   const configData = await u
     .db("t_config")
     .whereNotIn("type", ["video", "voice"])

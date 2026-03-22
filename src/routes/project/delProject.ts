@@ -1,7 +1,7 @@
 import express from "express";
 import u from "@/utils";
 import { z } from "zod";
-import { success } from "@/lib/responseFormat";
+import { error, success } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
 const router = express.Router();
 
@@ -13,6 +13,11 @@ export default router.post(
   }),
   async (req, res) => {
     const { id } = req.body;
+    const userId = Number((req as any)?.user?.id || 0);
+    const project = await u.db("t_project").where({ id, userId }).first("id");
+    if (!project) {
+      return res.status(403).send(error("无权删除该项目"));
+    }
 
     const scriptData = await u.db("t_script").where("projectId", id).select("id");
     const scriptIds = scriptData.map((item: any) => item.id);
@@ -23,7 +28,7 @@ export default router.post(
     const videoData = await u.db("t_video").whereIn("scriptId", scriptIds).select("id");
     const videoIds = videoData.map((item: any) => item.id);
 
-    await u.db("t_project").where("id", id).delete();
+    await u.db("t_project").where({ id, userId }).delete();
     await u.db("t_novel").where("projectId", id).delete();
     await u.db("t_storyline").where("projectId", id).delete();
     await u.db("t_outline").where("projectId", id).delete();
