@@ -20,13 +20,15 @@ export default router.post(
     projectId: z.number(),
     name: z.string(),
     intro: z.string().optional().nullable(),
+    coverPath: z.string().optional().nullable(),
+    publishStatus: z.string().optional().nullable(),
     settings: z.any().optional().nullable(),
     playerRole: z.any().optional().nullable(),
     narratorRole: z.any().optional().nullable(),
   }),
   async (req, res) => {
     try {
-      const { worldId, projectId, name, intro, settings, playerRole, narratorRole } = req.body;
+      const { worldId, projectId, name, intro, coverPath, publishStatus, settings, playerRole, narratorRole } = req.body;
       const db = getGameDb();
       const now = nowTs();
       const currentUserId = Number((req as any)?.user?.id || 0);
@@ -51,14 +53,15 @@ export default router.post(
           .select("w.*")
           .first();
       }
-      if (!existing) {
-        existing = await db("t_storyWorld").where({ projectId }).first();
+      if (worldIdNum > 0 && !existing) {
+        return res.status(404).send(error("未找到世界观"));
       }
 
       const payload = {
-        projectId,
         name: String(name || "").trim(),
         intro: String(intro || "").trim(),
+        coverPath: String(coverPath || "").trim(),
+        publishStatus: String(publishStatus || existing?.publishStatus || "draft").trim() || "draft",
         settings: toJsonText(settings, {}),
         playerRole: toJsonText(rolePair.playerRole, {}),
         narratorRole: toJsonText(rolePair.narratorRole, {}),
@@ -68,10 +71,14 @@ export default router.post(
       let id = 0;
       if (existing?.id) {
         id = Number(existing.id);
-        await db("t_storyWorld").where({ id }).update(payload);
+        await db("t_storyWorld").where({ id }).update({
+          ...payload,
+          projectId: Number(existing.projectId || projectId),
+        });
       } else {
         const insertPayload = {
           ...payload,
+          projectId,
           createTime: now,
         };
         const insertResult = await db("t_storyWorld").insert(insertPayload);

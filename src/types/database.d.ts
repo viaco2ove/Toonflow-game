@@ -1,4 +1,4 @@
-// @db-hash 1e828e8dbbd4f4836f6ab522ebb19866
+// @db-hash 6d4fbfc05603eab67e584ca3ca158816
 //该文件由脚本自动生成，请勿手动修改
 
 export interface t_aiModelMap {
@@ -194,12 +194,17 @@ export interface t_setting {
   'userId'?: number | null;
 }
 export interface t_storyChapter {
+  'backgroundPath'?: string | null;
+  'bgmPath'?: string | null;
   'chapterKey'?: string | null;
   'completionCondition'?: string | null;
   'content'?: string | null;
   'createTime'?: number | null;
   'entryCondition'?: string | null;
   'id'?: number;
+  'openingRole'?: string | null;
+  'openingText'?: string | null;
+  'showCompletionCondition'?: number | null;
   'sort'?: number | null;
   'status'?: string | null;
   'title'?: string | null;
@@ -214,6 +219,7 @@ export interface t_storyline {
   'projectId'?: number | null;
 }
 export interface t_storyWorld {
+  'coverPath'?: string | null;
   'createTime'?: number | null;
   'id'?: number;
   'intro'?: string | null;
@@ -221,6 +227,7 @@ export interface t_storyWorld {
   'narratorRole'?: string | null;
   'playerRole'?: string | null;
   'projectId'?: number | null;
+  'publishStatus'?: string | null;
   'settings'?: string | null;
   'updateTime'?: number | null;
 }

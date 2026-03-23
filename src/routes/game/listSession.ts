@@ -36,7 +36,7 @@ export default router.post(
       }
       query = query.whereExists((builder: any) => {
         builder
-          .select(db.raw("1"))
+          .select("m.id")
           .from("t_sessionMessage as m")
           .whereRaw("m.sessionId = s.sessionId")
           .andWhere("m.roleType", "player");
@@ -50,14 +50,17 @@ export default router.post(
       const sessionIds = sessions.map((item: any) => String(item.sessionId || "")).filter(Boolean);
       const worldIdSet = Array.from(new Set(sessions.map((item: any) => Number(item.worldId || 0)).filter((id: number) => id > 0)));
       const chapterIdSet = Array.from(new Set(sessions.map((item: any) => Number(item.chapterId || 0)).filter((id: number) => id > 0)));
+      const projectIdSet = Array.from(new Set(sessions.map((item: any) => Number(item.projectId || 0)).filter((id: number) => id > 0)));
 
-      const [worldRows, chapterRows] = await Promise.all([
-        worldIdSet.length ? db("t_storyWorld").whereIn("id", worldIdSet).select("id", "name") : Promise.resolve([]),
+      const [worldRows, chapterRows, projectRows] = await Promise.all([
+        worldIdSet.length ? db("t_storyWorld").whereIn("id", worldIdSet).select("id", "name", "intro", "settings") : Promise.resolve([]),
         chapterIdSet.length ? db("t_storyChapter").whereIn("id", chapterIdSet).select("id", "title") : Promise.resolve([]),
+        projectIdSet.length ? db("t_project").whereIn("id", projectIdSet).select("id", "name") : Promise.resolve([]),
       ]);
 
-      const worldNameMap = new Map<number, string>(worldRows.map((item: any) => [Number(item.id), String(item.name || "")]));
+      const worldMap = new Map<number, any>(worldRows.map((item: any) => [Number(item.id), item]));
       const chapterNameMap = new Map<number, string>(chapterRows.map((item: any) => [Number(item.id), String(item.title || "")]));
+      const projectNameMap = new Map<number, string>(projectRows.map((item: any) => [Number(item.id), String(item.name || "")]));
 
       const latestMessageRows = await Promise.all(
         sessionIds.map((sessionId: string) =>
@@ -75,14 +78,20 @@ export default router.post(
         const sessionId = String(item.sessionId || "");
         const worldIdValue = Number(item.worldId || 0);
         const chapterIdValue = Number(item.chapterId || 0);
+        const projectIdValue = Number(item.projectId || 0);
         const latest = latestMessageMap.get(sessionId);
+        const worldRow = worldMap.get(worldIdValue);
+        const worldSettings = parseJsonSafe<any>(worldRow?.settings, {});
         return {
           sessionId,
           worldId: worldIdValue,
-          worldName: worldNameMap.get(worldIdValue) || "",
+          worldName: String(worldRow?.name || ""),
+          worldIntro: String(worldRow?.intro || ""),
+          worldCoverPath: String(worldSettings?.coverPath || ""),
           chapterId: chapterIdValue > 0 ? chapterIdValue : null,
           chapterTitle: chapterIdValue > 0 ? chapterNameMap.get(chapterIdValue) || "" : "",
-          projectId: Number(item.projectId || 0) || null,
+          projectId: projectIdValue || null,
+          projectName: projectIdValue > 0 ? projectNameMap.get(projectIdValue) || "" : "",
           title: String(item.title || ""),
           status: String(item.status || ""),
           contentVersion: String(item.contentVersion || ""),

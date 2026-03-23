@@ -113,6 +113,13 @@ export default async (knex: Knex): Promise<void> => {
   await addColumn("t_videoConfig", "audioTrack", "integer");
   await addColumn("t_videoConfig", "dialogueTrack", "integer");
   await addColumn("t_gameSession", "contentVersion", "text");
+  await addColumn("t_storyWorld", "coverPath", "text");
+  await addColumn("t_storyWorld", "publishStatus", "text");
+  await addColumn("t_storyChapter", "backgroundPath", "text");
+  await addColumn("t_storyChapter", "openingRole", "text");
+  await addColumn("t_storyChapter", "openingText", "text");
+  await addColumn("t_storyChapter", "bgmPath", "text");
+  await addColumn("t_storyChapter", "showCompletionCondition", "integer");
 
   //更正字段
   await alterColumnType("t_config", "modelType", "text");

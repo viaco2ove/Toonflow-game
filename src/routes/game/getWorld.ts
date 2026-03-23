@@ -51,7 +51,11 @@ export default router.post(
         if (!project) {
           return res.status(403).send(error("无权访问该项目"));
         }
-        row = await db("t_storyWorld").where({ projectId: projectIdNum }).first();
+        row = await db("t_storyWorld")
+          .where({ projectId: projectIdNum })
+          .orderBy("updateTime", "desc")
+          .orderBy("id", "desc")
+          .first();
       }
       if (!row && autoCreate && Number.isFinite(projectIdNum) && projectIdNum > 0) {
         if (!project) {
@@ -66,13 +70,19 @@ export default router.post(
           projectId: projectIdNum,
           name: String(defaultWorldName || project?.name || "默认世界观"),
           intro: "",
+          coverPath: "",
+          publishStatus: "draft",
           settings: toJsonText({}, {}),
           playerRole: toJsonText(rolePair.playerRole, {}),
           narratorRole: toJsonText(rolePair.narratorRole, {}),
           createTime: now,
           updateTime: now,
         });
-        row = await db("t_storyWorld").where({ projectId: projectIdNum }).orderBy("id", "desc").first();
+        row = await db("t_storyWorld")
+          .where({ projectId: projectIdNum })
+          .orderBy("updateTime", "desc")
+          .orderBy("id", "desc")
+          .first();
       }
       if (!row) {
         return res.status(404).send(error("未找到世界观配置"));

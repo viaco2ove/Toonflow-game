@@ -292,6 +292,7 @@ export function normalizeChapterOutput(row: any): JsonRecord | null {
   if (!row) return null;
   return {
     ...row,
+    showCompletionCondition: Boolean(Number(row.showCompletionCondition || 0)),
     entryCondition: parseJsonSafe(row.entryCondition, null),
     completionCondition: parseJsonSafe(row.completionCondition, null),
   };

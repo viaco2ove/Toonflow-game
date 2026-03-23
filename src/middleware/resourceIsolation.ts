@@ -19,6 +19,8 @@ const NON_PROJECT_SCOPED_PATHS = new Set<string>([
   "/voice/uploadAudio",
   "/video/uploadAudio",
   "/task/getTaskApi",
+  "/game/listSession",
+  "/game/listWorlds",
 ]);
 
 function toPositiveInt(value: any): number | null {

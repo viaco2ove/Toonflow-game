@@ -1356,6 +1356,8 @@ export default async (knex: Knex, forceInit: boolean = false): Promise<void> => 
         table.integer("projectId");
         table.text("name");
         table.text("intro");
+        table.text("coverPath");
+        table.text("publishStatus");
         table.text("settings");
         table.text("playerRole");
         table.text("narratorRole");
@@ -1371,6 +1373,11 @@ export default async (knex: Knex, forceInit: boolean = false): Promise<void> => 
         table.integer("id").notNullable();
         table.integer("worldId");
         table.text("chapterKey");
+        table.text("backgroundPath");
+        table.text("openingRole");
+        table.text("openingText");
+        table.text("bgmPath");
+        table.integer("showCompletionCondition");
         table.text("title");
         table.text("content");
         table.text("entryCondition");

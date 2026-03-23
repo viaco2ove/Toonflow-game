@@ -1,0 +1,4 @@
+interface:
+  display_name: "DOCX Generation"
+  short_description: "DOCX<->MD conversion, layout mapping, image export"
+  default_prompt: "Use $docx-generation to convert a DOCX file to Markdown with images and a layout file."

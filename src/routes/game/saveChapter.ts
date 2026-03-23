@@ -18,6 +18,11 @@ export default router.post(
     chapterId: z.number().optional().nullable(),
     worldId: z.number(),
     chapterKey: z.string().optional().nullable(),
+    backgroundPath: z.string().optional().nullable(),
+    openingRole: z.string().optional().nullable(),
+    openingText: z.string().optional().nullable(),
+    bgmPath: z.string().optional().nullable(),
+    showCompletionCondition: z.boolean().optional().nullable(),
     title: z.string(),
     content: z.string().optional().nullable(),
     entryCondition: z.any().optional().nullable(),
@@ -27,7 +32,22 @@ export default router.post(
   }),
   async (req, res) => {
     try {
-      const { chapterId, worldId, chapterKey, title, content, entryCondition, completionCondition, sort, status } = req.body;
+      const {
+        chapterId,
+        worldId,
+        chapterKey,
+        backgroundPath,
+        openingRole,
+        openingText,
+        bgmPath,
+        showCompletionCondition,
+        title,
+        content,
+        entryCondition,
+        completionCondition,
+        sort,
+        status,
+      } = req.body;
       const db = getGameDb();
       const now = nowTs();
       const currentUserId = Number((req as any)?.user?.id || 0);
@@ -50,6 +70,11 @@ export default router.post(
       const payload = {
         worldId,
         chapterKey: String(chapterKey || "").trim(),
+        backgroundPath: String(backgroundPath || "").trim(),
+        openingRole: String(openingRole || "").trim(),
+        openingText: String(openingText || "").trim(),
+        bgmPath: String(bgmPath || "").trim(),
+        showCompletionCondition: showCompletionCondition ? 1 : 0,
         title: String(title || "").trim(),
         content: String(content || ""),
         entryCondition: toJsonText(entryCondition, null),

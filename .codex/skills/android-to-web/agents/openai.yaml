@@ -1,0 +1,6 @@
+interface:
+  display_name: Android to Web
+  short_description: Convert Android app behavior into Vue 3 web implementations
+  default_prompt: Use $android-to-web to convert Android app screens, state, and business logic into Vue 3 code. Preserve real functionality, persistence, and data isolation. Work screen by screen, keep account/story/resource data separate, and prefer parity with the Android implementation over demo UI.
+policy:
+  allow_implicit_invocation: true
