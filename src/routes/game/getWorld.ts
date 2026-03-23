@@ -25,6 +25,10 @@ export default router.post(
     try {
       const { worldId, projectId, autoCreate, defaultWorldName } = req.body;
       const db = getGameDb();
+      const currentUserId = Number((req as any)?.user?.id || 0);
+      if (!Number.isFinite(currentUserId) || currentUserId <= 0) {
+        return res.status(401).send(error("用户未登录"));
+      }
 
       const worldIdNum = Number(worldId);
       const projectIdNum = Number(projectId);
@@ -34,13 +38,28 @@ export default router.post(
 
       let row: any = null;
       if (Number.isFinite(worldIdNum) && worldIdNum > 0) {
-        row = await db("t_storyWorld").where({ id: worldIdNum }).first();
+        row = await db("t_storyWorld as w")
+          .leftJoin("t_project as p", "w.projectId", "p.id")
+          .where("w.id", worldIdNum)
+          .where("p.userId", currentUserId)
+          .select("w.*")
+          .first();
       }
+      let project: any = null;
       if (!row && Number.isFinite(projectIdNum) && projectIdNum > 0) {
+        project = await db("t_project").where({ id: projectIdNum, userId: currentUserId }).first();
+        if (!project) {
+          return res.status(403).send(error("无权访问该项目"));
+        }
         row = await db("t_storyWorld").where({ projectId: projectIdNum }).first();
       }
       if (!row && autoCreate && Number.isFinite(projectIdNum) && projectIdNum > 0) {
-        const project = await db("t_project").where({ id: projectIdNum }).first();
+        if (!project) {
+          project = await db("t_project").where({ id: projectIdNum, userId: currentUserId }).first();
+          if (!project) {
+            return res.status(403).send(error("无权访问该项目"));
+          }
+        }
         const rolePair = normalizeRolePair(null, null);
         const now = nowTs();
         await db("t_storyWorld").insert({

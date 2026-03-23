@@ -30,8 +30,17 @@ export default router.post(
       const { chapterId, worldId, chapterKey, title, content, entryCondition, completionCondition, sort, status } = req.body;
       const db = getGameDb();
       const now = nowTs();
+      const currentUserId = Number((req as any)?.user?.id || 0);
+      if (!Number.isFinite(currentUserId) || currentUserId <= 0) {
+        return res.status(401).send(error("用户未登录"));
+      }
 
-      const world = await db("t_storyWorld").where({ id: worldId }).first();
+      const world = await db("t_storyWorld as w")
+        .leftJoin("t_project as p", "w.projectId", "p.id")
+        .where("w.id", worldId)
+        .where("p.userId", currentUserId)
+        .select("w.*")
+        .first();
       if (!world) {
         return res.status(404).send(error("worldId 不存在，请先创建世界观"));
       }
@@ -53,7 +62,13 @@ export default router.post(
       let id = 0;
       let existed: any = null;
       if (Number.isFinite(chapterIdNum) && chapterIdNum > 0) {
-        existed = await db("t_storyChapter").where({ id: chapterIdNum }).first();
+        existed = await db("t_storyChapter as c")
+          .leftJoin("t_storyWorld as w", "c.worldId", "w.id")
+          .leftJoin("t_project as p", "w.projectId", "p.id")
+          .where("c.id", chapterIdNum)
+          .where("p.userId", currentUserId)
+          .select("c.*")
+          .first();
       }
 
       if (existed?.id) {

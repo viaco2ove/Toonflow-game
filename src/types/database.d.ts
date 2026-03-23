@@ -1,4 +1,4 @@
-// @db-hash 992fcaa234512d6f225d349a4c5e6364
+// @db-hash 1e828e8dbbd4f4836f6ab522ebb19866
 //该文件由脚本自动生成，请勿手动修改
 
 export interface t_aiModelMap {
@@ -84,6 +84,7 @@ export interface t_entityStateDelta {
 }
 export interface t_gameSession {
   'chapterId'?: number | null;
+  'contentVersion'?: string | null;
   'createTime'?: number | null;
   'id'?: number;
   'projectId'?: number | null;

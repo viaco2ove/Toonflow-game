@@ -112,6 +112,7 @@ export default async (knex: Knex): Promise<void> => {
   await addColumn("t_videoConfig", "sort", "integer");
   await addColumn("t_videoConfig", "audioTrack", "integer");
   await addColumn("t_videoConfig", "dialogueTrack", "integer");
+  await addColumn("t_gameSession", "contentVersion", "text");
 
   //更正字段
   await alterColumnType("t_config", "modelType", "text");

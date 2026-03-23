@@ -1,0 +1,109 @@
+import express from "express";
+import { z } from "zod";
+import { validateFields } from "@/middleware/middleware";
+import { error, success } from "@/lib/responseFormat";
+import { getGameDb, parseJsonSafe } from "@/lib/gameEngine";
+import u from "@/utils";
+
+const router = express.Router();
+
+export default router.post(
+  "/",
+  validateFields({
+    projectId: z.number().optional().nullable(),
+    worldId: z.number().optional().nullable(),
+    limit: z.number().optional().nullable(),
+  }),
+  async (req, res) => {
+    try {
+      const userId = Number((req as any)?.user?.id || 0);
+      if (!Number.isFinite(userId) || userId <= 0) {
+        return res.status(401).send(error("用户未登录"));
+      }
+
+      const db = getGameDb();
+      const projectId = Number(req.body.projectId);
+      const worldId = Number(req.body.worldId);
+      const limitNum = Number(req.body.limit);
+      const limit = Number.isFinite(limitNum) && limitNum > 0 ? Math.min(limitNum, 100) : 30;
+
+      let query = db("t_gameSession as s").where("s.userId", userId);
+      if (Number.isFinite(projectId) && projectId > 0) {
+        query = query.andWhere("s.projectId", projectId);
+      }
+      if (Number.isFinite(worldId) && worldId > 0) {
+        query = query.andWhere("s.worldId", worldId);
+      }
+      query = query.whereExists((builder: any) => {
+        builder
+          .select(db.raw("1"))
+          .from("t_sessionMessage as m")
+          .whereRaw("m.sessionId = s.sessionId")
+          .andWhere("m.roleType", "player");
+      });
+
+      const sessions = await query.select("s.*").orderBy("s.id", "desc").limit(limit);
+      if (!sessions.length) {
+        return res.status(200).send(success([]));
+      }
+
+      const sessionIds = sessions.map((item: any) => String(item.sessionId || "")).filter(Boolean);
+      const worldIdSet = Array.from(new Set(sessions.map((item: any) => Number(item.worldId || 0)).filter((id: number) => id > 0)));
+      const chapterIdSet = Array.from(new Set(sessions.map((item: any) => Number(item.chapterId || 0)).filter((id: number) => id > 0)));
+
+      const [worldRows, chapterRows] = await Promise.all([
+        worldIdSet.length ? db("t_storyWorld").whereIn("id", worldIdSet).select("id", "name") : Promise.resolve([]),
+        chapterIdSet.length ? db("t_storyChapter").whereIn("id", chapterIdSet).select("id", "title") : Promise.resolve([]),
+      ]);
+
+      const worldNameMap = new Map<number, string>(worldRows.map((item: any) => [Number(item.id), String(item.name || "")]));
+      const chapterNameMap = new Map<number, string>(chapterRows.map((item: any) => [Number(item.id), String(item.title || "")]));
+
+      const latestMessageRows = await Promise.all(
+        sessionIds.map((sessionId: string) =>
+          db("t_sessionMessage").where({ sessionId }).orderBy("id", "desc").first(),
+        ),
+      );
+      const latestMessageMap = new Map<string, any>();
+      latestMessageRows.forEach((item: any) => {
+        if (item?.sessionId) {
+          latestMessageMap.set(String(item.sessionId), item);
+        }
+      });
+
+      const list = sessions.map((item: any) => {
+        const sessionId = String(item.sessionId || "");
+        const worldIdValue = Number(item.worldId || 0);
+        const chapterIdValue = Number(item.chapterId || 0);
+        const latest = latestMessageMap.get(sessionId);
+        return {
+          sessionId,
+          worldId: worldIdValue,
+          worldName: worldNameMap.get(worldIdValue) || "",
+          chapterId: chapterIdValue > 0 ? chapterIdValue : null,
+          chapterTitle: chapterIdValue > 0 ? chapterNameMap.get(chapterIdValue) || "" : "",
+          projectId: Number(item.projectId || 0) || null,
+          title: String(item.title || ""),
+          status: String(item.status || ""),
+          contentVersion: String(item.contentVersion || ""),
+          updateTime: Number(item.updateTime || item.createTime || 0),
+          state: parseJsonSafe(item.stateJson, {}),
+          latestMessage: latest
+            ? {
+                id: Number(latest.id || 0),
+                role: String(latest.role || ""),
+                roleType: String(latest.roleType || ""),
+                eventType: String(latest.eventType || ""),
+                content: String(latest.content || ""),
+                createTime: Number(latest.createTime || 0),
+              }
+            : null,
+        };
+      });
+
+      res.status(200).send(success(list));
+    } catch (err) {
+      res.status(500).send(error(u.error(err).message));
+    }
+  },
+);

@@ -23,9 +23,13 @@ export default router.post(
     try {
       const { sessionId, messageLimit } = req.body;
       const db = getGameDb();
+      const currentUserId = Number((req as any)?.user?.id || 0);
+      if (!Number.isFinite(currentUserId) || currentUserId <= 0) {
+        return res.status(401).send(error("用户未登录"));
+      }
       const sessionIdValue = String(sessionId || "").trim();
 
-      const row = await db("t_gameSession").where({ sessionId: sessionIdValue }).first();
+      const row = await db("t_gameSession").where({ sessionId: sessionIdValue, userId: currentUserId }).first();
       if (!row) {
         return res.status(404).send(error("会话不存在"));
       }

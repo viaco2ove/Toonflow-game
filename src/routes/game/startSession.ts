@@ -23,27 +23,43 @@ function normalizeSessionRow(row: any) {
   };
 }
 
+function buildContentVersion(world: any, chapter: any, now: number): string {
+  const worldVersion = Number(world?.updateTime || world?.createTime || now);
+  const chapterVersion = Number(chapter?.updateTime || chapter?.createTime || 0);
+  const worldId = Number(world?.id || 0);
+  const chapterId = Number(chapter?.id || 0);
+
+  if (chapterId > 0 && chapterVersion > 0) {
+    return `w:${worldId}@${worldVersion};c:${chapterId}@${chapterVersion}`;
+  }
+  return `w:${worldId}@${worldVersion}`;
+}
+
 export default router.post(
   "/",
   validateFields({
     worldId: z.number(),
     chapterId: z.number().optional().nullable(),
     projectId: z.number().optional().nullable(),
-    userId: z.number().optional().nullable(),
     title: z.string().optional().nullable(),
     initialState: z.any().optional().nullable(),
   }),
   async (req, res) => {
     try {
-      const { worldId, chapterId, projectId, userId, title, initialState } = req.body;
-      const currentUserId = Number((req as any)?.user?.id || 0) || Number(userId || 0);
+      const { worldId, chapterId, projectId, title, initialState } = req.body;
+      const currentUserId = Number((req as any)?.user?.id || 0);
       if (!Number.isFinite(currentUserId) || currentUserId <= 0) {
         return res.status(401).send(error("用户未登录"));
       }
       const db = getGameDb();
       const now = nowTs();
 
-      const world = await db("t_storyWorld").where({ id: worldId }).first();
+      const world = await db("t_storyWorld as w")
+        .leftJoin("t_project as p", "w.projectId", "p.id")
+        .where("w.id", worldId)
+        .where("p.userId", currentUserId)
+        .select("w.*")
+        .first();
       if (!world) {
         return res.status(404).send(error("worldId 不存在，请先创建世界观"));
       }
@@ -66,6 +82,7 @@ export default router.post(
         worldId,
         projectId: Number.isFinite(Number(projectId)) ? Number(projectId) : Number(world.projectId || 0),
         chapterId: chapter ? Number(chapter.id) : null,
+        contentVersion: buildContentVersion(world, chapter, now),
         title: String(title || `${String(world.name || "世界")}-会话`).trim(),
         status: "active",
         stateJson: toJsonText(state, {}),

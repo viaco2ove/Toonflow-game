@@ -1,0 +1,865 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Toonflow Android 全流程 Demo</title>
+    <style>
+        :root {
+            --bg: #0a0f1c;
+            --panel: #121a31;
+            --line: #2d3f6b;
+            --text: #eef4ff;
+            --muted: #97abd9;
+            --orange: #ffa24c;
+            --cyan: #57d8ff;
+            --green: #4adf96;
+            --light-bg: #f3f5f9;
+            --light-line: #d8deea;
+            --light-text: #222a3d;
+            --light-muted: #707b95;
+        }
+
+        * { box-sizing: border-box; }
+
+        @keyframes show {
+            from { opacity: 0; transform: translateY(6px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        body {
+            margin: 0;
+            font-family: "Space Grotesk", "Noto Sans SC", "PingFang SC", sans-serif;
+            color: var(--text);
+            min-height: 100vh;
+            background:
+                radial-gradient(1200px 700px at -5% 20%, rgba(87, 216, 255, 0.18), transparent 62%),
+                radial-gradient(1100px 700px at 105% 100%, rgba(255, 162, 76, 0.18), transparent 62%),
+                var(--bg);
+            padding: 18px;
+        }
+
+        .header {
+            max-width: 1600px;
+            margin: 0 auto 12px;
+            border: 1px solid var(--line);
+            border-radius: 16px;
+            background: linear-gradient(160deg, rgba(18, 26, 49, 0.9), rgba(9, 13, 24, 0.95));
+            padding: 14px 16px;
+            animation: show 0.35s ease;
+        }
+
+        h1 {
+            margin: 0;
+            font-size: clamp(20px, 2.4vw, 28px);
+        }
+
+        .sub {
+            margin-top: 6px;
+            color: var(--muted);
+            font-size: 13px;
+            line-height: 1.45;
+        }
+
+        .tags {
+            margin-top: 10px;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+        }
+
+        .tag {
+            height: 24px;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            border-radius: 999px;
+            display: inline-flex;
+            align-items: center;
+            padding: 0 9px;
+            font-size: 11px;
+            color: #d8e6ff;
+            background: rgba(255, 255, 255, 0.06);
+        }
+
+        .grid {
+            max-width: 1600px;
+            margin: 0 auto;
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(270px, 1fr));
+            gap: 12px;
+            animation: show 0.5s ease;
+        }
+
+        .card {
+            border: 1px solid var(--line);
+            border-radius: 16px;
+            padding: 12px;
+            background: linear-gradient(160deg, rgba(17, 25, 47, 0.9), rgba(8, 12, 23, 0.95));
+            min-height: 660px;
+            display: grid;
+            grid-template-rows: auto 1fr;
+            gap: 8px;
+        }
+
+        .card h2 {
+            margin: 0;
+            font-size: 14px;
+            letter-spacing: 0.2px;
+        }
+
+        .card p {
+            margin: 3px 0 0;
+            font-size: 12px;
+            color: var(--muted);
+            line-height: 1.4;
+        }
+
+        .phone {
+            border-radius: 24px;
+            border: 1px solid #344a7a;
+            padding: 8px;
+            background: linear-gradient(165deg, #121c39, #070d1c);
+            min-height: 560px;
+            display: grid;
+        }
+
+        .phone.light {
+            background: linear-gradient(165deg, #f6f8fc, #e9edf6);
+            border-color: #bcc8df;
+        }
+
+        .screen {
+            border-radius: 18px;
+            border: 1px solid #3a5388;
+            overflow: hidden;
+            background: #0f1731;
+            display: grid;
+            grid-template-rows: auto 1fr auto;
+        }
+
+        .phone.light .screen {
+            background: var(--light-bg);
+            border-color: #c5d0e6;
+        }
+
+        .status {
+            height: 32px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+            padding: 0 10px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            font-size: 11px;
+            color: #d0ddff;
+            background: rgba(5, 8, 17, 0.78);
+        }
+
+        .phone.light .status {
+            background: #ffffff;
+            color: var(--light-muted);
+            border-bottom-color: var(--light-line);
+        }
+
+        .body {
+            padding: 10px;
+            overflow: auto;
+            min-height: 0;
+        }
+
+        .nav {
+            height: 56px;
+            border-top: 1px solid rgba(255, 255, 255, 0.08);
+            background: rgba(9, 12, 24, 0.92);
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+        }
+
+        .nav span {
+            display: grid;
+            place-items: center;
+            font-size: 11px;
+            color: #8fa1d0;
+        }
+
+        .nav span.active { color: var(--orange); }
+
+        .phone.light .nav {
+            background: #ffffff;
+            border-top-color: var(--light-line);
+        }
+
+        .phone.light .nav span { color: #7b859c; }
+        .phone.light .nav span.active { color: #f28a2b; }
+
+        .hero {
+            border: 1px solid rgba(255, 255, 255, 0.14);
+            border-radius: 12px;
+            padding: 8px;
+            background: rgba(14, 22, 47, 0.74);
+        }
+
+        .hero h3 {
+            margin: 0;
+            font-size: 13px;
+        }
+
+        .hero p {
+            margin: 5px 0 0;
+            font-size: 11px;
+            color: #c1d0f4;
+            line-height: 1.42;
+        }
+
+        .phone.light .hero {
+            background: #fff;
+            border-color: var(--light-line);
+        }
+
+        .phone.light .hero h3 { color: var(--light-text); }
+        .phone.light .hero p { color: var(--light-muted); }
+
+        .input-row {
+            margin-top: 8px;
+            height: 36px;
+            border-radius: 10px;
+            border: 1px solid rgba(255, 255, 255, 0.16);
+            background: rgba(255, 255, 255, 0.06);
+            display: flex;
+            align-items: center;
+            padding: 0 10px;
+            font-size: 11px;
+            color: #bdcef6;
+        }
+
+        .phone.light .input-row {
+            border-color: var(--light-line);
+            background: #fff;
+            color: var(--light-muted);
+        }
+
+        .mini-row {
+            margin-top: 7px;
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            border-radius: 10px;
+            padding: 7px;
+            font-size: 11px;
+            background: rgba(11, 18, 38, 0.8);
+        }
+
+        .mini-row b { display: block; }
+
+        .mini-row span {
+            display: block;
+            margin-top: 4px;
+            color: var(--muted);
+        }
+
+        .phone.light .mini-row {
+            border-color: var(--light-line);
+            background: #fff;
+        }
+
+        .phone.light .mini-row b { color: var(--light-text); }
+        .phone.light .mini-row span { color: var(--light-muted); }
+
+        .chips {
+            margin-top: 7px;
+            display: flex;
+            gap: 6px;
+            flex-wrap: wrap;
+        }
+
+        .chip {
+            height: 22px;
+            border-radius: 999px;
+            padding: 0 8px;
+            display: inline-flex;
+            align-items: center;
+            font-size: 11px;
+            color: #d9e7ff;
+            background: rgba(255, 255, 255, 0.09);
+            border: 1px solid rgba(255, 255, 255, 0.16);
+        }
+
+        .phone.light .chip {
+            color: #5f6b88;
+            border-color: var(--light-line);
+            background: #fff;
+        }
+
+        .story-wall {
+            margin-top: 8px;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 6px;
+        }
+
+        .tile {
+            border-radius: 10px;
+            border: 1px solid rgba(255, 255, 255, 0.16);
+            padding: 8px;
+            font-size: 11px;
+            min-height: 110px;
+            background: linear-gradient(155deg, rgba(41, 61, 106, 0.9), rgba(15, 23, 46, 0.88));
+        }
+
+        .phone.light .tile {
+            border-color: var(--light-line);
+            background: #ffffff;
+            color: var(--light-text);
+        }
+
+        .tile b { display: block; }
+
+        .tile em {
+            display: block;
+            font-style: normal;
+            margin-top: 4px;
+            color: #b6c8f0;
+        }
+
+        .phone.light .tile em { color: var(--light-muted); }
+
+        .play-bg {
+            border: 1px solid rgba(255, 255, 255, 0.16);
+            border-radius: 12px;
+            min-height: 400px;
+            padding: 8px;
+            background:
+                radial-gradient(210px 130px at 75% 10%, rgba(87, 216, 255, 0.2), transparent 72%),
+                radial-gradient(180px 120px at 20% 85%, rgba(255, 162, 76, 0.2), transparent 75%),
+                linear-gradient(160deg, #1a274d, #0d1530);
+        }
+
+        .bubble {
+            margin-top: 7px;
+            border-radius: 10px;
+            border: 1px solid rgba(255, 255, 255, 0.16);
+            background: rgba(250, 252, 255, 0.88);
+            color: #25304a;
+            padding: 7px;
+            font-size: 11px;
+            line-height: 1.44;
+        }
+
+        .bubble.role {
+            margin-left: 16%;
+        }
+
+        .name {
+            display: inline-flex;
+            align-items: center;
+            height: 20px;
+            border-radius: 999px;
+            padding: 0 8px;
+            font-size: 10px;
+            color: #d9e8ff;
+            background: rgba(255, 255, 255, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.16);
+            margin-top: 6px;
+        }
+
+        .action-row {
+            margin-top: 8px;
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 6px;
+        }
+
+        .action {
+            border-radius: 8px;
+            border: 1px solid rgba(255, 255, 255, 0.18);
+            background: rgba(255, 255, 255, 0.08);
+            display: grid;
+            place-items: center;
+            font-size: 10px;
+            min-height: 34px;
+            color: #cfdeff;
+        }
+
+        .speak {
+            margin-top: 8px;
+            width: 100%;
+            height: 40px;
+            border: 0;
+            border-radius: 10px;
+            font-weight: 800;
+            font-size: 16px;
+            letter-spacing: 0.3px;
+            color: #351700;
+            background: linear-gradient(120deg, #ffa24c, #ffd7a6);
+        }
+
+        .toggle-input {
+            margin-top: 8px;
+            height: 40px;
+            border-radius: 10px;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            background: rgba(255, 255, 255, 0.08);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 10px;
+            font-size: 11px;
+        }
+
+        .toggle-input i {
+            width: 24px;
+            height: 24px;
+            border-radius: 999px;
+            border: 1px solid rgba(255, 255, 255, 0.28);
+            display: inline-grid;
+            place-items: center;
+            color: #d1e0ff;
+            font-style: normal;
+        }
+
+        .bottom-sheet {
+            margin-top: 9px;
+            border: 1px solid rgba(255, 255, 255, 0.16);
+            border-radius: 14px;
+            background: rgba(22, 57, 70, 0.95);
+            padding: 8px;
+        }
+
+        .bottom-sheet h4 {
+            margin: 0;
+            font-size: 12px;
+        }
+
+        .bottom-sheet .mini-row {
+            border-color: rgba(255, 255, 255, 0.16);
+            background: rgba(255, 255, 255, 0.08);
+        }
+
+        .context-menu {
+            margin-top: 8px;
+            border-radius: 10px;
+            border: 1px solid rgba(255, 255, 255, 0.16);
+            background: #fff;
+            color: #1f2740;
+            padding: 7px;
+            display: grid;
+            grid-template-columns: repeat(5, 1fr);
+            gap: 4px;
+            font-size: 10px;
+            text-align: center;
+        }
+
+        .suggest {
+            margin-top: 8px;
+            border-radius: 10px;
+            border: 1px solid rgba(255, 255, 255, 0.18);
+            background: rgba(255, 255, 255, 0.08);
+            padding: 8px;
+        }
+
+        .suggest .option {
+            margin-top: 5px;
+            border-radius: 8px;
+            border: 1px solid rgba(255, 255, 255, 0.18);
+            padding: 6px;
+            font-size: 11px;
+            background: rgba(255, 255, 255, 0.05);
+            color: #d3e2ff;
+        }
+
+        .footer-note {
+            max-width: 1600px;
+            margin: 10px auto 0;
+            color: #7d93c6;
+            font-size: 12px;
+        }
+    </style>
+</head>
+<body>
+<header class="header">
+    <h1>Android 全流程原型（按 `android.md` 重设计）</h1>
+    <div class="sub">覆盖：主页、故事大厅、创建故事（角色/章节/发布）、聊过、我的、设置、游玩单条/历史、故事设定、语音文字切换、长按操作、AI 回答提示。</div>
+    <div class="tags">
+        <span class="tag">底部菜单：主页 / 创建故事 / 聊过 / 我的</span>
+        <span class="tag">固定角色：用户 + 旁白</span>
+        <span class="tag">输入后写入聊过并置顶</span>
+        <span class="tag">故事支持草稿与发布</span>
+    </div>
+</header>
+
+<main class="grid">
+    <article class="card">
+        <div>
+            <h2>1. 主页（随机推荐 + 输入框）</h2>
+            <p>对应 `img_4` `img_14`：随机故事卡、互动指标、底部菜单。</p>
+        </div>
+        <div class="phone">
+            <div class="screen">
+                <div class="status"><span>10:34</span><span>5G · 100%</span></div>
+                <div class="body">
+                    <div class="hero">
+                        <h3>随机推荐：敢和我争你配吗</h3>
+                        <p>点击进入故事；展示点赞/评论/收藏，并支持直接语音开聊。</p>
+                    </div>
+                    <div class="input-row">输入框：说一句开场白，自动进入「聊过」并置顶</div>
+                    <div class="mini-row"><b>故事信息</b><span>点赞 6,774 · 评论 179 · 收藏 2,031</span></div>
+                    <div class="chips">
+                        <span class="chip">角色：身价</span>
+                        <span class="chip">自由创作</span>
+                    </div>
+                    <div class="action-row">
+                        <div class="action">点赞</div>
+                        <div class="action">分享</div>
+                        <div class="action">评论</div>
+                        <div class="action">历史</div>
+                    </div>
+                    <button class="speak">按住说话</button>
+                </div>
+                <div class="nav">
+                    <span class="active">主页</span>
+                    <span>创建故事</span>
+                    <span>聊过</span>
+                    <span>我的</span>
+                </div>
+            </div>
+        </div>
+    </article>
+
+    <article class="card">
+        <div>
+            <h2>2. 故事大厅（分类 + 搜索）</h2>
+            <p>对应 `img_15` `img_16`：从主页入口进入，按分类筛选故事。</p>
+        </div>
+        <div class="phone light">
+            <div class="screen">
+                <div class="status"><span>10:34</span><span>5G · 100%</span></div>
+                <div class="body">
+                    <div class="input-row">搜索感兴趣的内容</div>
+                    <div class="chips">
+                        <span class="chip">精选故事</span>
+                        <span class="chip">工具</span>
+                        <span class="chip">校园</span>
+                        <span class="chip">都市</span>
+                    </div>
+                    <div class="story-wall">
+                        <div class="tile"><b>黑白往事</b><em>3778 在聊</em></div>
+                        <div class="tile"><b>热血青春</b><em>314 在聊</em></div>
+                        <div class="tile"><b>既定缘分</b><em>5337 在聊</em></div>
+                        <div class="tile"><b>花样男子</b><em>1.3万 在聊</em></div>
+                    </div>
+                    <div class="mini-row"><b>规则</b><span>用户在输入框发送第一句后，故事进入「聊过」列表。</span></div>
+                </div>
+                <div class="nav">
+                    <span class="active">主页</span>
+                    <span>创建故事</span>
+                    <span>聊过</span>
+                    <span>我的</span>
+                </div>
+            </div>
+        </div>
+    </article>
+
+    <article class="card">
+        <div>
+            <h2>3. 创建故事-角色</h2>
+            <p>对应 `img_17`：用户角色固定不可删，旁白不在角色列表中，仅可改音色。</p>
+        </div>
+        <div class="phone light">
+            <div class="screen">
+                <div class="status"><span>10:34</span><span>编辑中</span></div>
+                <div class="body">
+                    <div class="hero">
+                        <h3>角色面板</h3>
+                        <p>字段：头像(上传/AI)、角色名、设定、音色、台词示例；参数卡在游玩时生成。</p>
+                    </div>
+                    <div class="mini-row"><b>用户（固定）</b><span>不可删除；字段允许为空；代表实际玩家。</span></div>
+                    <div class="mini-row"><b>旁白（特殊）</b><span>不出现在角色列表，仅修改音色。</span></div>
+                    <div class="mini-row"><b>其他角色 +</b><span>可新增 NPC，配置角色音色与台词示例。</span></div>
+                    <div class="chips">
+                        <span class="chip">AI 生成头像</span>
+                        <span class="chip">音色库</span>
+                        <span class="chip">角色设定模板</span>
+                    </div>
+                </div>
+                <div class="nav">
+                    <span>主页</span>
+                    <span class="active">创建故事</span>
+                    <span>聊过</span>
+                    <span>我的</span>
+                </div>
+            </div>
+        </div>
+    </article>
+
+    <article class="card">
+        <div>
+            <h2>4. 创建故事-章节编辑</h2>
+            <p>章节背景图、开场白、章节内容调试、结局条件可见开关、音乐。</p>
+        </div>
+        <div class="phone light">
+            <div class="screen">
+                <div class="status"><span>10:34</span><span>Chapter 1</span></div>
+                <div class="body">
+                    <div class="hero">
+                        <h3>章节内容</h3>
+                        <p>说明：提及用户所扮演角色时，请用“用户”一词称呼。</p>
+                    </div>
+                    <div class="mini-row"><b>章节背景图</b><span>上传 / AI 生成</span></div>
+                    <div class="mini-row"><b>开场白（仅章节1）</b><span>角色 + 台词</span></div>
+                    <div class="mini-row"><b>调试章节</b><span>独立调试当前章节逻辑</span></div>
+                    <div class="input-row">章节正文编辑区（字数 393/1500）</div>
+                    <div class="chips">
+                        <span class="chip">提及：用户</span>
+                        <span class="chip">蒋炎</span>
+                        <span class="chip">纳兰嫣然</span>
+                    </div>
+                    <div class="mini-row"><b>章节结局</b><span>为空 = AI 可无限编排；支持「结局条件对用户可见」开关。</span></div>
+                </div>
+                <div class="nav">
+                    <span>主页</span>
+                    <span class="active">创建故事</span>
+                    <span>聊过</span>
+                    <span>我的</span>
+                </div>
+            </div>
+        </div>
+    </article>
+
+    <article class="card">
+        <div>
+            <h2>5. 创建故事-发布信息</h2>
+            <p>下一步填写故事图标/名称/简介，并支持存草稿与发布。</p>
+        </div>
+        <div class="phone light">
+            <div class="screen">
+                <div class="status"><span>10:34</span><span>发布面板</span></div>
+                <div class="body">
+                    <div class="mini-row"><b>故事图标</b><span>上传 / AI 生成</span></div>
+                    <div class="mini-row"><b>故事名称</b><span>镜港失落区</span></div>
+                    <div class="mini-row"><b>故事简介</b><span>悬疑冒险，支持语音游玩与分支章节。</span></div>
+                    <div class="mini-row"><b>可见性开关</b><span>他人可查看角色设定 / 他人可分享对话剧情</span></div>
+                    <div class="action-row">
+                        <div class="action">存草稿</div>
+                        <div class="action">预览</div>
+                        <div class="action">发布</div>
+                        <div class="action">返回</div>
+                    </div>
+                    <div class="mini-row"><b>草稿策略</b><span>每次编辑自动存本地，手动保存到云端。</span></div>
+                </div>
+                <div class="nav">
+                    <span>主页</span>
+                    <span class="active">创建故事</span>
+                    <span>聊过</span>
+                    <span>我的</span>
+                </div>
+            </div>
+        </div>
+    </article>
+
+    <article class="card">
+        <div>
+            <h2>6. 聊过（游玩记录）</h2>
+            <p>对应 `img_7`：展示用户聊过的故事，支持继续聊，最新在最前。</p>
+        </div>
+        <div class="phone light">
+            <div class="screen">
+                <div class="status"><span>10:34</span><span>聊过</span></div>
+                <div class="body">
+                    <div class="mini-row"><b>敢和我争你配吗</b><span>03-22 19:34 · 来自主页输入</span></div>
+                    <div class="mini-row"><b>我在西游记世界</b><span>03-22 18:15 · 语音开启</span></div>
+                    <div class="mini-row"><b>热血青春</b><span>03-22 14:06 · 文本模式</span></div>
+                    <div class="mini-row"><b>规则</b><span>用户首次输入后自动创建记录，之后按最近会话置顶。</span></div>
+                </div>
+                <div class="nav">
+                    <span>主页</span>
+                    <span>创建故事</span>
+                    <span class="active">聊过</span>
+                    <span>我的</span>
+                </div>
+            </div>
+        </div>
+    </article>
+
+    <article class="card">
+        <div>
+            <h2>7. 我的（资料 + 作品）</h2>
+            <p>对应 `img_18`：头像昵称、草稿箱、已发布故事，支持游玩/编辑/删除。</p>
+        </div>
+        <div class="phone light">
+            <div class="screen">
+                <div class="status"><span>10:34</span><span>我的</span></div>
+                <div class="body">
+                    <div class="hero">
+                        <h3>青熟大帝</h3>
+                        <p>入口：设置（右上） / 创作 / 编辑资料 / 草稿箱 / 已发布作品。</p>
+                    </div>
+                    <div class="mini-row"><b>草稿箱(14)</b><span>进入后继续编辑未发布故事</span></div>
+                    <div class="mini-row"><b>已发布：无厘头故事</b><span>支持游玩、编辑、删除</span></div>
+                    <div class="mini-row"><b>已发布：修仙传</b><span>浏览 19.6k · 评论 420</span></div>
+                </div>
+                <div class="nav">
+                    <span>主页</span>
+                    <span>创建故事</span>
+                    <span>聊过</span>
+                    <span class="active">我的</span>
+                </div>
+            </div>
+        </div>
+    </article>
+
+    <article class="card">
+        <div>
+            <h2>8. 设置</h2>
+            <p>对应 `img_19`：主题、接口地址、登录配置、退出登录。</p>
+        </div>
+        <div class="phone light">
+            <div class="screen">
+                <div class="status"><span>10:34</span><span>设置</span></div>
+                <div class="body">
+                    <div class="mini-row"><b>主题模式</b><span>浅色 / 深色 / 跟随系统</span></div>
+                    <div class="mini-row"><b>API 地址</b><span>http://localhost:60000</span></div>
+                    <div class="mini-row"><b>WebSocket 地址</b><span>ws://localhost:60000</span></div>
+                    <div class="mini-row"><b>账号配置</b><span>修改用户名 / 密码</span></div>
+                    <div class="mini-row"><b>退出登录</b><span>退出后返回登录/注册流程</span></div>
+                </div>
+                <div class="nav">
+                    <span>主页</span>
+                    <span>创建故事</span>
+                    <span>聊过</span>
+                    <span class="active">我的</span>
+                </div>
+            </div>
+        </div>
+    </article>
+
+    <article class="card">
+        <div>
+            <h2>9. 游玩故事（默认单条）</h2>
+            <p>对应 `img_20`：默认只显示重点发言，突出角色头像与章节背景。</p>
+        </div>
+        <div class="phone">
+            <div class="screen">
+                <div class="status"><span>10:35</span><span>我在西游记世界</span></div>
+                <div class="body">
+                    <div class="play-bg">
+                        <span class="name">青鸾</span>
+                        <div class="bubble role">根据对熊黑怪数据分析，内丹外露概率提升到 70.8%，建议立刻前往试探。</div>
+                        <div class="action-row">
+                            <div class="action">点赞</div>
+                            <div class="action">分享</div>
+                            <div class="action">评论</div>
+                            <div class="action">历史</div>
+                        </div>
+                    </div>
+                    <button class="speak">按住说话</button>
+                </div>
+                <div class="nav">
+                    <span>主页</span>
+                    <span>创建故事</span>
+                    <span class="active">聊过</span>
+                    <span>我的</span>
+                </div>
+            </div>
+        </div>
+    </article>
+
+    <article class="card">
+        <div>
+            <h2>10. 游玩故事（历史记录模式）</h2>
+            <p>对应 `img_21`：展示多条历史记录，可上下滚动；发送后自动跳到最后。</p>
+        </div>
+        <div class="phone">
+            <div class="screen">
+                <div class="status"><span>10:35</span><span>历史模式</span></div>
+                <div class="body">
+                    <div class="play-bg">
+                        <div class="bubble">不定就能用来改造系统……这可比蓝瓜子有意思多了。</div>
+                        <span class="name">青鸾</span>
+                        <div class="bubble role">宿主，补充信息：若能获取并合理利用，可能提供新的修炼资源。</div>
+                        <div class="bubble">收到，继续前进并保持警戒。</div>
+                    </div>
+                    <button class="speak">按住说话</button>
+                </div>
+                <div class="nav">
+                    <span>主页</span>
+                    <span>创建故事</span>
+                    <span class="active">聊过</span>
+                    <span>我的</span>
+                </div>
+            </div>
+        </div>
+    </article>
+
+    <article class="card">
+        <div>
+            <h2>11. 故事设定弹层</h2>
+            <p>对应 `img_22`：点击故事名打开，查看简介、角色列表、对话模式、分享等。</p>
+        </div>
+        <div class="phone">
+            <div class="screen">
+                <div class="status"><span>10:35</span><span>我在西游记世界</span></div>
+                <div class="body">
+                    <div class="play-bg">
+                        <div class="bubble">（背景继续播放中）</div>
+                        <div class="bottom-sheet">
+                            <h4>我在西游记世界</h4>
+                            <div class="mini-row"><b>故事简介</b><span>林浩然携华夏文脉穿越，融合多角色推进主线。</span></div>
+                            <div class="mini-row"><b>角色列表</b><span>女娲 / 林惊羽 / 青鸾 / 唐三藏 / 猪八戒</span></div>
+                            <div class="mini-row"><b>故事设定</b><span>对话模式：基础模式</span></div>
+                            <div class="action-row">
+                                <div class="action">分享</div>
+                                <div class="action">回溯</div>
+                                <div class="action">举报</div>
+                                <div class="action">拉黑作者</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="nav">
+                    <span>主页</span>
+                    <span>创建故事</span>
+                    <span class="active">聊过</span>
+                    <span>我的</span>
+                </div>
+            </div>
+        </div>
+    </article>
+
+    <article class="card">
+        <div>
+            <h2>12. 长按菜单 + 语音/文字切换 + AI提示</h2>
+            <p>对应 `img_23` `img_24` `img_25` `img_26`：复制、重听、点赞、点踩、改写；支持输入方式切换与推荐回答。</p>
+        </div>
+        <div class="phone">
+            <div class="screen">
+                <div class="status"><span>10:36</span><span>交互面板</span></div>
+                <div class="body">
+                    <div class="play-bg">
+                        <span class="name">青鸾</span>
+                        <div class="bubble role">建议你先从系统边缘试探，别正面硬拼。</div>
+                        <div class="context-menu">
+                            <div>复制</div>
+                            <div>点赞</div>
+                            <div>点踩</div>
+                            <div>改写</div>
+                            <div>重听</div>
+                        </div>
+                        <div class="toggle-input">文字输入模式（点图标切换）<i>⌨</i><i>＋</i></div>
+                        <div class="suggest">
+                            AI 提示可以怎么回答：
+                            <div class="option">1. 我先绕路观察，不直接进攻。</div>
+                            <div class="option">2. 你给我一个成功率更高的具体方案。</div>
+                            <div class="option">3. 返回上一轮，换一种行动方式。</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="nav">
+                    <span>主页</span>
+                    <span>创建故事</span>
+                    <span class="active">聊过</span>
+                    <span>我的</span>
+                </div>
+            </div>
+        </div>
+    </article>
+</main>
+
+<div class="footer-note">这个版本是「按安卓需求清单逐条映射」的 demo，不再只给概念图。你可以直接据此拆任务给前端开发。</div>
+</body>
+</html>

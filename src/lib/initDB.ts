@@ -1428,6 +1428,7 @@ export default async (knex: Knex, forceInit: boolean = false): Promise<void> => 
         table.integer("worldId");
         table.integer("projectId");
         table.integer("chapterId");
+        table.text("contentVersion");
         table.text("title");
         table.text("status");
         table.text("stateJson");

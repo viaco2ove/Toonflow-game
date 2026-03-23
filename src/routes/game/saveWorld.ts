@@ -29,12 +29,27 @@ export default router.post(
       const { worldId, projectId, name, intro, settings, playerRole, narratorRole } = req.body;
       const db = getGameDb();
       const now = nowTs();
+      const currentUserId = Number((req as any)?.user?.id || 0);
+      if (!Number.isFinite(currentUserId) || currentUserId <= 0) {
+        return res.status(401).send(error("用户未登录"));
+      }
+
+      const project = await db("t_project").where({ id: Number(projectId), userId: currentUserId }).first();
+      if (!project) {
+        return res.status(403).send(error("无权访问该项目"));
+      }
+
       const rolePair = normalizeRolePair(playerRole, narratorRole);
 
       const worldIdNum = Number(worldId);
       let existing: any = null;
       if (Number.isFinite(worldIdNum) && worldIdNum > 0) {
-        existing = await db("t_storyWorld").where({ id: worldIdNum }).first();
+        existing = await db("t_storyWorld as w")
+          .leftJoin("t_project as p", "w.projectId", "p.id")
+          .where("w.id", worldIdNum)
+          .where("p.userId", currentUserId)
+          .select("w.*")
+          .first();
       }
       if (!existing) {
         existing = await db("t_storyWorld").where({ projectId }).first();

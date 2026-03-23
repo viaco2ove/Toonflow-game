@@ -1,0 +1,3033 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Toonflow 高保真交互原型 v3</title>
+    <style>
+        :root {
+            --bg: #06111c;
+            --panel: #0d1d2f;
+            --panel-2: #122640;
+            --line: #2a4670;
+            --text: #edf5ff;
+            --muted: #90a9cf;
+            --accent: #ffbd5c;
+            --accent-2: #56e4f5;
+            --danger: #ff6b6b;
+            --ok: #63f08c;
+            --card: rgba(255, 255, 255, 0.06);
+        }
+
+        * { box-sizing: border-box; }
+
+        body {
+            margin: 0;
+            min-height: 100vh;
+            color: var(--text);
+            font-family: "Sora", "Noto Sans SC", "PingFang SC", sans-serif;
+            background:
+                radial-gradient(1100px 600px at -5% -5%, rgba(86, 228, 245, 0.2), transparent 55%),
+                radial-gradient(1100px 700px at 105% 120%, rgba(255, 189, 92, 0.2), transparent 58%),
+                linear-gradient(165deg, #030813, #081424 58%, #050b17);
+            padding: 14px;
+        }
+
+        .topbar {
+            max-width: 1700px;
+            margin: 0 auto 12px;
+            border: 1px solid var(--line);
+            border-radius: 16px;
+            padding: 14px 16px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            background: linear-gradient(160deg, rgba(13, 30, 52, 0.95), rgba(6, 14, 24, 0.98));
+        }
+
+        .topbar h1 {
+            margin: 0;
+            font-size: clamp(20px, 2.2vw, 32px);
+            letter-spacing: 0.3px;
+        }
+
+        .topbar p {
+            margin: 4px 0 0;
+            color: var(--muted);
+            font-size: 12px;
+        }
+
+        .mode-switch {
+            display: flex;
+            gap: 8px;
+        }
+
+        .mode-btn {
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            background: rgba(255, 255, 255, 0.06);
+            color: #dce8ff;
+            border-radius: 999px;
+            height: 34px;
+            padding: 0 14px;
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: 600;
+        }
+
+        .mode-btn.active {
+            border-color: rgba(255, 189, 92, 0.6);
+            background: rgba(255, 189, 92, 0.2);
+            color: #ffe6c0;
+        }
+
+        .workspace {
+            max-width: 1700px;
+            margin: 0 auto;
+            display: grid;
+            grid-template-columns: 290px minmax(420px, 560px) 1fr;
+            gap: 12px;
+        }
+
+        .workspace.web-mode {
+            grid-template-columns: 248px minmax(920px, 1.45fr) 292px;
+            align-items: start;
+        }
+
+        .workspace.web-mode > .panel {
+            min-height: 860px;
+        }
+
+        .workspace.web-mode > .panel:nth-child(2) {
+            padding: 14px;
+        }
+
+        .panel {
+            border: 1px solid var(--line);
+            border-radius: 16px;
+            background: linear-gradient(160deg, rgba(14, 29, 49, 0.95), rgba(8, 15, 27, 0.97));
+            padding: 12px;
+            min-height: 820px;
+        }
+
+        .panel h2,
+        .panel h3 {
+            margin: 0;
+            font-size: 16px;
+        }
+
+        .panel-sub {
+            margin-top: 4px;
+            font-size: 12px;
+            color: var(--muted);
+            line-height: 1.45;
+        }
+
+        .step-list {
+            margin-top: 10px;
+            display: grid;
+            gap: 8px;
+        }
+
+        .step-btn {
+            border: 1px solid rgba(255, 255, 255, 0.16);
+            border-radius: 10px;
+            height: 44px;
+            padding: 0 10px;
+            text-align: left;
+            background: var(--card);
+            color: #d4e3ff;
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: 600;
+        }
+
+        .step-btn small {
+            display: block;
+            margin-top: 1px;
+            font-size: 11px;
+            color: #9db4dc;
+            font-weight: 400;
+        }
+
+        .step-btn.active {
+            border-color: rgba(86, 228, 245, 0.58);
+            background: rgba(86, 228, 245, 0.18);
+            color: #d7fbff;
+        }
+
+        .legend {
+            margin-top: 10px;
+            border: 1px solid rgba(255, 255, 255, 0.14);
+            border-radius: 10px;
+            background: rgba(255, 255, 255, 0.04);
+            padding: 9px;
+            font-size: 12px;
+            color: #b8cdef;
+            line-height: 1.55;
+        }
+
+        .stage-head {
+            display: flex;
+            align-items: start;
+            justify-content: space-between;
+            gap: 12px;
+        }
+
+        .stage-head h2 {
+            margin: 0;
+            font-size: 17px;
+        }
+
+        .stage-head p {
+            margin: 4px 0 0;
+            color: var(--muted);
+            font-size: 12px;
+            line-height: 1.4;
+        }
+
+        .sub-controls {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: flex-end;
+            gap: 6px;
+        }
+
+        .chip-btn {
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            border-radius: 999px;
+            height: 28px;
+            padding: 0 10px;
+            font-size: 12px;
+            background: rgba(255, 255, 255, 0.07);
+            color: #d9e7ff;
+            cursor: pointer;
+            white-space: nowrap;
+        }
+
+        .chip-btn.active {
+            border-color: rgba(255, 189, 92, 0.6);
+            background: rgba(255, 189, 92, 0.2);
+            color: #ffe2b7;
+        }
+
+        .stage-body {
+            margin-top: 10px;
+            animation: fadeIn 220ms ease;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(6px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .phone-shell {
+            border-radius: 28px;
+            border: 1px solid #425f8f;
+            padding: 8px;
+            background: linear-gradient(165deg, #101c35, #070f1d);
+            box-shadow: 0 18px 40px rgba(0, 0, 0, 0.35);
+        }
+
+        .phone-screen {
+            height: 770px;
+            border-radius: 20px;
+            border: 1px solid #4d679a;
+            overflow: hidden;
+            background: #f3f5f8;
+            color: #1a2535;
+            position: relative;
+        }
+
+        .android-status {
+            height: 22px;
+            padding: 0 10px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            font-size: 11px;
+            color: #8fa2c8;
+            background: rgba(255, 255, 255, 0.88);
+        }
+
+        .bottom-nav {
+            position: absolute;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            height: 52px;
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            background: rgba(255, 255, 255, 0.96);
+            border-top: 1px solid #dbe5f5;
+            color: #51627f;
+            font-size: 12px;
+        }
+
+        .bottom-nav button {
+            border: none;
+            background: transparent;
+            color: inherit;
+            font: inherit;
+            cursor: pointer;
+            display: grid;
+            place-items: center;
+        }
+
+        .bottom-nav .active {
+            color: #ff8e2b;
+            font-weight: 700;
+        }
+
+        .hero-bg {
+            position: absolute;
+            inset: 22px 0 52px;
+            background-size: cover;
+            background-position: center;
+            filter: saturate(0.9);
+        }
+
+        .glass {
+            backdrop-filter: blur(6px);
+            background: rgba(8, 15, 28, 0.42);
+            color: #eef4ff;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            border-radius: 12px;
+        }
+
+        .home-block {
+            position: absolute;
+            left: 10px;
+            right: 10px;
+            bottom: 64px;
+            display: grid;
+            gap: 8px;
+        }
+
+        .home-corner-actions {
+            position: absolute;
+            top: 30px;
+            right: 12px;
+            display: flex;
+            gap: 8px;
+            z-index: 3;
+        }
+
+        .corner-btn {
+            width: 28px;
+            height: 28px;
+            border-radius: 999px;
+            border: 1px solid rgba(255, 255, 255, 0.44);
+            background: rgba(12, 21, 35, 0.4);
+            display: grid;
+            place-items: center;
+            cursor: pointer;
+        }
+
+        .corner-btn svg {
+            width: 15px;
+            height: 15px;
+            stroke: #edf6ff;
+            fill: none;
+            stroke-width: 1.8;
+            stroke-linecap: round;
+            stroke-linejoin: round;
+        }
+
+        .chat-corner-actions {
+            position: absolute;
+            top: 8px;
+            right: 10px;
+            display: flex;
+            gap: 8px;
+            z-index: 4;
+        }
+
+        .home-title {
+            padding: 9px 10px;
+            font-size: 14px;
+            line-height: 1.35;
+            cursor: pointer;
+        }
+
+        .home-meta {
+            display: flex;
+            justify-content: space-between;
+            padding: 0 4px;
+            font-size: 11px;
+            color: #dbe9ff;
+        }
+
+        .voice-bar {
+            height: 46px;
+            border-radius: 14px;
+            display: grid;
+            place-items: center;
+            font-weight: 700;
+            letter-spacing: 0.4px;
+            background: rgba(66, 81, 108, 0.92);
+            color: #e6efff;
+            border: none;
+            cursor: pointer;
+        }
+
+        .hall-wrap {
+            position: absolute;
+            inset: 22px 0 52px;
+            padding: 10px;
+            background: #f4f6fa;
+        }
+
+        .search {
+            height: 38px;
+            border: 2px solid #202932;
+            border-radius: 999px;
+            padding: 0 14px;
+            display: flex;
+            align-items: center;
+            font-size: 13px;
+            color: #697a97;
+            background: #fff;
+        }
+
+        .tags {
+            margin-top: 8px;
+            display: flex;
+            gap: 6px;
+            flex-wrap: wrap;
+        }
+
+        .tag {
+            border-radius: 999px;
+            background: #eaf0fa;
+            color: #415775;
+            height: 24px;
+            padding: 0 10px;
+            font-size: 11px;
+            display: grid;
+            place-items: center;
+        }
+
+        .tag.active {
+            background: #ffe347;
+            color: #39424f;
+            font-weight: 700;
+        }
+
+        .story-grid {
+            margin-top: 9px;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+        }
+
+        .story-card {
+            border-radius: 12px;
+            overflow: hidden;
+            border: 1px solid #cfdcf0;
+            background: #fff;
+        }
+
+        .story-thumb {
+            height: 98px;
+            background-size: cover;
+            background-position: center;
+        }
+
+        .story-text {
+            padding: 7px;
+            font-size: 11px;
+            color: #495c79;
+            line-height: 1.45;
+        }
+
+        .builder {
+            position: absolute;
+            inset: 22px 0 52px;
+            padding: 12px;
+            background: #f1f3f7;
+            overflow: auto;
+        }
+
+        .section-title {
+            margin: 10px 0 7px;
+            font-size: 13px;
+            color: #232f43;
+            font-weight: 800;
+        }
+
+        .avatar-row,
+        .avatar-grid {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+
+        .avatar-item {
+            width: 62px;
+            text-align: center;
+            font-size: 11px;
+            color: #50617c;
+        }
+
+        .avatar-dot {
+            width: 54px;
+            height: 54px;
+            border-radius: 50%;
+            border: 1px solid #d3deef;
+            background: #fff;
+            display: grid;
+            place-items: center;
+            font-weight: 700;
+            color: #8aa0c6;
+            margin: 0 auto 5px;
+            overflow: hidden;
+            position: relative;
+        }
+
+        button.avatar-dot {
+            padding: 0;
+            cursor: pointer;
+        }
+
+        .avatar-dot.editable:hover {
+            border-color: #9cb0cf;
+            box-shadow: 0 0 0 2px rgba(156, 176, 207, 0.14);
+        }
+
+        .avatar-icon {
+            font-size: 16px;
+            line-height: 1;
+        }
+
+        .avatar-edit-badge {
+            position: absolute;
+            right: 9px;
+            bottom: 2px;
+            width: 17px;
+            height: 17px;
+            border-radius: 50%;
+            border: 1px solid #c7d4e8;
+            background: #ffffff;
+            display: grid;
+            place-items: center;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.16);
+        }
+
+        .avatar-edit-badge svg {
+            width: 9px;
+            height: 9px;
+            stroke: #6b7f9f;
+            fill: none;
+            stroke-width: 2;
+            stroke-linecap: round;
+            stroke-linejoin: round;
+        }
+
+        .avatar-dot img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+
+        .user-editor {
+            position: absolute;
+            inset: 22px 0 0;
+            background: #f1f3f7;
+            overflow: auto;
+            padding: 12px;
+        }
+
+        .user-editor-head {
+            height: 34px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            position: relative;
+            margin-bottom: 8px;
+        }
+
+        .user-editor-back {
+            position: absolute;
+            left: 0;
+            width: 28px;
+            height: 28px;
+            border-radius: 999px;
+            border: 1px solid #d0dcec;
+            background: #fff;
+            color: #5e7498;
+            cursor: pointer;
+            font-size: 14px;
+        }
+
+        .user-editor-title {
+            font-size: 15px;
+            font-weight: 800;
+            color: #1f2b40;
+        }
+
+        .user-editor-card {
+            border: 1px solid #d3deef;
+            border-radius: 12px;
+            background: #fff;
+            padding: 10px;
+            margin-top: 10px;
+        }
+
+        .user-editor-label {
+            font-size: 13px;
+            color: #6a7f9f;
+            font-weight: 700;
+        }
+
+        .user-editor-input,
+        .user-editor-textarea {
+            margin-top: 7px;
+            border: 1px solid #d4dff0;
+            border-radius: 9px;
+            background: #f7f9fd;
+            color: #6e82a1;
+            padding: 10px;
+            font-size: 13px;
+            line-height: 1.45;
+        }
+
+        .user-editor-textarea {
+            min-height: 112px;
+        }
+
+        .user-editor-counter {
+            margin-top: 5px;
+            display: flex;
+            justify-content: space-between;
+            font-size: 11px;
+            color: #8fa3c2;
+        }
+
+        .user-editor-submit {
+            margin-top: 22px;
+            width: 100%;
+            height: 50px;
+            border: none;
+            border-radius: 12px;
+            background: #ffe600;
+            color: #1f2128;
+            font-size: 30px;
+            font-weight: 800;
+            letter-spacing: 1px;
+            cursor: pointer;
+        }
+
+        .npc-editor-upload {
+            margin-top: 7px;
+            border: 1px dashed #cfdcec;
+            border-radius: 10px;
+            background: #f7f9fd;
+            color: #60789c;
+            height: 92px;
+            display: grid;
+            place-items: center;
+            font-size: 13px;
+            text-align: center;
+            line-height: 1.4;
+        }
+
+        .npc-editor-select {
+            margin-top: 7px;
+            border: 1px solid #d4dff0;
+            border-radius: 9px;
+            background: #f7f9fd;
+            color: #6e82a1;
+            height: 44px;
+            padding: 0 12px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            font-size: 13px;
+        }
+
+        .card-block {
+            border: 1px solid #d3deef;
+            border-radius: 12px;
+            background: #fff;
+            padding: 10px;
+        }
+
+        .hint-text {
+            font-size: 11px;
+            color: #7b8ea8;
+            line-height: 1.5;
+        }
+
+        .input-box,
+        .textarea-box,
+        .line-field {
+            margin-top: 6px;
+            border: 1px solid #d5e1f2;
+            border-radius: 10px;
+            background: #f9fbff;
+            color: #374a67;
+            font-size: 13px;
+            padding: 10px;
+        }
+
+        .textarea-box {
+            min-height: 94px;
+            line-height: 1.5;
+        }
+
+        .chips {
+            margin-top: 7px;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+        }
+
+        .tiny-chip {
+            border-radius: 999px;
+            height: 22px;
+            padding: 0 9px;
+            font-size: 11px;
+            background: #eef3fc;
+            color: #4f6281;
+            display: grid;
+            place-items: center;
+            border: 1px solid #d7e2f2;
+        }
+
+        .primary-next {
+            margin-top: 10px;
+            height: 44px;
+            border-radius: 12px;
+            border: none;
+            width: 100%;
+            font-size: 20px;
+            font-weight: 800;
+            color: #1f2128;
+            background: #ffe600;
+            letter-spacing: 1px;
+        }
+
+        .split-line {
+            margin: 10px 0;
+            border-top: 1px dashed #d4deee;
+        }
+
+        .switch-row {
+            height: 44px;
+            border: 1px solid #d4deee;
+            border-radius: 10px;
+            background: #fff;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 10px;
+            font-size: 13px;
+            color: #3e5170;
+            margin-top: 8px;
+        }
+
+        .switch-row[data-action] {
+            cursor: pointer;
+        }
+
+        .switch-dot {
+            width: 34px;
+            height: 20px;
+            border-radius: 999px;
+            position: relative;
+            background: #d3deef;
+        }
+
+        .switch-dot::after {
+            content: "";
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            background: #fff;
+            position: absolute;
+            top: 2px;
+            left: 2px;
+            box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+        }
+
+        .switch-dot.on {
+            background: #4ad06b;
+        }
+
+        .switch-dot.on::after {
+            left: 16px;
+        }
+
+        .chat-stage {
+            position: absolute;
+            inset: 22px 0 52px;
+            color: #ecf3ff;
+            background-size: cover;
+            background-position: center;
+            overflow: hidden;
+        }
+
+        .chat-layer {
+            position: absolute;
+            inset: 0;
+            background: linear-gradient(180deg, rgba(7, 12, 21, 0.2), rgba(6, 12, 19, 0.58));
+            padding: 10px 10px 150px;
+        }
+
+        .chat-overlay-text {
+            position: absolute;
+            left: 6px;
+            top: 62px;
+            writing-mode: vertical-rl;
+            letter-spacing: 2px;
+            font-size: 10px;
+            color: rgba(221, 237, 255, 0.35);
+            z-index: 2;
+        }
+
+        .chat-close-btn {
+            position: absolute;
+            left: 10px;
+            top: 10px;
+            width: 24px;
+            height: 24px;
+            border-radius: 50%;
+            border: none;
+            background: rgba(0, 0, 0, 0.38);
+            color: #e9f3ff;
+            font-size: 14px;
+            cursor: pointer;
+            display: grid;
+            place-items: center;
+            z-index: 4;
+        }
+
+        .chat-fav-btn {
+            position: absolute;
+            left: 39px;
+            top: 10px;
+            width: 24px;
+            height: 24px;
+            border-radius: 50%;
+            border: none;
+            background: rgba(0, 0, 0, 0.28);
+            color: #ffe35a;
+            font-size: 12px;
+            cursor: pointer;
+            display: grid;
+            place-items: center;
+            z-index: 4;
+        }
+
+        .bubble {
+            max-width: 88%;
+            border-radius: 14px;
+            padding: 11px 12px;
+            line-height: 1.58;
+            font-size: 15px;
+            margin-top: 10px;
+        }
+
+        .bubble.npc {
+            background: rgba(249, 252, 255, 0.9);
+            color: #223248;
+        }
+
+        .bubble.player {
+            background: rgba(27, 45, 68, 0.76);
+            color: #e5efff;
+            margin-left: auto;
+        }
+
+        .bubble-title {
+            display: inline-flex;
+            align-items: center;
+            height: 22px;
+            border-radius: 6px;
+            background: rgba(28, 47, 76, 0.8);
+            color: #e3f1ff;
+            font-size: 13px;
+            padding: 0 8px;
+            margin: 8px 0 0;
+        }
+
+        .npc-wrap {
+            margin-top: 10px;
+            display: flex;
+            align-items: flex-start;
+            gap: 8px;
+        }
+
+        .npc-avatar {
+            width: 30px;
+            height: 30px;
+            border-radius: 50%;
+            background-size: cover;
+            background-position: center;
+            border: 1px solid rgba(255, 255, 255, 0.38);
+            flex: 0 0 30px;
+        }
+
+        .chat-actions {
+            margin-top: 8px;
+            display: flex;
+            gap: 16px;
+            font-size: 12px;
+            color: #d1e3ff;
+        }
+
+        .chat-input {
+            position: absolute;
+            left: 10px;
+            right: 10px;
+            bottom: 10px;
+            display: flex;
+            gap: 7px;
+            align-items: center;
+            padding: 8px;
+            border-radius: 13px;
+            background: rgba(42, 57, 80, 0.82);
+            border: 1px solid rgba(255, 255, 255, 0.22);
+            font-size: 13px;
+        }
+
+        .chat-input .text {
+            flex: 1;
+            text-align: center;
+            font-weight: 700;
+            letter-spacing: 0.4px;
+        }
+
+        .chat-icon {
+            width: 24px;
+            height: 24px;
+            border-radius: 50%;
+            border: 1px solid rgba(255, 255, 255, 0.4);
+            display: grid;
+            place-items: center;
+            font-size: 12px;
+        }
+
+        .history-mark {
+            position: absolute;
+            top: 8px;
+            right: 10px;
+            border-radius: 999px;
+            padding: 0 8px;
+            height: 22px;
+            display: grid;
+            place-items: center;
+            background: rgba(0, 0, 0, 0.42);
+            font-size: 11px;
+            color: #d8eaff;
+        }
+
+        .setting-modal {
+            position: absolute;
+            left: 10px;
+            right: 10px;
+            bottom: 70px;
+            border-radius: 16px;
+            background: rgba(13, 45, 61, 0.95);
+            border: 1px solid rgba(157, 215, 247, 0.45);
+            padding: 10px;
+            color: #d9efff;
+        }
+
+        .setting-modal h4 {
+            margin: 0;
+            font-size: 20px;
+            text-align: center;
+        }
+
+        .role-strip {
+            margin-top: 8px;
+            display: flex;
+            gap: 8px;
+            overflow: hidden;
+        }
+
+        .role-mini {
+            width: 52px;
+            text-align: center;
+            font-size: 10px;
+            border: none;
+            background: transparent;
+            color: inherit;
+            padding: 0;
+            cursor: pointer;
+        }
+
+        .role-mini span {
+            display: block;
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            margin: 0 auto 4px;
+            border: 1px solid rgba(255, 255, 255, 0.24);
+            background: rgba(255, 255, 255, 0.14);
+        }
+
+        .setting-link-row {
+            margin-top: 8px;
+            height: 40px;
+            width: 100%;
+            border: 1px solid rgba(190, 226, 255, 0.32);
+            border-radius: 10px;
+            background: rgba(5, 30, 43, 0.42);
+            color: #d8ecff;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 10px;
+            font-size: 13px;
+            cursor: pointer;
+        }
+
+        .role-detail-card {
+            margin-top: 8px;
+            border: 1px solid rgba(190, 226, 255, 0.3);
+            border-radius: 10px;
+            background: rgba(4, 24, 39, 0.44);
+            padding: 8px;
+            color: #d8ecff;
+            font-size: 12px;
+            line-height: 1.5;
+        }
+
+        .mode-select-card {
+            margin-top: 8px;
+            border: 1px solid rgba(190, 226, 255, 0.3);
+            border-radius: 10px;
+            background: rgba(4, 24, 39, 0.44);
+            padding: 8px;
+            color: #d8ecff;
+        }
+
+        .mode-select-option {
+            width: 100%;
+            height: 34px;
+            border-radius: 8px;
+            border: 1px solid rgba(255, 189, 92, 0.5);
+            background: rgba(255, 189, 92, 0.14);
+            color: #ffe8c4;
+            text-align: left;
+            padding: 0 10px;
+            font-size: 12px;
+            cursor: pointer;
+        }
+
+        .mode-select-tip {
+            margin-top: 6px;
+            font-size: 11px;
+            color: #bbd8f8;
+        }
+
+        .pair-banner {
+            margin-top: 8px;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+        }
+
+        .pair-tag {
+            height: 30px;
+            border-radius: 999px;
+            border: 1px solid rgba(255, 255, 255, 0.28);
+            background: rgba(0, 0, 0, 0.32);
+            color: #dbe9ff;
+            font-size: 12px;
+            display: grid;
+            place-items: center;
+            cursor: pointer;
+        }
+
+        .pair-tag.active {
+            border-color: rgba(255, 189, 92, 0.78);
+            background: rgba(255, 189, 92, 0.25);
+            color: #ffe8c7;
+            font-weight: 700;
+        }
+
+        .context-menu {
+            position: absolute;
+            top: 188px;
+            left: 14px;
+            width: 272px;
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 6px;
+            background: #fff;
+            color: #2f3f5a;
+            border-radius: 12px;
+            border: 1px solid #d4dfef;
+            padding: 8px;
+            box-shadow: 0 10px 24px rgba(0, 0, 0, 0.24);
+            font-size: 11px;
+            z-index: 5;
+        }
+
+        .menu-item {
+            border: none;
+            background: transparent;
+            color: inherit;
+            font-size: 11px;
+            padding: 2px 0;
+            text-align: center;
+            line-height: 1.4;
+            cursor: pointer;
+        }
+
+        .voice-toggle {
+            position: absolute;
+            top: 28px;
+            right: 12px;
+            border: 1px solid rgba(255, 255, 255, 0.42);
+            background: rgba(0, 0, 0, 0.36);
+            color: #e6f2ff;
+            border-radius: 999px;
+            height: 28px;
+            padding: 0 10px;
+            font-size: 11px;
+            cursor: pointer;
+            z-index: 6;
+        }
+
+        .story-footer {
+            position: absolute;
+            left: 10px;
+            right: 10px;
+            bottom: 108px;
+            display: flex;
+            align-items: flex-end;
+            justify-content: space-between;
+            gap: 8px;
+            z-index: 3;
+        }
+
+        .story-title-block {
+            color: #edf5ff;
+            line-height: 1.35;
+        }
+
+        .story-title {
+            font-size: 34px;
+            font-weight: 800;
+            letter-spacing: 0.2px;
+            line-height: 1;
+        }
+
+        .story-sub {
+            font-size: 13px;
+            color: rgba(225, 238, 255, 0.78);
+        }
+
+        .story-title-btn {
+            border: none;
+            background: transparent;
+            color: inherit;
+            text-align: left;
+            padding: 0;
+            cursor: pointer;
+            font: inherit;
+        }
+
+        .story-actions {
+            display: flex;
+            align-items: flex-end;
+            gap: 10px;
+        }
+
+        .story-action {
+            min-width: 36px;
+            text-align: center;
+            color: #e5f1ff;
+            font-size: 11px;
+        }
+
+        .story-action .icon {
+            width: 28px;
+            height: 28px;
+            border-radius: 50%;
+            border: 1px solid rgba(255, 255, 255, 0.35);
+            background: rgba(255, 255, 255, 0.08);
+            margin: 0 auto 2px;
+            display: grid;
+            place-items: center;
+            font-size: 13px;
+        }
+
+        .story-action button {
+            border: none;
+            background: transparent;
+            color: inherit;
+            font: inherit;
+            padding: 0;
+            cursor: pointer;
+        }
+
+        .floating-history-btn {
+            position: absolute;
+            right: 10px;
+            bottom: 214px;
+            width: 24px;
+            height: 24px;
+            border-radius: 50%;
+            border: 1px solid rgba(255, 255, 255, 0.45);
+            background: rgba(15, 35, 58, 0.45);
+            color: #e5f1ff;
+            font-size: 13px;
+            display: grid;
+            place-items: center;
+            cursor: pointer;
+            z-index: 4;
+        }
+
+        .ai-tip-panel {
+            position: absolute;
+            left: 10px;
+            right: 10px;
+            bottom: 158px;
+            border-radius: 12px;
+            border: 1px solid rgba(255, 255, 255, 0.3);
+            background: rgba(12, 29, 47, 0.7);
+            padding: 8px;
+            display: grid;
+            gap: 6px;
+            z-index: 4;
+        }
+
+        .ai-tip-option {
+            height: 32px;
+            border-radius: 8px;
+            border: 1px solid rgba(255, 255, 255, 0.28);
+            background: rgba(255, 255, 255, 0.08);
+            color: #e6f1ff;
+            font-size: 12px;
+            text-align: left;
+            padding: 0 10px;
+            cursor: pointer;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .ai-tip-back {
+            justify-self: end;
+            border: none;
+            background: transparent;
+            color: #d6e9ff;
+            font-size: 12px;
+            cursor: pointer;
+        }
+
+        .voice-toggle.on {
+            border-color: rgba(99, 240, 140, 0.88);
+            color: #d9ffe5;
+        }
+
+        .toast {
+            position: absolute;
+            right: 12px;
+            top: 62px;
+            border-radius: 999px;
+            background: rgba(0, 0, 0, 0.56);
+            color: #d8e9ff;
+            height: 24px;
+            padding: 0 9px;
+            display: grid;
+            place-items: center;
+            font-size: 11px;
+            z-index: 6;
+        }
+
+        .profile-wrap {
+            position: absolute;
+            inset: 22px 0 52px;
+            background: #f6f7fb;
+            overflow: auto;
+            padding: 10px;
+        }
+
+        .my-head {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 24px;
+            color: #313b4c;
+        }
+
+        .gear-btn,
+        .back-btn {
+            width: 28px;
+            height: 28px;
+            border-radius: 50%;
+            border: 1px solid #c4d0e3;
+            background: #fff;
+            cursor: pointer;
+            color: #60779a;
+            font-size: 14px;
+        }
+
+        .account {
+            margin-top: 8px;
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+
+        .account-avatar {
+            width: 56px;
+            height: 56px;
+            border-radius: 50%;
+            overflow: hidden;
+            border: 1px solid #ccd8ea;
+            background: #fff;
+        }
+
+        .account-avatar img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+
+        .account-name {
+            font-size: 26px;
+            font-weight: 800;
+            color: #1f2a3f;
+        }
+
+        .stat-row {
+            margin-top: 8px;
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 8px;
+            text-align: center;
+            font-size: 12px;
+            color: #5b6f8f;
+        }
+
+        .big-actions {
+            margin-top: 10px;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+        }
+
+        .action-btn {
+            height: 40px;
+            border-radius: 10px;
+            border: 1px solid #d4deed;
+            background: #fff;
+            color: #3b4d69;
+            font-size: 14px;
+            font-weight: 700;
+        }
+
+        .work-grid {
+            margin-top: 10px;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+        }
+
+        .work-card {
+            border: 1px solid #d4dfef;
+            border-radius: 10px;
+            overflow: hidden;
+            background: #fff;
+        }
+
+        .work-card .cover {
+            height: 126px;
+            background-size: cover;
+            background-position: center;
+        }
+
+        .work-card .meta {
+            padding: 7px;
+            font-size: 11px;
+            color: #556b8a;
+        }
+
+        .setting-wrap {
+            position: absolute;
+            inset: 22px 0 52px;
+            background: #f7f7fa;
+            overflow: auto;
+            padding: 10px;
+            color: #202b3c;
+        }
+
+        .setting-card {
+            border: 1px solid #d3ddeb;
+            border-radius: 12px;
+            background: #fff;
+            padding: 10px;
+            margin-top: 10px;
+        }
+
+        .setting-card h4 {
+            margin: 0;
+            font-size: 14px;
+        }
+
+        .theme-row {
+            margin-top: 7px;
+            display: flex;
+            gap: 7px;
+        }
+
+        .theme-dot {
+            width: 26px;
+            height: 26px;
+            border-radius: 8px;
+            border: 1px solid #d2dceb;
+        }
+
+        .setting-input {
+            margin-top: 8px;
+            height: 34px;
+            border-radius: 8px;
+            border: 1px solid #d4dfef;
+            background: #f8fbff;
+            display: flex;
+            align-items: center;
+            padding: 0 10px;
+            font-size: 12px;
+            color: #4b617f;
+        }
+
+        .mini-actions {
+            margin-top: 8px;
+            display: flex;
+            gap: 7px;
+        }
+
+        .mini-btn {
+            border: 1px solid #cedaeb;
+            background: #f9fbff;
+            color: #455d80;
+            border-radius: 7px;
+            height: 30px;
+            padding: 0 12px;
+            font-size: 12px;
+            cursor: pointer;
+        }
+
+        .mini-btn.primary {
+            background: #ffe24e;
+            border-color: #f1d430;
+            color: #222;
+            font-weight: 700;
+        }
+
+        .web-shell {
+            height: 770px;
+            border-radius: 16px;
+            border: 1px solid #35517d;
+            overflow: hidden;
+            background: #f7f8fc;
+            display: grid;
+            grid-template-columns: 240px 1fr 280px;
+            color: #1e2b3f;
+        }
+
+        .web-left {
+            background: #ffffff;
+            border-right: 1px solid #dbe4f3;
+            padding: 12px;
+        }
+
+        .web-left h4,
+        .web-right h4 {
+            margin: 0;
+            font-size: 14px;
+        }
+
+        .web-left .menu,
+        .web-right .menu {
+            margin-top: 10px;
+            display: grid;
+            gap: 8px;
+        }
+
+        .web-item {
+            border: 1px solid #d7e1f1;
+            border-radius: 10px;
+            background: #f8fbff;
+            padding: 8px;
+            font-size: 12px;
+            color: #455f84;
+        }
+
+        button.web-item {
+            width: 100%;
+            text-align: left;
+            font: inherit;
+            cursor: pointer;
+        }
+
+        .web-main {
+            padding: 12px;
+            overflow: auto;
+            background: #f2f5fb;
+        }
+
+        .web-topbar {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .web-topbar .title {
+            font-size: 16px;
+            font-weight: 800;
+            color: #1f2a40;
+        }
+
+        .web-canvas {
+            margin-top: 10px;
+            border: 1px solid #d5deee;
+            border-radius: 12px;
+            background: #fff;
+            padding: 12px;
+        }
+
+        .web-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+            margin-top: 10px;
+        }
+
+        .web-card {
+            border: 1px solid #d9e2f0;
+            border-radius: 10px;
+            background: #f9fbff;
+            padding: 10px;
+            font-size: 12px;
+            color: #486082;
+            line-height: 1.5;
+        }
+
+        .web-right {
+            border-left: 1px solid #dbe4f3;
+            background: #fff;
+            padding: 12px;
+        }
+
+        .web-adapt-shell {
+            height: 792px;
+            border-radius: 16px;
+            border: 1px solid #35517d;
+            overflow: hidden;
+            background:
+                radial-gradient(560px 280px at 12% 10%, rgba(92, 174, 255, 0.16), transparent 60%),
+                radial-gradient(460px 260px at 90% 100%, rgba(255, 189, 92, 0.16), transparent 60%),
+                linear-gradient(180deg, #eef4ff, #e1eaf8);
+            display: block;
+            padding: 10px;
+        }
+
+        .web-adapt-main {
+            display: flex;
+            justify-content: center;
+            align-items: flex-start;
+            overflow: hidden;
+            border-radius: 18px;
+            border: 1px solid rgba(87, 119, 171, 0.18);
+            background:
+                linear-gradient(180deg, rgba(255, 255, 255, 0.76), rgba(231, 239, 251, 0.92)),
+                linear-gradient(135deg, rgba(86, 228, 245, 0.08), transparent 40%);
+            padding: 8px 10px 10px;
+            position: relative;
+            height: 100%;
+        }
+
+        .web-adapt-main::before {
+            content: "";
+            position: absolute;
+            inset: 10px;
+            border-radius: 22px;
+            background:
+                linear-gradient(90deg, rgba(79, 109, 165, 0.07) 1px, transparent 1px),
+                linear-gradient(rgba(79, 109, 165, 0.07) 1px, transparent 1px);
+            background-size: 22px 22px;
+            pointer-events: none;
+        }
+
+        .web-adapt-frame {
+            width: min(100%, 640px);
+            margin: 0 auto;
+            position: relative;
+            z-index: 1;
+        }
+
+        .web-adapt-main .phone-shell {
+            width: 100%;
+            max-width: 640px;
+            margin: 0 auto;
+            box-shadow: 0 28px 60px rgba(9, 22, 45, 0.22);
+        }
+
+        .web-adapt-card {
+            border: 1px solid #d7e1f0;
+            border-radius: 10px;
+            background: linear-gradient(180deg, #ffffff, #f6f9ff);
+            padding: 12px;
+            color: #465f84;
+            font-size: 12px;
+            line-height: 1.6;
+        }
+
+        .web-adapt-card h4 {
+            margin: 0 0 6px;
+            font-size: 14px;
+            color: #1e2d46;
+        }
+
+        .web-adapt-actions {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+        }
+
+        .web-adapt-checks {
+            margin: 0;
+            padding-left: 18px;
+            color: #4d668b;
+            font-size: 12px;
+            line-height: 1.65;
+        }
+
+        .web-adapt-checks li + li {
+            margin-top: 4px;
+        }
+
+        .web-toolbar {
+            display: flex;
+            gap: 6px;
+        }
+
+        .web-mini-toggle {
+            border: 1px solid #cfdbee;
+            border-radius: 999px;
+            background: #f8fbff;
+            color: #435d82;
+            height: 28px;
+            padding: 0 10px;
+            font-size: 12px;
+            cursor: pointer;
+        }
+
+        .web-mini-toggle.active {
+            border-color: #f1d193;
+            background: #fff2d2;
+            color: #7a4f05;
+            font-weight: 700;
+        }
+
+        .web-play-preview {
+            border: 1px solid #cfdced;
+            border-radius: 12px;
+            background-image: linear-gradient(180deg, rgba(12, 23, 36, 0.2), rgba(12, 23, 36, 0.48)), url('assets/img_20.png');
+            background-size: cover;
+            background-position: center;
+            padding: 10px;
+            color: #eff7ff;
+            min-height: 290px;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            gap: 10px;
+        }
+
+        .web-play-head {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+        }
+
+        .web-story-link {
+            border: none;
+            background: rgba(17, 30, 46, 0.72);
+            color: #eaf3ff;
+            border-radius: 999px;
+            height: 30px;
+            padding: 0 12px;
+            font-size: 12px;
+            cursor: pointer;
+        }
+
+        .web-play-bubble {
+            border: 1px solid rgba(255, 255, 255, 0.45);
+            border-radius: 10px;
+            background: rgba(255, 255, 255, 0.94);
+            color: #2b3e5c;
+            padding: 10px;
+            font-size: 13px;
+            line-height: 1.6;
+        }
+
+        .web-play-bubble + .web-play-bubble {
+            margin-top: 8px;
+        }
+
+        .web-story-foot {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            font-size: 12px;
+            color: #e8f3ff;
+        }
+
+        .web-setting-card {
+            border: 1px solid #d7e2f2;
+            border-radius: 12px;
+            background: #f8fbff;
+            padding: 10px;
+            color: #3f5b83;
+        }
+
+        .web-setting-card h5 {
+            margin: 0;
+            font-size: 14px;
+            color: #213150;
+        }
+
+        .web-role-strip {
+            margin-top: 8px;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+        }
+
+        .web-role-btn {
+            border: 1px solid #cfdbee;
+            border-radius: 999px;
+            background: #fff;
+            color: #446084;
+            height: 28px;
+            padding: 0 10px;
+            font-size: 12px;
+            cursor: pointer;
+        }
+
+        .web-role-btn.active {
+            border-color: #f0ce89;
+            background: #fff2d1;
+            color: #7a4f05;
+            font-weight: 700;
+        }
+
+        .web-setting-link {
+            margin-top: 8px;
+            width: 100%;
+            height: 36px;
+            border: 1px solid #d1def0;
+            border-radius: 9px;
+            background: #fff;
+            color: #3e5c82;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 10px;
+            font-size: 12px;
+            cursor: pointer;
+        }
+
+        .web-detail-box {
+            margin-top: 8px;
+            border: 1px solid #d7e2f2;
+            border-radius: 10px;
+            background: #fff;
+            padding: 8px;
+            color: #435f84;
+            font-size: 12px;
+            line-height: 1.55;
+        }
+
+        .web-tip-list {
+            margin-top: 8px;
+            display: grid;
+            gap: 8px;
+        }
+
+        .web-tip-list .web-setting-link {
+            justify-content: flex-start;
+        }
+
+        .web-mode-tip {
+            margin-top: 6px;
+            font-size: 11px;
+            color: #5f7ba1;
+        }
+
+        .check-list {
+            margin: 10px 0 0;
+            padding-left: 18px;
+            color: #dce9ff;
+            font-size: 13px;
+            line-height: 1.55;
+        }
+
+        .check-list li + li { margin-top: 7px; }
+
+        .ref-grid {
+            margin-top: 10px;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+        }
+
+        .ref-card {
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            border-radius: 10px;
+            overflow: hidden;
+            background: rgba(255, 255, 255, 0.06);
+        }
+
+        .ref-card img {
+            width: 100%;
+            height: 120px;
+            object-fit: cover;
+            display: block;
+        }
+
+        .ref-card span {
+            display: block;
+            padding: 6px;
+            font-size: 11px;
+            color: #c8dcff;
+        }
+
+        .right-tip {
+            margin-top: 10px;
+            border: 1px solid rgba(255, 255, 255, 0.18);
+            border-radius: 10px;
+            background: rgba(255, 255, 255, 0.04);
+            padding: 9px;
+            color: #bdd2f0;
+            font-size: 12px;
+            line-height: 1.5;
+        }
+
+        .keyboard {
+            margin-top: 8px;
+            font-size: 11px;
+            color: #9fb5da;
+        }
+
+        @media (max-width: 1300px) {
+            .workspace { grid-template-columns: 1fr; }
+            .panel { min-height: auto; }
+            .phone-screen,
+            .web-shell { height: 690px; }
+        }
+    </style>
+</head>
+<body>
+<header class="topbar">
+    <div>
+        <h1>Toonflow 高保真交互原型 v3</h1>
+        <p>单页交互 · Android + Web · 可见即可得（重点：7 一对联动 / 8 按图拆分）</p>
+    </div>
+    <div class="mode-switch" id="mode-switch"></div>
+</header>
+
+<main class="workspace">
+    <aside class="panel">
+        <h2 id="left-title"></h2>
+        <div class="panel-sub" id="left-sub"></div>
+        <div class="step-list" id="step-list"></div>
+        <div class="legend">
+            当前是可操作原型，不是截图切页。<br />
+            你可以直接点状态按钮验证流程。<br />
+            7 支持长按触发菜单，8 支持“我的→设置”切换。
+            <div class="keyboard">键盘：`←/→` 切流程，`↑/↓` 切子状态</div>
+        </div>
+    </aside>
+
+    <section class="panel">
+        <div class="stage-head">
+            <div>
+                <h2 id="stage-title"></h2>
+                <p id="stage-sub"></p>
+            </div>
+            <div class="sub-controls" id="sub-controls"></div>
+        </div>
+        <div class="stage-body" id="stage-body"></div>
+    </section>
+
+    <aside class="panel">
+        <h3>验收清单</h3>
+        <ul class="check-list" id="check-list"></ul>
+        <h3 style="margin-top: 12px;">参考图</h3>
+        <div class="ref-grid" id="ref-grid"></div>
+        <div class="right-tip" id="right-tip"></div>
+    </aside>
+</main>
+
+<script>
+    const modeDefs = [
+        { key: 'android', label: 'Android 端' },
+        { key: 'web', label: 'Web 端' }
+    ];
+
+    const androidScenes = [
+        {
+            key: 'a1',
+            label: '1. 主页',
+            subLabel: '随机推荐 + 输入',
+            title: '1. 主页（随机推荐 + 输入框）',
+            sub: '用户输入首句后才进入“聊过”记录',
+            checks: [
+                '推荐故事在首页主视觉区域。',
+                '按住说话是主入口，文本切换在同区域。',
+                '底部菜单固定为：主页 / 创建故事 / 聊过 / 我的。'
+            ],
+            refs: ['img_4.png'],
+            tip: '首页承担“进入故事前的一句话输入”。'
+        },
+        {
+            key: 'a2',
+            label: '2. 故事大厅',
+            subLabel: '分类 + 搜索',
+            title: '2. 故事大厅（分类检索）',
+            sub: '从搜索和分类进入故事',
+            checks: [
+                '搜索框置顶，分类标签可快速切换。',
+                '故事卡是双列流，显示封面与在聊人数。',
+                '大厅页不应直接写入“聊过”。'
+            ],
+            refs: ['img_16.png'],
+            tip: '聊过是游玩记录，不是浏览记录。'
+        },
+        {
+            key: 'a3',
+            label: '3. 创建故事',
+            subLabel: '角色 + 开场白',
+            title: '3. 创建故事（角色与开场白）',
+            sub: '支持初始态与编辑态切换',
+            checks: [
+                '用户角色固定不可删除。',
+                '开场白必须保留角色选择器。',
+                '编辑态角色采用圆形头像矩阵。'
+            ],
+            refs: ['img_17.png', 'img_29.png'],
+            tip: '这里保留“初始态 / 编辑态”两个可切状态。'
+        },
+        {
+            key: 'a4',
+            label: '4. 章节内容',
+            subLabel: '章节正文 + 条件',
+            title: '4. 章节编辑（正文、条件、高级设定）',
+            sub: '下一步从章节底部进入发布信息',
+            checks: [
+                '章节内容支持提及角色插入。',
+                '成功条件可选，空则 AI 可持续编排。',
+                '高级设定包含旁白音色和可见性开关。'
+            ],
+            refs: ['img_28.png', 'img_27.png'],
+            tip: '“下一步”按钮固定在本页底部。'
+        },
+        {
+            key: 'a5',
+            label: '5. 发布信息',
+            subLabel: '图标 + 名称 + 简介',
+            title: '5. 发布面板（预发布）',
+            sub: '存草稿与发布动作都在此页',
+            checks: [
+                '故事名称、故事简介是输入框形态。',
+                '发布页不承载章节高级开关。',
+                '底部动作：返回 / 存草稿 / 发布。'
+            ],
+            refs: ['4a69b4a30131eec601d1d2bf55050365.jpg'],
+            tip: '这页只处理发布信息，不混章节设定。'
+        },
+        {
+            key: 'a6',
+            label: '6. 游玩故事',
+            subLabel: '实时 / 历史 / 设定 / AI提示',
+            title: '6. 游玩模式（实时、历史、设定、AI提示）',
+            sub: '支持语音输入与文本输入切换',
+            checks: [
+                '实时模式默认只展示关键上下文。',
+                '历史模式可滚动，不中断继续对话。',
+                '点击故事名可查看设定弹层。',
+                'AI 提示模式提供 3 个可选回答，并支持返回。'
+            ],
+            refs: ['img_20.png', 'img_21.png', 'img_22.png', 'img_25.png', '1d874c0ae6d6d7bf58050f2c00fd6073.jpg'],
+            tip: '顶部保留搜索与语音开关，历史模式与 AI 提示模式可直接切换。'
+        },
+        {
+            key: 'a7',
+            label: '7. 长按交互',
+            subLabel: '双击弹菜单 + 语音开关',
+            title: '7. 角色对话菜单',
+            sub: '双击对白模拟长按，弹出菜单',
+            checks: [
+                '在游玩对白上双击，弹出角色对话菜单。',
+                '菜单包含：复制 / 点赞 / 点踩 / 改写 / 重听。',
+                '右上语音图标可开关角色发言自动播放。'
+            ],
+            refs: ['img_23.png', 'img_24.png'],
+            tip: '原需求是长按，这里用双击模拟触发。'
+        },
+        {
+            key: 'a8',
+            label: '8. 我的 / 设置',
+            subLabel: '按图拆分',
+            title: '8. 我的 + 设置（按图）',
+            sub: '从“我的”右上角进入设置',
+            checks: [
+                '我的页展示账号、草稿入口、作品列表。',
+                '设置页展示主题、API、WebSocket、账号项。',
+                '8 拆分为两个页面，不混排。'
+            ],
+            refs: ['img_18.png', 'img_19.png'],
+            tip: '点击右上角齿轮进入设置，再点返回。'
+        }
+    ];
+
+    const webScenes = androidScenes.map((scene, index) => ({
+        key: `w${index + 1}`,
+        label: `${index + 1}. ${scene.label.replace(/^\d+\.\s*/, '')}`,
+        subLabel: scene.subLabel,
+        title: `Web版 · ${scene.title.replace(/^\d+\.\s*/, '')}`,
+        sub: `桌面容器复用安卓版交互：${scene.sub}`,
+        checks: scene.checks,
+        refs: scene.refs,
+        tip: `Web 端与 Android 端保持同一套交互链路。(${scene.tip})`,
+        androidIndex: index
+    }));
+
+    const state = {
+        mode: 'android',
+        androidIndex: 0,
+        webIndex: 0,
+        sub3: 'init',
+        sub3UserEditor: false,
+        sub3NpcEditor: false,
+        sub3Advanced: false,
+        sub3MultiChapter: false,
+        addedNpcRoles: [],
+        sub4: 'base',
+        sub6: 'live',
+        sub6RoleDetail: '',
+        sub6StoryDetail: false,
+        sub6DialogMode: '基础模式',
+        sub6DialogPicker: false,
+        sub7: 'a',
+        sub8: 'my',
+        autoVoice: true,
+        longMenu: false
+    };
+
+    const modeSwitchEl = document.getElementById('mode-switch');
+    const workspaceEl = document.querySelector('.workspace');
+    const leftTitleEl = document.getElementById('left-title');
+    const leftSubEl = document.getElementById('left-sub');
+    const stepListEl = document.getElementById('step-list');
+    const stageTitleEl = document.getElementById('stage-title');
+    const stageSubEl = document.getElementById('stage-sub');
+    const subControlsEl = document.getElementById('sub-controls');
+    const stageBodyEl = document.getElementById('stage-body');
+    const checkListEl = document.getElementById('check-list');
+    const refGridEl = document.getElementById('ref-grid');
+    const rightTipEl = document.getElementById('right-tip');
+
+    function currentScenes() {
+        return state.mode === 'android' ? androidScenes : webScenes;
+    }
+
+    function currentIndex() {
+        return state.mode === 'android' ? state.androidIndex : state.webIndex;
+    }
+
+    function setCurrentIndex(next) {
+        if (state.mode === 'android') {
+            state.androidIndex = next;
+        } else {
+            state.webIndex = next;
+        }
+    }
+
+    function phone(inner) {
+        return `<div class="phone-shell"><div class="phone-screen">${inner}</div></div>`;
+    }
+
+    function renderModeSwitch() {
+        workspaceEl.classList.toggle('web-mode', state.mode === 'web');
+        modeSwitchEl.innerHTML = modeDefs.map((mode) => {
+            const active = mode.key === state.mode ? 'active' : '';
+            return `<button class="mode-btn ${active}" data-action="set-mode" data-value="${mode.key}">${mode.label}</button>`;
+        }).join('');
+    }
+
+    function renderSteps() {
+        const scenes = currentScenes();
+        const index = currentIndex();
+        stepListEl.innerHTML = scenes.map((scene, i) => {
+            const active = i === index ? 'active' : '';
+            return `<button class="step-btn ${active}" data-action="set-step" data-value="${i}">${scene.label}<small>${scene.subLabel}</small></button>`;
+        }).join('');
+    }
+
+    function btn(label, action, value, active) {
+        return `<button class="chip-btn ${active ? 'active' : ''}" data-action="${action}" data-value="${value}">${label}</button>`;
+    }
+
+    function renderAndroidSubControls(scene) {
+        if (scene.key === 'a3') {
+            return btn('初始态', 'set-sub3', 'init', state.sub3 === 'init')
+                + btn('编辑态', 'set-sub3', 'edit', state.sub3 === 'edit');
+        }
+
+        if (scene.key === 'a4') {
+            return btn('基础态', 'set-sub4', 'base', state.sub4 === 'base')
+                + btn('高级设定', 'set-sub4', 'advance', state.sub4 === 'advance');
+        }
+
+        if (scene.key === 'a6') {
+            return btn('实时', 'set-sub6', 'live', state.sub6 === 'live')
+                + btn('历史', 'set-sub6', 'history', state.sub6 === 'history')
+                + btn('故事设定', 'set-sub6', 'setting', state.sub6 === 'setting')
+                + btn('AI提示', 'set-sub6', 'tips', state.sub6 === 'tips');
+        }
+
+        if (scene.key === 'a7') {
+            return btn(state.longMenu ? '隐藏菜单' : '显示菜单', 'toggle-dialog-menu', 'x', state.longMenu)
+                + btn(state.autoVoice ? '自动语音:开' : '自动语音:关', 'toggle-voice', 'x', state.autoVoice);
+        }
+
+        if (scene.key === 'a8') {
+            return btn('我的', 'set-sub8', 'my', state.sub8 === 'my')
+                + btn('设置', 'set-sub8', 'setting', state.sub8 === 'setting');
+        }
+
+        return '';
+    }
+
+    function renderSubControls(scene) {
+        if (state.mode === 'web') {
+            const mapped = androidScenes[scene.androidIndex ?? 0] || androidScenes[0];
+            return renderAndroidSubControls(mapped);
+        }
+        return renderAndroidSubControls(scene);
+    }
+
+    function renderRefs(scene) {
+        refGridEl.innerHTML = scene.refs.map((file) => {
+            const name = file.length > 18 ? `${file.slice(0, 16)}...` : file;
+            return `<div class="ref-card"><img src="assets/${file}" alt="${file}" /><span>${name}</span></div>`;
+        }).join('');
+    }
+
+    function renderChecks(scene) {
+        checkListEl.innerHTML = scene.checks.map((item) => `<li>${item}</li>`).join('');
+        rightTipEl.textContent = scene.tip;
+    }
+
+    function androidNav(active) {
+        const tabs = [
+            { key: 'home', label: '主页', step: 0 },
+            { key: 'create', label: '创建故事', step: 2 },
+            { key: 'chat', label: '聊过', step: 5 },
+            { key: 'my', label: '我的', step: 7 }
+        ];
+        return `<div class="bottom-nav">${tabs.map((tab) => {
+            const cls = tab.key === active ? 'active' : '';
+            return `<button type="button" class="${cls}" data-action="jump-android" data-value="${tab.step}">${tab.label}</button>`;
+        }).join('')}</div>`;
+    }
+
+    function searchIconSvg() {
+        return `<svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="5"></circle><path d="M20 20L15.5 15.5"></path><path d="M3 11H6"></path><path d="M16 11H19"></path></svg>`;
+    }
+
+    function speakerIconSvg(isOn) {
+        if (isOn) {
+            return `<svg viewBox="0 0 24 24"><path d="M4 9H8L13 5V19L8 15H4Z"></path><path d="M16 8C17.2 9.1 17.9 10.5 17.9 12C17.9 13.5 17.2 14.9 16 16"></path><path d="M18.8 5.9C20.5 7.6 21.5 9.7 21.5 12C21.5 14.3 20.5 16.4 18.8 18.1"></path></svg>`;
+        }
+        return `<svg viewBox="0 0 24 24"><path d="M4 9H8L13 5V19L8 15H4Z"></path><path d="M16 10L20 14"></path><path d="M20 10L16 14"></path></svg>`;
+    }
+
+    function renderAndroidScene(scene) {
+        if (scene.key === 'a1') {
+            return phone(`
+                <div class="android-status"><span>10:34</span><span>5G • 100%</span></div>
+                <div class="hero-bg" style="background-image:url('assets/img_4.png')"></div>
+                <div class="home-corner-actions">
+                    <button class="corner-btn" title="进入故事大厅" data-action="jump-android" data-value="1" aria-label="进入故事大厅">
+                        ${searchIconSvg()}
+                    </button>
+                    <button class="corner-btn" title="${state.autoVoice ? '语音已开启，点击静音' : '语音已静音，点击开启'}" data-action="toggle-entry-voice" aria-label="切换语音">
+                        ${speakerIconSvg(state.autoVoice)}
+                    </button>
+                </div>
+                <div class="home-block">
+                    <div class="glass home-title" data-action="jump-play">随机推荐：敢和我争你配吗<br />点击进入故事，或直接按住说话。</div>
+                    <div class="home-meta"><span>点赞 6774</span><span>评论 179</span><span>收藏 2031</span></div>
+                    <button class="voice-bar" data-action="jump-play">按住说话</button>
+                </div>
+                ${androidNav('home')}
+            `);
+        }
+
+        if (scene.key === 'a2') {
+            return phone(`
+                <div class="android-status"><span>10:34</span><span>5G • 100%</span></div>
+                <div class="hall-wrap">
+                    <div class="search">搜索感兴趣的内容</div>
+                    <div class="tags"><span class="tag">精选故事</span><span class="tag">工具</span><span class="tag active">校园</span><span class="tag">都市</span><span class="tag">古代</span></div>
+                    <div class="story-grid">
+                        <div class="story-card"><div class="story-thumb" style="background-image:url('assets/img_16.png')"></div><div class="story-text">黑白往事 · 3778 在聊</div></div>
+                        <div class="story-card"><div class="story-thumb" style="background-image:url('assets/img_4.png')"></div><div class="story-text">热血青春 · 314 在聊</div></div>
+                        <div class="story-card"><div class="story-thumb" style="background-image:url('assets/img_20.png')"></div><div class="story-text">既定缘分 · 5337 在聊</div></div>
+                        <div class="story-card"><div class="story-thumb" style="background-image:url('assets/img_29.png')"></div><div class="story-text">花样男子 · 1.3万 在聊</div></div>
+                    </div>
+                </div>
+                ${androidNav('create')}
+            `);
+        }
+
+        if (scene.key === 'a3') {
+            if (state.sub3UserEditor) {
+                return phone(`
+                    <div class="android-status"><span>10:38</span><span>用户扮演角色的资料</span></div>
+                    <div class="user-editor">
+                        <div class="user-editor-head">
+                            <button class="user-editor-back" data-action="close-user-editor" aria-label="返回">←</button>
+                            <div class="user-editor-title">用户扮演角色的资料</div>
+                        </div>
+                        <div class="user-editor-card">
+                            <div class="user-editor-label">角色名（选填）</div>
+                            <div class="user-editor-input">输入用户在故事里扮演的角色名</div>
+                            <div class="user-editor-counter"><span>还可输入 30 字</span><span>0/30</span></div>
+                        </div>
+                        <div class="user-editor-card">
+                            <div class="user-editor-label">角色设定（选填）</div>
+                            <div class="user-editor-textarea">用户的身份、性格等，会作为其他角色的已知信息</div>
+                            <div class="user-editor-counter"><span>还可输入 1000 字</span><span>0/1000</span></div>
+                        </div>
+                        <button class="user-editor-submit" data-action="save-user-editor">完成</button>
+                    </div>
+                `);
+            }
+
+            if (state.sub3NpcEditor) {
+                return phone(`
+                    <div class="android-status"><span>10:39</span><span>角色资料</span></div>
+                    <div class="user-editor">
+                        <div class="user-editor-head">
+                            <button class="user-editor-back" data-action="close-npc-editor" aria-label="返回">←</button>
+                            <div class="user-editor-title">新增角色资料</div>
+                        </div>
+                        <div class="user-editor-card">
+                            <div class="user-editor-label">头像</div>
+                            <div class="npc-editor-upload">上传头像 / AI 生成头像</div>
+                        </div>
+                        <div class="user-editor-card">
+                            <div class="user-editor-label">角色名</div>
+                            <div class="user-editor-input">输入角色名</div>
+                            <div class="user-editor-counter"><span>还可输入 30 字</span><span>0/30</span></div>
+                        </div>
+                        <div class="user-editor-card">
+                            <div class="user-editor-label">角色设定</div>
+                            <div class="user-editor-textarea">角色身份、性格、目标。会作为剧情生成时的角色画像。</div>
+                            <div class="user-editor-counter"><span>还可输入 1000 字</span><span>0/1000</span></div>
+                        </div>
+                        <div class="user-editor-card">
+                            <div class="user-editor-label">角色音色</div>
+                            <div class="npc-editor-select"><span>请选择音色</span><span>&gt;</span></div>
+                        </div>
+                        <div class="user-editor-card">
+                            <div class="user-editor-label">台词示例</div>
+                            <div class="user-editor-textarea">（示例）少废话，先把城门打开再说。</div>
+                            <div class="user-editor-counter"><span>建议 1~3 句</span><span>1/3</span></div>
+                        </div>
+                        <button class="user-editor-submit" data-action="save-npc-editor">确定</button>
+                    </div>
+                `);
+            }
+
+            if (state.sub3 === 'init') {
+                return phone(`
+                    <div class="android-status"><span>10:34</span><span>故事设定</span></div>
+                    <div class="builder">
+                        <div class="section-title">角色</div>
+                        <div class="avatar-row">
+                            <div class="avatar-item">
+                                <button class="avatar-dot editable" data-action="open-user-editor" aria-label="编辑用户资料">
+                                    <span class="avatar-icon">👤</span>
+                                    <span class="avatar-edit-badge">
+                                        <svg viewBox="0 0 24 24">
+                                            <path d="M4 20L8.5 18.9L18 9.4L14.6 6L5.1 15.5L4 20Z"></path>
+                                            <path d="M13.7 6.9L17.1 10.3"></path>
+                                        </svg>
+                                    </span>
+                                </button>
+                                用户
+                            </div>
+                            <div class="avatar-item">
+                                <button class="avatar-dot editable" data-action="open-npc-editor" aria-label="新增角色">
+                                    <span class="avatar-icon">＋</span>
+                                </button>
+                                新增
+                            </div>
+                        </div>
+                        <div class="section-title">故事描述</div>
+                        ${state.sub3MultiChapter ? `
+                            <div class="card-block">
+                                <div class="hint-text">全局背景（选填）</div>
+                                <div class="textarea-box" style="min-height:86px;">补充世界观与长期背景（多章节时显示）。</div>
+                            </div>
+                        ` : ''}
+                        <div class="card-block" style="${state.sub3MultiChapter ? 'margin-top:9px;' : ''}">
+                            ${state.sub3MultiChapter ? '<div class="hint-text">章节1 <a href="“#”" style="position: absolute;right: 5rem;display: inline-block;">调试</a></div>' : ''}
+                            <div class="hint-text">开场白</div>
+                            <div class="line-field">选择开场白发言角色　　&gt;</div>
+                            <div class="textarea-box" style="min-height:76px;">作为选定角色/旁白的第一句话开启整个故事</div>
+                        </div>
+                        <div class="section-title">故事内容（章节内容）<a href="“#”" style="position: absolute;right: 5rem;display: inline-block;">调试</a></div>
+                        <div class="hint-text">提及用户扮演的角色时，请用“用户”一词称呼</div>
+                        <div class="textarea-box">描述主要情节，包括用户在故事中和其他角色的互动。提及时请使用角色原名或用户，不要使用“你”来代称。</div>
+                        <div class="hint-text" style="display:flex;justify-content:space-between;margin-top:6px;"><span>还可输入 1500 字</span><span>0/1500</span></div>
+                        <div class="section-title">成功条件（章节结局）</div>
+                        <div class="textarea-box" style="min-height:84px;">只有用户达成该条件才进入下一章节。为空代表无结束，AI 持续编排。</div>
+                        <div class="switch-row" data-action="add-next-chapter"><span>${state.sub3MultiChapter ? '已添加章节2' : '添加下一章节'}</span><span>${state.sub3MultiChapter ? '✓' : '＋'}</span></div>
+                        <div class="card-block" style="margin-top:9px;">
+                            <div class="section-title" style="margin-top:0;">旁白面板</div>
+                            <div class="switch-row" style="margin-top:6px;"><span>旁白音色</span><span>混合（清朗温润） &gt;</span></div>
+                        </div>
+                        <div class="switch-row" data-action="toggle-sub3-advanced"><span>高级设定</span><span>${state.sub3Advanced ? '收起' : '展开'}</span></div>
+                        ${state.sub3Advanced ? `
+                            <div class="switch-row"><span>他人可查看角色设定</span><span class="switch-dot on"></span></div>
+                            <div class="switch-row"><span>他人可分享对话剧情</span><span class="switch-dot on"></span></div>
+                        ` : ''}
+                        <button class="primary-next">下一步</button>
+                    </div>
+                    ${androidNav('create')}
+                `);
+            }
+
+            const baseRoles = ['萧炎', '纳兰嫣然', '小医仙', '云韵', '药老', '薰儿', '某女子', '某男子', '美杜莎', '海波东'];
+            const roleItems = [
+                { type: 'user', name: '用户' },
+                ...state.addedNpcRoles.map((role) => ({ type: 'added', ...role })),
+                ...baseRoles.map((name, idx) => ({ type: 'base', name, idx }))
+            ];
+
+            return phone(`
+                <div class="android-status"><span>9:13</span><span>故事设定</span></div>
+                <div class="builder">
+                    <div class="switch-row"><span>创作指南</span><span>&gt;</span></div>
+                    <div class="section-title">角色</div>
+                    <div class="hint-text">用户固定不可删除；旁白不在角色列表，仅支持音色编辑。</div>
+                    <div class="avatar-grid">
+                        ${roleItems.map((item) => {
+                            if (item.type === 'user') {
+                                return `<div class="avatar-item"><button class="avatar-dot editable" data-action="open-user-editor" aria-label="编辑用户资料"><span class="avatar-icon">👤</span><span class="avatar-edit-badge"><svg viewBox="0 0 24 24"><path d="M4 20L8.5 18.9L18 9.4L14.6 6L5.1 15.5L4 20Z"></path><path d="M13.7 6.9L17.1 10.3"></path></svg></span></button>${item.name}</div>`;
+                            }
+                            if (item.type === 'added') {
+                                return `<div class="avatar-item"><button class="avatar-dot editable" data-action="open-npc-editor" aria-label="编辑角色资料"><img src="${item.face}" alt="${item.name}" /><span class="avatar-edit-badge"><svg viewBox="0 0 24 24"><path d="M4 20L8.5 18.9L18 9.4L14.6 6L5.1 15.5L4 20Z"></path><path d="M13.7 6.9L17.1 10.3"></path></svg></span></button>${item.name}</div>`;
+                            }
+                            const face = item.idx % 3 === 0 ? 'assets/img_20.png' : (item.idx % 3 === 1 ? 'assets/img_29.png' : 'assets/img_4.png');
+                            return `<div class="avatar-item"><button class="avatar-dot editable" data-action="open-npc-editor" aria-label="编辑角色资料"><img src="${face}" alt="${item.name}" /><span class="avatar-edit-badge"><svg viewBox="0 0 24 24"><path d="M4 20L8.5 18.9L18 9.4L14.6 6L5.1 15.5L4 20Z"></path><path d="M13.7 6.9L17.1 10.3"></path></svg></span></button>${item.name}</div>`;
+                        }).join('')}
+                        <div class="avatar-item">
+                            <button class="avatar-dot editable" data-action="open-npc-editor" aria-label="新增角色">
+                                <span class="avatar-icon">＋</span>
+                            </button>
+                            新增
+                        </div>
+                    </div>
+                    <div class="card-block" style="margin-top:9px;">
+                        <div class="section-title" style="margin-top:0;">旁白面板</div>
+                        <div class="switch-row" style="margin-top:6px;"><span>旁白音色</span><span>混合（清朗温润） &gt;</span></div>
+                    </div>
+                    <div class="section-title">故事描述</div>
+                    <div class="card-block">
+                        <div class="hint-text">全局背景（选填）</div>
+                        <div class="textarea-box" style="min-height:102px;">这里是斗破苍穹的世界。\n时空规则：\n时间流速严格为 24 小时。一天要经历上午下午晚上。</div>
+                        <div class="hint-text" style="margin-top:8px;">提及</div>
+                        <div class="chips">
+                            <span class="tiny-chip">用户</span>
+                            <span class="tiny-chip">萧炎</span>
+                            <span class="tiny-chip">纳兰嫣然</span>
+                            <span class="tiny-chip">小医仙</span>
+                        </div>
+                    </div>
+                    <div class="card-block" style="margin-top:9px;">
+                        <div class="hint-text">章节1 <a href="“#”" style="position: absolute;right: 5rem;display: inline-block;">调试</a></div>
+                        <div class="hint-text" style="margin-top:8px;">章节背景图</div>
+                        <div class="npc-editor-upload" style="height:72px;">上传 / AI 生成章节背景图</div>
+                        <div class="hint-text" style="margin-top:8px;">开场白（仅章节1）</div>
+                        <div class="line-field">选择开场白发言角色　　&gt;</div>
+                        <div class="textarea-box" style="min-height:70px;">萧炎：今天先把城门守住，别让黑怪突破防线。</div>
+                        <div style="margin-top:8px; display:flex; justify-content:space-between; align-items:center;">
+                            <span class="hint-text" style="margin:0;">章节内容</span>
+                            <button class="mini-btn">调试本章</button>
+                        </div>
+                        <div class="hint-text" style="margin-top:6px;">说明：提及用户扮演角色时，请用“用户”一词称呼</div>
+                        <div class="textarea-box" style="min-height:110px;">描述章节推进、角色互动与冲突解决路径。可在此插入角色提及并控制剧情节奏。</div>
+                        <div class="hint-text" style="display:flex;justify-content:space-between;margin-top:6px;"><span>还可输入 393 字</span><span>1107/1500</span></div>
+                        <div class="hint-text" style="margin-top:8px;">提及</div>
+                        <div class="chips">
+                            <span class="tiny-chip">用户</span>
+                            <span class="tiny-chip">萧炎</span>
+                            <span class="tiny-chip">纳兰嫣然</span>
+                            <span class="tiny-chip">小医仙</span>
+                        </div>
+                        <div class="hint-text" style="margin-top:8px;">章节结局</div>
+                        <div class="textarea-box" style="min-height:74px;">用于 AI 判断是否进入下一章。为空代表无结束，AI 可无限编排。</div>
+                        <div class="switch-row"><span>结局条件对用户可见</span><span class="switch-dot on"></span></div>
+                        <div class="switch-row"><span>背景音乐（可选）</span><span>上传 / 选择 &gt;</span></div>
+                    </div>
+                    <div class="switch-row" data-action="add-next-chapter"><span>${state.sub3MultiChapter ? '已添加章节2' : '添加下一章节'}</span><span>${state.sub3MultiChapter ? '✓' : '＋'}</span></div>
+                    ${state.sub3MultiChapter ? `
+                        <div class="card-block" style="margin-top:9px;">
+                            <div class="hint-text">章节2</div>
+                            <div class="textarea-box" style="min-height:84px;">章节2 内容占位：用于继续编辑后续章节。</div>
+                        </div>
+                    ` : ''}
+                    <div class="switch-row" data-action="toggle-sub3-advanced"><span>高级设定</span><span>${state.sub3Advanced ? '收起' : '展开'}</span></div>
+                    ${state.sub3Advanced ? `
+                        <div class="switch-row"><span>他人可查看角色设定</span><span class="switch-dot on"></span></div>
+                        <div class="switch-row"><span>他人可分享对话剧情</span><span class="switch-dot on"></span></div>
+                    ` : ''}
+                    <button class="primary-next" data-action="jump-android" data-value="4">下一步</button>
+                </div>
+                ${androidNav('create')}
+            `);
+        }
+
+        if (scene.key === 'a4') {
+            const advanced = state.sub4 === 'advance';
+            return phone(`
+                <div class="android-status"><span>9:13</span><span>故事设定</span></div>
+                <div class="builder">
+                    <div class="card-block">
+                        <div class="section-title" style="margin-top:0;">章节内容（1112/1500）</div>
+                        <div class="textarea-box">遗失古道：时空副本\n斗帝幻影：终极试炼\n提及用户扮演角色时，请使用“用户”一词称呼。</div>
+                    </div>
+                    <div class="card-block" style="margin-top:9px;">
+                        <div class="section-title" style="margin-top:0;">成功条件（选填）</div>
+                        <div class="textarea-box" style="min-height:88px;">只有用户达成条件才判定本章完成。为空代表无结束，AI 可继续编排。</div>
+                    </div>
+                    <div class="switch-row"><span>背景音乐（可选）</span><span>请选择 &gt;</span></div>
+                    <div class="switch-row"><span>添加下一章</span><span>＋</span></div>
+                    ${advanced ? `
+                        <div class="switch-row"><span>他人可查看角色设定</span><span class="switch-dot on"></span></div>
+                        <div class="switch-row"><span>他人可分享对话剧情</span><span class="switch-dot on"></span></div>
+                    ` : ''}
+                    <div class="switch-row"><span>旁白音色</span><span>混合（清朗温润） &gt;</span></div>
+                    <button class="primary-next">下一步</button>
+                </div>
+                ${androidNav('create')}
+            `);
+        }
+
+        if (scene.key === 'a5') {
+            return phone(`
+                <div class="android-status"><span>9:35</span><span>基本信息</span></div>
+                <div class="builder">
+                    <div class="card-block">
+                        <div class="section-title" style="margin-top:0;">故事图标</div>
+                        <div class="input-box" style="height:106px; display:grid; place-items:center; color:#7f95b5;">上传图片 / AI 生成封面</div>
+                    </div>
+                    <div class="card-block" style="margin-top:9px;">
+                        <div class="section-title" style="margin-top:0;">故事名称</div>
+                        <div class="input-box">斗破苍穹·陨落之始-乌坦城崛起</div>
+                        <div class="hint-text" style="display:flex;justify-content:space-between;margin-top:4px;"><span>还可输入 1 字</span><span>29/30</span></div>
+                    </div>
+                    <div class="card-block" style="margin-top:9px;">
+                        <div class="section-title" style="margin-top:0;">故事简介（选填）</div>
+                        <div class="textarea-box" style="min-height:130px;">在斗气大陆的修行日常中，你作为独立修士自由探索乌坦城与魔兽山脉。</div>
+                    </div>
+                    <div class="mini-actions" style="justify-content:space-between; margin-top:12px;">
+                        <button class="mini-btn">返回</button>
+                        <button class="mini-btn">存草稿</button>
+                        <button class="mini-btn primary">发布</button>
+                    </div>
+                </div>
+                ${androidNav('create')}
+            `);
+        }
+
+        if (scene.key === 'a6') {
+            const mode = state.sub6;
+            const historyLike = mode === 'history' || mode === 'tips';
+            const showSetting = mode === 'setting';
+            const showTips = mode === 'tips';
+            const roleProfiles = {
+                '女娲': '女娲：上古创世者。可查看角色设定、音色配置与角色参数卡（JSON）。',
+                '林惊羽': '林惊羽：主线伙伴。可查看角色设定、台词示例与参数卡。',
+                '青鸾': '青鸾：当前场景角色。可查看音色、台词示例与参数卡。',
+                '唐三藏': '唐三藏：剧情主角之一。可查看设定、音色和剧情关联信息。',
+                '猪八戒': '猪八戒：剧情主角之一。可查看设定、音色和剧情关联信息。'
+            };
+            const roleDetail = state.sub6RoleDetail ? roleProfiles[state.sub6RoleDetail] || `${state.sub6RoleDetail}：可查看角色信息。` : '';
+            return phone(`
+                <div class="android-status"><span>10:35</span><span>我在西游记世界</span></div>
+                <div class="chat-stage" style="background-image:url('assets/img_20.png')">
+                    <div class="chat-corner-actions">
+                        <button class="corner-btn" title="进入故事大厅" data-action="jump-android" data-value="1" aria-label="进入故事大厅">${searchIconSvg()}</button>
+                        <button class="corner-btn" title="${state.autoVoice ? '语音已开启，点击静音' : '语音已静音，点击开启'}" data-action="toggle-entry-voice" aria-label="切换语音">${speakerIconSvg(state.autoVoice)}</button>
+                    </div>
+                    <div class="chat-overlay-text">内容由 AI 生成</div>
+                    ${historyLike ? '<button class="chat-close-btn" data-action="set-sub6" data-value="live" aria-label="关闭历史">×</button>' : ''}
+                    <button class="chat-fav-btn" aria-label="收藏">❤</button>
+                    <div class="chat-layer">
+                        ${!state.autoVoice ? '<div class="toast">静音进入</div>' : ''}
+                        ${historyLike ? '<div class="history-mark">历史模式</div>' : ''}
+                        ${historyLike ? `
+                            <div class="bubble player">不定就能用来改造这伤邪系统！<br />（他一边说一边观察你的反应，那熊黑怪在黑风山修炼这么久）</div>
+                            <div class="npc-wrap">
+                                <div class="npc-avatar" style="background-image:url('assets/img_20.png')"></div>
+                                <div style="flex:1;">
+                                    <div class="bubble-title">青鸾</div>
+                                    <div class="bubble npc" id="long-press-target" style="margin-top:6px;">（似乎也配合着林惊羽的策略，声音里多了几分吸引力）宿主，补充信息：根据对熊黑怪的数据分析，他的内丹极有可能蕴含着强大的生命能量与妖族灵韵。</div>
+                                </div>
+                            </div>
+                        ` : `
+                            <div class="bubble-title" style="margin-top:334px;">青鸾</div>
+                            <div class="bubble npc" id="long-press-target" style="margin-top:6px;">（似乎也配合着林惊羽的策略，声音里多了几分吸引力）宿主，补充信息：根据对熊黑怪的数据分析，他的内丹极有可能蕴含着强大的生命能量与妖族灵韵。若能获取并合理利用，不仅可能对我进行某种程度的“强化”，还可能为您提供新的修炼资源或推演方向。</div>
+                        `}
+                        <button class="floating-history-btn" data-action="set-sub6" data-value="${showTips ? 'live' : 'tips'}" aria-label="${showTips ? '返回实时' : 'AI提示'}">${showTips ? '↩' : '✨'}</button>
+                        ${showSetting ? `
+                            <div class="setting-modal">
+                                <h4>我的西游记世界</h4>
+                                <div class="hint-text" style="color:#d5ebff; margin-top:6px;">故事简介：林浩然携华夏文明穿越西游世界，于风云将起之前归于一宗。他以现代思维神机妙法、以华夏经典融汇神通，广纳门徒，教化妖、人。</div>
+                                <div class="hint-text" style="margin-top:8px; color:#dceeff;">角色列表</div>
+                                <div class="role-strip">
+                                    <button class="role-mini" data-action="set-sub6-role" data-value="女娲"><span></span>女娲</button>
+                                    <button class="role-mini" data-action="set-sub6-role" data-value="林惊羽"><span></span>林惊羽</button>
+                                    <button class="role-mini" data-action="set-sub6-role" data-value="青鸾"><span></span>青鸾</button>
+                                    <button class="role-mini" data-action="set-sub6-role" data-value="唐三藏"><span></span>唐三藏</button>
+                                    <button class="role-mini" data-action="set-sub6-role" data-value="猪八戒"><span></span>猪八戒</button>
+                                </div>
+                                ${state.sub6RoleDetail ? `<div class="role-detail-card">${roleDetail}</div>` : ''}
+                                ${state.sub6StoryDetail ? `<div class="role-detail-card">故事设定：<br />1. 故事背景：乌坦城与魔兽山脉双线推进。<br />2. 章节内容：当前章节含角色互动、旁白推进和分支触发。<br />3. 章节完成条件：击败黑熊怪并收集内丹；为空时 AI 持续编排。</div>` : ''}
+                                <button class="setting-link-row" data-action="open-story-setting-detail"><span>故事设定</span><span>&gt;</span></button>
+                                <button class="setting-link-row" data-action="toggle-sub6-dialog-mode"><span>对话模式</span><span>${state.sub6DialogMode} &gt;</span></button>
+                                ${state.sub6DialogPicker ? `
+                                    <div class="mode-select-card">
+                                        <button class="mode-select-option" data-action="select-sub6-dialog-mode" data-value="基础模式">✓ 基础模式（当前唯一）</button>
+                                        <div class="mode-select-tip">当前仅支持基础模式，后续可扩展其他对话模式。</div>
+                                    </div>
+                                ` : ''}
+                            </div>
+                        ` : ''}
+                        ${showTips ? `
+                            <div class="ai-tip-panel">
+                                <button class="ai-tip-option">我想先观察黑怪行动，再决定是否出手。</button>
+                                <button class="ai-tip-option">直接追击，别给它逃跑机会。</button>
+                                <button class="ai-tip-option">你先给我一个稳妥方案，我按方案执行。</button>
+                                <button class="ai-tip-back" data-action="set-sub6" data-value="live">返回</button>
+                            </div>
+                        ` : ''}
+                        ${state.longMenu && !showTips && !showSetting ? `
+                            <div class="context-menu" id="context-menu">
+                                <button class="menu-item" data-action="dialog-menu-action" data-value="copy">复制</button>
+                                <button class="menu-item" data-action="dialog-menu-action" data-value="like">点赞</button>
+                                <button class="menu-item" data-action="dialog-menu-action" data-value="dislike">点踩</button>
+                                <button class="menu-item" data-action="dialog-menu-action" data-value="rewrite">改写</button>
+                                <button class="menu-item" data-action="dialog-menu-action" data-value="replay">重听</button>
+                            </div>
+                        ` : ''}
+                        <div class="story-footer">
+                            <div class="story-title-block">
+                                <button class="story-title story-title-btn" data-action="set-sub6" data-value="setting">我的西游记世界 &gt;</button>
+                                <div class="story-sub">@孙悟空无相</div>
+                            </div>
+                            <div class="story-actions">
+                                <div class="story-action"><div class="icon">❤</div><div>30</div></div>
+                                <div class="story-action"><div class="icon">↗</div><div>分享</div></div>
+                                <div class="story-action"><div class="icon">💬</div><div>评论</div></div>
+                                <div class="story-action">
+                                    <button data-action="set-sub6" data-value="${historyLike ? 'live' : 'history'}">
+                                        <div class="icon">${historyLike ? '↩' : '◷'}</div>
+                                        <div>${historyLike ? '返回' : '历史'}</div>
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="chat-input"><div class="text">按住说话</div><div class="chat-icon">⌨</div><div class="chat-icon">＋</div></div>
+                    </div>
+                </div>
+                ${androidNav('chat')}
+            `);
+        }
+
+        if (scene.key === 'a7') {
+            return phone(`
+                <div class="android-status"><span>10:36</span><span>我在西游记世界</span></div>
+                <div class="chat-stage" style="background-image:url('assets/img_20.png')">
+                    <div class="chat-corner-actions">
+                        <button class="corner-btn" title="进入故事大厅" data-action="jump-android" data-value="1" aria-label="进入故事大厅">${searchIconSvg()}</button>
+                        <button class="corner-btn" title="${state.autoVoice ? '语音已开启，点击静音' : '语音已静音，点击开启'}" data-action="toggle-entry-voice" aria-label="切换语音">${speakerIconSvg(state.autoVoice)}</button>
+                    </div>
+                    <div class="chat-overlay-text">内容由 AI 生成</div>
+                    <div class="chat-layer">
+                        ${!state.autoVoice ? '<div class="toast">静音进入</div>' : ''}
+                        <div class="bubble-title" style="margin-top:334px;">青鸾</div>
+                        <div class="bubble npc" id="long-press-target" style="margin-top:6px;">（双击该对白模拟长按）宿主，补充信息：根据对熊黑怪的数据分析，他的内丹极有可能蕴含着强大的生命能量与妖族灵韵。若能获取并合理利用，不仅可能对我进行某种程度的“强化”，还可能为您提供新的修炼资源或推演方向。</div>
+                        ${state.longMenu ? `
+                            <div class="context-menu" id="context-menu">
+                                <button class="menu-item" data-action="dialog-menu-action" data-value="copy">复制</button>
+                                <button class="menu-item" data-action="dialog-menu-action" data-value="like">点赞</button>
+                                <button class="menu-item" data-action="dialog-menu-action" data-value="dislike">点踩</button>
+                                <button class="menu-item" data-action="dialog-menu-action" data-value="rewrite">改写</button>
+                                <button class="menu-item" data-action="dialog-menu-action" data-value="replay">重听</button>
+                            </div>
+                        ` : ''}
+                        <div class="story-footer">
+                            <div class="story-title-block">
+                                <button class="story-title story-title-btn" data-action="open-play-setting">我的西游记世界 &gt;</button>
+                                <div class="story-sub">@孙悟空无相</div>
+                            </div>
+                            <div class="story-actions">
+                                <div class="story-action"><div class="icon">❤</div><div>30</div></div>
+                                <div class="story-action"><div class="icon">↗</div><div>分享</div></div>
+                                <div class="story-action"><div class="icon">💬</div><div>评论</div></div>
+                                <div class="story-action"><div class="icon">◷</div><div>历史</div></div>
+                            </div>
+                        </div>
+                        <div class="chat-input"><div class="text">按住说话</div><div class="chat-icon">⌨</div><div class="chat-icon">＋</div></div>
+                    </div>
+                </div>
+                ${androidNav('chat')}
+            `);
+        }
+
+        if (scene.key === 'a8') {
+            if (state.sub8 === 'my') {
+                return phone(`
+                    <div class="android-status"><span>10:34</span><span>我的</span></div>
+                    <div class="profile-wrap">
+                        <div class="my-head"><span></span><button class="gear-btn" data-action="set-sub8" data-value="setting">⚙</button></div>
+                        <div class="account">
+                            <div class="account-avatar"><img src="assets/img_20.png" alt="avatar" /></div>
+                            <div class="account-name">青煞大帝</div>
+                        </div>
+                        <div class="stat-row"><div><b>672</b><br />获赞</div><div><b>1</b><br />关注</div><div><b>29</b><br />粉丝</div></div>
+                        <div class="big-actions"><button class="action-btn">创作</button><button class="action-btn">编辑资料</button></div>
+                        <div class="section-title">241 作品</div>
+                        <div class="chips"><span class="tiny-chip">修仙传</span><span class="tiny-chip">假面骑士</span><span class="tiny-chip">收藏者</span></div>
+                        <div class="work-grid">
+                            <div class="work-card"><div class="cover" style="background:#f0f3fa; display:grid; place-items:center; color:#9fb0ca;">未生图</div><div class="meta">草稿箱（14）</div></div>
+                            <div class="work-card"><div class="cover" style="background-image:url('assets/img_4.png')"></div><div class="meta">无厘头故事 · 浏览 144</div></div>
+                        </div>
+                    </div>
+                    ${androidNav('my')}
+                `);
+            }
+
+            return phone(`
+                <div class="android-status"><span>10:35</span><span>设置</span></div>
+                <div class="setting-wrap">
+                    <button class="back-btn" data-action="set-sub8" data-value="my">←</button>
+                    <div class="setting-card">
+                        <h4>主题</h4>
+                        <div class="theme-row">
+                            <div class="theme-dot" style="background:#f6f8fb;"></div>
+                            <div class="theme-dot" style="background:#e9eef7;"></div>
+                            <div class="theme-dot" style="background:#f0be27;"></div>
+                            <div class="theme-dot" style="background:#10a56a;"></div>
+                            <div class="theme-dot" style="background:#27a4d2;"></div>
+                        </div>
+                    </div>
+                    <div class="setting-card">
+                        <h4>请求地址配置</h4>
+                        <div class="setting-input">API 地址： http://localhost:60000</div>
+                        <div class="setting-input">WebSocket： ws://localhost:60000</div>
+                        <div class="mini-actions"><button class="mini-btn primary">保存</button><button class="mini-btn">重置</button></div>
+                    </div>
+                    <div class="setting-card">
+                        <h4>账号</h4>
+                        <div class="setting-input">用户名：admin</div>
+                        <div class="setting-input">密码：******</div>
+                        <div class="mini-actions"><button class="mini-btn">修改</button><button class="mini-btn">退出登录</button></div>
+                    </div>
+                </div>
+                ${androidNav('my')}
+            `);
+        }
+
+        return '';
+    }
+
+    function renderWebScene(scene) {
+        const mapped = androidScenes[scene.androidIndex ?? 0] || androidScenes[0];
+        return `
+            <div class="web-adapt-shell">
+                <div class="web-adapt-main">
+                    <div class="web-adapt-frame">${renderAndroidScene(mapped)}</div>
+                </div>
+            </div>
+        `;
+    }
+
+    function renderStage() {
+        const scene = currentScenes()[currentIndex()];
+        stageTitleEl.textContent = scene.title;
+        stageSubEl.textContent = scene.sub;
+        subControlsEl.innerHTML = renderSubControls(scene);
+
+        if (state.mode === 'android') {
+            stageBodyEl.innerHTML = renderAndroidScene(scene);
+            bindLongPressIfNeeded(scene);
+        } else {
+            stageBodyEl.innerHTML = renderWebScene(scene);
+            const mapped = androidScenes[scene.androidIndex ?? 0] || androidScenes[0];
+            bindLongPressIfNeeded(mapped);
+        }
+
+        renderChecks(scene);
+        renderRefs(scene);
+    }
+
+    function bindLongPressIfNeeded(scene) {
+        const inPlayableChat = scene.key === 'a7' || (scene.key === 'a6' && (state.sub6 === 'live' || state.sub6 === 'history'));
+        if (!inPlayableChat) {
+            return;
+        }
+
+        const target = document.getElementById('long-press-target');
+        if (!target) return;
+
+        target.addEventListener('dblclick', () => {
+            state.longMenu = !state.longMenu;
+            renderStage();
+        });
+    }
+
+    function renderLeftMeta() {
+        if (state.mode === 'android') {
+            leftTitleEl.textContent = 'Android 流程';
+            leftSubEl.textContent = '8 个关键步骤，按真实交互链路串联';
+        } else {
+            leftTitleEl.textContent = 'Web 流程';
+            leftSubEl.textContent = '8 个关键步骤，桌面容器复用 Android 全链路';
+        }
+    }
+
+    function renderAll() {
+        renderModeSwitch();
+        renderLeftMeta();
+        renderSteps();
+        renderStage();
+    }
+
+    function clampStep(delta) {
+        const scenes = currentScenes();
+        const next = (currentIndex() + delta + scenes.length) % scenes.length;
+        setCurrentIndex(next);
+    }
+
+    document.addEventListener('click', (event) => {
+        const button = event.target.closest('[data-action]');
+        if (!button) return;
+
+        const action = button.dataset.action;
+        const value = button.dataset.value;
+
+        if (action === 'set-mode') {
+            state.mode = value;
+            if (value !== 'android') {
+                state.sub3UserEditor = false;
+                state.sub3NpcEditor = false;
+            }
+            renderAll();
+            return;
+        }
+
+        if (action === 'jump-android') {
+            const nextIndex = Number(value);
+            if (state.mode === 'web') {
+                state.webIndex = nextIndex;
+            } else {
+                state.mode = 'android';
+                state.androidIndex = nextIndex;
+            }
+            state.sub3UserEditor = false;
+            state.sub3NpcEditor = false;
+            state.longMenu = false;
+            renderAll();
+            return;
+        }
+
+        if (action === 'jump-play') {
+            if (state.mode === 'web') {
+                state.webIndex = 5;
+            } else {
+                state.mode = 'android';
+                state.androidIndex = 5;
+            }
+            state.sub6 = 'live';
+            state.sub6RoleDetail = '';
+            state.sub6StoryDetail = false;
+            state.sub6DialogPicker = false;
+            state.sub3UserEditor = false;
+            state.sub3NpcEditor = false;
+            state.longMenu = false;
+            renderAll();
+            return;
+        }
+
+        if (action === 'jump-play-muted') {
+            if (state.mode === 'web') {
+                state.webIndex = 5;
+            } else {
+                state.mode = 'android';
+                state.androidIndex = 5;
+            }
+            state.sub6 = 'live';
+            state.autoVoice = false;
+            state.sub6RoleDetail = '';
+            state.sub6StoryDetail = false;
+            state.sub6DialogPicker = false;
+            state.sub3UserEditor = false;
+            state.sub3NpcEditor = false;
+            state.longMenu = false;
+            renderAll();
+            return;
+        }
+
+        if (action === 'open-play-setting') {
+            if (state.mode === 'web') {
+                state.webIndex = 5;
+            } else {
+                state.mode = 'android';
+                state.androidIndex = 5;
+            }
+            state.sub6 = 'setting';
+            state.sub6RoleDetail = '';
+            state.sub6StoryDetail = false;
+            state.sub6DialogPicker = false;
+            state.longMenu = false;
+            renderAll();
+            return;
+        }
+
+        if (action === 'toggle-entry-voice') {
+            state.autoVoice = !state.autoVoice;
+            renderStage();
+            return;
+        }
+
+        if (action === 'set-step') {
+            setCurrentIndex(Number(value));
+            if (Number(value) !== 2) {
+                state.sub3UserEditor = false;
+                state.sub3NpcEditor = false;
+            }
+            state.longMenu = false;
+            renderAll();
+            return;
+        }
+
+        if (action === 'set-sub3') {
+            state.sub3 = value;
+            state.sub3UserEditor = false;
+            state.sub3NpcEditor = false;
+            renderStage();
+            return;
+        }
+
+        if (action === 'add-next-chapter') {
+            state.sub3MultiChapter = true;
+            renderStage();
+            return;
+        }
+
+        if (action === 'toggle-sub3-advanced') {
+            state.sub3Advanced = !state.sub3Advanced;
+            renderStage();
+            return;
+        }
+
+        if (action === 'open-user-editor') {
+            state.sub3UserEditor = true;
+            state.sub3NpcEditor = false;
+            renderStage();
+            return;
+        }
+
+        if (action === 'close-user-editor' || action === 'save-user-editor') {
+            state.sub3UserEditor = false;
+            renderStage();
+            return;
+        }
+
+        if (action === 'open-npc-editor') {
+            state.sub3NpcEditor = true;
+            state.sub3UserEditor = false;
+            renderStage();
+            return;
+        }
+
+        if (action === 'close-npc-editor') {
+            state.sub3NpcEditor = false;
+            renderStage();
+            return;
+        }
+
+        if (action === 'save-npc-editor') {
+            const facePool = ['assets/img_29.png', 'assets/img_20.png', 'assets/img_4.png'];
+            const nextIndex = state.addedNpcRoles.length + 1;
+            state.addedNpcRoles.push({
+                name: `新角色${nextIndex}`,
+                face: facePool[(nextIndex - 1) % facePool.length]
+            });
+            state.sub3NpcEditor = false;
+            state.sub3 = 'edit';
+            renderStage();
+            return;
+        }
+
+        if (action === 'set-sub4') {
+            state.sub4 = value;
+            renderStage();
+            return;
+        }
+
+        if (action === 'set-sub6') {
+            const toSetting = value === 'setting';
+            const enterSettingFromOther = toSetting && state.sub6 !== 'setting';
+            state.sub6 = value;
+            if (!toSetting || enterSettingFromOther) {
+                state.sub6RoleDetail = '';
+                state.sub6StoryDetail = false;
+                state.sub6DialogPicker = false;
+            }
+            state.longMenu = false;
+            renderStage();
+            return;
+        }
+
+        if (action === 'set-sub6-role') {
+            state.sub6 = 'setting';
+            state.sub6RoleDetail = value || '';
+            state.sub6StoryDetail = false;
+            state.sub6DialogPicker = false;
+            state.longMenu = false;
+            renderStage();
+            return;
+        }
+
+        if (action === 'open-story-setting-detail') {
+            state.sub6 = 'setting';
+            state.sub6StoryDetail = !state.sub6StoryDetail;
+            state.sub6RoleDetail = '';
+            state.sub6DialogPicker = false;
+            state.longMenu = false;
+            renderStage();
+            return;
+        }
+
+        if (action === 'toggle-sub6-dialog-mode') {
+            state.sub6 = 'setting';
+            state.sub6DialogPicker = !state.sub6DialogPicker;
+            state.sub6RoleDetail = '';
+            state.sub6StoryDetail = false;
+            state.longMenu = false;
+            renderStage();
+            return;
+        }
+
+        if (action === 'select-sub6-dialog-mode') {
+            state.sub6 = 'setting';
+            state.sub6DialogMode = value || '基础模式';
+            state.sub6DialogPicker = false;
+            state.longMenu = false;
+            renderStage();
+            return;
+        }
+
+        if (action === 'toggle-dialog-menu') {
+            state.longMenu = !state.longMenu;
+            renderStage();
+            return;
+        }
+
+        if (action === 'dialog-menu-action') {
+            state.longMenu = false;
+            renderStage();
+            return;
+        }
+
+        if (action === 'set-sub7') {
+            state.sub7 = value;
+            state.longMenu = false;
+            renderStage();
+            return;
+        }
+
+        if (action === 'set-sub8') {
+            state.sub8 = value;
+            renderStage();
+            return;
+        }
+
+        if (action === 'toggle-voice') {
+            state.autoVoice = !state.autoVoice;
+            renderStage();
+        }
+    });
+
+    document.addEventListener('keydown', (event) => {
+        if (event.key === 'ArrowLeft') {
+            clampStep(-1);
+            renderAll();
+        }
+        if (event.key === 'ArrowRight') {
+            clampStep(1);
+            renderAll();
+        }
+        if ((state.mode === 'android' || state.mode === 'web') && event.key === 'ArrowUp') {
+            const activeAndroidScene = state.mode === 'android' ? androidScenes[state.androidIndex] : androidScenes[state.webIndex];
+            if (activeAndroidScene.key === 'a3') state.sub3 = state.sub3 === 'init' ? 'edit' : 'init';
+            if (activeAndroidScene.key === 'a4') state.sub4 = state.sub4 === 'base' ? 'advance' : 'base';
+            if (activeAndroidScene.key === 'a6') {
+                const order = ['live', 'history', 'setting', 'tips'];
+                state.sub6 = order[(order.indexOf(state.sub6) + 3) % 4];
+                state.longMenu = false;
+            }
+            if (activeAndroidScene.key === 'a7') {
+                state.longMenu = !state.longMenu;
+            }
+            if (activeAndroidScene.key === 'a8') {
+                state.sub8 = state.sub8 === 'my' ? 'setting' : 'my';
+            }
+            renderStage();
+        }
+        if ((state.mode === 'android' || state.mode === 'web') && event.key === 'ArrowDown') {
+            const activeAndroidScene = state.mode === 'android' ? androidScenes[state.androidIndex] : androidScenes[state.webIndex];
+            if (activeAndroidScene.key === 'a3') state.sub3 = state.sub3 === 'init' ? 'edit' : 'init';
+            if (activeAndroidScene.key === 'a4') state.sub4 = state.sub4 === 'base' ? 'advance' : 'base';
+            if (activeAndroidScene.key === 'a6') {
+                const order = ['live', 'history', 'setting', 'tips'];
+                state.sub6 = order[(order.indexOf(state.sub6) + 1) % 4];
+                state.longMenu = false;
+            }
+            if (activeAndroidScene.key === 'a7') {
+                state.longMenu = !state.longMenu;
+            }
+            if (activeAndroidScene.key === 'a8') {
+                state.sub8 = state.sub8 === 'my' ? 'setting' : 'my';
+            }
+            renderStage();
+        }
+    });
+
+    renderAll();
+</script>
+</body>
+</html>
