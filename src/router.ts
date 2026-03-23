@@ -13,6 +13,7 @@ import route9 from "./routes/assets/saveAssets";
 import route10 from "./routes/assets/updateAssets";
 import route11 from "./routes/game/addMessage";
 import route12 from "./routes/game/generateImage";
+import route12a from "./routes/game/deleteWorld";
 import route13 from "./routes/game/getChapter";
 import route14 from "./routes/game/getMessage";
 import route15 from "./routes/game/getSession";
@@ -128,6 +129,7 @@ export default async (app: Express) => {
   app.use("/assets/updateAssets", route10);
   app.use("/game/addMessage", route11);
   app.use("/game/generateImage", route12);
+  app.use("/game/deleteWorld", route12a);
   app.use("/game/getChapter", route13);
   app.use("/game/getMessage", route14);
   app.use("/game/getSession", route15);
