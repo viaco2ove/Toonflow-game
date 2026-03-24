@@ -1,0 +1,4 @@
+[env] local
+[env] file D:\Users\viaco\tools\Toonflow-game\toonflow-game-app\env\.env.local
+Database path: C:\Users\viaco\AppData\Roaming\Electron\db.sqlite
+Upload dir: C:\Users\viaco\AppData\Roaming\Electron\uploads
