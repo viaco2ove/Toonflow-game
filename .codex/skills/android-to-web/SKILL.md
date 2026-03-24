@@ -32,4 +32,4 @@ description: Use when converting Android app screens, flows, state, and business
 tmp/Android-to-Web/{time}
 编写 ui-checklist-{time}.md
 逐一比对界面差异
-模版：[ui-checklist-2026-0324-0322.review.md](references/ui-checklist-2026-0324-0322.review.md)
+模版：[ui-checklist-2026-0324-0322.review.md](references/template/ui-checklist-2026-0324-0322.review.md)[ui-checklist-2026-0324-0322.review.md](references/ui-checklist-2026-0324-0322.review.md)

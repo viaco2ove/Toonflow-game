@@ -21,6 +21,7 @@ const NON_PROJECT_SCOPED_PATHS = new Set<string>([
   "/task/getTaskApi",
   "/game/listSession",
   "/game/listWorlds",
+  "/game/uploadImage",
 ]);
 
 function toPositiveInt(value: any): number | null {

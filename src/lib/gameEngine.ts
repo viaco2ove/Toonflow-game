@@ -277,12 +277,34 @@ export function normalizeActionList(input: unknown): JsonRecord[] {
   return [];
 }
 
+export function normalizeWorldSettings(settingsRaw: unknown, topLevel: { coverPath?: unknown; publishStatus?: unknown }): JsonRecord {
+  const settings = parseJsonSafe<JsonRecord>(settingsRaw, {});
+  const coverPath = String(topLevel.coverPath || "").trim();
+  const publishStatus = String(topLevel.publishStatus || "").trim();
+  if (coverPath) {
+    settings.coverPath = coverPath;
+  }
+  if (publishStatus) {
+    settings.publishStatus = publishStatus;
+  }
+  return settings;
+}
+
 export function normalizeWorldOutput(row: any): JsonRecord | null {
   if (!row) return null;
   const rolePair = normalizeRolePair(row.playerRole, row.narratorRole);
+  const settings = normalizeWorldSettings(row.settings, {
+    coverPath: row.coverPath,
+    publishStatus: row.publishStatus,
+  });
   return {
     ...row,
-    settings: parseJsonSafe<JsonRecord>(row.settings, {}),
+    name: String(row.name || ""),
+    intro: String(row.intro || ""),
+    coverPath: String(row.coverPath || ""),
+    coverBgPath: String(row.coverBgPath || ""),
+    publishStatus: String(row.publishStatus || ""),
+    settings,
     playerRole: rolePair.playerRole,
     narratorRole: rolePair.narratorRole,
   };
