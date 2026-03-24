@@ -14,6 +14,23 @@ function normalizeBaseUrl(input: string | null | undefined): string {
   return (base || "http://127.0.0.1:8000").replace(/\/+$/, "");
 }
 
+function buildProxyAudioUrl(req: express.Request, configId: number | null | undefined, source: string): string {
+  const rawSource = String(source || "").trim();
+  if (!rawSource) return "";
+  const protocol = String(req.headers["x-forwarded-proto"] || req.protocol || "http")
+    .split(",")[0]
+    .trim();
+  const host = String(req.headers["x-forwarded-host"] || req.get("host") || "127.0.0.1:60000")
+    .split(",")[0]
+    .trim();
+  const rawToken = String(req.headers.authorization || req.query.token || "").replace(/^Bearer\s+/i, "").trim();
+  const params = new URLSearchParams();
+  if (configId) params.set("configId", String(configId));
+  params.set("source", rawSource);
+  if (rawToken) params.set("token", rawToken);
+  return `${protocol}://${host}/voice/audioProxy?${params.toString()}`;
+}
+
 function normalizeBase64(input?: string | null): string {
   if (!input) return "";
   const match = input.match(/^data:([^;]+);base64,(.+)$/);
@@ -126,9 +143,10 @@ export default router.post(
 
       const response = await axios.post(url, payload, { headers });
       const data = response.data || {};
-      const audioUrl =
+      const sourceUrl =
         data.audio_url_full ||
         (data.audio_url ? `${baseUrl}${String(data.audio_url).startsWith("/") ? "" : "/"}${data.audio_url}` : "");
+      const audioUrl = buildProxyAudioUrl(req, config?.id, sourceUrl);
 
       res.status(200).send(success({ audioUrl, data }));
     } catch (err) {

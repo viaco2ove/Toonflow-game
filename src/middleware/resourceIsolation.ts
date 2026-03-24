@@ -13,6 +13,7 @@ const NON_PROJECT_SCOPED_PATHS = new Set<string>([
   "/prompt/getPrompts",
   "/prompt/updatePrompt",
   "/voice/getVoices",
+  "/voice/audioProxy",
   "/voice/preview",
   "/voice/transcribe",
   "/voice/polishPrompt",

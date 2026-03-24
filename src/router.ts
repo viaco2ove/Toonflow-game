@@ -1,4 +1,4 @@
-// @routes-hash fbef5033595cdc588611b1720d1ee848
+// @routes-hash 26d15d4b8836d5b8e779d66ce00d5b8d
 import { Express } from "express";
 
 import route1 from "./routes/assets/addAssets";
@@ -113,11 +113,12 @@ import route109 from "./routes/video/reviseVideoStoryboards";
 import route110 from "./routes/video/saveVideo";
 import route111 from "./routes/video/upDateVideoConfig";
 import route112 from "./routes/video/uploadAudio";
-import route113 from "./routes/voice/getVoices";
-import route114 from "./routes/voice/polishPrompt";
-import route115 from "./routes/voice/preview";
-import route116 from "./routes/voice/transcribe";
-import route117 from "./routes/voice/uploadAudio";
+import route113 from "./routes/voice/audioProxy";
+import route114 from "./routes/voice/getVoices";
+import route115 from "./routes/voice/polishPrompt";
+import route116 from "./routes/voice/preview";
+import route117 from "./routes/voice/transcribe";
+import route118 from "./routes/voice/uploadAudio";
 
 export default async (app: Express) => {
   app.use("/assets/addAssets", route1);
@@ -232,9 +233,10 @@ export default async (app: Express) => {
   app.use("/video/saveVideo", route110);
   app.use("/video/upDateVideoConfig", route111);
   app.use("/video/uploadAudio", route112);
-  app.use("/voice/getVoices", route113);
-  app.use("/voice/polishPrompt", route114);
-  app.use("/voice/preview", route115);
-  app.use("/voice/transcribe", route116);
-  app.use("/voice/uploadAudio", route117);
+  app.use("/voice/audioProxy", route113);
+  app.use("/voice/getVoices", route114);
+  app.use("/voice/polishPrompt", route115);
+  app.use("/voice/preview", route116);
+  app.use("/voice/transcribe", route117);
+  app.use("/voice/uploadAudio", route118);
 }
