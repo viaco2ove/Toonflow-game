@@ -63,7 +63,7 @@ export default async function startServe(randomPort: Boolean = false) {
 
   app.use(async (req, res, next) => {
     // 白名单路径
-    if (req.path === "/other/login") return next();
+    if (req.path === "/other/login" || req.path === "/other/register") return next();
 
     // 从 header 或 query 参数获取 token
     const rawToken = req.headers.authorization || (req.query.token as string) || "";

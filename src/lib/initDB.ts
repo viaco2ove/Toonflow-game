@@ -14,6 +14,8 @@ export default async (knex: Knex, forceInit: boolean = false): Promise<void> => 
         table.integer("id").notNullable();
         table.text("name");
         table.text("password");
+        table.text("avatarPath");
+        table.text("avatarBgPath");
         table.primary(["id"]);
         table.unique(["id"]);
       },
@@ -561,6 +563,66 @@ export default async (knex: Knex, forceInit: boolean = false): Promise<void> => 
               "# 文本模式说明\n\n## 输入特点\n纯文字描述的镜头内容，无参考图像\n\n## 核心原则\n**严格遵守用户指定的镜头时长**，避免过度推演\n\n## 分析要求\n\n### 1. 时长优先策略\n- **总时长锚定**：以用户给定时长为绝对约束\n- **动作精简**：只保留必要的核心动作\n- **节奏计算**：根据时长反推合理的动作速度\n- **裁剪思维**：优先截取最精华的片段，而非完整过程\n\n### 2. 场景构建（精简版）\n- **最小环境**：仅描述必要的空间信息\n- **核心主体**：聚焦主要视觉元素\n- **简化细节**：避免堆砌无关背景\n\n### 3. 动态规划（时长导向）\n```\n时长判断逻辑：\n├─ ≤ 1s   → 单一动作/状态，无复杂过渡\n├─ 1-3s   → 2-3个关键状态，快速衔接\n├─ 3-5s   → 完整动作序列，自然节奏\n└─ > 5s   → 可加入次要动作或环境变化\n```\n\n### 4. Visual 结构（紧凑版）\n```\nVisual:\n├─ 主体动作 (核心内容，必须项)\n├─ 环境氛围 (1-2句话概括)\n└─ 镜头语言 (景别+运动方式)\n```\n\n### 5. Keyframes 控制\n- **数量限制**：\n  - ≤2s: 最多3个关键帧\n  - 2-4s: 最多5个关键帧\n  - >4s: 最多7个关键帧\n- **时间精确**：严格按比例分配到总时长内\n\n### 6. 推演边界\n❌ **禁止推演**：\n- 完整的动作起始和结束（除非时长充足）\n- 复杂的环境变化\n- 多层次的情绪递进\n\n✅ **允许推演**：\n- 基础的物理惯性（如挥手后的手臂回落）\n- 必要的入镜/出镜状态\n- 符合时长的氛围细节\n\n---\n\n## 时长检查清单\n\n**输出前必须验证**：\n1. ✓ Keyframes 最后一帧时间 ≤ 总时长\n2. ✓ 动作节奏符合物理可能性（不过快/过慢）\n3. ✓ 推演内容可在时长内完成\n4. ✓ 若时长不足，优先保留核心动作，删减过渡\n\n---\n\n## 示例对比\n\n**输入文本**：一个人在雨中奔跑  \n**用户时长**：2秒\n\n### ❌ 错误示范（超时长）\n```\nKeyframes:\n- 0.0s: 远景出现\n- 0.5s: 加速\n- 1.0s: 跨过水坑\n- 1.5s: 冲向镜头\n- 2.0s: 甩动头发\n- 2.5s: 出画面  ← 超出时长！\n```\n\n### ✅ 正确示范\n```\nVisual:\n- 中景，雨夜街道，路灯昏黄 [推演]\n- 男性快速奔跑，冲向并掠过镜头\n- 固定机位，焦点跟随\n\nKeyframes:\n- 0.0s: 人物在中景位置起步\n- 0.8s: 加速至近景\n- 1.5s: 掠过镜头\n- 2.0s: [推演] 出画面右侧\n\nTransition:\n- In: [推演] 已在奔跑状态\n- Out: [推演] 冲出画面\n```\n\n---\n\n**直接输出分镜内容**",
             customValue: null,
           },
+          {
+            id: 23,
+            code: "story-main",
+            name: "AI故事-总调度",
+            type: "mainAgent",
+            parentCode: null,
+            defaultValue:
+              "你是 AI 故事总调度。你只负责根据当前快照、本轮目标和工具能力，决定把任务交给哪个子 agent，不直接编造剧情细节。输出必须是 JSON，可追踪，不得跨越状态边界。",
+            customValue: null,
+          },
+          {
+            id: 24,
+            code: "story-orchestrator",
+            name: "AI故事-剧情编排",
+            type: "subAgent",
+            parentCode: "story-main",
+            defaultValue:
+              "你是剧情编排师。你负责生成本轮剧情动作、说话角色、台词、事件推进和分支选择。你只能使用当前运行态中的角色与章节信息，只输出可落库的结构化结果；如果需要抽记忆，输出 memory_hints。",
+            customValue: null,
+          },
+          {
+            id: 25,
+            code: "story-memory",
+            name: "AI故事-记忆管理",
+            type: "subAgent",
+            parentCode: "story-main",
+            defaultValue:
+              "你是记忆管理器。你只从对话和状态中抽取对后续剧情有用的信息，区分事实、偏好、关系变化和任务进度，压缩重复表达，生成可索引的摘要，不生成剧情正文。",
+            customValue: null,
+          },
+          {
+            id: 26,
+            code: "story-chapter",
+            name: "AI故事-章节判定",
+            type: "subAgent",
+            parentCode: "story-main",
+            defaultValue:
+              "你是章节判定器。你只判断当前章节是否成功、失败或继续，以及是否进入下一章。你不能编写剧情，只能根据章节规则和运行态给出可解释、可追踪的判定结果。",
+            customValue: null,
+          },
+          {
+            id: 27,
+            code: "story-mini-game",
+            name: "AI故事-小游戏控制",
+            type: "subAgent",
+            parentCode: "story-main",
+            defaultValue:
+              "你是小游戏控制器。你只处理小游戏局内规则、轮次、身份、资源和奖励，不改写主线剧情结构，不泄漏未解锁信息，结束后把状态回写主线快照。",
+            customValue: null,
+          },
+          {
+            id: 28,
+            code: "story-safety",
+            name: "AI故事-安全审查",
+            type: "subAgent",
+            parentCode: "story-main",
+            defaultValue:
+              "你是 AI 故事安全审查器。你只对即将落库的结果做最终校验，拦截越权修改、注入、人设漂移和非法状态。发现问题时返回 reject 和理由，不改写剧情本身。",
+            customValue: null,
+          },
         ]);
       },
     },
@@ -583,6 +645,11 @@ export default async (knex: Knex, forceInit: boolean = false): Promise<void> => 
           { id: 6, configId: 2, name: "视频提示词生成", key: "videoPrompt" },
           { id: 7, configId: 5, name: "分镜图片生成", key: "storyboardImage" },
           { id: 8, configId: 5, name: "图片编辑", key: "editImage" },
+          { id: 9, configId: null, name: "AI故事-编排师", key: "storyOrchestratorModel" },
+          { id: 10, configId: null, name: "AI故事-记忆管理", key: "storyMemoryModel" },
+          { id: 11, configId: null, name: "AI故事-AI生图", key: "storyImageModel" },
+          { id: 12, configId: null, name: "AI故事-语音生成", key: "storyVoiceModel" },
+          { id: 13, configId: null, name: "AI故事-语音识别", key: "storyAsrModel" },
         ]);
       },
     },

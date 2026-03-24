@@ -1,6 +1,6 @@
 import express from "express";
 import u from "@/utils";
-import { success } from "@/lib/responseFormat";
+import { error, success } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
 import { z } from "zod";
 const router = express.Router();
@@ -15,6 +15,19 @@ export default router.post(
   }),
   async (req, res) => {
     const { id, customValue, code } = req.body;
+    const userId = Number((req as any)?.user?.id || 0);
+    const storyPromptCodes = new Set([
+      "story-main",
+      "story-orchestrator",
+      "story-memory",
+      "story-chapter",
+      "story-mini-game",
+      "story-safety",
+    ]);
+
+    if (storyPromptCodes.has(String(code || "")) && userId !== 1) {
+      return res.status(403).send(error("仅管理员可编辑 AI 故事提示词"));
+    }
 
     await u
       .db("t_prompts")

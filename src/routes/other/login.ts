@@ -6,7 +6,7 @@ import { validateFields } from "@/middleware/middleware";
 import { z } from "zod";
 const router = express.Router();
 
-async function getOrCreateTokenKey(userId: number): Promise<string> {
+export async function getOrCreateTokenKey(userId: number): Promise<string> {
   const existed = await u.db("t_setting").where("userId", userId).select("id", "tokenKey").first();
   const tokenKey = String(existed?.tokenKey || "").trim();
   if (tokenKey) return tokenKey;

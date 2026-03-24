@@ -5,6 +5,7 @@ import { error, success } from "@/lib/responseFormat";
 import {
   getGameDb,
   normalizeRolePair,
+  normalizeWorldSettings,
   normalizeWorldOutput,
   nowTs,
   toJsonText,
@@ -57,12 +58,19 @@ export default router.post(
         return res.status(404).send(error("未找到世界观"));
       }
 
+      const normalizedCoverPath = String(coverPath || "").trim();
+      const normalizedPublishStatus = String(publishStatus || existing?.publishStatus || "draft").trim() || "draft";
+      const normalizedSettings = normalizeWorldSettings(settings, {
+        coverPath: normalizedCoverPath,
+        publishStatus: normalizedPublishStatus,
+      });
+
       const payload = {
         name: String(name || "").trim(),
         intro: String(intro || "").trim(),
-        coverPath: String(coverPath || "").trim(),
-        publishStatus: String(publishStatus || existing?.publishStatus || "draft").trim() || "draft",
-        settings: toJsonText(settings, {}),
+        coverPath: normalizedCoverPath,
+        publishStatus: normalizedPublishStatus,
+        settings: toJsonText(normalizedSettings, {}),
         playerRole: toJsonText(rolePair.playerRole, {}),
         narratorRole: toJsonText(rolePair.narratorRole, {}),
         updateTime: now,

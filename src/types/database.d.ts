@@ -1,4 +1,4 @@
-// @db-hash 6d4fbfc05603eab67e584ca3ca158816
+// @db-hash 1c961ed10335d81e7112a6fe7485b4dd
 //该文件由脚本自动生成，请勿手动修改
 
 export interface t_aiModelMap {
@@ -250,6 +250,8 @@ export interface t_textModel {
   'tool'?: number | null;
 }
 export interface t_user {
+  'avatarBgPath'?: string | null;
+  'avatarPath'?: string | null;
   'id'?: number;
   'name'?: string | null;
   'password'?: string | null;
