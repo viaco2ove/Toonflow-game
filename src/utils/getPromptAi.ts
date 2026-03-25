@@ -56,8 +56,11 @@ export default async function getPromptAi(key: string, userId?: number): Promise
             qb.where("type", "text");
           } else if (fallbackType === "image") {
             qb.whereIn("type", ["image", "t2i", "i2i"]);
-          } else if (fallbackType === "voice") {
+          } else if (fallbackType === "voice" || fallbackType === "asr") {
             qb.where("type", "voice");
+            if (fallbackType === "asr") {
+              qb.where("modelType", "asr");
+            }
           }
         })
         .orderByRaw("case when manufacturer in ('t8star','openai') then 0 else 1 end")

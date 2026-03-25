@@ -45,6 +45,22 @@ function asDebugMessage(input: any) {
   });
 }
 
+function isDebugFreePlotActive(state: unknown): boolean {
+  if (!state || typeof state !== "object" || Array.isArray(state)) return false;
+  const box = (state as Record<string, unknown>).debugFreePlot;
+  if (!box || typeof box !== "object" || Array.isArray(box)) return false;
+  return (box as Record<string, unknown>).active === true;
+}
+
+function buildDebugFreePlotMessage(roleName: string, chapterTitle: string) {
+  return asDebugMessage({
+    role: roleName,
+    roleType: "narrator",
+    eventType: "on_debug_free_plot",
+    content: `章节《${chapterTitle || "当前章节"}》已完成，接下来进入自由剧情，编排师将继续根据局势推进故事。`,
+  });
+}
+
 function buildDebugRecentMessages(
   messages: RuntimeMessageInput[],
   playerRoleName: string,
@@ -128,6 +144,15 @@ export default router.post(
 
       const rolePair = normalizeRolePair(world.playerRole, world.narratorRole);
       const state = normalizeSessionState(req.body.state, worldId, Number(chapter.id || 0), rolePair);
+      const debugFreePlotActive = isDebugFreePlotActive(state);
+      const effectiveChapter = debugFreePlotActive
+        ? {
+          ...chapter,
+          content: "",
+          openingText: "",
+          completionCondition: null,
+        }
+        : chapter;
       const messages = inputMessages.map((item) => ({
         role: String(item.role || ""),
         roleType: String(item.roleType || ""),
@@ -149,7 +174,7 @@ export default router.post(
         const initialResult = await runNarrativeOrchestrator({
           userId,
           world,
-          chapter,
+          chapter: effectiveChapter,
           state,
           recentMessages: [openingRuntimeMessage],
           playerMessage: "",
@@ -157,7 +182,7 @@ export default router.post(
         const orchestrated = await advanceNarrativeUntilPlayerTurn({
           userId,
           world,
-          chapter,
+          chapter: effectiveChapter,
           state,
           recentMessages: [openingRuntimeMessage],
           playerMessage: "",
@@ -167,7 +192,7 @@ export default router.post(
         const memory = await runStoryMemoryManager({
           userId,
           world,
-          chapter,
+          chapter: effectiveChapter,
           state,
           recentMessages: allMessages,
         });
@@ -210,7 +235,7 @@ export default router.post(
         }));
       }
 
-      const outcome = evaluateDebugChapterOutcome(chapter, playerContent, recentMessages);
+      const outcome = debugFreePlotActive ? { result: "continue" as const, nextChapterId: null } : evaluateDebugChapterOutcome(chapter, playerContent, recentMessages);
       if (outcome.result === "failed") {
         return res.status(200).send(success({
           chapterId: Number(chapter.id || 0),
@@ -235,17 +260,17 @@ export default router.post(
         const currentIndex = chapters.findIndex((item: any) => Number(item.id) === Number(chapter.id));
         const nextChapter = explicitNext || (currentIndex >= 0 ? chapters[currentIndex + 1] : null) || null;
         if (!nextChapter) {
+          (state as any).debugFreePlot = {
+            active: true,
+            fromChapterId: Number(chapter.id || 0),
+            unlockedAt: nowTs(),
+          }
           return res.status(200).send(success({
             chapterId: Number(chapter.id || 0),
             chapterTitle: String(chapter.title || ""),
             state,
-            endDialog: "已完结",
-            messages: [asDebugMessage({
-              role: String(rolePair.narratorRole.name || "旁白"),
-              roleType: "narrator",
-              eventType: "on_debug_complete",
-              content: `章节《${String(chapter.title || "当前章节")}》完成，故事已完结。`,
-            })],
+            endDialog: "进入自由剧情",
+            messages: [buildDebugFreePlotMessage(String(rolePair.narratorRole.name || "旁白"), String(chapter.title || "当前章节"))],
           }));
         }
         state.chapterId = Number(nextChapter.id || 0);
@@ -298,7 +323,7 @@ export default router.post(
       const orchestrator = await runNarrativeOrchestrator({
         userId,
         world,
-        chapter,
+        chapter: effectiveChapter,
         state,
         recentMessages,
         playerMessage: playerContent,
@@ -306,13 +331,13 @@ export default router.post(
       const orchestrated = await advanceNarrativeUntilPlayerTurn({
         userId,
         world,
-        chapter,
+        chapter: effectiveChapter,
         state,
         recentMessages,
         playerMessage: playerContent,
         initialResult: orchestrator,
       });
-      if (orchestrated.chapterOutcome === "failed") {
+      if (!debugFreePlotActive && orchestrated.chapterOutcome === "failed") {
         return res.status(200).send(success({
           chapterId: Number(chapter.id || 0),
           chapterTitle: String(chapter.title || ""),
@@ -321,7 +346,7 @@ export default router.post(
           messages: orchestrated.messages.map((item) => asDebugMessage(item)),
         }));
       }
-      if (orchestrated.chapterOutcome === "success") {
+      if (!debugFreePlotActive && orchestrated.chapterOutcome === "success") {
         const chapters = (await db("t_storyChapter").where({ worldId }).orderBy("sort", "asc").orderBy("id", "asc"))
           .map((item: any) => normalizeChapterOutput(item));
         const explicitNext = orchestrated.nextChapterId
@@ -330,12 +355,20 @@ export default router.post(
         const currentIndex = chapters.findIndex((item: any) => Number(item.id) === Number(chapter.id));
         const nextChapter = explicitNext || (currentIndex >= 0 ? chapters[currentIndex + 1] : null) || null;
         if (!nextChapter) {
+          (state as any).debugFreePlot = {
+            active: true,
+            fromChapterId: Number(chapter.id || 0),
+            unlockedAt: nowTs(),
+          }
           return res.status(200).send(success({
             chapterId: Number(chapter.id || 0),
             chapterTitle: String(chapter.title || ""),
             state,
-            endDialog: "已完结",
-            messages: orchestrated.messages.map((item) => asDebugMessage(item)),
+            endDialog: "进入自由剧情",
+            messages: [
+              ...orchestrated.messages.map((item) => asDebugMessage(item)),
+              buildDebugFreePlotMessage(String(rolePair.narratorRole.name || "旁白"), String(chapter.title || "当前章节")),
+            ],
           }));
         }
         state.chapterId = Number(nextChapter.id || 0);
@@ -391,7 +424,7 @@ export default router.post(
       const memory = await runStoryMemoryManager({
         userId,
         world,
-        chapter,
+        chapter: effectiveChapter,
         state,
         recentMessages: [
           ...recentMessages,

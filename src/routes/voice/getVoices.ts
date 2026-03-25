@@ -2,7 +2,7 @@ import express from "express";
 import { success, error } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
 import { z } from "zod";
-import { fetchVoicePresets, getUserVoiceConfig, normalizeVoiceBaseUrl } from "@/lib/voiceGateway";
+import { fetchVoicePresets, filterVoicePresetsByManufacturer, getUserVoiceConfig, normalizeVoiceBaseUrl } from "@/lib/voiceGateway";
 
 const router = express.Router();
 
@@ -27,7 +27,7 @@ export default router.post(
         headers.Authorization = `Bearer ${config.apiKey}`;
       }
 
-      const presets = await fetchVoicePresets(baseUrl, headers);
+      const presets = filterVoicePresetsByManufacturer(await fetchVoicePresets(baseUrl, headers), config.manufacturer);
       res.status(200).send(success(presets));
     } catch (err) {
       res.status(500).send(error((err as Error)?.message || "获取音色预设失败"));

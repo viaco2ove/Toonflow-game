@@ -4,7 +4,13 @@ import u from "@/utils";
 import { success, error } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
 import { z } from "zod";
-import { fetchVoicePresets, getUserVoiceConfig, normalizeVoiceBaseUrl } from "@/lib/voiceGateway";
+import {
+  fetchVoicePresets,
+  filterVoicePresetsByManufacturer,
+  getUserVoiceConfig,
+  normalizeVoiceBaseUrl,
+  voiceSupplierFromManufacturer,
+} from "@/lib/voiceGateway";
 import FormData from "form-data";
 
 const router = express.Router();
@@ -116,6 +122,8 @@ export default router.post(
       }
 
       const baseUrl = normalizeVoiceBaseUrl(config.baseUrl);
+      const manufacturer = String(config.manufacturer || "").trim();
+      const suppliers = voiceSupplierFromManufacturer(manufacturer);
       const headers: Record<string, string> = {};
       if (config.apiKey) {
         headers.Authorization = `Bearer ${config.apiKey}`;
@@ -126,37 +134,41 @@ export default router.post(
         mode,
         format: format || "wav",
         use_cache: true,
+        suppliers,
       };
       if (typeof speed === "number") {
         payload.speed = speed;
       }
+      if (manufacturer === "aliyun" && String(config.model || "").trim()) {
+        payload.model = String(config.model || "").trim();
+      }
 
-      let resolvedProvider = String(config.model || "").trim();
+      let resolvedProvider = "";
       const resolvedVoiceId = String(voiceId || "").trim();
       let presetProvider = "";
 
       if (resolvedVoiceId) {
-        const preset = (await fetchVoicePresets(baseUrl, headers)).find(
+        const preset = filterVoicePresetsByManufacturer(await fetchVoicePresets(baseUrl, headers), manufacturer).find(
           (item: { voiceId: string }) => item.voiceId === resolvedVoiceId,
         );
         presetProvider = String(preset?.provider || "").trim();
       }
 
-      if (presetProvider) {
-        resolvedProvider = presetProvider;
-      } else if (resolvedProvider === "ai_voice_tts") {
-        resolvedProvider = "";
-      }
+      if (presetProvider) resolvedProvider = presetProvider;
 
       if (mode === "text") {
         if (resolvedVoiceId) payload.voice_id = resolvedVoiceId;
         if (resolvedProvider) payload.provider = resolvedProvider;
       } else if (mode === "clone") {
+        if (suppliers === "aliyun") {
+          return res.status(400).send(error("阿里云当前不支持克隆音色"));
+        }
         if (referenceAudioPath) {
           const cloneForm = new FormData();
           cloneForm.append("text", text);
           cloneForm.append("format", payload.format);
           cloneForm.append("use_cache", String(payload.use_cache));
+          cloneForm.append("suppliers", suppliers);
           if (typeof speed === "number") {
             cloneForm.append("speed", String(speed));
           }
@@ -193,6 +205,9 @@ export default router.post(
         payload.reference_audio_base64 = base64;
         if (referenceText) payload.reference_text = referenceText;
       } else if (mode === "mix") {
+        if (suppliers === "aliyun") {
+          return res.status(400).send(error("阿里云当前不支持混合音色"));
+        }
         const mixList = (mixVoices || []).map((item: any) => ({
           voice_id: item.voiceId,
           weight: typeof item.weight === "number" ? item.weight : 1,
@@ -204,7 +219,7 @@ export default router.post(
         if (mixIds.length) {
           const mixProviders = Array.from(
             new Set(
-              (await fetchVoicePresets(baseUrl, headers))
+              filterVoicePresetsByManufacturer(await fetchVoicePresets(baseUrl, headers), manufacturer)
                 .filter((item: { voiceId: string; provider: string }) => mixIds.includes(item.voiceId) && item.provider)
                 .map((item: { provider: string }) => item.provider),
             ),

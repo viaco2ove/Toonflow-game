@@ -9,6 +9,8 @@ export interface GatewayVoicePreset {
   description: string;
 }
 
+export type VoiceSupplier = "local" | "aliyun";
+
 export function normalizeVoiceBaseUrl(input: string | null | undefined): string {
   const base = String(input || "").trim();
   return (base || "http://127.0.0.1:8000").replace(/\/+$/, "");
@@ -19,6 +21,21 @@ export async function getUserVoiceConfig(userId: number, configId?: number | nul
     return u.db("t_config").where({ id: configId, type: "voice", userId }).first();
   }
   return u.db("t_config").where({ type: "voice", userId }).first();
+}
+
+export function voiceSupplierFromManufacturer(input?: string | null): VoiceSupplier {
+  return String(input || "").trim() === "aliyun" ? "aliyun" : "local";
+}
+
+export function filterVoicePresetsByManufacturer(presets: GatewayVoicePreset[], manufacturer?: string | null) {
+  const normalized = String(manufacturer || "").trim();
+  if (normalized === "aliyun") {
+    return presets.filter((item) => String(item.provider || "").trim() === "aliyun_tts");
+  }
+  if (normalized === "ai_voice_tts") {
+    return presets.filter((item) => String(item.provider || "").trim() !== "aliyun_tts");
+  }
+  return presets;
 }
 
 export function normalizeVoicePreset(item: any): GatewayVoicePreset | null {

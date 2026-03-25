@@ -6,6 +6,7 @@ import u from "@/utils";
 import { success, error } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
 import { z } from "zod";
+import { voiceSupplierFromManufacturer } from "@/lib/voiceGateway";
 
 const router = express.Router();
 
@@ -59,11 +60,15 @@ function parseAudioFromPath(filePath: string, buffer: Buffer): { buffer: Buffer;
   };
 }
 
-async function getVoiceConfig(userId: number, configId?: number | null) {
+async function getVoiceConfig(userId: number, configId?: number | null, preferredModelType?: "tts" | "asr") {
   if (configId) {
     return u.db("t_config").where({ id: configId, type: "voice", userId }).first();
   }
-  return u.db("t_config").where({ type: "voice", userId }).first();
+  const preferred = preferredModelType
+    ? await u.db("t_config").where({ type: "voice", userId, modelType: preferredModelType }).orderBy("id", "desc").first()
+    : null;
+  if (preferred) return preferred;
+  return u.db("t_config").where({ type: "voice", userId }).orderBy("id", "desc").first();
 }
 
 function parseTranscribeResult(data: any): { text: string; segments: any[]; confidence: number | null } {
@@ -130,12 +135,15 @@ export default router.post(
       }
 
       const userId = Number((req as any)?.user?.id || 0);
-      const config = await getVoiceConfig(userId, configId);
+      const config = await getVoiceConfig(userId, configId, "asr");
       if (!config) {
         return res.status(400).send(error("语音模型配置不存在"));
       }
 
       const baseUrl = normalizeBaseUrl(config.baseUrl);
+      const manufacturer = String(config.manufacturer || "").trim();
+      const suppliers = voiceSupplierFromManufacturer(manufacturer);
+      const modelName = String(model || config.model || "").trim();
       const headers: Record<string, string> = {};
       if (config.apiKey) {
         headers.Authorization = `Bearer ${config.apiKey}`;
@@ -150,12 +158,10 @@ export default router.post(
         audio = parseAudioFromPath(filePath, fileBuffer);
       }
 
-      const endpointCandidates = [
-        `${baseUrl}/v1/asr/transcribe`,
-        `${baseUrl}/v1/asr`,
-        `${baseUrl}/v1/transcribe`,
-        `${baseUrl}/v1/audio/transcriptions`,
-      ];
+      const endpointCandidates =
+        manufacturer === "aliyun" || manufacturer === "ai_voice_tts"
+          ? [`${baseUrl}/v1/asr`, `${baseUrl}/v1/audio/transcriptions`, `${baseUrl}/v1/asr/transcribe`, `${baseUrl}/v1/transcribe`]
+          : [`${baseUrl}/v1/asr/transcribe`, `${baseUrl}/v1/asr`, `${baseUrl}/v1/transcribe`, `${baseUrl}/v1/audio/transcriptions`];
 
       const errors: string[] = [];
       let usedEndpoint = "";
@@ -165,13 +171,14 @@ export default router.post(
         try {
           if (endpoint.endsWith("/audio/transcriptions")) {
             const form = new FormData();
-            const modelName = String(model || config.model || "whisper-1").trim() || "whisper-1";
+            const effectiveModel = modelName || "whisper-1";
 
             form.append("file", audio.buffer, {
               filename: `audio.${audio.ext}`,
               contentType: audio.mime,
             });
-            form.append("model", modelName);
+            form.append("model", effectiveModel);
+            form.append("suppliers", suppliers);
             if (lang) form.append("language", String(lang));
             if (prompt) form.append("prompt", String(prompt));
             if (typeof temperature === "number") form.append("temperature", String(temperature));
@@ -188,17 +195,40 @@ export default router.post(
               timeout: 120000,
             });
             rawData = response.data || {};
+          } else if (endpoint.endsWith("/v1/asr")) {
+            const form = new FormData();
+            form.append("audio", audio.buffer, {
+              filename: `audio.${audio.ext}`,
+              contentType: audio.mime,
+            });
+            form.append("suppliers", suppliers);
+            if (modelName) form.append("model", modelName);
+            if (lang) form.append("language", String(lang));
+            if (prompt) form.append("prompt", String(prompt));
+            if (typeof temperature === "number") form.append("temperature", String(temperature));
+            if (audio.ext) form.append("format", String(audio.ext));
+
+            const response = await axios.post(endpoint, form, {
+              headers: {
+                ...headers,
+                ...form.getHeaders(),
+              },
+              maxBodyLength: Infinity,
+              timeout: 120000,
+            });
+            rawData = response.data || {};
           } else {
             const response = await axios.post(
               endpoint,
               {
                 audioBase64: audio.buffer.toString("base64"),
                 audioMime: audio.mime,
+                suppliers,
                 lang: lang || undefined,
                 sessionId: sessionId || undefined,
                 prompt: prompt || undefined,
                 temperature: typeof temperature === "number" ? temperature : undefined,
-                model: model || config.model || undefined,
+                model: modelName || undefined,
                 withSegments: Boolean(withSegments),
               },
               {
