@@ -2,7 +2,11 @@
 通过接口对接语音接口,先对接的是local 语音接口(ai_voice_tts)。
 跟图像模型一样可以选择厂商和模型然后进行对接。只是我们先只对接ai_voice_tts
 # ai_voice_tts project [D:\Users\viaco\tools\voice]
+接口文档
 [{ai_voice_tts}/md/apidoc.md]
+提示词规则文档
+[{ai_voice_tts}/md/voice_prompt.md]
+
 
 ## 语音生成模型接口 设置
 设置>语音生成>新增模型>语音tts>厂商筛选>ai_voice_tts(厂商)>ai_voice_tts(模型)

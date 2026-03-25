@@ -16,6 +16,12 @@ export interface ConditionContext {
   meta: JsonRecord;
 }
 
+export interface ChapterOpeningParts {
+  role: string;
+  line: string;
+  body: string;
+}
+
 const DEFAULT_PLAYER_ROLE: JsonRecord = {
   id: "player",
   name: "玩家",
@@ -34,6 +40,117 @@ const DEFAULT_NARRATOR_ROLE: JsonRecord = {
 
 function isRecord(input: unknown): input is JsonRecord {
   return typeof input === "object" && input !== null && !Array.isArray(input);
+}
+
+function normalizeEditorText(input: unknown): string {
+  if (input === null || input === undefined) return "";
+  if (typeof input === "string") return input.replace(/\r\n/g, "\n").trim();
+  if (typeof input === "number" || typeof input === "boolean") return String(input).trim();
+  try {
+    return JSON.stringify(input).trim();
+  } catch {
+    return "";
+  }
+}
+
+function isNullLikeText(input: string): boolean {
+  const text = String(input || "").trim().toLowerCase();
+  return !text || text === "null" || text === "undefined";
+}
+
+export function extractOpeningContentParts(input: unknown): ChapterOpeningParts | null {
+  const text = normalizeEditorText(input);
+  if (!text) return null;
+  const match = text.match(/^开场白(?:\[(.+?)\]|([^\[\]:：\r\n]+))\s*[:：]\s*([^\r\n]*)(?:\r?\n)*/);
+  if (!match) return null;
+  const role = String(match[1] || match[2] || "").trim();
+  const line = String(match[3] || "").trim();
+  const body = text.slice(match[0].length).replace(/^\s*[\r\n]+/, "");
+  if (!role && !line) return null;
+  return { role, line, body };
+}
+
+function splitParagraphs(input: string): string[] {
+  return String(input || "")
+    .replace(/\r\n/g, "\n")
+    .split(/\n\s*\n+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function stripLeadingOpeningParagraphs(input: string, openingText: string): string {
+  const openingParagraphs = splitParagraphs(openingText);
+  if (!openingParagraphs.length) {
+    return input.trim();
+  }
+  const openingSet = new Set(openingParagraphs);
+  const contentParagraphs = splitParagraphs(input);
+  while (contentParagraphs.length && openingSet.has(contentParagraphs[0])) {
+    contentParagraphs.shift();
+  }
+  return contentParagraphs.join("\n\n").trim();
+}
+
+export function stripLeadingOpeningArtifacts(input: unknown, openingRole?: unknown, openingText?: unknown): string {
+  let text = normalizeEditorText(input);
+  if (!text) return "";
+  const expectedRole = normalizeEditorText(openingRole);
+  const expectedText = normalizeEditorText(openingText);
+  const expectedParagraphs = splitParagraphs(expectedText).sort((a, b) => b.length - a.length);
+
+  for (let i = 0; i < 64; i += 1) {
+    const before = text;
+    const extracted = extractOpeningContentParts(text);
+    if (extracted) {
+      const roleMatches = !expectedRole || !extracted.role || extracted.role === expectedRole;
+      const lineMatches = !expectedText || !extracted.line || expectedText.startsWith(extracted.line) || extracted.line === expectedText;
+      if (roleMatches && lineMatches) {
+        text = extracted.body.replace(/^\s*[\r\n]+/, "");
+      }
+    }
+    if (expectedText && text.startsWith(expectedText)) {
+      text = text.slice(expectedText.length).replace(/^\s*[\r\n]+/, "");
+    }
+    const paragraphMatch = expectedParagraphs.find((item) => item && text.startsWith(item));
+    if (paragraphMatch) {
+      text = text.slice(paragraphMatch.length).replace(/^\s*[\r\n]+/, "");
+    }
+    if (text === before) break;
+  }
+  if (expectedText) {
+    text = stripLeadingOpeningParagraphs(text, expectedText);
+  }
+  return text.trim();
+}
+
+export function normalizeChapterFields(input: {
+  content?: unknown;
+  openingRole?: unknown;
+  openingText?: unknown;
+  entryCondition?: unknown;
+  completionCondition?: unknown;
+}): {
+  content: string;
+  openingRole: string;
+  openingText: string;
+  entryCondition: unknown;
+  completionCondition: unknown;
+} {
+  const extracted = extractOpeningContentParts(input.content);
+  const openingRole = normalizeEditorText(input.openingRole) || extracted?.role || "";
+  const openingText = normalizeEditorText(input.openingText) || extracted?.line || "";
+  const content = stripLeadingOpeningArtifacts(input.content, openingRole, openingText);
+  const rawEntry = tryParseCondition(input.entryCondition);
+  const rawCompletion = tryParseCondition(input.completionCondition);
+  const entryCondition = typeof rawEntry === "string" && isNullLikeText(rawEntry) ? null : rawEntry;
+  const completionCondition = typeof rawCompletion === "string" && isNullLikeText(rawCompletion) ? null : rawCompletion;
+  return {
+    content,
+    openingRole,
+    openingText,
+    entryCondition,
+    completionCondition,
+  };
 }
 
 export function getGameDb(): any {
@@ -312,11 +429,21 @@ export function normalizeWorldOutput(row: any): JsonRecord | null {
 
 export function normalizeChapterOutput(row: any): JsonRecord | null {
   if (!row) return null;
+  const normalized = normalizeChapterFields({
+    content: row.content,
+    openingRole: row.openingRole,
+    openingText: row.openingText,
+    entryCondition: row.entryCondition,
+    completionCondition: row.completionCondition,
+  });
   return {
     ...row,
+    content: normalized.content,
+    openingRole: normalized.openingRole,
+    openingText: normalized.openingText,
     showCompletionCondition: Boolean(Number(row.showCompletionCondition || 0)),
-    entryCondition: parseJsonSafe(row.entryCondition, null),
-    completionCondition: parseJsonSafe(row.completionCondition, null),
+    entryCondition: normalized.entryCondition,
+    completionCondition: normalized.completionCondition,
   };
 }
 

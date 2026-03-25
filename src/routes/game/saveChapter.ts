@@ -4,6 +4,7 @@ import { validateFields } from "@/middleware/middleware";
 import { error, success } from "@/lib/responseFormat";
 import {
   getGameDb,
+  normalizeChapterFields,
   normalizeChapterOutput,
   nowTs,
   toJsonText,
@@ -48,6 +49,13 @@ export default router.post(
         sort,
         status,
       } = req.body;
+      const normalizedChapter = normalizeChapterFields({
+        content,
+        openingRole,
+        openingText,
+        entryCondition,
+        completionCondition,
+      });
       const db = getGameDb();
       const now = nowTs();
       const currentUserId = Number((req as any)?.user?.id || 0);
@@ -71,14 +79,14 @@ export default router.post(
         worldId,
         chapterKey: String(chapterKey || "").trim(),
         backgroundPath: String(backgroundPath || "").trim(),
-        openingRole: String(openingRole || "").trim(),
-        openingText: String(openingText || "").trim(),
+        openingRole: normalizedChapter.openingRole,
+        openingText: normalizedChapter.openingText,
         bgmPath: String(bgmPath || "").trim(),
         showCompletionCondition: showCompletionCondition ? 1 : 0,
         title: String(title || "").trim(),
-        content: String(content || ""),
-        entryCondition: toJsonText(entryCondition, null),
-        completionCondition: toJsonText(completionCondition, null),
+        content: normalizedChapter.content,
+        entryCondition: toJsonText(normalizedChapter.entryCondition, null),
+        completionCondition: toJsonText(normalizedChapter.completionCondition, null),
         sort: Number.isFinite(sortNum) ? sortNum : 0,
         status: String(status || "draft").trim() || "draft",
         updateTime: now,

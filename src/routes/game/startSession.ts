@@ -5,12 +5,14 @@ import { error, success } from "@/lib/responseFormat";
 import {
   createGameSessionId,
   getGameDb,
+  normalizeChapterOutput,
   parseJsonSafe,
   normalizeRolePair,
   normalizeSessionState,
   nowTs,
   toJsonText,
 } from "@/lib/gameEngine";
+import { resolveOpeningMessage } from "@/modules/game-runtime/engines/NarrativeOrchestrator";
 import u from "@/utils";
 
 const router = express.Router();
@@ -72,6 +74,7 @@ export default router.post(
       if (!chapter) {
         chapter = await db("t_storyChapter").where({ worldId }).orderBy("sort", "asc").orderBy("id", "asc").first();
       }
+      chapter = normalizeChapterOutput(chapter);
 
       const rolePair = normalizeRolePair(world.playerRole, world.narratorRole);
       const state = normalizeSessionState(initialState, worldId, chapter ? Number(chapter.id) : null, rolePair);
@@ -102,12 +105,13 @@ export default router.post(
       });
 
       if (chapter) {
+        const openingMessage = resolveOpeningMessage(world, chapter);
         await db("t_sessionMessage").insert({
           sessionId,
-          role: String(state.narrator?.name || "旁白"),
-          roleType: "narrator",
-          content: `进入章节《${String(chapter.title || "未命名章节")}》`,
-          eventType: "on_enter_chapter",
+          role: String(openingMessage.role || state.narrator?.name || "旁白"),
+          roleType: String(openingMessage.roleType || "narrator"),
+          content: String(openingMessage.content || `进入章节《${String(chapter.title || "未命名章节")}》`),
+          eventType: String(openingMessage.eventType || "on_enter_chapter"),
           meta: toJsonText({ chapterId: Number(chapter.id) }, {}),
           createTime: now,
         });

@@ -4,15 +4,12 @@ import u from "@/utils";
 import { success, error } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
 import { z } from "zod";
+import { fetchVoicePresets, getUserVoiceConfig, normalizeVoiceBaseUrl } from "@/lib/voiceGateway";
+import FormData from "form-data";
 
 const router = express.Router();
 
 type VoiceMode = "text" | "clone" | "mix" | "prompt_voice";
-
-function normalizeBaseUrl(input: string | null | undefined): string {
-  const base = String(input || "").trim();
-  return (base || "http://127.0.0.1:8000").replace(/\/+$/, "");
-}
 
 function buildProxyAudioUrl(req: express.Request, configId: number | null | undefined, source: string): string {
   const rawSource = String(source || "").trim();
@@ -37,11 +34,39 @@ function normalizeBase64(input?: string | null): string {
   return match ? match[2] || "" : input;
 }
 
-async function getVoiceConfig(userId: number, configId?: number | null) {
-  if (configId) {
-    return u.db("t_config").where({ id: configId, type: "voice", userId }).first();
+function inferAudioExt(source?: string | null): string {
+  const raw = String(source || "").trim();
+  if (!raw) return "wav";
+  try {
+    if (/^https?:\/\//i.test(raw)) {
+      const url = new URL(raw);
+      const ext = String(url.pathname.split(".").pop() || "").replace(/[^a-zA-Z0-9]/g, "");
+      return ext || "wav";
+    }
+  } catch {}
+  const ext = String(raw.split(".").pop() || "").replace(/[^a-zA-Z0-9]/g, "");
+  return ext || "wav";
+}
+
+async function loadReferenceAudioBuffer(referenceAudioPath: string): Promise<Buffer> {
+  const raw = String(referenceAudioPath || "").trim();
+  if (!raw) {
+    throw new Error("克隆模式需要参考音频");
   }
-  return u.db("t_config").where({ type: "voice", userId }).first();
+
+  if (/^data:/i.test(raw)) {
+    return Buffer.from(normalizeBase64(raw), "base64");
+  }
+
+  if (/^https?:\/\//i.test(raw)) {
+    const response = await axios.get(raw, {
+      responseType: "arraybuffer",
+      timeout: 30000,
+    });
+    return Buffer.from(response.data);
+  }
+
+  return u.oss.getFile(raw);
 }
 
 // 语音预览
@@ -85,13 +110,12 @@ export default router.post(
       } = req.body;
 
       const userId = Number((req as any)?.user?.id || 0);
-      const config = await getVoiceConfig(userId, configId);
+      const config = await getUserVoiceConfig(userId, configId);
       if (!config) {
         return res.status(400).send(error("语音模型配置不存在"));
       }
 
-      const baseUrl = normalizeBaseUrl(config.baseUrl);
-      const url = `${baseUrl}/v1/tts`;
+      const baseUrl = normalizeVoiceBaseUrl(config.baseUrl);
       const headers: Record<string, string> = {};
       if (config.apiKey) {
         headers.Authorization = `Bearer ${config.apiKey}`;
@@ -107,19 +131,62 @@ export default router.post(
         payload.speed = speed;
       }
 
-      const provider = String(config.model || "").trim();
-      if (provider && provider !== "ai_voice_tts") {
-        payload.provider = provider;
+      let resolvedProvider = String(config.model || "").trim();
+      const resolvedVoiceId = String(voiceId || "").trim();
+      let presetProvider = "";
+
+      if (resolvedVoiceId) {
+        const preset = (await fetchVoicePresets(baseUrl, headers)).find(
+          (item: { voiceId: string }) => item.voiceId === resolvedVoiceId,
+        );
+        presetProvider = String(preset?.provider || "").trim();
+      }
+
+      if (presetProvider) {
+        resolvedProvider = presetProvider;
+      } else if (resolvedProvider === "ai_voice_tts") {
+        resolvedProvider = "";
       }
 
       if (mode === "text") {
-        if (voiceId) payload.voice_id = voiceId;
+        if (resolvedVoiceId) payload.voice_id = resolvedVoiceId;
+        if (resolvedProvider) payload.provider = resolvedProvider;
       } else if (mode === "clone") {
-        let base64 = normalizeBase64(referenceAudioBase64);
-        if (!base64 && referenceAudioPath) {
-          const buffer = await u.oss.getFile(referenceAudioPath);
-          base64 = buffer.toString("base64");
+        if (referenceAudioPath) {
+          const cloneForm = new FormData();
+          cloneForm.append("text", text);
+          cloneForm.append("format", payload.format);
+          cloneForm.append("use_cache", String(payload.use_cache));
+          if (typeof speed === "number") {
+            cloneForm.append("speed", String(speed));
+          }
+          if (resolvedProvider) {
+            cloneForm.append("provider", resolvedProvider);
+          }
+          if (referenceText) {
+            cloneForm.append("reference_text", referenceText);
+          }
+          const fileBuffer = await loadReferenceAudioBuffer(referenceAudioPath);
+          const fileExt = inferAudioExt(referenceAudioPath);
+          cloneForm.append("reference_audio", fileBuffer, {
+            filename: `reference.${fileExt}`,
+            contentType: `audio/${fileExt === "mp3" ? "mpeg" : fileExt}`,
+          });
+          const cloneResponse = await axios.post(`${baseUrl}/v1/tts/clone_upload`, cloneForm, {
+            headers: {
+              ...headers,
+              ...cloneForm.getHeaders(),
+            },
+          });
+          const cloneData = cloneResponse.data || {};
+          const cloneSourceUrl =
+            cloneData.audio_url_full ||
+            (cloneData.audio_url ? `${baseUrl}${String(cloneData.audio_url).startsWith("/") ? "" : "/"}${cloneData.audio_url}` : "");
+          const cloneAudioUrl = buildProxyAudioUrl(req, config?.id, cloneSourceUrl);
+          return res.status(200).send(success({ audioUrl: cloneAudioUrl, data: cloneData }));
         }
+        if (resolvedProvider) payload.provider = resolvedProvider;
+        let base64 = normalizeBase64(referenceAudioBase64);
         if (!base64) {
           return res.status(400).send(error("克隆模式需要参考音频"));
         }
@@ -133,15 +200,30 @@ export default router.post(
         if (!mixList.length) {
           return res.status(400).send(error("混合模式需要选择音色"));
         }
+        const mixIds = mixList.map((item: { voice_id: string }) => String(item.voice_id || "").trim()).filter(Boolean);
+        if (mixIds.length) {
+          const mixProviders = Array.from(
+            new Set(
+              (await fetchVoicePresets(baseUrl, headers))
+                .filter((item: { voiceId: string; provider: string }) => mixIds.includes(item.voiceId) && item.provider)
+                .map((item: { provider: string }) => item.provider),
+            ),
+          );
+          if (mixProviders.length === 1) {
+            payload.provider = mixProviders[0];
+          }
+        }
         payload.mix_voices = mixList;
       } else if (mode === "prompt_voice") {
         if (!promptText) {
           return res.status(400).send(error("提示词模式需要填写提示词"));
         }
+        if (resolvedVoiceId) payload.voice_id = resolvedVoiceId;
+        if (resolvedProvider) payload.provider = resolvedProvider;
         payload.prompt_text = promptText;
       }
 
-      const response = await axios.post(url, payload, { headers });
+      const response = await axios.post(`${baseUrl}/v1/tts`, payload, { headers });
       const data = response.data || {};
       const sourceUrl =
         data.audio_url_full ||

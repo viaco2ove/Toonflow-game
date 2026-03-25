@@ -39,6 +39,34 @@ export default async function getPromptAi(key: string, userId?: number): Promise
       .first();
   }
 
+  if (!aiConfigData) {
+    const fallbackTypeMap: Record<string, string> = {
+      storyOrchestratorModel: "text",
+      storyMemoryModel: "text",
+      storyImageModel: "image",
+      storyVoiceModel: "voice",
+      storyAsrModel: "asr",
+    };
+    const fallbackType = fallbackTypeMap[key];
+    if (fallbackType) {
+      const query = db("t_config")
+        .where({ userId: resolvedUserId })
+        .modify((qb: any) => {
+          if (fallbackType === "text") {
+            qb.where("type", "text");
+          } else if (fallbackType === "image") {
+            qb.whereIn("type", ["image", "t2i", "i2i"]);
+          } else if (fallbackType === "voice") {
+            qb.where("type", "voice");
+          }
+        })
+        .orderByRaw("case when manufacturer in ('t8star','openai') then 0 else 1 end")
+        .orderBy("id", "desc")
+        .select("model", "apiKey", "baseUrl as baseURL", "manufacturer");
+      aiConfigData = await query.first();
+    }
+  }
+
   if (aiConfigData) {
     return aiConfigData as AiConfig;
   } else return {};
