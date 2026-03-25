@@ -10,12 +10,15 @@ import {
 } from "@/lib/gameEngine";
 import { getCurrentUserId } from "@/lib/requestContext";
 import {
+  advanceNarrativeUntilPlayerTurn,
   applyMemoryResultToState,
-  applyOrchestratorResultToState,
+  RuntimeMessageInput,
+  canPlayerSpeakNow,
   resolveOpeningMessage,
   runNarrativeOrchestrator,
   runStoryMemoryManager,
 } from "@/modules/game-runtime/engines/NarrativeOrchestrator";
+import { handleMiniGameTurn } from "@/modules/game-runtime/engines/MiniGameController";
 import { runTaskProgressEngine } from "@/modules/game-runtime/engines/TaskProgressEngine";
 import {
   applyAttributeChanges,
@@ -84,6 +87,18 @@ function normalizeMessageId(value: unknown): number {
   return Number.isFinite(n) ? n : 0;
 }
 
+function buildRecentMessages(rows: any[]): RuntimeMessageInput[] {
+  return rows
+    .reverse()
+    .map((item: any) => ({
+      role: String(item.role || ""),
+      roleType: String(item.roleType || ""),
+      eventType: String(item.eventType || ""),
+      content: String(item.content || ""),
+      createTime: Number(item.createTime || 0),
+    }));
+}
+
 function resolveDefaultRoleName(roleType: string, state: Record<string, any>): string {
   if (roleType === "player") return String(state.player?.name || "玩家");
   if (roleType === "narrator") return String(state.narrator?.name || "旁白");
@@ -126,6 +141,10 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
   const messageContent = String(input.content || "");
   const metaObj = parseJsonMaybe(input.meta);
 
+  if (roleTypeValue === "player" && eventTypeValue === "on_message" && messageContent.trim() && !canPlayerSpeakNow(state, world)) {
+    throw new SessionServiceError(409, "当前还没轮到用户发言");
+  }
+
   const insertedMessage = await db("t_sessionMessage").insert({
     sessionId,
     role: roleValue,
@@ -139,6 +158,104 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
 
   const attrChangeList = Array.isArray(input.attrChanges) ? input.attrChanges : [];
   const attrDeltas = applyAttributeChanges(state, attrChangeList);
+
+  const currentChapter = prevChapterId
+    ? normalizeChapterOutput(await db("t_storyChapter").where({ id: prevChapterId }).first())
+    : null;
+
+  pushRecentEvent(state, {
+    messageId,
+    eventType: eventTypeValue,
+    roleType: roleTypeValue,
+    contentPreview: messageContent.slice(0, 120),
+    time: now,
+  });
+
+  if (roleTypeValue === "player" && eventTypeValue === "on_message" && messageContent.trim()) {
+    const rawRecentMessages = await db("t_sessionMessage").where({ sessionId }).orderBy("id", "desc").limit(20);
+    const recentMessages = buildRecentMessages(rawRecentMessages);
+    const miniGameResult = await handleMiniGameTurn({
+      userId: currentUserId,
+      world,
+      chapter: currentChapter || { id: prevChapterId || state.chapterId || 0, title: "当前章节" },
+      state,
+      recentMessages,
+      playerMessage: messageContent,
+      mode: "session",
+    });
+
+      if (miniGameResult?.intercepted) {
+      if (attrDeltas.length > 0) {
+        const deltaRows = attrDeltas.map((delta) => ({
+          sessionId,
+          eventId: `message:${messageId}`,
+          entityType: delta.entityType,
+          entityId: delta.entityId,
+          field: delta.field,
+          oldValue: toJsonText(delta.oldValue, null),
+          newValue: toJsonText(delta.newValue, null),
+          source: delta.source,
+          createTime: now,
+        }));
+        await db("t_entityStateDelta").insert(deltaRows);
+      }
+
+      let narrativeMessageRow: any = null;
+      if (miniGameResult.message) {
+        const inserted = await db("t_sessionMessage").insert({
+          sessionId,
+          role: String(miniGameResult.message.role || state.narrator?.name || "旁白"),
+          roleType: String(miniGameResult.message.roleType || "narrator"),
+          content: String(miniGameResult.message.content || ""),
+          eventType: String(miniGameResult.message.eventType || "on_mini_game"),
+          meta: toJsonText(miniGameResult.message.meta || {}, {}),
+          createTime: now,
+        });
+        const narrativeMessageId = normalizeMessageId(inserted);
+        narrativeMessageRow = await db("t_sessionMessage").where({ id: narrativeMessageId }).first();
+      }
+
+      const stateJson = toJsonText(state, {});
+      await db("t_gameSession").where({ sessionId }).update({
+        stateJson,
+        chapterId: prevChapterId,
+        status: prevStatus,
+        updateTime: now,
+      });
+
+      const snapshotResult = await persistSnapshotIfNeeded({
+        db,
+        sessionId,
+        stateJson,
+        round: Number(state.round || 0),
+        now,
+        policy: {
+          saveSnapshot: input.saveSnapshot,
+          nextChapterId: prevChapterId,
+          prevChapterId,
+          sessionStatus: prevStatus,
+          prevStatus,
+          round: Number(state.round || 0),
+        },
+      });
+
+      const messageRow = await db("t_sessionMessage").where({ id: messageId }).first();
+      return {
+        sessionId,
+        status: prevStatus,
+        chapterId: prevChapterId,
+        state,
+        message: normalizeMessageOutput(messageRow),
+        chapterSwitchMessage: null,
+        narrativeMessage: normalizeMessageOutput(narrativeMessageRow),
+        triggered: [],
+        taskProgress: [],
+        deltas: attrDeltas,
+        snapshotSaved: snapshotResult.snapshotSaved,
+        snapshotReason: snapshotResult.snapshotReason,
+      };
+    }
+  }
 
   const triggerResult = await runTriggerEngine({
     db,
@@ -175,14 +292,6 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
   const sessionStatus = taskResult.sessionStatus;
   state.chapterId = nextChapterId;
 
-  pushRecentEvent(state, {
-    messageId,
-    eventType: eventTypeValue,
-    roleType: roleTypeValue,
-    contentPreview: messageContent.slice(0, 120),
-    time: now,
-  });
-
   if (appliedDeltas.length > 0) {
     const deltaRows = appliedDeltas.map((delta) => ({
       sessionId,
@@ -204,71 +313,122 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
     const switchedChapter = normalizeChapterOutput(await db("t_storyChapter").where({ id: nextChapterId }).first());
     if (switchedChapter) {
       const openingMessage = resolveOpeningMessage(world, switchedChapter);
-      const inserted = await db("t_sessionMessage").insert({
-        sessionId,
+      const openingRuntimeMessage: RuntimeMessageInput = {
         role: String(openingMessage.role || state.narrator?.name || "旁白"),
         roleType: String(openingMessage.roleType || "narrator"),
-        content: String(openingMessage.content || `进入章节《${String(switchedChapter.title || "未命名章节")}》`),
         eventType: String(openingMessage.eventType || "on_enter_chapter"),
-        meta: toJsonText({ chapterId: Number(switchedChapter.id) }, {}),
+        content: String(openingMessage.content || `进入章节《${String(switchedChapter.title || "未命名章节")}》`),
         createTime: now,
+      };
+      const inserted = await db("t_sessionMessage").insert({
+        sessionId,
+        role: String(openingRuntimeMessage.role || state.narrator?.name || "旁白"),
+        roleType: String(openingRuntimeMessage.roleType || "narrator"),
+        content: String(openingRuntimeMessage.content || ""),
+        eventType: String(openingRuntimeMessage.eventType || "on_enter_chapter"),
+        meta: toJsonText({ chapterId: Number(switchedChapter.id) }, {}),
+        createTime: Number(openingRuntimeMessage.createTime || now),
       });
       const switchMessageId = normalizeMessageId(inserted);
       chapterSwitchMessageRow = await db("t_sessionMessage").where({ id: switchMessageId }).first();
-    }
-  } else if (roleTypeValue === "player" && eventTypeValue === "on_message" && messageContent.trim()) {
-    const currentChapter = nextChapterId
-      ? normalizeChapterOutput(await db("t_storyChapter").where({ id: nextChapterId }).first())
-      : null;
-    if (currentChapter) {
-      const rawRecentMessages = await db("t_sessionMessage").where({ sessionId }).orderBy("id", "desc").limit(20);
-      const recentMessages = rawRecentMessages
-        .reverse()
-        .map((item: any) => ({
-          role: String(item.role || ""),
-          roleType: String(item.roleType || ""),
-          eventType: String(item.eventType || ""),
-          content: String(item.content || ""),
-          createTime: Number(item.createTime || 0),
-        }));
-      const orchestrator = await runNarrativeOrchestrator({
+
+      const recentMessages = buildRecentMessages(
+        await db("t_sessionMessage").where({ sessionId }).orderBy("id", "desc").limit(20),
+      );
+      const initialResult = await runNarrativeOrchestrator({
         userId: currentUserId,
         world,
-        chapter: currentChapter,
+        chapter: switchedChapter,
         state,
         recentMessages,
-        playerMessage: messageContent,
+        playerMessage: "",
       });
-      applyOrchestratorResultToState(state, orchestrator);
-      const inserted = await db("t_sessionMessage").insert({
-        sessionId,
-        role: orchestrator.role,
-        roleType: orchestrator.roleType,
-        content: orchestrator.content,
-        eventType: "on_orchestrated_reply",
-        meta: toJsonText({
-          source: orchestrator.source,
-          memoryHints: orchestrator.memoryHints,
-        }, {}),
-        createTime: now,
+      const orchestrated = await advanceNarrativeUntilPlayerTurn({
+        userId: currentUserId,
+        world,
+        chapter: switchedChapter,
+        state,
+        recentMessages,
+        playerMessage: "",
+        initialResult,
       });
-      const narrativeMessageId = normalizeMessageId(inserted);
-      narrativeMessageRow = await db("t_sessionMessage").where({ id: narrativeMessageId }).first();
+
+      for (const item of orchestrated.messages) {
+        const insertedNarrative = await db("t_sessionMessage").insert({
+          sessionId,
+          role: String(item.role || state.narrator?.name || "旁白"),
+          roleType: String(item.roleType || "narrator"),
+          content: String(item.content || ""),
+          eventType: String(item.eventType || "on_orchestrated_reply"),
+          meta: toJsonText({ chapterId: Number(switchedChapter.id), source: "orchestrator" }, {}),
+          createTime: Number(item.createTime || now),
+        });
+        const narrativeMessageId = normalizeMessageId(insertedNarrative);
+        narrativeMessageRow = await db("t_sessionMessage").where({ id: narrativeMessageId }).first();
+      }
 
       const memory = await runStoryMemoryManager({
         userId: currentUserId,
         world,
-        chapter: currentChapter,
+        chapter: switchedChapter,
         state,
         recentMessages: [
           ...recentMessages,
-          {
-            role: orchestrator.role,
-            roleType: orchestrator.roleType,
-            eventType: "on_orchestrated_reply",
-            content: orchestrator.content,
-            createTime: now,
-          },
+          ...orchestrated.messages,
+        ],
+      });
+      applyMemoryResultToState(state, memory);
+    }
+  } else if (roleTypeValue === "player" && eventTypeValue === "on_message" && messageContent.trim()) {
+    const playChapter = nextChapterId
+      ? normalizeChapterOutput(await db("t_storyChapter").where({ id: nextChapterId }).first())
+      : null;
+    if (playChapter) {
+      const rawRecentMessages = await db("t_sessionMessage").where({ sessionId }).orderBy("id", "desc").limit(20);
+      const recentMessages = buildRecentMessages(rawRecentMessages);
+      const orchestrator = await runNarrativeOrchestrator({
+        userId: currentUserId,
+        world,
+        chapter: playChapter,
+        state,
+        recentMessages,
+        playerMessage: messageContent,
+      });
+      const orchestrated = await advanceNarrativeUntilPlayerTurn({
+        userId: currentUserId,
+        world,
+        chapter: playChapter,
+        state,
+        recentMessages,
+        playerMessage: messageContent,
+        initialResult: orchestrator,
+      });
+
+      for (const item of orchestrated.messages) {
+        const inserted = await db("t_sessionMessage").insert({
+          sessionId,
+          role: String(item.role || state.narrator?.name || "旁白"),
+          roleType: String(item.roleType || "narrator"),
+          content: String(item.content || ""),
+          eventType: String(item.eventType || "on_orchestrated_reply"),
+          meta: toJsonText({
+            source: orchestrator.source,
+            memoryHints: orchestrator.memoryHints,
+          }, {}),
+          createTime: Number(item.createTime || now),
+        });
+        const narrativeMessageId = normalizeMessageId(inserted);
+        narrativeMessageRow = await db("t_sessionMessage").where({ id: narrativeMessageId }).first();
+      }
+
+      const memory = await runStoryMemoryManager({
+        userId: currentUserId,
+        world,
+        chapter: playChapter,
+        state,
+        recentMessages: [
+          ...recentMessages,
+          ...orchestrated.messages,
         ],
       });
       applyMemoryResultToState(state, memory);

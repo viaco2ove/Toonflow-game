@@ -225,6 +225,8 @@ export function normalizeSessionState(
   const base = parseJsonSafe<JsonRecord>(raw, {});
   const player = isRecord(base.player) ? base.player : {};
   const narrator = isRecord(base.narrator) ? base.narrator : {};
+  const rawTurnState = isRecord(base.turnState) ? base.turnState : {};
+  const normalizedPlayerName = String(rolePair.playerRole.name || "用户").trim() || "用户";
 
   return {
     version: 1,
@@ -256,6 +258,13 @@ export function normalizeSessionState(
     inventory: Array.isArray(base.inventory) ? base.inventory : [],
     unlockedRoles: Array.isArray(base.unlockedRoles) ? base.unlockedRoles : [],
     recentEvents: Array.isArray(base.recentEvents) ? base.recentEvents : [],
+    turnState: {
+      canPlayerSpeak: typeof rawTurnState.canPlayerSpeak === "boolean" ? rawTurnState.canPlayerSpeak : true,
+      expectedRoleType: String(rawTurnState.expectedRoleType || "player").trim() || "player",
+      expectedRole: String(rawTurnState.expectedRole || normalizedPlayerName).trim() || normalizedPlayerName,
+      lastSpeakerRoleType: String(rawTurnState.lastSpeakerRoleType || "").trim(),
+      lastSpeaker: String(rawTurnState.lastSpeaker || "").trim(),
+    },
   };
 }
 
