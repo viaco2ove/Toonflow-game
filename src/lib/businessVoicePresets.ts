@@ -1,8 +1,12 @@
+import fs from "node:fs/promises";
+import path from "node:path";
 import axios from "axios";
 import u from "@/utils";
 import { createHash } from "crypto";
 import { GatewayVoicePreset, normalizeVoiceBaseUrl } from "@/lib/voiceGateway";
 import { ensureBundledVoicePresetSeed } from "@/lib/voicePresetSeeds";
+import { getVoicePresetSeedDir } from "@/lib/runtimePaths";
+import { getStoryVoiceDesignConfig, synthesizeVoiceDesignBuffer } from "@/lib/voiceDesign";
 
 export interface BusinessVoicePreset extends GatewayVoicePreset {
   referencePath: string;
@@ -122,6 +126,59 @@ async function downloadRemoteAudio(sourceUrl: string): Promise<Buffer> {
   return Buffer.from(response.data);
 }
 
+function presetBundledPath(preset: BusinessVoicePreset): string {
+  return path.join(getVoicePresetSeedDir(), path.basename(preset.referencePath));
+}
+
+async function writeBundledPresetFile(preset: BusinessVoicePreset, buffer: Buffer): Promise<void> {
+  const targetPath = presetBundledPath(preset);
+  await fs.mkdir(path.dirname(targetPath), { recursive: true });
+  await fs.writeFile(targetPath, buffer);
+}
+
+async function generatePresetBufferWithLocalPromptVoice(userId: number, preset: BusinessVoicePreset): Promise<Buffer> {
+  const { baseUrl, headers } = await resolveLocalCloneGateway(userId);
+  const response = await axios.post(
+    `${baseUrl}/v1/tts`,
+    {
+      text: preset.referenceText,
+      suppliers: "local",
+      mode: "prompt_voice",
+      voice_id: preset.baseVoiceId,
+      prompt_text: preset.promptText,
+      format: "wav",
+      use_cache: true,
+    },
+    { headers, timeout: 120000 },
+  );
+  const data = response.data || {};
+  const audioUrl = trimText(data.audio_url_full)
+    || (trimText(data.audio_url) ? `${baseUrl}${String(data.audio_url).startsWith("/") ? "" : "/"}${data.audio_url}` : "");
+  if (!audioUrl) {
+    throw new Error(`生成标准音色失败: ${preset.name}`);
+  }
+  return downloadRemoteAudio(audioUrl);
+}
+
+async function generatePresetBuffer(userId: number, preset: BusinessVoicePreset, strictDesignModel: boolean): Promise<Buffer> {
+  const voiceDesignConfig = await getStoryVoiceDesignConfig(userId);
+  if (voiceDesignConfig) {
+    const designed = await synthesizeVoiceDesignBuffer({
+      userId,
+      config: voiceDesignConfig,
+      promptText: preset.promptText,
+      previewText: preset.referenceText,
+      preferredName: preset.voiceId,
+      format: "wav",
+    });
+    return designed.buffer;
+  }
+  if (strictDesignModel) {
+    throw new Error("请先在设置里配置语音设计模型");
+  }
+  return generatePresetBufferWithLocalPromptVoice(userId, preset);
+}
+
 async function ensurePresetGenerated(userId: number, preset: BusinessVoicePreset): Promise<void> {
   if (await u.oss.fileExists(preset.referencePath)) return;
   const seededFileName = preset.referencePath.split("/").pop();
@@ -137,27 +194,7 @@ async function ensurePresetGenerated(userId: number, preset: BusinessVoicePreset
   }
   const task = (async () => {
     if (await u.oss.fileExists(preset.referencePath)) return;
-    const { baseUrl, headers } = await resolveLocalCloneGateway(userId);
-    const response = await axios.post(
-      `${baseUrl}/v1/tts`,
-      {
-        text: preset.referenceText,
-        suppliers: "local",
-        mode: "prompt_voice",
-        voice_id: preset.baseVoiceId,
-        prompt_text: preset.promptText,
-        format: "wav",
-        use_cache: true,
-      },
-      { headers, timeout: 120000 },
-    );
-    const data = response.data || {};
-    const audioUrl = trimText(data.audio_url_full)
-      || (trimText(data.audio_url) ? `${baseUrl}${String(data.audio_url).startsWith("/") ? "" : "/"}${data.audio_url}` : "");
-    if (!audioUrl) {
-      throw new Error(`生成标准音色失败: ${preset.name}`);
-    }
-    const buffer = await downloadRemoteAudio(audioUrl);
+    const buffer = await generatePresetBuffer(userId, preset, false);
     await u.oss.writeFile(preset.referencePath, buffer);
   })();
   generationLocks.set(lockKey, task);
@@ -186,6 +223,16 @@ export async function ensureBusinessVoicePresets(userId: number): Promise<Busine
     } catch (err) {
       console.warn(`[voice] ensure business preset failed: ${preset.voiceId}`, err instanceof Error ? err.message : String(err));
     }
+  }
+  return list;
+}
+
+export async function regenerateBusinessVoicePresetFiles(userId: number): Promise<BusinessVoicePreset[]> {
+  const list = getBusinessVoicePresets();
+  for (const preset of list) {
+    const buffer = await generatePresetBuffer(userId, preset, true);
+    await writeBundledPresetFile(preset, buffer);
+    await u.oss.writeFile(preset.referencePath, buffer);
   }
   return list;
 }

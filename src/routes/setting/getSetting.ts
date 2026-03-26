@@ -1,6 +1,7 @@
 import express from "express";
 import u from "@/utils";
 import { success } from "@/lib/responseFormat";
+import { toExternalModelConfigRow } from "@/lib/modelConfigType";
 const router = express.Router();
 
 export default router.post("/", async (req, res) => {
@@ -11,5 +12,5 @@ export default router.post("/", async (req, res) => {
     .where("userId", userId)
     .select("*");
 
-  res.status(200).send(success(configData));
+  res.status(200).send(success(configData.map((item) => toExternalModelConfigRow(item))));
 });

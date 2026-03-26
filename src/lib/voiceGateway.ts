@@ -12,8 +12,8 @@ export interface GatewayVoicePreset {
 export type GatewayVoiceMode = "text" | "clone" | "mix" | "prompt_voice";
 export type VoiceSupplier = "local" | "aliyun";
 const DEFAULT_TTS_VOICE_MODES: GatewayVoiceMode[] = ["text", "clone", "mix", "prompt_voice"];
+const DIRECT_ALIYUN_COSYVOICE_TTS_VOICE_MODES: GatewayVoiceMode[] = ["text", "clone", "mix"];
 const TEXT_ONLY_VOICE_MODES: GatewayVoiceMode[] = ["text"];
-const DIRECT_ALIYUN_COSYVOICE_TEXT_ONLY_REASON = "当前阿里云直连 CosyVoice 模型仅支持预设音色，请切换到 qwen3-tts-instruct-flash 或本地克隆模型";
 
 const ALIYUN_DIRECT_QWEN_TTS_PRESETS: GatewayVoicePreset[] = [
   {
@@ -400,7 +400,7 @@ export function resolveVoiceModelModes(input: {
     return [];
   }
   if (manufacturer === "aliyun_direct" && isAliyunDirectCosyVoiceModel(input.model)) {
-    return [...TEXT_ONLY_VOICE_MODES];
+    return [...DIRECT_ALIYUN_COSYVOICE_TTS_VOICE_MODES];
   }
   return [...DEFAULT_TTS_VOICE_MODES];
 }
@@ -415,9 +415,6 @@ export function resolveUnsupportedVoiceModeReason(input: {
   if (!mode) return "";
   if (resolveVoiceModelModes(input).includes(mode)) {
     return "";
-  }
-  if (normalizedManufacturer(input.manufacturer) === "aliyun_direct" && isAliyunDirectCosyVoiceModel(input.model)) {
-    return DIRECT_ALIYUN_COSYVOICE_TEXT_ONLY_REASON;
   }
   return "当前语音模型不支持该绑定模式";
 }

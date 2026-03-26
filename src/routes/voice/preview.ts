@@ -29,8 +29,10 @@ import {
   inferVoiceGenderHint,
 } from "@/lib/businessVoicePresets";
 import { ensureBundledVoicePresetSeed } from "@/lib/voicePresetSeeds";
+import { getStoryVoiceDesignConfig, synthesizeVoiceDesignBuffer, type VoiceDesignConfig } from "@/lib/voiceDesign";
 import FormData from "form-data";
 import { synthesizeAliyunDirectCosyVoiceBuffer } from "@/lib/aliyunCosyVoice";
+import { mixPcmWavBuffers } from "@/lib/wavMix";
 import { v4 as uuidv4 } from "uuid";
 
 const router = express.Router();
@@ -231,6 +233,49 @@ async function persistPreviewAudioBuffer(userId: number, input: Buffer, format =
   return savePath;
 }
 
+async function synthesizeDirectAliyunReferenceBuffer(options: {
+  config: any;
+  headers: Record<string, string>;
+  model: string;
+  voiceId: string;
+  text: string;
+}): Promise<Buffer> {
+  const { config, headers, model, voiceId, text } = options;
+  if (isAliyunDirectCosyVoiceModel(model)) {
+    return synthesizeAliyunDirectCosyVoiceBuffer({
+      apiKey: String(config.apiKey || "").trim(),
+      baseUrl: config.baseUrl,
+      model,
+      voiceId,
+      text,
+      format: "wav",
+    });
+  }
+
+  const endpoint = resolveAliyunDirectTtsEndpoint(config.baseUrl);
+  const response = await axios.post(
+    endpoint,
+    {
+      model,
+      input: {
+        text,
+        language_type: "Chinese",
+        ...(voiceId ? { voice: voiceId } : {}),
+      },
+    },
+    { headers, timeout: 120000 },
+  );
+  const sourceUrl = String(response.data?.output?.audio?.url || "").trim();
+  if (!sourceUrl) {
+    throw new Error("未能生成参考音色");
+  }
+  const audioResponse = await axios.get(sourceUrl, {
+    responseType: "arraybuffer",
+    timeout: 120000,
+  });
+  return Buffer.from(audioResponse.data);
+}
+
 async function synthesizeReferenceAudioFromMode(options: {
   config: any;
   manufacturer: string;
@@ -243,6 +288,7 @@ async function synthesizeReferenceAudioFromMode(options: {
   resolvedProvider: string;
   textSeed?: string;
   userId: number;
+  voiceDesignConfig?: VoiceDesignConfig | null;
 }): Promise<string> {
   const {
     config,
@@ -255,6 +301,8 @@ async function synthesizeReferenceAudioFromMode(options: {
     mixVoices,
     resolvedProvider,
     textSeed = BUSINESS_VOICE_PRESET_SEED_TEXT,
+    userId,
+    voiceDesignConfig = null,
   } = options;
 
   const cachePath = buildGeneratedReferencePath({
@@ -269,15 +317,49 @@ async function synthesizeReferenceAudioFromMode(options: {
     return cachePath;
   }
 
+  if (mode === "prompt_voice") {
+    const designed = await synthesizeVoiceDesignBuffer({
+      userId,
+      config: voiceDesignConfig,
+      promptText,
+      previewText: textSeed,
+      preferredName: voiceId || "story_prompt_voice",
+      format: "wav",
+    });
+    await u.oss.writeFile(cachePath, designed.buffer);
+    return cachePath;
+  }
+
   let sourceUrl = "";
 
   if (isDirectAliyunManufacturer(manufacturer)) {
     const directModel = normalizeAliyunDirectTtsModel(String(config.model || "").trim());
     const directVoiceId = String(voiceId || "").trim() || defaultAliyunDirectVoiceId(directModel);
-    if (isAliyunDirectCosyVoiceModel(directModel)) {
-      if (mode !== "text") {
-        throw new Error("当前阿里云直连 CosyVoice 模型仅支持预设音色，请切换到 qwen3-tts-instruct-flash 或本地克隆模型");
+    if (mode === "mix") {
+      const normalizedMixVoices = normalizeMixVoiceItems(mixVoices);
+      if (!normalizedMixVoices.length) {
+        throw new Error("混合模式需要选择音色");
       }
+      const buffers = await Promise.all(
+        normalizedMixVoices.map(async (item) => ({
+          buffer: await synthesizeDirectAliyunReferenceBuffer({
+            config,
+            headers,
+            model: directModel,
+            voiceId: item.voiceId,
+            text: textSeed,
+          }),
+          weight: item.weight,
+        })),
+      );
+      const mixedBuffer = mixPcmWavBuffers(buffers);
+      await u.oss.writeFile(cachePath, mixedBuffer);
+      return cachePath;
+    }
+    if (mode !== "text") {
+      throw new Error("当前语音模型不支持该绑定模式");
+    }
+    if (isAliyunDirectCosyVoiceModel(directModel)) {
       const buffer = await synthesizeAliyunDirectCosyVoiceBuffer({
         apiKey: String(config.apiKey || "").trim(),
         baseUrl: config.baseUrl,
@@ -289,25 +371,15 @@ async function synthesizeReferenceAudioFromMode(options: {
       await u.oss.writeFile(cachePath, buffer);
       return cachePath;
     }
-    const endpoint = resolveAliyunDirectTtsEndpoint(config.baseUrl);
-    const directInput: Record<string, any> = {
+    const buffer = await synthesizeDirectAliyunReferenceBuffer({
+      config,
+      headers,
+      model: directModel,
+      voiceId: directVoiceId,
       text: textSeed,
-      language_type: "Chinese",
-      instructions: promptText,
-      optimize_instructions: true,
-    };
-    if (directVoiceId) {
-      directInput.voice = directVoiceId;
-    }
-    const response = await axios.post(
-      endpoint,
-      {
-        model: directModel,
-        input: directInput,
-      },
-      { headers, timeout: 120000 },
-    );
-    sourceUrl = String(response.data?.output?.audio?.url || "").trim();
+    });
+    await u.oss.writeFile(cachePath, buffer);
+    return cachePath;
   } else {
     const payload: Record<string, any> = {
       text: textSeed,
@@ -322,9 +394,7 @@ async function synthesizeReferenceAudioFromMode(options: {
     }
     if (voiceId) payload.voice_id = voiceId;
     if (resolvedProvider) payload.provider = resolvedProvider;
-    if (mode === "prompt_voice") {
-      payload.prompt_text = promptText;
-    } else if (mode === "mix") {
+    if (mode === "mix") {
       payload.mix_voices = normalizeMixVoiceItems(mixVoices).map((item) => ({
         voice_id: item.voiceId,
         weight: item.weight,
@@ -422,12 +492,18 @@ export default router.post(
 
       const baseUrl = normalizeVoiceBaseUrl(config.baseUrl);
       const manufacturer = String(config.manufacturer || "").trim();
-      const unsupportedModeReason = resolveUnsupportedVoiceModeReason({
-        manufacturer,
-        modelType: config.modelType,
-        model: config.model,
-        mode,
-      });
+      const voiceDesignConfig = mode === "prompt_voice" ? await getStoryVoiceDesignConfig(userId) : null;
+      if (mode === "prompt_voice" && !voiceDesignConfig) {
+        return res.status(400).send(error("请先在设置里配置语音设计模型"));
+      }
+      const unsupportedModeReason = mode === "prompt_voice"
+        ? ""
+        : resolveUnsupportedVoiceModeReason({
+            manufacturer,
+            modelType: config.modelType,
+            model: config.model,
+            mode,
+          });
       if (unsupportedModeReason) {
         return res.status(400).send(error(unsupportedModeReason));
       }
@@ -585,6 +661,7 @@ export default router.post(
           mixVoices: [],
           resolvedProvider,
           userId,
+          voiceDesignConfig,
         });
         const cloned = await synthesizeWithLocalClone(
           req,

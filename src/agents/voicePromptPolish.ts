@@ -194,9 +194,9 @@ export default async function polishVoicePromptAgent(input: PolishVoicePromptInp
   const fallback = buildFallbackKeywords(rawText, rawStyle);
   const fallbackPrompt = sanitizePrompt(fallback.keywords.join("，")) || sanitizePrompt(rawText) || "自然，清晰，稳定";
 
-  let promptAiConfig = await u.getPromptAi("storyVoiceDesignModel", input.userId);
+  let promptAiConfig = await u.getPromptAi("assetsPrompt", input.userId);
   if (!hasUsableAiConfig(promptAiConfig)) {
-    promptAiConfig = await u.getPromptAi("assetsPrompt", input.userId);
+    promptAiConfig = await u.getPromptAi("storyOrchestratorModel", input.userId);
   }
   if (!hasUsableAiConfig(promptAiConfig)) {
     return {

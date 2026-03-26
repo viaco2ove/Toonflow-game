@@ -42,6 +42,7 @@ import route38 from "./routes/other/register";
 import route39 from "./routes/other/testAI";
 import route40 from "./routes/other/testImage";
 import route41 from "./routes/other/testVideo";
+import route120 from "./routes/other/testVoiceDesign";
 import route42 from "./routes/outline/addOutline";
 import route43 from "./routes/outline/agentsOutline";
 import route44 from "./routes/outline/delOutline";
@@ -163,6 +164,7 @@ export default async (app: Express) => {
   app.use("/other/testAI", route39);
   app.use("/other/testImage", route40);
   app.use("/other/testVideo", route41);
+  app.use("/other/testVoiceDesign", route120);
   app.use("/outline/addOutline", route42);
   app.use("/outline/agentsOutline", route43);
   app.use("/outline/delOutline", route44);

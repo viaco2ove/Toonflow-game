@@ -44,7 +44,6 @@ export default async function getPromptAi(key: string, userId?: number): Promise
       storyOrchestratorModel: "text",
       storyMemoryModel: "text",
       storyImageModel: "image",
-      storyVoiceDesignModel: "text",
       storyVoiceModel: "voice",
       storyAsrModel: "asr",
     };

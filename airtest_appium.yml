@@ -1,0 +1,53 @@
+platform:
+  os: "Ubuntu 24.04.3 LTS"
+  runtime: "WSL2"
+  shell: "bash"
+
+paths:
+  android_home: "/home/viaco/.local/android-sdk"
+  android_sdk_root: "/home/viaco/.local/android-sdk"
+  java_home: "/home/viaco/.local/opt/jdk-17"
+  airtest_venv: "/home/viaco/.venvs/airtest-poco"
+  python_bin: "/home/viaco/.local/bin/python"
+  airtest_python_bin: "/home/viaco/.venvs/airtest-poco/bin/python"
+  node_bin: "/home/viaco/.local/bin/node"
+  npm_bin: "/home/viaco/.local/bin/npm"
+  appium_bin: "/home/viaco/.local/bin/appium"
+  adb_bin: "/home/viaco/.local/bin/adb"
+  sdkmanager_bin: "/home/viaco/.local/bin/sdkmanager"
+  avdmanager_bin: "/home/viaco/.local/bin/avdmanager"
+  emulator_bin: "/home/viaco/.local/bin/emulator"
+  airtest_bin: "/home/viaco/.local/bin/airtest"
+
+versions:
+  node: "v22.21.0"
+  npm: "11.6.2"
+  appium: "3.2.2"
+  appium_uiautomator2_driver: "7.1.0"
+  adb: "1.0.41"
+  sdkmanager: "20.0"
+  emulator: "36.4.10.0"
+  java: "17.0.18"
+  python: "3.12.3"
+  appium_python_client: "5.2.7"
+  selenium: "4.26.1"
+  airtest: "1.4.3"
+  pocoui: "1.0.94"
+  hrpc: "1.0.9"
+
+status:
+  appium_doctor_required_fixes: 0
+  adb_connected_devices: []
+  optional_missing:
+    - "bundletool.jar"
+    - "ffmpeg"
+    - "gst-launch-1.0"
+    - "gst-inspect-1.0"
+
+notes:
+  - "Appium Python client and Selenium are installed in the default user Python environment."
+  - "Airtest and Poco are also available in the isolated venv at /home/viaco/.venvs/airtest-poco."
+  - "The appium wrapper exports JAVA_HOME and ANDROID_HOME automatically before startup."
+device:
+  type: Virtual
+  name: Pixel 8 Pro
