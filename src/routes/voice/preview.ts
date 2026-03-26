@@ -5,11 +5,13 @@ import { success, error } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
 import { z } from "zod";
 import {
+  defaultAliyunDirectVoiceId,
   directAliyunVoicePresets,
   fetchVoicePresets,
   filterVoicePresetsByManufacturer,
-  getUserVoiceConfig,
+  getRuntimeStoryVoiceConfig,
   isAliyunVoiceManufacturer,
+  isAliyunDirectCosyVoiceModel,
   isDirectAliyunManufacturer,
   normalizeAliyunDirectTtsModel,
   normalizeVoiceBaseUrl,
@@ -24,7 +26,10 @@ import {
   findBusinessVoicePreset,
   inferVoiceGenderHint,
 } from "@/lib/businessVoicePresets";
+import { ensureBundledVoicePresetSeed } from "@/lib/voicePresetSeeds";
 import FormData from "form-data";
+import { synthesizeAliyunDirectCosyVoiceBuffer } from "@/lib/aliyunCosyVoice";
+import { v4 as uuidv4 } from "uuid";
 
 const router = express.Router();
 
@@ -95,6 +100,11 @@ async function loadReferenceAudioBuffer(referenceAudioPath: string): Promise<Buf
     return Buffer.from(response.data);
   }
 
+  const maybeSeedName = raw.split("/").pop() || "";
+  if (/^\/system\/voice-presets\/[^/]+\.wav$/i.test(raw) && maybeSeedName) {
+    await ensureBundledVoicePresetSeed(maybeSeedName);
+  }
+
   return u.oss.getFile(raw);
 }
 
@@ -112,6 +122,26 @@ function resolveSourceUrl(data: Record<string, any>, baseUrl: string): string {
   const relativeUrl = String(data.audio_url || "").trim();
   if (!relativeUrl) return "";
   return `${baseUrl}${relativeUrl.startsWith("/") ? "" : "/"}${relativeUrl}`;
+}
+
+function normalizeMixVoiceItems(
+  mixVoices: Array<{ voiceId: string; weight?: number | null }> | null | undefined,
+): Array<{ voiceId: string; weight: number }> {
+  const normalized: Array<{ voiceId: string; weight: number }> = [];
+  const seen = new Set<string>();
+  for (const item of mixVoices || []) {
+    const rawVoiceId = String(item?.voiceId || "").trim();
+    if (!rawVoiceId) continue;
+    const businessPreset = findBusinessVoicePreset(rawVoiceId);
+    const resolvedVoiceId = String(businessPreset?.baseVoiceId || rawVoiceId).trim();
+    if (!resolvedVoiceId || seen.has(resolvedVoiceId)) continue;
+    seen.add(resolvedVoiceId);
+    normalized.push({
+      voiceId: resolvedVoiceId,
+      weight: typeof item?.weight === "number" ? item.weight : 1,
+    });
+  }
+  return normalized;
 }
 
 async function resolveLocalCloneGateway(userId: number): Promise<{ baseUrl: string; headers: Record<string, string> }> {
@@ -192,6 +222,13 @@ async function persistDerivedReferenceAudio(
   return savePath;
 }
 
+async function persistPreviewAudioBuffer(userId: number, input: Buffer, format = "wav"): Promise<string> {
+  const ext = inferAudioExt(`.${String(format || "wav").trim().toLowerCase()}`) || "wav";
+  const savePath = `/user/${userId}/game/voice-preview/${uuidv4()}.${ext}`;
+  await u.oss.writeFile(savePath, input);
+  return savePath;
+}
+
 async function synthesizeReferenceAudioFromMode(options: {
   config: any;
   manufacturer: string;
@@ -224,10 +261,7 @@ async function synthesizeReferenceAudioFromMode(options: {
     mode,
     voiceId,
     promptText,
-    mixVoices: (mixVoices || []).map((item) => ({
-      voiceId: item.voiceId,
-      weight: typeof item.weight === "number" ? item.weight : 1,
-    })),
+    mixVoices: normalizeMixVoiceItems(mixVoices),
   });
   if (await u.oss.fileExists(cachePath)) {
     return cachePath;
@@ -236,18 +270,38 @@ async function synthesizeReferenceAudioFromMode(options: {
   let sourceUrl = "";
 
   if (isDirectAliyunManufacturer(manufacturer)) {
+    const directModel = normalizeAliyunDirectTtsModel(String(config.model || "").trim());
+    const directVoiceId = String(voiceId || "").trim() || defaultAliyunDirectVoiceId(directModel);
+    if (isAliyunDirectCosyVoiceModel(directModel)) {
+      if (mode !== "text") {
+        throw new Error("当前阿里云直连 CosyVoice 模型仅支持预设音色，请切换到 qwen3-tts-instruct-flash 或本地克隆模型");
+      }
+      const buffer = await synthesizeAliyunDirectCosyVoiceBuffer({
+        apiKey: String(config.apiKey || "").trim(),
+        baseUrl: config.baseUrl,
+        model: directModel,
+        voiceId: directVoiceId,
+        text: textSeed,
+        format: "wav",
+      });
+      await u.oss.writeFile(cachePath, buffer);
+      return cachePath;
+    }
     const endpoint = resolveAliyunDirectTtsEndpoint(config.baseUrl);
+    const directInput: Record<string, any> = {
+      text: textSeed,
+      language_type: "Chinese",
+      instructions: promptText,
+      optimize_instructions: true,
+    };
+    if (directVoiceId) {
+      directInput.voice = directVoiceId;
+    }
     const response = await axios.post(
       endpoint,
       {
-        model: "qwen3-tts-instruct-flash",
-        input: {
-          text: textSeed,
-          voice: voiceId || "Cherry",
-          language_type: "Chinese",
-          instructions: promptText,
-          optimize_instructions: true,
-        },
+        model: directModel,
+        input: directInput,
       },
       { headers, timeout: 120000 },
     );
@@ -269,9 +323,9 @@ async function synthesizeReferenceAudioFromMode(options: {
     if (mode === "prompt_voice") {
       payload.prompt_text = promptText;
     } else if (mode === "mix") {
-      payload.mix_voices = (mixVoices || []).map((item) => ({
+      payload.mix_voices = normalizeMixVoiceItems(mixVoices).map((item) => ({
         voice_id: item.voiceId,
-        weight: typeof item.weight === "number" ? item.weight : 1,
+        weight: item.weight,
       }));
     }
     const response = await axios.post(`${baseUrl}/v1/tts`, payload, { headers, timeout: 120000 });
@@ -309,6 +363,9 @@ export default router.post(
       .nullable(),
   }),
   async (req, res) => {
+    const debugContext: Record<string, unknown> = {
+      route: "/voice/preview",
+    };
     try {
       const {
         configId,
@@ -323,12 +380,33 @@ export default router.post(
         promptText,
         mixVoices,
       } = req.body;
+      debugContext.request = {
+        configId: configId ?? null,
+        mode,
+        voiceId: String(voiceId || "").trim() || null,
+        textLength: String(text || "").length,
+        hasReferenceText: !!String(referenceText || "").trim(),
+        hasReferenceAudioBase64: !!String(referenceAudioBase64 || "").trim(),
+        hasReferenceAudioPath: !!String(referenceAudioPath || "").trim(),
+        promptTextLength: String(promptText || "").trim().length,
+        mixVoiceCount: Array.isArray(mixVoices) ? mixVoices.length : 0,
+      };
 
       const userId = Number((req as any)?.user?.id || 0);
-      const config = await getUserVoiceConfig(userId, configId);
+      const config = await getRuntimeStoryVoiceConfig(userId, configId);
       if (!config) {
         return res.status(400).send(error("语音模型配置不存在"));
       }
+      debugContext.userId = userId;
+      debugContext.config = {
+        id: Number(config.id || 0),
+        manufacturer: String(config.manufacturer || "").trim(),
+        model: String(config.model || "").trim(),
+        modelType: String(config.modelType || "").trim(),
+        baseUrl: String(config.baseUrl || "").trim(),
+      };
+      debugContext.requestedConfigId = configId ?? null;
+      debugContext.resolvedConfigId = Number(config.id || 0);
 
       const baseUrl = normalizeVoiceBaseUrl(config.baseUrl);
       const manufacturer = String(config.manufacturer || "").trim();
@@ -358,7 +436,7 @@ export default router.post(
       let resolvedProvider = "";
       const businessPresets = await ensureBusinessVoicePresets(userId);
       const providerPresetPool = directAliyun
-        ? directAliyunVoicePresets()
+        ? directAliyunVoicePresets(String(config.model || "").trim())
         : filterVoicePresetsByManufacturer(await fetchVoicePresets(baseUrl, headers), manufacturer);
       const mergedPresetPool = [...businessPresets, ...providerPresetPool].filter(
         (item, index, list) => list.findIndex((row) => row.voiceId === item.voiceId) === index,
@@ -383,6 +461,19 @@ export default router.post(
       if (presetProvider && !directAliyun) resolvedProvider = presetProvider;
 
       if (businessPreset) {
+        if (
+          String(text || "").trim() === String(businessPreset.referenceText || "").trim()
+          && (!speed || Number(speed) === 1)
+        ) {
+          const seedAudioUrl = buildProxyAudioUrl(req, null, businessPreset.referencePath);
+          return res.status(200).send(success({
+            audioUrl: seedAudioUrl,
+            data: {
+              compatibilityPreset: businessPreset.voiceId,
+              compatibilitySeed: true,
+            },
+          }));
+        }
         const cloned = await synthesizeWithLocalClone(
           req,
           userId,
@@ -413,9 +504,10 @@ export default router.post(
         }
         return res.status(400).send(error("克隆模式需要参考音频"));
       } else if (mode === "mix") {
-        const mixList = (mixVoices || []).map((item: any) => ({
+        const normalizedMixVoices = normalizeMixVoiceItems((mixVoices || []) as Array<{ voiceId: string; weight?: number | null }>);
+        const mixList = normalizedMixVoices.map((item) => ({
           voice_id: item.voiceId,
-          weight: typeof item.weight === "number" ? item.weight : 1,
+          weight: item.weight,
         }));
         if (!mixList.length) {
           return res.status(400).send(error("混合模式需要选择音色"));
@@ -443,7 +535,7 @@ export default router.post(
           mode,
           voiceId: effectiveVoiceId,
           promptText: String(promptText || "").trim(),
-          mixVoices: (mixVoices || []) as Array<{ voiceId: string; weight?: number | null }>,
+          mixVoices: normalizedMixVoices,
           resolvedProvider: String(payload.provider || ""),
           userId,
         });
@@ -489,22 +581,45 @@ export default router.post(
       let sourceUrl = "";
 
       if (directAliyun) {
-        const endpoint = resolveAliyunDirectTtsEndpoint(config.baseUrl);
         const directModel = normalizeAliyunDirectTtsModel(String(config.model || "").trim());
-        const response = await axios.post(
-          endpoint,
-          {
+        const directVoiceId = effectiveVoiceId || defaultAliyunDirectVoiceId(directModel);
+        if (isAliyunDirectCosyVoiceModel(directModel)) {
+          const buffer = await synthesizeAliyunDirectCosyVoiceBuffer({
+            apiKey: String(config.apiKey || "").trim(),
+            baseUrl: config.baseUrl,
             model: directModel,
-            input: {
-              text,
-              voice: effectiveVoiceId || "Cherry",
-              language_type: "Chinese",
+            voiceId: directVoiceId,
+            text: String(text || ""),
+            format: payload.format,
+            speed,
+          });
+          sourceUrl = await persistPreviewAudioBuffer(userId, buffer, payload.format);
+          data = {
+            localGenerated: true,
+            mode: "websocket",
+            voice: directVoiceId,
+            model: directModel,
+          };
+        } else {
+          const endpoint = resolveAliyunDirectTtsEndpoint(config.baseUrl);
+          const directInput: Record<string, any> = {
+            text,
+            language_type: "Chinese",
+          };
+          if (directVoiceId) {
+            directInput.voice = directVoiceId;
+          }
+          const response = await axios.post(
+            endpoint,
+            {
+              model: directModel,
+              input: directInput,
             },
-          },
-          { headers, timeout: 120000 },
-        );
-        data = response.data || {};
-        sourceUrl = String(data?.output?.audio?.url || "").trim();
+            { headers, timeout: 120000 },
+          );
+          data = response.data || {};
+          sourceUrl = String(data?.output?.audio?.url || "").trim();
+        }
       } else {
         const response = await axios.post(`${baseUrl}/v1/tts`, payload, { headers });
         data = response.data || {};
@@ -517,9 +632,28 @@ export default router.post(
         return res.status(500).send(error("未返回可用音频地址"));
       }
       const audioUrl = buildProxyAudioUrl(req, config?.id, sourceUrl);
+      debugContext.result = {
+        sourceUrl,
+        proxied: audioUrl,
+      };
 
       res.status(200).send(success({ audioUrl, data }));
     } catch (err) {
+      const axiosErr = axios.isAxiosError(err) ? err : null;
+      console.error("[voice] preview failed", {
+        ...debugContext,
+        message: u.error(err).message,
+        stack: err instanceof Error ? err.stack : undefined,
+        upstream: axiosErr
+          ? {
+              code: axiosErr.code,
+              status: axiosErr.response?.status,
+              method: axiosErr.config?.method,
+              url: axiosErr.config?.url,
+              responseData: axiosErr.response?.data,
+            }
+          : null,
+      });
       res.status(500).send(error(u.error(err).message));
     }
   },

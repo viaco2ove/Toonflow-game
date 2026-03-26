@@ -2,6 +2,7 @@ import express from "express";
 import axios from "axios";
 import u from "@/utils";
 import { error } from "@/lib/responseFormat";
+import { ensureBundledVoicePresetSeed } from "@/lib/voicePresetSeeds";
 
 const router = express.Router();
 
@@ -25,6 +26,22 @@ function resolveSourceUrl(source: string, baseUrl: string): string {
   return `${baseUrl}/${raw}`;
 }
 
+function isLocalOssAudioSource(source: string): boolean {
+  const raw = String(source || "").trim();
+  return /^\/?(system|user|\d+)\//i.test(raw);
+}
+
+function inferAudioContentType(source: string): string {
+  const raw = String(source || "").trim().toLowerCase();
+  if (raw.endsWith(".mp3")) return "audio/mpeg";
+  if (raw.endsWith(".ogg")) return "audio/ogg";
+  if (raw.endsWith(".webm")) return "audio/webm";
+  if (raw.endsWith(".m4a")) return "audio/mp4";
+  if (raw.endsWith(".aac")) return "audio/aac";
+  if (raw.endsWith(".flac")) return "audio/flac";
+  return "audio/wav";
+}
+
 router.get("/", async (req, res) => {
   try {
     const userId = Number((req as any)?.user?.id || 0);
@@ -32,6 +49,25 @@ router.get("/", async (req, res) => {
     const source = String(req.query.source || "").trim();
     if (!source) {
       return res.status(400).send(error("缺少音频地址"));
+    }
+
+    if (isLocalOssAudioSource(source)) {
+      try {
+        const buffer = await u.oss.getFile(source);
+        res.setHeader("Content-Type", inferAudioContentType(source));
+        res.setHeader("Cache-Control", "no-store");
+        return res.status(200).send(buffer);
+      } catch (err) {
+        const maybeSeedName = String(source || "").trim().split("/").pop() || "";
+        if (/^\/system\/voice-presets\/[^/]+\.wav$/i.test(source) && maybeSeedName) {
+          await ensureBundledVoicePresetSeed(maybeSeedName);
+          const buffer = await u.oss.getFile(source);
+          res.setHeader("Content-Type", inferAudioContentType(source));
+          res.setHeader("Cache-Control", "no-store");
+          return res.status(200).send(buffer);
+        }
+        throw err;
+      }
     }
 
     const config = await getVoiceConfig(userId, configId);

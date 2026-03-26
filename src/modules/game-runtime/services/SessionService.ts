@@ -11,13 +11,12 @@ import {
 import { getCurrentUserId } from "@/lib/requestContext";
 import {
   advanceNarrativeUntilPlayerTurn,
-  applyMemoryResultToState,
   RuntimeMessageInput,
   allowPlayerTurn,
   canPlayerSpeakNow,
   resolveOpeningMessage,
   runNarrativeOrchestrator,
-  runStoryMemoryManager,
+  setRuntimeTurnState,
 } from "@/modules/game-runtime/engines/NarrativeOrchestrator";
 import { handleMiniGameTurn } from "@/modules/game-runtime/engines/MiniGameController";
 import { runTaskProgressEngine } from "@/modules/game-runtime/engines/TaskProgressEngine";
@@ -314,39 +313,60 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
     const switchedChapter = normalizeChapterOutput(await db("t_storyChapter").where({ id: nextChapterId }).first());
     if (switchedChapter) {
       const openingMessage = resolveOpeningMessage(world, switchedChapter);
-      const openingRuntimeMessage: RuntimeMessageInput = {
-        role: String(openingMessage.role || state.narrator?.name || "旁白"),
-        roleType: String(openingMessage.roleType || "narrator"),
-        eventType: String(openingMessage.eventType || "on_enter_chapter"),
-        content: String(openingMessage.content || `进入章节《${String(switchedChapter.title || "未命名章节")}》`),
-        createTime: now,
-      };
-      const inserted = await db("t_sessionMessage").insert({
-        sessionId,
-        role: String(openingRuntimeMessage.role || state.narrator?.name || "旁白"),
-        roleType: String(openingRuntimeMessage.roleType || "narrator"),
-        content: String(openingRuntimeMessage.content || ""),
-        eventType: String(openingRuntimeMessage.eventType || "on_enter_chapter"),
-        meta: toJsonText({ chapterId: Number(switchedChapter.id) }, {}),
-        createTime: Number(openingRuntimeMessage.createTime || now),
+      const transitionMessages: RuntimeMessageInput[] = [];
+      if (openingMessage && String(openingMessage.content || "").trim()) {
+        transitionMessages.push({
+          role: String(openingMessage.role || state.narrator?.name || "旁白"),
+          roleType: String(openingMessage.roleType || "narrator"),
+          eventType: String(openingMessage.eventType || "on_enter_chapter"),
+          content: String(openingMessage.content || `进入章节《${String(switchedChapter.title || "未命名章节")}》`),
+          createTime: now,
+        });
+      }
+      setRuntimeTurnState(state, world, {
+        canPlayerSpeak: false,
+        expectedRoleType: "narrator",
+        expectedRole: String(state.narrator?.name || "旁白"),
+        lastSpeakerRoleType: String(transitionMessages[transitionMessages.length - 1]?.roleType || "narrator"),
+        lastSpeaker: String(transitionMessages[transitionMessages.length - 1]?.role || state.narrator?.name || "旁白"),
       });
-      const switchMessageId = normalizeMessageId(inserted);
-      chapterSwitchMessageRow = await db("t_sessionMessage").where({ id: switchMessageId }).first();
-      allowPlayerTurn(
-        state,
-        world,
-        String(openingRuntimeMessage.roleType || "narrator"),
-        String(openingRuntimeMessage.role || state.narrator?.name || "旁白"),
-      );
-
-      const memory = await runStoryMemoryManager({
+      const orchestrator = await runNarrativeOrchestrator({
         userId: currentUserId,
         world,
         chapter: switchedChapter,
         state,
-        recentMessages: [openingRuntimeMessage],
+        recentMessages: transitionMessages,
+        playerMessage: "",
       });
-      applyMemoryResultToState(state, memory);
+      const orchestrated = await advanceNarrativeUntilPlayerTurn({
+        userId: currentUserId,
+        world,
+        chapter: switchedChapter,
+        state,
+        recentMessages: transitionMessages,
+        playerMessage: "",
+        initialResult: orchestrator,
+      });
+      transitionMessages.push(...orchestrated.messages);
+      for (let index = 0; index < transitionMessages.length; index += 1) {
+        const item = transitionMessages[index];
+        const inserted = await db("t_sessionMessage").insert({
+          sessionId,
+          role: String(item.role || state.narrator?.name || "旁白"),
+          roleType: String(item.roleType || "narrator"),
+          content: String(item.content || ""),
+          eventType: String(item.eventType || (index === 0 ? "on_enter_chapter" : "on_orchestrated_reply")),
+          meta: toJsonText({ chapterId: Number(switchedChapter.id) }, {}),
+          createTime: Number(item.createTime || now),
+        });
+        const insertedId = normalizeMessageId(inserted);
+        const row = await db("t_sessionMessage").where({ id: insertedId }).first();
+        if (index === 0) {
+          chapterSwitchMessageRow = row;
+        } else {
+          narrativeMessageRow = row;
+        }
+      }
     }
   } else if (roleTypeValue === "player" && eventTypeValue === "on_message" && messageContent.trim()) {
     const playChapter = nextChapterId
@@ -390,17 +410,6 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
         narrativeMessageRow = await db("t_sessionMessage").where({ id: narrativeMessageId }).first();
       }
 
-      const memory = await runStoryMemoryManager({
-        userId: currentUserId,
-        world,
-        chapter: playChapter,
-        state,
-        recentMessages: [
-          ...recentMessages,
-          ...orchestrated.messages,
-        ],
-      });
-      applyMemoryResultToState(state, memory);
     }
   }
 

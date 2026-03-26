@@ -10,6 +10,12 @@ function getUserDataDir(): string {
   return app.getPath("userData");
 }
 
+function isPackagedElectron(): boolean {
+  if (!isElectronRuntime()) return false;
+  const { app } = require("electron");
+  return Boolean(app?.isPackaged);
+}
+
 function isWindowsAbsolutePath(input: string): boolean {
   return /^[a-zA-Z]:[\\/]/.test(input) || /^\\\\/.test(input);
 }
@@ -35,4 +41,11 @@ export function getUploadRootDir(): string {
     ? path.join(getUserDataDir(), "Toonflow-game/uploads")
     : path.join(process.cwd(), "Toonflow-game/uploads");
   return resolveConfiguredPath(process.env.UPLOAD_DIR, fallback);
+}
+
+export function getVoicePresetSeedDir(): string {
+  const baseDir = isPackagedElectron()
+    ? process.resourcesPath
+    : process.cwd();
+  return path.join(baseDir, "res", "voice-presets");
 }

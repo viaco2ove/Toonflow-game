@@ -66,3 +66,8 @@ scripts/web/index.html 只是构建后的html文件
 
 # 系统环境配置
 [system.yml](system/system.yml)
+
+# web端和安卓端同步修改
+
+# wsl test
+[test_wsl.md](md/wsl/test_wsl.md)

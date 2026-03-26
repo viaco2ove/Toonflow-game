@@ -12,13 +12,12 @@ import {
 } from "@/lib/gameEngine";
 import {
   allowPlayerTurn,
-  advanceNarrativeUntilPlayerTurn,
-  applyMemoryResultToState,
+  applyOrchestratorResultToState,
   canPlayerSpeakNow,
   evaluateDebugChapterOutcome,
   resolveOpeningMessage,
+  setRuntimeTurnState,
   runNarrativeOrchestrator,
-  runStoryMemoryManager,
   RuntimeMessageInput,
 } from "@/modules/game-runtime/engines/NarrativeOrchestrator";
 import { handleMiniGameTurn } from "@/modules/game-runtime/engines/MiniGameController";
@@ -60,6 +59,42 @@ function buildDebugFreePlotMessage(roleName: string, chapterTitle: string) {
     eventType: "on_debug_free_plot",
     content: `章节《${chapterTitle || "当前章节"}》已完成，接下来进入自由剧情，编排师将继续根据局势推进故事。`,
   });
+}
+
+function getPendingDebugChapterId(state: unknown): number | null {
+  if (!state || typeof state !== "object" || Array.isArray(state)) return null;
+  const value = Number((state as Record<string, unknown>).debugPendingChapterId || 0);
+  return Number.isFinite(value) && value > 0 ? value : null;
+}
+
+function setPendingDebugChapterId(state: unknown, chapterId: number | null) {
+  if (!state || typeof state !== "object" || Array.isArray(state)) return;
+  if (chapterId && chapterId > 0) {
+    (state as Record<string, unknown>).debugPendingChapterId = chapterId;
+  } else {
+    delete (state as Record<string, unknown>).debugPendingChapterId;
+  }
+}
+
+async function resolveNextChapter(db: any, worldId: number, chapter: any, explicitNextChapterId?: number | null) {
+  const chapters = (await db("t_storyChapter").where({ worldId }).orderBy("sort", "asc").orderBy("id", "asc"))
+    .map((item: any) => normalizeChapterOutput(item));
+  const explicitNext = explicitNextChapterId
+    ? chapters.find((item: any) => Number(item.id) === Number(explicitNextChapterId))
+    : null;
+  const currentIndex = chapters.findIndex((item: any) => Number(item.id) === Number(chapter.id));
+  return explicitNext || (currentIndex >= 0 ? chapters[currentIndex + 1] : null) || null;
+}
+
+function buildOpeningRuntimeMessage(world: any, chapter: any, narratorName: string): RuntimeMessageInput {
+  const opening = resolveOpeningMessage(world, chapter);
+  return {
+    role: String(opening.role || narratorName || "旁白"),
+    roleType: String(opening.roleType || "narrator"),
+    eventType: String(opening.eventType || "on_enter_chapter"),
+    content: String(opening.content || ""),
+    createTime: nowTs(),
+  };
 }
 
 function buildDebugRecentMessages(
@@ -164,35 +199,170 @@ export default router.post(
       const recentMessages = buildDebugRecentMessages(messages, String(rolePair.playerRole.name || "用户"), playerContent);
 
       if (!playerContent) {
-        const opening = resolveOpeningMessage(world, chapter);
-        const openingRuntimeMessage: RuntimeMessageInput = {
-          role: String(opening.role || rolePair.narratorRole.name || "旁白"),
-          roleType: String(opening.roleType || "narrator"),
-          eventType: String(opening.eventType || "on_enter_chapter"),
-          content: String(opening.content || ""),
-          createTime: nowTs(),
-        };
-        allowPlayerTurn(
-          state,
-          world,
-          String(openingRuntimeMessage.roleType || "narrator"),
-          String(openingRuntimeMessage.role || rolePair.narratorRole.name || "旁白"),
-        );
-        const allMessages = [openingRuntimeMessage];
-        const memory = await runStoryMemoryManager({
+        const pendingChapterId = getPendingDebugChapterId(state);
+        if (pendingChapterId) {
+          const nextChapter = normalizeChapterOutput(await db("t_storyChapter").where({ id: pendingChapterId, worldId }).first());
+          setPendingDebugChapterId(state, null);
+          if (!nextChapter) {
+            return res.status(200).send(success({
+              chapterId: Number(chapter.id || 0),
+              chapterTitle: String(chapter.title || ""),
+              state,
+              endDialog: null,
+              messages: [],
+            }));
+          }
+          state.chapterId = Number(nextChapter.id || 0);
+          const nextOpeningRuntimeMessage = buildOpeningRuntimeMessage(world, nextChapter, String(rolePair.narratorRole.name || "旁白"));
+          setRuntimeTurnState(state, world, {
+            canPlayerSpeak: false,
+            expectedRoleType: "narrator",
+            expectedRole: String(rolePair.narratorRole.name || "旁白"),
+            lastSpeakerRoleType: String(nextOpeningRuntimeMessage.roleType || "narrator"),
+            lastSpeaker: String(nextOpeningRuntimeMessage.role || rolePair.narratorRole.name || "旁白"),
+          });
+          return res.status(200).send(success({
+            chapterId: Number(nextChapter.id || 0),
+            chapterTitle: String(nextChapter.title || ""),
+            state,
+            endDialog: null,
+            messages: [asDebugMessage(nextOpeningRuntimeMessage)],
+          }));
+        }
+
+        if (!messages.length) {
+          const openingRuntimeMessage = buildOpeningRuntimeMessage(world, chapter, String(rolePair.narratorRole.name || "旁白"));
+          setRuntimeTurnState(state, world, {
+            canPlayerSpeak: false,
+            expectedRoleType: "narrator",
+            expectedRole: String(rolePair.narratorRole.name || "旁白"),
+            lastSpeakerRoleType: String(openingRuntimeMessage.roleType || "narrator"),
+            lastSpeaker: String(openingRuntimeMessage.role || rolePair.narratorRole.name || "旁白"),
+          });
+          return res.status(200).send(success({
+            chapterId: Number(chapter.id || 0),
+            chapterTitle: String(chapter.title || ""),
+            state,
+            endDialog: null,
+            messages: [asDebugMessage(openingRuntimeMessage)],
+          }));
+        }
+
+        if (canPlayerSpeakNow(state, world)) {
+          return res.status(200).send(success({
+            chapterId: Number(chapter.id || 0),
+            chapterTitle: String(chapter.title || ""),
+            state,
+            endDialog: null,
+            messages: [],
+          }));
+        }
+
+        const orchestrator = await runNarrativeOrchestrator({
           userId,
           world,
           chapter: effectiveChapter,
           state,
-          recentMessages: allMessages,
+          recentMessages,
+          playerMessage: "",
         });
-        applyMemoryResultToState(state, memory);
+        applyOrchestratorResultToState(state, orchestrator);
+        const emittedMessage = orchestrator.role && orchestrator.content
+          ? asDebugMessage({
+            role: orchestrator.role,
+            roleType: orchestrator.roleType,
+            eventType: "on_orchestrated_reply",
+            content: orchestrator.content,
+            createTime: nowTs(),
+          })
+          : null;
+
+        if (!debugFreePlotActive && orchestrator.chapterOutcome === "failed") {
+          setRuntimeTurnState(state, world, {
+            canPlayerSpeak: false,
+            expectedRoleType: String(orchestrator.nextRoleType || "narrator"),
+            expectedRole: String(orchestrator.nextRole || orchestrator.role || rolePair.narratorRole.name || "旁白"),
+            lastSpeakerRoleType: String(orchestrator.roleType || "narrator"),
+            lastSpeaker: String(orchestrator.role || rolePair.narratorRole.name || "旁白"),
+          });
+          return res.status(200).send(success({
+            chapterId: Number(chapter.id || 0),
+            chapterTitle: String(chapter.title || ""),
+            state,
+            endDialog: "已失败",
+            messages: emittedMessage ? [emittedMessage] : [],
+          }));
+        }
+
+        if (!debugFreePlotActive && orchestrator.chapterOutcome === "success") {
+          const nextChapter = await resolveNextChapter(db, worldId, chapter, orchestrator.nextChapterId);
+          if (!nextChapter) {
+            (state as any).debugFreePlot = {
+              active: true,
+              fromChapterId: Number(chapter.id || 0),
+              unlockedAt: nowTs(),
+            };
+            return res.status(200).send(success({
+              chapterId: Number(chapter.id || 0),
+              chapterTitle: String(chapter.title || ""),
+              state,
+              endDialog: "进入自由剧情",
+              messages: emittedMessage ? [emittedMessage] : [],
+            }));
+          }
+          if (emittedMessage) {
+            setPendingDebugChapterId(state, Number(nextChapter.id || 0));
+            setRuntimeTurnState(state, world, {
+              canPlayerSpeak: false,
+              expectedRoleType: "narrator",
+              expectedRole: String(rolePair.narratorRole.name || "旁白"),
+              lastSpeakerRoleType: String(orchestrator.roleType || "narrator"),
+              lastSpeaker: String(orchestrator.role || rolePair.narratorRole.name || "旁白"),
+            });
+            return res.status(200).send(success({
+              chapterId: Number(chapter.id || 0),
+              chapterTitle: String(chapter.title || ""),
+              state,
+              endDialog: null,
+              messages: [emittedMessage],
+            }));
+          }
+          state.chapterId = Number(nextChapter.id || 0);
+          const nextOpeningRuntimeMessage = buildOpeningRuntimeMessage(world, nextChapter, String(rolePair.narratorRole.name || "旁白"));
+          setRuntimeTurnState(state, world, {
+            canPlayerSpeak: false,
+            expectedRoleType: "narrator",
+            expectedRole: String(rolePair.narratorRole.name || "旁白"),
+            lastSpeakerRoleType: String(nextOpeningRuntimeMessage.roleType || "narrator"),
+            lastSpeaker: String(nextOpeningRuntimeMessage.role || rolePair.narratorRole.name || "旁白"),
+          });
+          return res.status(200).send(success({
+            chapterId: Number(nextChapter.id || 0),
+            chapterTitle: String(nextChapter.title || ""),
+            state,
+            endDialog: null,
+            messages: [asDebugMessage(nextOpeningRuntimeMessage)],
+          }));
+        }
+
+        const shouldYieldToPlayer = orchestrator.awaitUser || String(orchestrator.nextRoleType || "").trim().toLowerCase() === "player";
+        if (shouldYieldToPlayer) {
+          allowPlayerTurn(state, world, String(orchestrator.roleType || "narrator"), String(orchestrator.role || rolePair.narratorRole.name || "旁白"));
+        } else {
+          setRuntimeTurnState(state, world, {
+            canPlayerSpeak: false,
+            expectedRoleType: String(orchestrator.nextRoleType || "narrator"),
+            expectedRole: String(orchestrator.nextRole || orchestrator.role || rolePair.narratorRole.name || "旁白"),
+            lastSpeakerRoleType: String(orchestrator.roleType || "narrator"),
+            lastSpeaker: String(orchestrator.role || rolePair.narratorRole.name || "旁白"),
+          });
+        }
         return res.status(200).send(success({
           chapterId: Number(chapter.id || 0),
           chapterTitle: String(chapter.title || ""),
           state,
           endDialog: null,
-          messages: allMessages.map((item) => asDebugMessage(item)),
+          messages: emittedMessage ? [emittedMessage] : [],
         }));
       }
 
@@ -242,13 +412,7 @@ export default router.post(
       }
 
       if (outcome.result === "success") {
-        const chapters = (await db("t_storyChapter").where({ worldId }).orderBy("sort", "asc").orderBy("id", "asc"))
-          .map((item: any) => normalizeChapterOutput(item));
-        const explicitNext = outcome.nextChapterId
-          ? chapters.find((item: any) => Number(item.id) === Number(outcome.nextChapterId))
-          : null;
-        const currentIndex = chapters.findIndex((item: any) => Number(item.id) === Number(chapter.id));
-        const nextChapter = explicitNext || (currentIndex >= 0 ? chapters[currentIndex + 1] : null) || null;
+        const nextChapter = await resolveNextChapter(db, worldId, chapter, outcome.nextChapterId);
         if (!nextChapter) {
           (state as any).debugFreePlot = {
             active: true,
@@ -264,38 +428,20 @@ export default router.post(
           }));
         }
         state.chapterId = Number(nextChapter.id || 0);
-        const nextOpening = resolveOpeningMessage(world, nextChapter);
-        const nextOpeningRuntimeMessage: RuntimeMessageInput = {
-          role: String(nextOpening.role || rolePair.narratorRole.name || "旁白"),
-          roleType: String(nextOpening.roleType || "narrator"),
-          eventType: String(nextOpening.eventType || "on_enter_chapter"),
-          content: String(nextOpening.content || ""),
-          createTime: nowTs(),
-        };
-        allowPlayerTurn(
-          state,
-          world,
-          String(nextOpeningRuntimeMessage.roleType || "narrator"),
-          String(nextOpeningRuntimeMessage.role || rolePair.narratorRole.name || "旁白"),
-        );
-        const switchedMessages = [nextOpeningRuntimeMessage];
-        const memory = await runStoryMemoryManager({
-          userId,
-          world,
-          chapter: nextChapter,
-          state,
-          recentMessages: [
-            ...recentMessages,
-            ...switchedMessages,
-          ],
+        const nextOpeningRuntimeMessage = buildOpeningRuntimeMessage(world, nextChapter, String(rolePair.narratorRole.name || "旁白"));
+        setRuntimeTurnState(state, world, {
+          canPlayerSpeak: false,
+          expectedRoleType: "narrator",
+          expectedRole: String(rolePair.narratorRole.name || "旁白"),
+          lastSpeakerRoleType: String(nextOpeningRuntimeMessage.roleType || "narrator"),
+          lastSpeaker: String(nextOpeningRuntimeMessage.role || rolePair.narratorRole.name || "旁白"),
         });
-        applyMemoryResultToState(state, memory);
         return res.status(200).send(success({
           chapterId: Number(nextChapter.id || 0),
           chapterTitle: String(nextChapter.title || ""),
           state,
           endDialog: null,
-          messages: switchedMessages.map((item) => asDebugMessage(item)),
+          messages: [asDebugMessage(nextOpeningRuntimeMessage)],
         }));
       }
 
@@ -307,106 +453,97 @@ export default router.post(
         recentMessages,
         playerMessage: playerContent,
       });
-      const orchestrated = await advanceNarrativeUntilPlayerTurn({
-        userId,
-        world,
-        chapter: effectiveChapter,
-        state,
-        recentMessages,
-        playerMessage: playerContent,
-        initialResult: orchestrator,
-      });
-      if (!debugFreePlotActive && orchestrated.chapterOutcome === "failed") {
+      applyOrchestratorResultToState(state, orchestrator);
+      const emittedMessage = orchestrator.role && orchestrator.content
+        ? asDebugMessage({
+          role: orchestrator.role,
+          roleType: orchestrator.roleType,
+          eventType: "on_orchestrated_reply",
+          content: orchestrator.content,
+          createTime: nowTs(),
+        })
+        : null;
+
+      if (!debugFreePlotActive && orchestrator.chapterOutcome === "failed") {
         return res.status(200).send(success({
           chapterId: Number(chapter.id || 0),
           chapterTitle: String(chapter.title || ""),
           state,
           endDialog: "已失败",
-          messages: orchestrated.messages.map((item) => asDebugMessage(item)),
+          messages: emittedMessage ? [emittedMessage] : [],
         }));
       }
-      if (!debugFreePlotActive && orchestrated.chapterOutcome === "success") {
-        const chapters = (await db("t_storyChapter").where({ worldId }).orderBy("sort", "asc").orderBy("id", "asc"))
-          .map((item: any) => normalizeChapterOutput(item));
-        const explicitNext = orchestrated.nextChapterId
-          ? chapters.find((item: any) => Number(item.id) === Number(orchestrated.nextChapterId))
-          : null;
-        const currentIndex = chapters.findIndex((item: any) => Number(item.id) === Number(chapter.id));
-        const nextChapter = explicitNext || (currentIndex >= 0 ? chapters[currentIndex + 1] : null) || null;
+
+      if (!debugFreePlotActive && orchestrator.chapterOutcome === "success") {
+        const nextChapter = await resolveNextChapter(db, worldId, chapter, orchestrator.nextChapterId);
         if (!nextChapter) {
           (state as any).debugFreePlot = {
             active: true,
             fromChapterId: Number(chapter.id || 0),
             unlockedAt: nowTs(),
-          }
+          };
           return res.status(200).send(success({
             chapterId: Number(chapter.id || 0),
             chapterTitle: String(chapter.title || ""),
             state,
             endDialog: "进入自由剧情",
-            messages: [
-              ...orchestrated.messages.map((item) => asDebugMessage(item)),
-              buildDebugFreePlotMessage(String(rolePair.narratorRole.name || "旁白"), String(chapter.title || "当前章节")),
-            ],
+            messages: emittedMessage ? [emittedMessage] : [],
+          }));
+        }
+        if (emittedMessage) {
+          setPendingDebugChapterId(state, Number(nextChapter.id || 0));
+          setRuntimeTurnState(state, world, {
+            canPlayerSpeak: false,
+            expectedRoleType: "narrator",
+            expectedRole: String(rolePair.narratorRole.name || "旁白"),
+            lastSpeakerRoleType: String(orchestrator.roleType || "narrator"),
+            lastSpeaker: String(orchestrator.role || rolePair.narratorRole.name || "旁白"),
+          });
+          return res.status(200).send(success({
+            chapterId: Number(chapter.id || 0),
+            chapterTitle: String(chapter.title || ""),
+            state,
+            endDialog: null,
+            messages: [emittedMessage],
           }));
         }
         state.chapterId = Number(nextChapter.id || 0);
-        const nextOpening = resolveOpeningMessage(world, nextChapter);
-        const nextOpeningRuntimeMessage: RuntimeMessageInput = {
-          role: String(nextOpening.role || rolePair.narratorRole.name || "旁白"),
-          roleType: String(nextOpening.roleType || "narrator"),
-          eventType: String(nextOpening.eventType || "on_enter_chapter"),
-          content: String(nextOpening.content || ""),
-          createTime: nowTs(),
-        };
-        allowPlayerTurn(
-          state,
-          world,
-          String(nextOpeningRuntimeMessage.roleType || "narrator"),
-          String(nextOpeningRuntimeMessage.role || rolePair.narratorRole.name || "旁白"),
-        );
-        const switchedMessages = [nextOpeningRuntimeMessage];
-        const memory = await runStoryMemoryManager({
-          userId,
-          world,
-          chapter: nextChapter,
-          state,
-          recentMessages: [
-            ...recentMessages,
-            ...orchestrated.messages,
-            ...switchedMessages,
-          ],
+        const nextOpeningRuntimeMessage = buildOpeningRuntimeMessage(world, nextChapter, String(rolePair.narratorRole.name || "旁白"));
+        setRuntimeTurnState(state, world, {
+          canPlayerSpeak: false,
+          expectedRoleType: "narrator",
+          expectedRole: String(rolePair.narratorRole.name || "旁白"),
+          lastSpeakerRoleType: String(nextOpeningRuntimeMessage.roleType || "narrator"),
+          lastSpeaker: String(nextOpeningRuntimeMessage.role || rolePair.narratorRole.name || "旁白"),
         });
-        applyMemoryResultToState(state, memory);
         return res.status(200).send(success({
           chapterId: Number(nextChapter.id || 0),
           chapterTitle: String(nextChapter.title || ""),
           state,
           endDialog: null,
-          messages: [
-            ...orchestrated.messages.map((item) => asDebugMessage(item)),
-            ...switchedMessages.map((item) => asDebugMessage(item)),
-          ],
+          messages: [asDebugMessage(nextOpeningRuntimeMessage)],
         }));
       }
-      const memory = await runStoryMemoryManager({
-        userId,
-        world,
-        chapter: effectiveChapter,
-        state,
-        recentMessages: [
-          ...recentMessages,
-          ...orchestrated.messages,
-        ],
-      });
-      applyMemoryResultToState(state, memory);
+
+      const shouldYieldToPlayer = orchestrator.awaitUser || String(orchestrator.nextRoleType || "").trim().toLowerCase() === "player";
+      if (shouldYieldToPlayer) {
+        allowPlayerTurn(state, world, String(orchestrator.roleType || "narrator"), String(orchestrator.role || rolePair.narratorRole.name || "旁白"));
+      } else {
+        setRuntimeTurnState(state, world, {
+          canPlayerSpeak: false,
+          expectedRoleType: String(orchestrator.nextRoleType || "narrator"),
+          expectedRole: String(orchestrator.nextRole || orchestrator.role || rolePair.narratorRole.name || "旁白"),
+          lastSpeakerRoleType: String(orchestrator.roleType || "narrator"),
+          lastSpeaker: String(orchestrator.role || rolePair.narratorRole.name || "旁白"),
+        });
+      }
 
       return res.status(200).send(success({
         chapterId: Number(chapter.id || 0),
         chapterTitle: String(chapter.title || ""),
         state,
         endDialog: null,
-        messages: orchestrated.messages.map((item) => asDebugMessage(item)),
+        messages: emittedMessage ? [emittedMessage] : [],
       }));
     } catch (err) {
       res.status(500).send(error(u.error(err).message));

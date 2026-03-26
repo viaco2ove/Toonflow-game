@@ -55,3 +55,4 @@ web/*
 run.local.cmd
 run.local.ps1
 /Toonflow-game/
+/node_modules_wsl/

@@ -13,11 +13,11 @@ import {
   toJsonText,
 } from "@/lib/gameEngine";
 import {
-  allowPlayerTurn,
-  applyMemoryResultToState,
+  advanceNarrativeUntilPlayerTurn,
   resolveOpeningMessage,
-  runStoryMemoryManager,
+  runNarrativeOrchestrator,
   RuntimeMessageInput,
+  setRuntimeTurnState,
 } from "@/modules/game-runtime/engines/NarrativeOrchestrator";
 import u from "@/utils";
 
@@ -96,31 +96,43 @@ export default router.post(
 
       const rolePair = normalizeRolePair(world.playerRole, world.narratorRole);
       const state = normalizeSessionState(initialState, worldId, chapter ? Number(chapter.id) : null, rolePair);
-      const openingMessage = chapter ? resolveOpeningMessage(world, chapter) : null;
       const openingMessages: RuntimeMessageInput[] = [];
-      if (chapter && openingMessage) {
-        const openingRuntimeMessage: RuntimeMessageInput = {
-          role: String(openingMessage.role || state.narrator?.name || "旁白"),
-          roleType: String(openingMessage.roleType || "narrator"),
-          eventType: String(openingMessage.eventType || "on_enter_chapter"),
-          content: String(openingMessage.content || `进入章节《${String(chapter.title || "未命名章节")}》`),
-          createTime: now,
-        };
-        openingMessages.push(openingRuntimeMessage);
-        allowPlayerTurn(
-          state,
-          world,
-          String(openingRuntimeMessage.roleType || "narrator"),
-          String(openingRuntimeMessage.role || state.narrator?.name || "旁白"),
-        );
-        const memory = await runStoryMemoryManager({
+      if (chapter) {
+        const openingMessage = resolveOpeningMessage(world, chapter);
+        if (openingMessage && String(openingMessage.content || "").trim()) {
+          openingMessages.push({
+            role: String(openingMessage.role || state.narrator?.name || "旁白"),
+            roleType: String(openingMessage.roleType || "narrator"),
+            eventType: String(openingMessage.eventType || "on_enter_chapter"),
+            content: String(openingMessage.content || `进入章节《${String(chapter.title || "未命名章节")}》`),
+            createTime: now,
+          });
+        }
+        setRuntimeTurnState(state, world, {
+          canPlayerSpeak: false,
+          expectedRoleType: "narrator",
+          expectedRole: String(state.narrator?.name || "旁白"),
+          lastSpeakerRoleType: String(openingMessages[openingMessages.length - 1]?.roleType || "narrator"),
+          lastSpeaker: String(openingMessages[openingMessages.length - 1]?.role || state.narrator?.name || "旁白"),
+        });
+        const orchestrator = await runNarrativeOrchestrator({
           userId: currentUserId,
           world,
           chapter,
           state,
           recentMessages: openingMessages,
+          playerMessage: "",
         });
-        applyMemoryResultToState(state, memory);
+        const orchestrated = await advanceNarrativeUntilPlayerTurn({
+          userId: currentUserId,
+          world,
+          chapter,
+          state,
+          recentMessages: openingMessages,
+          playerMessage: "",
+          initialResult: orchestrator,
+        });
+        openingMessages.push(...orchestrated.messages);
       }
 
       const sessionId = createGameSessionId();

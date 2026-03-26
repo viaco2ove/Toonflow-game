@@ -20,6 +20,10 @@ files:
   - "!scripts/**/*.ts"
   - "!scripts/*.ts"
 
+extraResources:
+  - from: res/voice-presets
+    to: res/voice-presets
+
 asar: true
 
 win:

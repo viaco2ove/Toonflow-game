@@ -451,13 +451,19 @@ export default async (knex: Knex): Promise<void> => {
     await knex("t_config")
       .where({ type: "voice", manufacturer: "aliyun_direct" })
       .whereRaw("lower(coalesce(modelType, '')) = ?", ["tts"])
+      .where(function () {
+        this.whereNull("model").orWhereRaw("trim(coalesce(model, '')) = ''");
+      })
       .update({
-        model: "qwen3-tts-instruct-flash",
+        model: "cosyvoice-v3-flash",
         baseUrl: "https://dashscope.aliyuncs.com",
       });
     await knex("t_config")
       .where({ type: "voice", manufacturer: "aliyun_direct" })
       .whereRaw("lower(coalesce(modelType, '')) = ?", ["asr"])
+      .where(function () {
+        this.whereNull("model").orWhereRaw("trim(coalesce(model, '')) = ''");
+      })
       .update({
         model: "qwen3-asr-flash",
         baseUrl: "https://dashscope.aliyuncs.com/compatible-mode",

@@ -4,7 +4,22 @@ import * as path from "path";
 type LogLevel = "log" | "info" | "warn" | "error" | "debug";
 type ConsoleMethod = (...args: unknown[]) => void;
 
+function isWindowsAbsolutePath(input: string): boolean {
+  return /^[a-zA-Z]:[\\/]/.test(input) || /^\\\\/.test(input);
+}
+
+function resolveConfiguredPath(rawValue: string | undefined, fallback: string): string {
+  const value = String(rawValue || "").trim().replace(/^['"]|['"]$/g, "");
+  if (!value) return fallback;
+  if (path.isAbsolute(value) || isWindowsAbsolutePath(value)) {
+    return value;
+  }
+  return path.resolve(process.cwd(), value);
+}
+
 function getLogDir(): string {
+  const configured = resolveConfiguredPath(process.env.LOG_PATH, "");
+  if (configured) return configured;
   const isElectron = typeof process.versions?.electron !== "undefined";
   if (isElectron) {
     const { app } = require("electron");
@@ -14,12 +29,24 @@ function getLogDir(): string {
 }
 
 const LOG_DIR = getLogDir();
-const LOG_FILE = path.join(LOG_DIR, "app.log");
 const MAX_SIZE = 1000 * 1024 * 1024;
 const LEVELS: LogLevel[] = ["log", "info", "warn", "error", "debug"];
 
+function formatDateKey(date: Date = new Date()): string {
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${date.getFullYear()}-${p(date.getMonth() + 1)}-${p(date.getDate())}`;
+}
+
+function resolveDailyLogFile(dateKey: string): string {
+  return path.join(LOG_DIR, `app-${dateKey}.log`);
+}
+
+const LEGACY_LOG_FILE = path.join(LOG_DIR, "app.log");
+
 class Logger {
   private stream: fs.WriteStream | null = null;
+  private currentDateKey = "";
+  private currentLogFile = "";
   private originalConsole: Partial<Record<LogLevel, ConsoleMethod>> = {};
   private originalStdoutWrite: typeof process.stdout.write | null = null;
   private originalStderrWrite: typeof process.stderr.write | null = null;
@@ -27,12 +54,8 @@ class Logger {
 
   init(): this {
     if (!fs.existsSync(LOG_DIR)) fs.mkdirSync(LOG_DIR, { recursive: true });
-    this.stream = fs.createWriteStream(LOG_FILE, { flags: "a" });
-    this.stream.on("error", () => {
-      // 日志写入失败不应影响主流程（WSL/终端关闭时常见 EIO/EBADF）
-      this.stream?.destroy();
-      this.stream = null;
-    });
+    this.migrateLegacyAppLog();
+    this.ensureStreamReady();
     this.hijack();
     return this;
   }
@@ -66,6 +89,7 @@ class Logger {
   }
 
   private safeAppend(line: string): void {
+    this.ensureStreamReady();
     if (!this.stream || this.stream.destroyed) return;
     try {
       this.stream.write(line);
@@ -111,15 +135,59 @@ class Logger {
 
   private checkRotate(): void {
     try {
-      if (!fs.existsSync(LOG_FILE) || fs.statSync(LOG_FILE).size < MAX_SIZE) return;
+      this.ensureStreamReady();
+      if (!this.currentLogFile || !fs.existsSync(this.currentLogFile) || fs.statSync(this.currentLogFile).size < MAX_SIZE) return;
       this.stream?.end();
-      // 单文件轮转：保留后半部分日志
-      const content = fs.readFileSync(LOG_FILE, "utf-8");
+      // 单日日志达到阈值时，仅裁剪当天文件，避免无限增长
+      const content = fs.readFileSync(this.currentLogFile, "utf-8");
       const half = content.slice(content.length >>> 1);
       const firstNewline = half.indexOf("\n");
-      fs.writeFileSync(LOG_FILE, firstNewline >= 0 ? half.slice(firstNewline + 1) : half);
-      this.stream = fs.createWriteStream(LOG_FILE, { flags: "a" });
+      fs.writeFileSync(this.currentLogFile, firstNewline >= 0 ? half.slice(firstNewline + 1) : half);
+      this.openStreamForCurrentDate();
     } catch {}
+  }
+
+  private migrateLegacyAppLog(): void {
+    try {
+      if (!fs.existsSync(LEGACY_LOG_FILE)) return;
+      const stats = fs.statSync(LEGACY_LOG_FILE);
+      if (!stats.size) {
+        fs.unlinkSync(LEGACY_LOG_FILE);
+        return;
+      }
+      const todayFile = resolveDailyLogFile(formatDateKey());
+      const legacyContent = fs.readFileSync(LEGACY_LOG_FILE);
+      if (fs.existsSync(todayFile)) {
+        fs.appendFileSync(todayFile, legacyContent);
+        fs.unlinkSync(LEGACY_LOG_FILE);
+        return;
+      }
+      fs.renameSync(LEGACY_LOG_FILE, todayFile);
+    } catch {}
+  }
+
+  private openStreamForCurrentDate(): void {
+    const nextDateKey = formatDateKey();
+    const nextLogFile = resolveDailyLogFile(nextDateKey);
+    if (this.currentDateKey === nextDateKey && this.currentLogFile === nextLogFile && this.stream && !this.stream.destroyed) {
+      return;
+    }
+    this.stream?.end();
+    this.currentDateKey = nextDateKey;
+    this.currentLogFile = nextLogFile;
+    this.stream = fs.createWriteStream(this.currentLogFile, { flags: "a" });
+    this.stream.on("error", () => {
+      this.stream?.destroy();
+      this.stream = null;
+    });
+  }
+
+  private ensureStreamReady(): void {
+    if (!fs.existsSync(LOG_DIR)) fs.mkdirSync(LOG_DIR, { recursive: true });
+    const nextDateKey = formatDateKey();
+    if (!this.stream || this.stream.destroyed || this.currentDateKey !== nextDateKey) {
+      this.openStreamForCurrentDate();
+    }
   }
 
   private hijack(): void {
@@ -160,15 +228,17 @@ class Logger {
 
   /** 导出日志内容 */
   exportLogs(): string {
-    if (!fs.existsSync(LOG_FILE)) return "";
-    return fs.readFileSync(LOG_FILE, "utf-8");
+    this.ensureStreamReady();
+    if (!this.currentLogFile || !fs.existsSync(this.currentLogFile)) return "";
+    return fs.readFileSync(this.currentLogFile, "utf-8");
   }
 
   /** 清空日志 */
   clear(): void {
     this.stream?.end();
-    if (fs.existsSync(LOG_FILE)) fs.unlinkSync(LOG_FILE);
-    this.stream = fs.createWriteStream(LOG_FILE, { flags: "a" });
+    this.ensureStreamReady();
+    if (this.currentLogFile && fs.existsSync(this.currentLogFile)) fs.unlinkSync(this.currentLogFile);
+    this.openStreamForCurrentDate();
   }
 
   /** 关闭日志 */

@@ -302,6 +302,7 @@ function buildOrchestratorSystemPrompt(mainPrompt: string, orchestratorPrompt: s
     "14. 若存在万能角色，可让万能角色临时扮演路人/配角；若没有万能角色，旁白可以承担一次性的路人或环境播报。",
     "15. 若章节判定成功但没有下一章节，不要宣告故事彻底结束；运行时会转入自由剧情，继续按角色与局势编排。",
     "16. 章节内容是给编排师看的内部提纲，只能用于安排谁说话、说什么、剧情怎么发展，绝不能直接念给用户。",
+    "17. 当玩家尚未输入、只是刚进入章节时，必须先推进至少一轮非玩家对话，不能空着内容直接把回合交给玩家。",
   ].filter(Boolean).join("\n\n");
 }
 
@@ -362,6 +363,7 @@ export async function runNarrativeOrchestrator(input: OrchestratorInput): Promis
     recentDialogue: recentDialogueText(input.recentMessages),
     latestPlayerMessage: normalizeScalarText(input.playerMessage),
   };
+  const hasPlayerInput = payload.latestPlayerMessage.length > 0;
   const isSkip = payload.latestPlayerMessage === ".";
 
   const output = {
@@ -412,7 +414,7 @@ export async function runNarrativeOrchestrator(input: OrchestratorInput): Promis
       : [];
     const stateDelta = asRecord((result as any)?.stateDelta);
 
-    if ((awaitUser || (matchedRole && content)) && !looksLikeDirectiveLeak(content, currentChapter.directive, currentChapter.openingText)) {
+    if ((((matchedRole && content) || (awaitUser && hasPlayerInput))) && !looksLikeDirectiveLeak(content, currentChapter.directive, currentChapter.openingText)) {
       if (isSkip) {
         const skipRole = matchedRole || roles.find((item) => item.roleType === "narrator") || roles[0];
         const skipContent = content || "你选择暂时沉默，其他角色顺势接过话头，剧情继续推进。";
@@ -452,24 +454,29 @@ export async function runNarrativeOrchestrator(input: OrchestratorInput): Promis
     name: "旁白",
     roleType: "narrator",
   };
+  const fallbackNpc = roles.find((item) => item.roleType === "npc") || fallbackRole;
   const latestPlayerMessage = normalizeScalarText(input.playerMessage);
   const fallbackIsSkip = latestPlayerMessage === ".";
   const fallbackContent = latestPlayerMessage
     ? (fallbackIsSkip
       ? "你选择暂时沉默，其他角色顺势接过话头，剧情继续推进。"
       : "你的回应让气氛发生了变化，其他角色开始根据局势继续行动。")
-    : "故事正在继续推进，角色们开始根据当前局势展开行动。";
+    : "虚空中的局势仍在迅速变化，其他角色开始根据眼前的异动继续行动。";
   return {
     role: fallbackRole.name,
     roleType: fallbackRole.roleType || "narrator",
     content: fallbackContent,
     memoryHints: [],
     stateDelta: {},
-    awaitUser: latestPlayerMessage ? !fallbackIsSkip : true,
-    nextRole: latestPlayerMessage && fallbackIsSkip
-      ? normalizeScalarText(fallbackRole.name) || "旁白"
-      : normalizeScalarText(rolePairForWorld(input.world).playerRole.name) || "用户",
-    nextRoleType: latestPlayerMessage && fallbackIsSkip ? sanitizeRoleType(fallbackRole.roleType) : "player",
+    awaitUser: latestPlayerMessage ? !fallbackIsSkip : false,
+    nextRole: latestPlayerMessage
+      ? (fallbackIsSkip
+        ? normalizeScalarText(fallbackRole.name) || "旁白"
+        : normalizeScalarText(rolePairForWorld(input.world).playerRole.name) || "用户")
+      : (normalizeScalarText(fallbackNpc.name) || "旁白"),
+    nextRoleType: latestPlayerMessage
+      ? (fallbackIsSkip ? sanitizeRoleType(fallbackRole.roleType) : "player")
+      : sanitizeRoleType(fallbackNpc.roleType || "narrator"),
     chapterOutcome: "continue",
     nextChapterId: null,
     source: "fallback",

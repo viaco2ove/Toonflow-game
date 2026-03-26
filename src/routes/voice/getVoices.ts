@@ -6,7 +6,8 @@ import {
   directAliyunVoicePresets,
   fetchVoicePresets,
   filterVoicePresetsByManufacturer,
-  getUserVoiceConfig,
+  GatewayVoicePreset,
+  getRuntimeStoryVoiceConfig,
   isDirectAliyunManufacturer,
   normalizeVoiceBaseUrl,
 } from "@/lib/voiceGateway";
@@ -24,7 +25,7 @@ export default router.post(
     try {
       const { configId } = req.body;
       const userId = Number((req as any)?.user?.id || 0);
-      const config = await getUserVoiceConfig(userId, configId);
+      const config = await getRuntimeStoryVoiceConfig(userId, configId);
       if (!config) {
         return res.status(400).send(error("语音模型配置不存在"));
       }
@@ -36,14 +37,17 @@ export default router.post(
       }
 
       const businessPresets = await ensureBusinessVoicePresets(userId);
-      let presets;
+      let presets: GatewayVoicePreset[] = [];
       if (isDirectAliyunManufacturer(config.manufacturer)) {
-        presets = directAliyunVoicePresets();
+        presets = directAliyunVoicePresets(String(config.model || "").trim());
       } else {
         try {
           presets = filterVoicePresetsByManufacturer(await fetchVoicePresets(baseUrl, headers), config.manufacturer);
         } catch (err) {
-          throw err;
+          console.warn(
+            `[voice] fetch presets fallback to business presets only: manufacturer=${String(config.manufacturer || "").trim()} baseUrl=${baseUrl} error=${(err as Error)?.message || String(err)}`,
+          );
+          presets = [];
         }
       }
       const merged = [...businessPresets, ...presets].filter((item, index, list) => list.findIndex((row) => row.voiceId === item.voiceId) === index);

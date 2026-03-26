@@ -12,6 +12,7 @@ import jwt from "jsonwebtoken";
 import { getUploadRootDir } from "@/lib/runtimePaths";
 import { runWithRequestContext } from "@/lib/requestContext";
 import { enforceResourceIsolation } from "@/middleware/resourceIsolation";
+import { syncBundledVoicePresetSeeds } from "@/lib/voicePresetSeeds";
 
 function ensureNoProxyForLocalhost() {
   const localHosts = ["127.0.0.1", "localhost", "::1"];
@@ -58,6 +59,10 @@ export default async function startServe(randomPort: Boolean = false) {
     fs.mkdirSync(rootDir, { recursive: true });
   }
   console.log("Upload dir:", rootDir);
+  const syncedVoicePresetSeeds = await syncBundledVoicePresetSeeds();
+  if (syncedVoicePresetSeeds > 0) {
+    console.log(`[voice] synced bundled preset seeds: ${syncedVoicePresetSeeds}`);
+  }
 
   app.use(express.static(rootDir));
 
