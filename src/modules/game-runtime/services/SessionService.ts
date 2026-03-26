@@ -13,6 +13,7 @@ import {
   advanceNarrativeUntilPlayerTurn,
   applyMemoryResultToState,
   RuntimeMessageInput,
+  allowPlayerTurn,
   canPlayerSpeakNow,
   resolveOpeningMessage,
   runNarrativeOrchestrator,
@@ -331,51 +332,19 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
       });
       const switchMessageId = normalizeMessageId(inserted);
       chapterSwitchMessageRow = await db("t_sessionMessage").where({ id: switchMessageId }).first();
-
-      const recentMessages = buildRecentMessages(
-        await db("t_sessionMessage").where({ sessionId }).orderBy("id", "desc").limit(20),
+      allowPlayerTurn(
+        state,
+        world,
+        String(openingRuntimeMessage.roleType || "narrator"),
+        String(openingRuntimeMessage.role || state.narrator?.name || "旁白"),
       );
-      const initialResult = await runNarrativeOrchestrator({
-        userId: currentUserId,
-        world,
-        chapter: switchedChapter,
-        state,
-        recentMessages,
-        playerMessage: "",
-      });
-      const orchestrated = await advanceNarrativeUntilPlayerTurn({
-        userId: currentUserId,
-        world,
-        chapter: switchedChapter,
-        state,
-        recentMessages,
-        playerMessage: "",
-        initialResult,
-      });
-
-      for (const item of orchestrated.messages) {
-        const insertedNarrative = await db("t_sessionMessage").insert({
-          sessionId,
-          role: String(item.role || state.narrator?.name || "旁白"),
-          roleType: String(item.roleType || "narrator"),
-          content: String(item.content || ""),
-          eventType: String(item.eventType || "on_orchestrated_reply"),
-          meta: toJsonText({ chapterId: Number(switchedChapter.id), source: "orchestrator" }, {}),
-          createTime: Number(item.createTime || now),
-        });
-        const narrativeMessageId = normalizeMessageId(insertedNarrative);
-        narrativeMessageRow = await db("t_sessionMessage").where({ id: narrativeMessageId }).first();
-      }
 
       const memory = await runStoryMemoryManager({
         userId: currentUserId,
         world,
         chapter: switchedChapter,
         state,
-        recentMessages: [
-          ...recentMessages,
-          ...orchestrated.messages,
-        ],
+        recentMessages: [openingRuntimeMessage],
       });
       applyMemoryResultToState(state, memory);
     }

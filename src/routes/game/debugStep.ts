@@ -11,6 +11,7 @@ import {
   nowTs,
 } from "@/lib/gameEngine";
 import {
+  allowPlayerTurn,
   advanceNarrativeUntilPlayerTurn,
   applyMemoryResultToState,
   canPlayerSpeakNow,
@@ -171,24 +172,13 @@ export default router.post(
           content: String(opening.content || ""),
           createTime: nowTs(),
         };
-        const initialResult = await runNarrativeOrchestrator({
-          userId,
-          world,
-          chapter: effectiveChapter,
+        allowPlayerTurn(
           state,
-          recentMessages: [openingRuntimeMessage],
-          playerMessage: "",
-        });
-        const orchestrated = await advanceNarrativeUntilPlayerTurn({
-          userId,
           world,
-          chapter: effectiveChapter,
-          state,
-          recentMessages: [openingRuntimeMessage],
-          playerMessage: "",
-          initialResult,
-        });
-        const allMessages = [openingRuntimeMessage, ...orchestrated.messages];
+          String(openingRuntimeMessage.roleType || "narrator"),
+          String(openingRuntimeMessage.role || rolePair.narratorRole.name || "旁白"),
+        );
+        const allMessages = [openingRuntimeMessage];
         const memory = await runStoryMemoryManager({
           userId,
           world,
@@ -282,24 +272,13 @@ export default router.post(
           content: String(nextOpening.content || ""),
           createTime: nowTs(),
         };
-        const nextInitialResult = await runNarrativeOrchestrator({
-          userId,
-          world,
-          chapter: nextChapter,
+        allowPlayerTurn(
           state,
-          recentMessages: [nextOpeningRuntimeMessage],
-          playerMessage: "",
-        });
-        const nextOrchestrated = await advanceNarrativeUntilPlayerTurn({
-          userId,
           world,
-          chapter: nextChapter,
-          state,
-          recentMessages: [nextOpeningRuntimeMessage],
-          playerMessage: "",
-          initialResult: nextInitialResult,
-        });
-        const switchedMessages = [nextOpeningRuntimeMessage, ...nextOrchestrated.messages];
+          String(nextOpeningRuntimeMessage.roleType || "narrator"),
+          String(nextOpeningRuntimeMessage.role || rolePair.narratorRole.name || "旁白"),
+        );
+        const switchedMessages = [nextOpeningRuntimeMessage];
         const memory = await runStoryMemoryManager({
           userId,
           world,
@@ -380,24 +359,13 @@ export default router.post(
           content: String(nextOpening.content || ""),
           createTime: nowTs(),
         };
-        const nextInitialResult = await runNarrativeOrchestrator({
-          userId,
-          world,
-          chapter: nextChapter,
+        allowPlayerTurn(
           state,
-          recentMessages: [nextOpeningRuntimeMessage],
-          playerMessage: "",
-        });
-        const nextOrchestrated = await advanceNarrativeUntilPlayerTurn({
-          userId,
           world,
-          chapter: nextChapter,
-          state,
-          recentMessages: [nextOpeningRuntimeMessage],
-          playerMessage: "",
-          initialResult: nextInitialResult,
-        });
-        const switchedMessages = [nextOpeningRuntimeMessage, ...nextOrchestrated.messages];
+          String(nextOpeningRuntimeMessage.roleType || "narrator"),
+          String(nextOpeningRuntimeMessage.role || rolePair.narratorRole.name || "旁白"),
+        );
+        const switchedMessages = [nextOpeningRuntimeMessage];
         const memory = await runStoryMemoryManager({
           userId,
           world,

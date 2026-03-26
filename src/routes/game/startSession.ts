@@ -13,10 +13,9 @@ import {
   toJsonText,
 } from "@/lib/gameEngine";
 import {
-  advanceNarrativeUntilPlayerTurn,
+  allowPlayerTurn,
   applyMemoryResultToState,
   resolveOpeningMessage,
-  runNarrativeOrchestrator,
   runStoryMemoryManager,
   RuntimeMessageInput,
 } from "@/modules/game-runtime/engines/NarrativeOrchestrator";
@@ -96,26 +95,12 @@ export default router.post(
           createTime: now,
         };
         openingMessages.push(openingRuntimeMessage);
-        const initialResult = await runNarrativeOrchestrator({
-          userId: currentUserId,
-          world,
-          chapter,
+        allowPlayerTurn(
           state,
-          recentMessages: [openingRuntimeMessage],
-          playerMessage: "",
-        });
-        const orchestrated = await advanceNarrativeUntilPlayerTurn({
-          userId: currentUserId,
           world,
-          chapter,
-          state,
-          recentMessages: [openingRuntimeMessage],
-          playerMessage: "",
-          initialResult,
-        });
-        if (orchestrated.messages.length > 0) {
-          openingMessages.push(...orchestrated.messages);
-        }
+          String(openingRuntimeMessage.roleType || "narrator"),
+          String(openingRuntimeMessage.role || state.narrator?.name || "旁白"),
+        );
         const memory = await runStoryMemoryManager({
           userId: currentUserId,
           world,

@@ -78,6 +78,20 @@ function splitParagraphs(input: string): string[] {
     .filter(Boolean);
 }
 
+function escapeRegExp(input: string): string {
+  return String(input || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function stripOpeningHeader(input: string, openingRole?: unknown): string {
+  const text = String(input || "").trimStart();
+  if (!text) return "";
+  const role = normalizeEditorText(openingRole);
+  const header = role
+    ? new RegExp(`^开场白(?:\\[${escapeRegExp(role)}\\]|${escapeRegExp(role)})?\\s*[:：]\\s*`)
+    : /^开场白(?:\[(.+?)\]|([^\[\]:：\r\n]+))?\s*[:：]\s*/;
+  return text.replace(header, "").replace(/^\s*[\r\n]+/, "");
+}
+
 function stripLeadingOpeningParagraphs(input: string, openingText: string): string {
   const openingParagraphs = splitParagraphs(openingText);
   if (!openingParagraphs.length) {
@@ -100,6 +114,7 @@ export function stripLeadingOpeningArtifacts(input: unknown, openingRole?: unkno
 
   for (let i = 0; i < 64; i += 1) {
     const before = text;
+    text = stripOpeningHeader(text, expectedRole);
     const extracted = extractOpeningContentParts(text);
     if (extracted) {
       const roleMatches = !expectedRole || !extracted.role || extracted.role === expectedRole;
