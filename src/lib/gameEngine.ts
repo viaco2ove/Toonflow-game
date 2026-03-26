@@ -78,6 +78,18 @@ function splitParagraphs(input: string): string[] {
     .filter(Boolean);
 }
 
+function normalizeChapterTitle(input: unknown, sort: unknown): string {
+  const raw = normalizeEditorText(input);
+  if (raw && !/^章节\s*\d{10,}$/u.test(raw)) {
+    return raw;
+  }
+  const chapterSort = Number(sort || 0);
+  if (Number.isFinite(chapterSort) && chapterSort > 0) {
+    return `第 ${chapterSort} 章`;
+  }
+  return raw;
+}
+
 function escapeRegExp(input: string): string {
   return String(input || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -153,8 +165,21 @@ export function normalizeChapterFields(input: {
 } {
   const extracted = extractOpeningContentParts(input.content);
   const openingRole = normalizeEditorText(input.openingRole) || extracted?.role || "";
-  const openingText = normalizeEditorText(input.openingText) || extracted?.line || "";
-  const content = stripLeadingOpeningArtifacts(input.content, openingRole, openingText);
+  let openingText = normalizeEditorText(input.openingText) || extracted?.line || "";
+  let content = stripLeadingOpeningArtifacts(input.content, openingRole, openingText);
+  const openingParagraphs = splitParagraphs(openingText);
+  if (openingParagraphs.length > 1) {
+    openingText = openingParagraphs[0];
+    const remainder = openingParagraphs.slice(1).join("\n\n").trim();
+    if (remainder) {
+      const remainderParagraphs = splitParagraphs(remainder);
+      const contentParagraphs = splitParagraphs(content);
+      const alreadyPrefixed = remainderParagraphs.every((item, index) => contentParagraphs[index] === item);
+      if (!alreadyPrefixed) {
+        content = [remainder, content].filter(Boolean).join("\n\n").trim();
+      }
+    }
+  }
   const rawEntry = tryParseCondition(input.entryCondition);
   const rawCompletion = tryParseCondition(input.completionCondition);
   const entryCondition = typeof rawEntry === "string" && isNullLikeText(rawEntry) ? null : rawEntry;
@@ -462,6 +487,7 @@ export function normalizeChapterOutput(row: any): JsonRecord | null {
   });
   return {
     ...row,
+    title: normalizeChapterTitle(row.title, row.sort),
     content: normalized.content,
     openingRole: normalized.openingRole,
     openingText: normalized.openingText,

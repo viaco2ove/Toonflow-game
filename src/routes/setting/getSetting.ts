@@ -7,7 +7,7 @@ export default router.post("/", async (req, res) => {
   const userId = Number((req as any)?.user?.id || 0);
   const configData = await u
     .db("t_config")
-    .whereNotIn("type", ["video", "voice"])
+    .whereNotIn("type", ["video"])
     .where("userId", userId)
     .select("*");
 

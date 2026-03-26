@@ -82,6 +82,18 @@ export default router.post(
       }
       chapter = normalizeChapterOutput(chapter);
 
+      const existingSession = await db("t_gameSession")
+        .where({
+          worldId: Number(worldId),
+          userId: currentUserId,
+        })
+        .orderBy("updateTime", "desc")
+        .orderBy("id", "desc")
+        .first();
+      if (existingSession) {
+        return res.status(200).send(success(normalizeSessionRow(existingSession), "已继续现有会话"));
+      }
+
       const rolePair = normalizeRolePair(world.playerRole, world.narratorRole);
       const state = normalizeSessionState(initialState, worldId, chapter ? Number(chapter.id) : null, rolePair);
       const openingMessage = chapter ? resolveOpeningMessage(world, chapter) : null;

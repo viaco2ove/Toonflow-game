@@ -50,7 +50,7 @@ export default router.post(
           ? db("t_gameSession")
               .whereIn("worldId", worldIds)
               .select("worldId")
-              .count({ count: "id" })
+              .countDistinct({ count: "userId" })
               .groupBy("worldId")
           : Promise.resolve([]),
       ]);

@@ -42,7 +42,22 @@ export default router.post(
           .andWhere("m.roleType", "player");
       });
 
-      const sessions = await query.select("s.*").orderBy("s.id", "desc").limit(limit);
+      const rawSessions = await query
+        .select("s.*")
+        .orderBy("s.updateTime", "desc")
+        .orderBy("s.id", "desc");
+      const seenWorldIds = new Set<number>();
+      const sessions = rawSessions.filter((item: any) => {
+        const worldIdValue = Number(item.worldId || 0);
+        if (!Number.isFinite(worldIdValue) || worldIdValue <= 0) {
+          return false;
+        }
+        if (seenWorldIds.has(worldIdValue)) {
+          return false;
+        }
+        seenWorldIds.add(worldIdValue);
+        return true;
+      }).slice(0, limit);
       if (!sessions.length) {
         return res.status(200).send(success([]));
       }

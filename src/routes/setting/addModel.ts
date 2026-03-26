@@ -3,6 +3,7 @@ import u from "@/utils";
 import { z } from "zod";
 import { success } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
+import { normalizePersistedVoiceConfig } from "@/lib/voiceGateway";
 const router = express.Router();
 
 export default router.post(
@@ -18,11 +19,14 @@ export default router.post(
   async (req, res) => {
     const { type, model, baseUrl, apiKey, manufacturer, modelType } = req.body;
     const userId = Number((req as any)?.user?.id || 0);
+    const normalizedVoiceConfig = type === "voice"
+      ? normalizePersistedVoiceConfig({ manufacturer, modelType, model, baseUrl })
+      : { model, baseUrl };
 
     await u.db("t_config").insert({
       type,
-      model,
-      baseUrl,
+      model: normalizedVoiceConfig.model,
+      baseUrl: normalizedVoiceConfig.baseUrl,
       apiKey,
       manufacturer,
       modelType,

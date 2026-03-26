@@ -6,7 +6,7 @@ import u from "@/utils";
 import { success, error } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
 import { z } from "zod";
-import { voiceSupplierFromManufacturer } from "@/lib/voiceGateway";
+import { isDirectAliyunManufacturer, normalizeAliyunDirectAsrModel, voiceSupplierFromManufacturer } from "@/lib/voiceGateway";
 
 const router = express.Router();
 
@@ -143,7 +143,10 @@ export default router.post(
       const baseUrl = normalizeBaseUrl(config.baseUrl);
       const manufacturer = String(config.manufacturer || "").trim();
       const suppliers = voiceSupplierFromManufacturer(manufacturer);
-      const modelName = String(model || config.model || "").trim();
+      const directAliyun = isDirectAliyunManufacturer(manufacturer);
+      const modelName = directAliyun
+        ? normalizeAliyunDirectAsrModel(String(model || config.model || "").trim())
+        : String(model || config.model || "").trim();
       const headers: Record<string, string> = {};
       if (config.apiKey) {
         headers.Authorization = `Bearer ${config.apiKey}`;
@@ -158,10 +161,9 @@ export default router.post(
         audio = parseAudioFromPath(filePath, fileBuffer);
       }
 
-      const endpointCandidates =
-        manufacturer === "aliyun" || manufacturer === "ai_voice_tts"
-          ? [`${baseUrl}/v1/asr`, `${baseUrl}/v1/audio/transcriptions`, `${baseUrl}/v1/asr/transcribe`, `${baseUrl}/v1/transcribe`]
-          : [`${baseUrl}/v1/asr/transcribe`, `${baseUrl}/v1/asr`, `${baseUrl}/v1/transcribe`, `${baseUrl}/v1/audio/transcriptions`];
+      const endpointCandidates = directAliyun
+        ? [`${baseUrl}/v1/audio/transcriptions`, `${baseUrl}/v1/asr`, `${baseUrl}/v1/asr/transcribe`, `${baseUrl}/v1/transcribe`]
+        : [`${baseUrl}/v1/asr`, `${baseUrl}/v1/audio/transcriptions`, `${baseUrl}/v1/asr/transcribe`, `${baseUrl}/v1/transcribe`];
 
       const errors: string[] = [];
       let usedEndpoint = "";
@@ -178,7 +180,9 @@ export default router.post(
               contentType: audio.mime,
             });
             form.append("model", effectiveModel);
-            form.append("suppliers", suppliers);
+            if (suppliers) {
+              form.append("suppliers", suppliers);
+            }
             if (lang) form.append("language", String(lang));
             if (prompt) form.append("prompt", String(prompt));
             if (typeof temperature === "number") form.append("temperature", String(temperature));
@@ -201,7 +205,9 @@ export default router.post(
               filename: `audio.${audio.ext}`,
               contentType: audio.mime,
             });
-            form.append("suppliers", suppliers);
+            if (suppliers) {
+              form.append("suppliers", suppliers);
+            }
             if (modelName) form.append("model", modelName);
             if (lang) form.append("language", String(lang));
             if (prompt) form.append("prompt", String(prompt));
@@ -223,13 +229,13 @@ export default router.post(
               {
                 audioBase64: audio.buffer.toString("base64"),
                 audioMime: audio.mime,
-                suppliers,
                 lang: lang || undefined,
                 sessionId: sessionId || undefined,
                 prompt: prompt || undefined,
                 temperature: typeof temperature === "number" ? temperature : undefined,
                 model: modelName || undefined,
                 withSegments: Boolean(withSegments),
+                ...(suppliers ? { suppliers } : {}),
               },
               {
                 headers,

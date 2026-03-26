@@ -89,7 +89,10 @@ export default router.post(
       }
 
       const chapterCountRow = await db("t_storyChapter").where({ worldId: Number(row.id) }).count({ count: "id" }).first();
-      const sessionCountRow = await db("t_gameSession").where({ worldId: Number(row.id) }).count({ count: "id" }).first();
+      const sessionCountRow = await db("t_gameSession")
+        .where({ worldId: Number(row.id) })
+        .countDistinct({ count: "userId" })
+        .first();
 
       const output = normalizeWorldOutput(row);
       res.status(200).send(

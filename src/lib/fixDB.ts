@@ -65,6 +65,108 @@ export default async (knex: Knex): Promise<void> => {
     }
   };
 
+  const cleanupDuplicateStorySessions = async () => {
+    const requiredTables = ["t_gameSession", "t_sessionMessage", "t_sessionStateSnapshot", "t_entityStateDelta"];
+    for (const table of requiredTables) {
+      if (!(await knex.schema.hasTable(table))) return;
+    }
+    const sessionRows = await knex("t_gameSession")
+      .whereNotNull("userId")
+      .whereNotNull("worldId")
+      .where("userId", ">", 0)
+      .where("worldId", ">", 0)
+      .select("id", "sessionId", "userId", "worldId", "updateTime")
+      .orderBy("userId", "asc")
+      .orderBy("worldId", "asc")
+      .orderBy("updateTime", "desc")
+      .orderBy("id", "desc");
+    if (!sessionRows.length) return;
+    const seenKeys = new Set<string>();
+    const duplicateRows: Array<{ id: number; sessionId: string | null }> = [];
+    for (const row of sessionRows as Array<{ id?: number | null; sessionId?: string | null; userId?: number | null; worldId?: number | null }>) {
+      const userId = Number(row.userId || 0);
+      const worldId = Number(row.worldId || 0);
+      if (!userId || !worldId) continue;
+      const key = `${userId}:${worldId}`;
+      if (!seenKeys.has(key)) {
+        seenKeys.add(key);
+        continue;
+      }
+      duplicateRows.push({
+        id: Number(row.id || 0),
+        sessionId: row.sessionId || null,
+      });
+    }
+    if (!duplicateRows.length) return;
+    const duplicateIds = duplicateRows.map((row) => row.id).filter((id) => id > 0);
+    const duplicateSessionIds = duplicateRows
+      .map((row) => row.sessionId)
+      .filter((sessionId): sessionId is string => Boolean(sessionId));
+    await knex.transaction(async (trx) => {
+      if (duplicateSessionIds.length) {
+        await trx("t_sessionMessage").whereIn("sessionId", duplicateSessionIds).delete();
+        await trx("t_sessionStateSnapshot").whereIn("sessionId", duplicateSessionIds).delete();
+        await trx("t_entityStateDelta").whereIn("sessionId", duplicateSessionIds).delete();
+      }
+      if (duplicateIds.length) {
+        await trx("t_gameSession").whereIn("id", duplicateIds).delete();
+      }
+    });
+    console.log(`[fixDB] cleaned duplicate story sessions: ${duplicateRows.length}`);
+  };
+
+  const cleanupStoryChapterDrafts = async () => {
+    if (!(await knex.schema.hasTable("t_storyChapter"))) return;
+    const rows = await knex("t_storyChapter")
+      .select("id", "title", "sort", "openingText", "content")
+      .orderBy("id", "asc");
+    if (!rows.length) return;
+    const splitParagraphs = (input: string) =>
+      String(input || "")
+        .replace(/\r\n/g, "\n")
+        .split(/\n\s*\n+/)
+        .map((item) => item.trim())
+        .filter(Boolean);
+    let changed = 0;
+    for (const row of rows as Array<{ id?: number; title?: string | null; sort?: number | null; openingText?: string | null; content?: string | null }>) {
+      const id = Number(row.id || 0);
+      if (id <= 0) continue;
+      const sort = Number(row.sort || 0);
+      const currentTitle = String(row.title || "").trim();
+      const currentOpening = String(row.openingText || "").trim();
+      const currentContent = String(row.content || "").trim();
+      let nextTitle = currentTitle;
+      let nextOpening = currentOpening;
+      let nextContent = currentContent;
+      if (/^章节\s*\d{10,}$/u.test(currentTitle) && sort > 0) {
+        nextTitle = `第 ${sort} 章`;
+      }
+      const openingParagraphs = splitParagraphs(currentOpening);
+      if (openingParagraphs.length > 1) {
+        nextOpening = openingParagraphs[0];
+        const remainder = openingParagraphs.slice(1).join("\n\n").trim();
+        if (remainder) {
+          const remainderParagraphs = splitParagraphs(remainder);
+          const contentParagraphs = splitParagraphs(currentContent);
+          const alreadyPrefixed = remainderParagraphs.every((item, index) => contentParagraphs[index] === item);
+          if (!alreadyPrefixed) {
+            nextContent = [remainder, currentContent].filter(Boolean).join("\n\n").trim();
+          }
+        }
+      }
+      if (nextTitle === currentTitle && nextOpening === currentOpening && nextContent === currentContent) continue;
+      await knex("t_storyChapter").where({ id }).update({
+        title: nextTitle,
+        openingText: nextOpening,
+        content: nextContent,
+      });
+      changed += 1;
+    }
+    if (changed > 0) {
+      console.log(`[fixDB] cleaned story chapters: ${changed}`);
+    }
+  };
+
   await ensureTable("t_scriptSegment", (table) => {
     table.integer("id").notNullable();
     table.integer("scriptId").notNullable();
@@ -345,6 +447,23 @@ export default async (knex: Knex): Promise<void> => {
     }
   }
 
+  if (await knex.schema.hasTable("t_config")) {
+    await knex("t_config")
+      .where({ type: "voice", manufacturer: "aliyun_direct" })
+      .whereRaw("lower(coalesce(modelType, '')) = ?", ["tts"])
+      .update({
+        model: "qwen3-tts-instruct-flash",
+        baseUrl: "https://dashscope.aliyuncs.com",
+      });
+    await knex("t_config")
+      .where({ type: "voice", manufacturer: "aliyun_direct" })
+      .whereRaw("lower(coalesce(modelType, '')) = ?", ["asr"])
+      .update({
+        model: "qwen3-asr-flash",
+        baseUrl: "https://dashscope.aliyuncs.com/compatible-mode",
+      });
+  }
+
   const aiModels = [
     { name: "分镜Agent", key: "storyboardAgent" },
     { name: "分镜Agent图片生成", key: "storyboardImage" },
@@ -442,4 +561,7 @@ export default async (knex: Knex): Promise<void> => {
       await knex("t_prompts").insert(rowsToInsert);
     }
   }
+
+  await cleanupDuplicateStorySessions();
+  await cleanupStoryChapterDrafts();
 };
