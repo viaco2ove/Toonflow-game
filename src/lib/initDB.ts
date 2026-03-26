@@ -650,6 +650,7 @@ export default async (knex: Knex, forceInit: boolean = false): Promise<void> => 
           { id: 11, configId: null, name: "AI故事-AI生图", key: "storyImageModel" },
           { id: 12, configId: null, name: "AI故事-语音生成", key: "storyVoiceModel" },
           { id: 13, configId: null, name: "AI故事-语音识别", key: "storyAsrModel" },
+          { id: 14, configId: null, name: "AI故事-语音设计", key: "storyVoiceDesignModel" },
         ]);
       },
     },

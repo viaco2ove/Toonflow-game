@@ -9,7 +9,11 @@ export interface GatewayVoicePreset {
   description: string;
 }
 
+export type GatewayVoiceMode = "text" | "clone" | "mix" | "prompt_voice";
 export type VoiceSupplier = "local" | "aliyun";
+const DEFAULT_TTS_VOICE_MODES: GatewayVoiceMode[] = ["text", "clone", "mix", "prompt_voice"];
+const TEXT_ONLY_VOICE_MODES: GatewayVoiceMode[] = ["text"];
+const DIRECT_ALIYUN_COSYVOICE_TEXT_ONLY_REASON = "当前阿里云直连 CosyVoice 模型仅支持预设音色，请切换到 qwen3-tts-instruct-flash 或本地克隆模型";
 
 const ALIYUN_DIRECT_QWEN_TTS_PRESETS: GatewayVoicePreset[] = [
   {
@@ -152,91 +156,91 @@ const ALIYUN_DIRECT_COSYVOICE_V3_PRESETS: GatewayVoicePreset[] = [
     voiceId: "longanhuan",
     name: "龙安欢",
     provider: "aliyun_direct_cosyvoice_v3",
-    modes: ["text", "prompt_voice"],
+    modes: TEXT_ONLY_VOICE_MODES,
     description: "CosyVoice-v3 系统音色，欢脱元气女",
   },
   {
     voiceId: "longanyang",
     name: "龙安洋",
     provider: "aliyun_direct_cosyvoice_v3",
-    modes: ["text", "prompt_voice"],
+    modes: TEXT_ONLY_VOICE_MODES,
     description: "CosyVoice-v3 系统音色，阳光大男孩",
   },
   {
     voiceId: "longhuhu_v3",
     name: "龙呼呼",
     provider: "aliyun_direct_cosyvoice_v3",
-    modes: ["text", "prompt_voice"],
+    modes: TEXT_ONLY_VOICE_MODES,
     description: "CosyVoice-v3 系统音色，天真烂漫女童",
   },
   {
     voiceId: "longwangwang_v3",
     name: "龙汪汪",
     provider: "aliyun_direct_cosyvoice_v3",
-    modes: ["text", "prompt_voice"],
+    modes: TEXT_ONLY_VOICE_MODES,
     description: "CosyVoice-v3 系统音色，台湾少年音",
   },
   {
     voiceId: "longanshuo_v3",
     name: "龙安朔",
     provider: "aliyun_direct_cosyvoice_v3",
-    modes: ["text", "prompt_voice"],
+    modes: TEXT_ONLY_VOICE_MODES,
     description: "CosyVoice-v3 系统音色，干净清爽男",
   },
   {
     voiceId: "longfeifei_v3",
     name: "龙菲菲",
     provider: "aliyun_direct_cosyvoice_v3",
-    modes: ["text", "prompt_voice"],
+    modes: TEXT_ONLY_VOICE_MODES,
     description: "CosyVoice-v3 系统音色，甜美娇气女",
   },
   {
     voiceId: "longanzhi_v3",
     name: "龙安智",
     provider: "aliyun_direct_cosyvoice_v3",
-    modes: ["text", "prompt_voice"],
+    modes: TEXT_ONLY_VOICE_MODES,
     description: "CosyVoice-v3 系统音色，睿智轻熟男",
   },
   {
     voiceId: "longanqin_v3",
     name: "龙安琴",
     provider: "aliyun_direct_cosyvoice_v3",
-    modes: ["text", "prompt_voice"],
+    modes: TEXT_ONLY_VOICE_MODES,
     description: "CosyVoice-v3 系统音色，知性沉稳女",
   },
   {
     voiceId: "longanling_v3",
     name: "龙安玲",
     provider: "aliyun_direct_cosyvoice_v3",
-    modes: ["text", "prompt_voice"],
+    modes: TEXT_ONLY_VOICE_MODES,
     description: "CosyVoice-v3 系统音色，灵动少女音",
   },
   {
     voiceId: "longanya_v3",
     name: "龙安雅",
     provider: "aliyun_direct_cosyvoice_v3",
-    modes: ["text", "prompt_voice"],
+    modes: TEXT_ONLY_VOICE_MODES,
     description: "CosyVoice-v3 系统音色，温婉女声",
   },
   {
     voiceId: "longanwen_v3",
     name: "龙安文",
     provider: "aliyun_direct_cosyvoice_v3",
-    modes: ["text", "prompt_voice"],
+    modes: TEXT_ONLY_VOICE_MODES,
     description: "CosyVoice-v3 系统音色，沉静书卷男声",
   },
   {
     voiceId: "longanyun_v3",
     name: "龙安云",
     provider: "aliyun_direct_cosyvoice_v3",
-    modes: ["text", "prompt_voice"],
+    modes: TEXT_ONLY_VOICE_MODES,
     description: "CosyVoice-v3 系统音色，清亮中性声",
   },
   {
     voiceId: "longjiqi_v3",
     name: "龙极琪",
     provider: "aliyun_direct_cosyvoice_v3",
-    modes: ["text", "prompt_voice"],
+    modes: TEXT_ONLY_VOICE_MODES,
     description: "CosyVoice-v3 系统音色，科技感青年声",
   },
 ];
@@ -383,6 +387,39 @@ export function isAliyunDirectCosyVoiceModel(input?: string | null): boolean {
     "cosyvoice-v3.5-flash",
     "cosyvoice-v3.5-plus",
   ].includes(normalizedModel);
+}
+
+export function resolveVoiceModelModes(input: {
+  manufacturer?: string | null;
+  modelType?: string | null;
+  model?: string | null;
+}): GatewayVoiceMode[] {
+  const manufacturer = normalizedManufacturer(input.manufacturer);
+  const modelType = String(input.modelType || "").trim().toLowerCase();
+  if (modelType && modelType !== "tts") {
+    return [];
+  }
+  if (manufacturer === "aliyun_direct" && isAliyunDirectCosyVoiceModel(input.model)) {
+    return [...TEXT_ONLY_VOICE_MODES];
+  }
+  return [...DEFAULT_TTS_VOICE_MODES];
+}
+
+export function resolveUnsupportedVoiceModeReason(input: {
+  manufacturer?: string | null;
+  modelType?: string | null;
+  model?: string | null;
+  mode?: string | null;
+}): string {
+  const mode = String(input.mode || "").trim() as GatewayVoiceMode;
+  if (!mode) return "";
+  if (resolveVoiceModelModes(input).includes(mode)) {
+    return "";
+  }
+  if (normalizedManufacturer(input.manufacturer) === "aliyun_direct" && isAliyunDirectCosyVoiceModel(input.model)) {
+    return DIRECT_ALIYUN_COSYVOICE_TEXT_ONLY_REASON;
+  }
+  return "当前语音模型不支持该绑定模式";
 }
 
 export function resolveAliyunDirectCosyVoiceWsEndpoint(input: string | null | undefined): string {

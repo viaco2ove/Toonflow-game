@@ -14,8 +14,10 @@ import {
   isAliyunDirectCosyVoiceModel,
   isDirectAliyunManufacturer,
   normalizeAliyunDirectTtsModel,
+  normalizePersistedVoiceConfig,
   normalizeVoiceBaseUrl,
   resolveAliyunDirectTtsEndpoint,
+  resolveUnsupportedVoiceModeReason,
   voiceSupplierFromManufacturer,
 } from "@/lib/voiceGateway";
 import {
@@ -393,10 +395,20 @@ export default router.post(
       };
 
       const userId = Number((req as any)?.user?.id || 0);
-      const config = await getRuntimeStoryVoiceConfig(userId, configId);
-      if (!config) {
+      const persistedConfig = await getRuntimeStoryVoiceConfig(userId, configId);
+      if (!persistedConfig) {
         return res.status(400).send(error("语音模型配置不存在"));
       }
+      const normalizedConfig = normalizePersistedVoiceConfig({
+        manufacturer: persistedConfig.manufacturer,
+        modelType: persistedConfig.modelType,
+        model: persistedConfig.model,
+        baseUrl: persistedConfig.baseUrl,
+      });
+      const config = {
+        ...persistedConfig,
+        ...normalizedConfig,
+      };
       debugContext.userId = userId;
       debugContext.config = {
         id: Number(config.id || 0),
@@ -410,6 +422,15 @@ export default router.post(
 
       const baseUrl = normalizeVoiceBaseUrl(config.baseUrl);
       const manufacturer = String(config.manufacturer || "").trim();
+      const unsupportedModeReason = resolveUnsupportedVoiceModeReason({
+        manufacturer,
+        modelType: config.modelType,
+        model: config.model,
+        mode,
+      });
+      if (unsupportedModeReason) {
+        return res.status(400).send(error(unsupportedModeReason));
+      }
       const suppliers = voiceSupplierFromManufacturer(manufacturer);
       const directAliyun = isDirectAliyunManufacturer(manufacturer);
       const headers: Record<string, string> = {};
