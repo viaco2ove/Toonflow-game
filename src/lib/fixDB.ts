@@ -240,6 +240,22 @@ export default async (knex: Knex): Promise<void> => {
     table.primary(["id"]);
     table.unique(["id"]);
   });
+  await ensureTable("t_roleAvatarTask", (table) => {
+    table.increments("id").primary();
+    table.integer("userId").notNullable();
+    table.integer("projectId");
+    table.text("taskType");
+    table.text("status");
+    table.integer("progress");
+    table.text("message");
+    table.text("errorMessage");
+    table.text("foregroundPath");
+    table.text("foregroundFilePath");
+    table.text("backgroundPath");
+    table.text("backgroundFilePath");
+    table.integer("createTime");
+    table.integer("updateTime");
+  });
 
   //添加字段
   await addColumn("t_video", "time", "integer");

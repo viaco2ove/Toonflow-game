@@ -200,6 +200,25 @@ export default async (knex: Knex, forceInit: boolean = false): Promise<void> => 
       },
     },
     {
+      name: "t_roleAvatarTask",
+      builder: (table) => {
+        table.increments("id").primary();
+        table.integer("userId").notNullable();
+        table.integer("projectId");
+        table.text("taskType");
+        table.text("status");
+        table.integer("progress");
+        table.text("message");
+        table.text("errorMessage");
+        table.text("foregroundPath");
+        table.text("foregroundFilePath");
+        table.text("backgroundPath");
+        table.text("backgroundFilePath");
+        table.integer("createTime");
+        table.integer("updateTime");
+      },
+    },
+    {
       name: "t_image",
       builder: (table) => {
         table.integer("id").notNullable();

@@ -1,4 +1,4 @@
-// @db-hash 1c961ed10335d81e7112a6fe7485b4dd
+// @db-hash f7978a1cd651da887ec7eab8b8670f9e
 //该文件由脚本自动生成，请勿手动修改
 
 export interface t_aiModelMap {
@@ -146,6 +146,22 @@ export interface t_prompts {
   'name'?: string | null;
   'parentCode'?: string | null;
   'type'?: string | null;
+}
+export interface t_roleAvatarTask {
+  'backgroundFilePath'?: string | null;
+  'backgroundPath'?: string | null;
+  'createTime'?: number | null;
+  'errorMessage'?: string | null;
+  'foregroundFilePath'?: string | null;
+  'foregroundPath'?: string | null;
+  'id'?: number;
+  'message'?: string | null;
+  'progress'?: number | null;
+  'projectId'?: number | null;
+  'status'?: string | null;
+  'taskType'?: string | null;
+  'updateTime'?: number | null;
+  'userId': number;
 }
 export interface t_script {
   'content'?: string | null;
@@ -331,6 +347,7 @@ export interface DB {
   "t_outline": t_outline;
   "t_project": t_project;
   "t_prompts": t_prompts;
+  "t_roleAvatarTask": t_roleAvatarTask;
   "t_script": t_script;
   "t_scriptSegment": t_scriptSegment;
   "t_sessionMessage": t_sessionMessage;

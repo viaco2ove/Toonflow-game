@@ -12,8 +12,60 @@ const router = express.Router();
 const MODEL_INPUT_SIZE = 1024;
 const AVATAR_STD_SIZE = 512;
 const AVATAR_BG_SIZE = 768;
+const ROLE_AVATAR_TASK_TYPE = "separate_role_avatar";
+const ROLE_AVATAR_STATUS_QUEUED = "queued";
+const ROLE_AVATAR_STATUS_PROCESSING = "processing";
+const ROLE_AVATAR_STATUS_SUCCESS = "success";
+const ROLE_AVATAR_STATUS_FAILED = "failed";
 
 const LOCAL_HOSTS = new Set(["127.0.0.1", "localhost", "0.0.0.0", "::1"]);
+const activeRoleAvatarTasks = new Map<number, Promise<void>>();
+
+type SeparateRoleAvatarPayload = {
+  projectId?: number | null;
+  fileName?: string | null;
+  name?: string | null;
+  base64Data: string;
+};
+
+type RoleAvatarTaskRow = {
+  id?: number | null;
+  userId?: number | null;
+  projectId?: number | null;
+  taskType?: string | null;
+  status?: string | null;
+  progress?: number | null;
+  message?: string | null;
+  errorMessage?: string | null;
+  foregroundPath?: string | null;
+  foregroundFilePath?: string | null;
+  backgroundPath?: string | null;
+  backgroundFilePath?: string | null;
+  createTime?: number | null;
+  updateTime?: number | null;
+};
+
+type RoleAvatarTaskUpdate = {
+  status?: string | null;
+  progress?: number | null;
+  message?: string | null;
+  errorMessage?: string | null;
+  foregroundPath?: string | null;
+  foregroundFilePath?: string | null;
+  backgroundPath?: string | null;
+  backgroundFilePath?: string | null;
+};
+
+type SeparateRoleAvatarResult = {
+  foregroundPath: string;
+  foregroundFilePath: string;
+  backgroundPath: string;
+  backgroundFilePath: string;
+};
+
+function nowTs(): number {
+  return Date.now();
+}
 
 function normalizeBase64Data(input: string, fileName: string): string {
   const value = String(input || "").trim();
@@ -154,91 +206,248 @@ function buildBackgroundPrompt(name: string): string {
   ].join("\n");
 }
 
-export default router.post(
+async function ensureOwnedProjectId(projectId: number | null | undefined, userId: number): Promise<number | null> {
+  const normalizedProjectId = Number(projectId || 0);
+  if (!Number.isFinite(normalizedProjectId) || normalizedProjectId <= 0) {
+    return null;
+  }
+  const owned = await u.db("t_project").where({ id: normalizedProjectId, userId }).first("id");
+  if (!owned) {
+    throw new Error("无权访问该项目");
+  }
+  return normalizedProjectId;
+}
+
+function normalizeRoleAvatarTask(row: RoleAvatarTaskRow | undefined | null) {
+  return {
+    taskId: Number(row?.id || 0),
+    status: String(row?.status || ROLE_AVATAR_STATUS_FAILED),
+    progress: Number(row?.progress || 0),
+    message: String(row?.message || ""),
+    errorMessage: String(row?.errorMessage || ""),
+    foregroundPath: String(row?.foregroundPath || ""),
+    foregroundFilePath: String(row?.foregroundFilePath || ""),
+    backgroundPath: String(row?.backgroundPath || ""),
+    backgroundFilePath: String(row?.backgroundFilePath || ""),
+  };
+}
+
+async function updateRoleAvatarTask(taskId: number, patch: RoleAvatarTaskUpdate) {
+  await u.db("t_roleAvatarTask")
+    .where({ id: taskId })
+    .update({
+      ...patch,
+      updateTime: nowTs(),
+    });
+}
+
+async function getRoleAvatarTask(taskId: number, userId: number): Promise<RoleAvatarTaskRow | undefined> {
+  return await u.db("t_roleAvatarTask")
+    .where({ id: taskId, userId })
+    .first();
+}
+
+async function createRoleAvatarTask(userId: number, projectId: number | null): Promise<RoleAvatarTaskRow> {
+  const timestamp = nowTs();
+  const insertResult = await u.db("t_roleAvatarTask").insert({
+    userId,
+    projectId: projectId || null,
+    taskType: ROLE_AVATAR_TASK_TYPE,
+    status: ROLE_AVATAR_STATUS_QUEUED,
+    progress: 0,
+    message: "等待处理",
+    errorMessage: null,
+    foregroundPath: null,
+    foregroundFilePath: null,
+    backgroundPath: null,
+    backgroundFilePath: null,
+    createTime: timestamp,
+    updateTime: timestamp,
+  });
+  const taskId = Number(Array.isArray(insertResult) ? insertResult[0] : insertResult || 0);
+  const row = await u.db("t_roleAvatarTask").where({ id: taskId }).first();
+  if (!row) {
+    throw new Error("创建头像分离任务失败");
+  }
+  return row as RoleAvatarTaskRow;
+}
+
+async function runSeparateRoleAvatarJob(
+  payload: SeparateRoleAvatarPayload & { userId: number; projectId: number | null },
+): Promise<SeparateRoleAvatarResult> {
+  const safeName = String(payload.name || "").trim() || "角色";
+  const normalizedInput = normalizeBase64Data(payload.base64Data, String(payload.fileName || ""));
+  const modelInput = await normalizeRoleSource(normalizedInput);
+  const modelInputDataUrl = bufferToDataUrl(modelInput, "image/png");
+  const config = await resolveImageConfig(payload.userId);
+
+  const [foregroundRaw, backgroundRaw] = await Promise.all([
+    u.ai.image(
+      {
+        systemPrompt: "你是角色主体分离助手，只输出图片。",
+        prompt: buildForegroundPrompt(safeName),
+        imageBase64: [modelInputDataUrl],
+        aspectRatio: "1:1",
+        size: "2K",
+      },
+      config,
+    ),
+    u.ai.image(
+      {
+        systemPrompt: "你是角色背景补全助手，只输出图片。",
+        prompt: buildBackgroundPrompt(safeName),
+        imageBase64: [modelInputDataUrl],
+        aspectRatio: "1:1",
+        size: "2K",
+      },
+      config,
+    ),
+  ]);
+
+  const foregroundBuffer = await chromaKeyForeground(await imageOutputToBuffer(String(foregroundRaw || "")));
+  const backgroundBuffer = await normalizeBackgroundLayer(await imageOutputToBuffer(String(backgroundRaw || "")));
+
+  const baseDir = payload.projectId && payload.projectId > 0
+    ? `/${payload.projectId}/game/role`
+    : `/user/${payload.userId}/game/role`;
+  const foregroundFilePath = `${baseDir}/${uuidv4()}_fg.png`;
+  const backgroundFilePath = `${baseDir}/${uuidv4()}_bg.png`;
+  await u.oss.writeFile(foregroundFilePath, foregroundBuffer);
+  await u.oss.writeFile(backgroundFilePath, backgroundBuffer);
+
+  const foregroundPath = await u.oss.getFileUrl(foregroundFilePath);
+  const backgroundPath = await u.oss.getFileUrl(backgroundFilePath);
+  return {
+    foregroundPath,
+    foregroundFilePath,
+    backgroundPath,
+    backgroundFilePath,
+  };
+}
+
+async function runRoleAvatarTask(taskId: number, payload: SeparateRoleAvatarPayload & { userId: number; projectId: number | null }) {
+  try {
+    await updateRoleAvatarTask(taskId, {
+      status: ROLE_AVATAR_STATUS_PROCESSING,
+      progress: 10,
+      message: "正在分离角色主体与背景",
+      errorMessage: null,
+    });
+    const result = await runSeparateRoleAvatarJob(payload);
+    await updateRoleAvatarTask(taskId, {
+      status: ROLE_AVATAR_STATUS_SUCCESS,
+      progress: 100,
+      message: "处理完成",
+      errorMessage: null,
+      ...result,
+    });
+  } catch (err) {
+    await updateRoleAvatarTask(taskId, {
+      status: ROLE_AVATAR_STATUS_FAILED,
+      progress: 0,
+      message: "处理失败",
+      errorMessage: u.error(err).message,
+    });
+  } finally {
+    activeRoleAvatarTasks.delete(taskId);
+  }
+}
+
+function startRoleAvatarTask(taskId: number, payload: SeparateRoleAvatarPayload & { userId: number; projectId: number | null }) {
+  if (activeRoleAvatarTasks.has(taskId)) return;
+  const promise = runRoleAvatarTask(taskId, payload);
+  activeRoleAvatarTasks.set(taskId, promise);
+  void promise.catch(() => undefined);
+}
+
+router.post(
   "/",
   validateFields({
     projectId: z.number().optional().nullable(),
     fileName: z.string().optional().nullable(),
     name: z.string().optional().nullable(),
     base64Data: z.string(),
+    asyncTask: z.boolean().optional().nullable(),
   }),
   async (req, res) => {
     try {
-      const { projectId, fileName, name, base64Data } = req.body as {
-        projectId?: number | null;
-        fileName?: string | null;
-        name?: string | null;
-        base64Data: string;
+      const { projectId, fileName, name, base64Data, asyncTask } = req.body as SeparateRoleAvatarPayload & {
+        asyncTask?: boolean | null;
       };
       const userId = Number((req as any)?.user?.id || 0);
       if (!Number.isFinite(userId) || userId <= 0) {
         return res.status(401).send(error("用户未登录"));
       }
 
-      const normalizedProjectId = Number(projectId || 0);
-      if (normalizedProjectId > 0) {
-        const owned = await u.db("t_project").where({ id: normalizedProjectId, userId }).first("id");
-        if (!owned) {
-          return res.status(403).send(error("无权访问该项目"));
-        }
+      const ownedProjectId = await ensureOwnedProjectId(projectId, userId);
+      const payload = {
+        projectId: ownedProjectId,
+        fileName,
+        name,
+        base64Data,
+        userId,
+      };
+
+      if (asyncTask) {
+        const taskRow = await createRoleAvatarTask(userId, ownedProjectId);
+        const taskId = Number(taskRow.id || 0);
+        startRoleAvatarTask(taskId, payload);
+        return res.status(200).send(success(normalizeRoleAvatarTask(taskRow)));
       }
 
-      const safeName = String(name || "").trim() || "角色";
-      const normalizedInput = normalizeBase64Data(base64Data, String(fileName || ""));
-      const modelInput = await normalizeRoleSource(normalizedInput);
-      const modelInputDataUrl = bufferToDataUrl(modelInput, "image/png");
-      const config = await resolveImageConfig(userId);
-
-      const [foregroundRaw, backgroundRaw] = await Promise.all([
-        u.ai.image(
-          {
-            systemPrompt: "你是角色主体分离助手，只输出图片。",
-            prompt: buildForegroundPrompt(safeName),
-            imageBase64: [modelInputDataUrl],
-            aspectRatio: "1:1",
-            size: "2K",
-          },
-          config,
-        ),
-        u.ai.image(
-          {
-            systemPrompt: "你是角色背景补全助手，只输出图片。",
-            prompt: buildBackgroundPrompt(safeName),
-            imageBase64: [modelInputDataUrl],
-            aspectRatio: "1:1",
-            size: "2K",
-          },
-          config,
-        ),
-      ]);
-
-      const foregroundBuffer = await chromaKeyForeground(await imageOutputToBuffer(String(foregroundRaw || "")));
-      const backgroundBuffer = await normalizeBackgroundLayer(await imageOutputToBuffer(String(backgroundRaw || "")));
-
-      const baseDir = normalizedProjectId > 0 ? `/${normalizedProjectId}/game/role` : `/user/${userId}/game/role`;
-      const foregroundFilePath = `${baseDir}/${uuidv4()}_fg.png`;
-      const backgroundFilePath = `${baseDir}/${uuidv4()}_bg.png`;
-      await u.oss.writeFile(foregroundFilePath, foregroundBuffer);
-      await u.oss.writeFile(backgroundFilePath, backgroundBuffer);
-
-      const foregroundPath = await u.oss.getFileUrl(foregroundFilePath);
-      const backgroundPath = await u.oss.getFileUrl(backgroundFilePath);
-
-      return res.status(200).send(success({
-        foregroundPath,
-        foregroundFilePath,
-        backgroundPath,
-        backgroundFilePath,
-      }));
+      const result = await runSeparateRoleAvatarJob(payload);
+      return res.status(200).send(success(result));
     } catch (err) {
+      const message = u.error(err).message;
+      const status = message === "无权访问该项目" ? 403 : 500;
       console.error("[separateRoleAvatar] failed", {
         userId: Number((req as any)?.user?.id || 0),
         projectId: Number((req.body as any)?.projectId || 0) || null,
         fileName: String((req.body as any)?.fileName || "").trim(),
         name: String((req.body as any)?.name || "").trim(),
-        message: u.error(err).message,
+        message,
       });
+      return res.status(status).send(error(message));
+    }
+  },
+);
+
+router.post(
+  "/status",
+  validateFields({
+    taskId: z.number(),
+  }),
+  async (req, res) => {
+    try {
+      const userId = Number((req as any)?.user?.id || 0);
+      if (!Number.isFinite(userId) || userId <= 0) {
+        return res.status(401).send(error("用户未登录"));
+      }
+      const taskId = Number((req.body as any)?.taskId || 0);
+      let taskRow = await getRoleAvatarTask(taskId, userId);
+      if (!taskRow) {
+        return res.status(404).send(error("未找到头像处理任务"));
+      }
+
+      const status = String(taskRow.status || "");
+      if (
+        [ROLE_AVATAR_STATUS_QUEUED, ROLE_AVATAR_STATUS_PROCESSING].includes(status)
+        && !activeRoleAvatarTasks.has(taskId)
+      ) {
+        await updateRoleAvatarTask(taskId, {
+          status: ROLE_AVATAR_STATUS_FAILED,
+          progress: 0,
+          message: "任务已中断，请重试",
+          errorMessage: "任务已中断，请重试",
+        });
+        taskRow = await getRoleAvatarTask(taskId, userId);
+      }
+
+      return res.status(200).send(success(normalizeRoleAvatarTask(taskRow)));
+    } catch (err) {
       return res.status(500).send(error(u.error(err).message));
     }
   },
 );
+
+export default router;
