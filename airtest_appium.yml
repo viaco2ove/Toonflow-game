@@ -48,6 +48,8 @@ notes:
   - "Appium Python client and Selenium are installed in the default user Python environment."
   - "Airtest and Poco are also available in the isolated venv at /home/viaco/.venvs/airtest-poco."
   - "The appium wrapper exports JAVA_HOME and ANDROID_HOME automatically before startup."
+# 安卓机器 Virtual代表是虚拟机，Physical代表真机
 device:
   type: Virtual
   name: Pixel 8 Pro
+  dba: windows

@@ -8,13 +8,24 @@ function isWindowsAbsolutePath(input: string): boolean {
   return /^[a-zA-Z]:[\\/]/.test(input) || /^\\\\/.test(input);
 }
 
+function normalizeCrossPlatformPath(input: string): string {
+  if (!isWindowsAbsolutePath(input) || process.platform === "win32") return input;
+  const isWsl = process.platform === "linux" && Boolean(process.env.WSL_DISTRO_NAME || process.env.WSL_INTEROP || process.env.WSLENV);
+  if (!isWsl) return input;
+  const normalized = input.replace(/\\/g, "/");
+  const driveMatch = normalized.match(/^([a-zA-Z]):\/(.*)$/);
+  if (!driveMatch) return input;
+  return `/mnt/${driveMatch[1].toLowerCase()}/${driveMatch[2]}`;
+}
+
 function resolveConfiguredPath(rawValue: string | undefined, fallback: string): string {
   const value = String(rawValue || "").trim().replace(/^['"]|['"]$/g, "");
   if (!value) return fallback;
-  if (path.isAbsolute(value) || isWindowsAbsolutePath(value)) {
-    return value;
+  const normalized = normalizeCrossPlatformPath(value);
+  if (path.isAbsolute(normalized) || isWindowsAbsolutePath(normalized)) {
+    return normalized;
   }
-  return path.resolve(process.cwd(), value);
+  return path.resolve(process.cwd(), normalized);
 }
 
 function getLogDir(): string {

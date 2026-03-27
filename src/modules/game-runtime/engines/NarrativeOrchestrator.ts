@@ -31,6 +31,7 @@ export interface OrchestratorInput {
   state: JsonRecord;
   recentMessages: RuntimeMessageInput[];
   playerMessage?: string;
+  maxRetries?: number;
 }
 
 export interface OrchestratorResult {
@@ -52,6 +53,18 @@ export interface MemoryManagerResult {
   facts: string[];
   tags: string[];
   source: "ai" | "fallback";
+}
+
+function truncateErrorMessage(input: unknown, limit = 180): string {
+  const text = normalizeScalarText(input);
+  if (!text) return "";
+  return text.length > limit ? `${text.slice(0, limit)}...` : text;
+}
+
+function createRuntimeModelError(stage: "orchestrator" | "memory", reason?: unknown): Error {
+  const prefix = stage === "orchestrator" ? "编排师对接的模型异常" : "记忆管理对接的模型异常";
+  const detail = truncateErrorMessage(reason);
+  return new Error(detail ? `${prefix}：${detail}` : prefix);
 }
 
 export function normalizeScalarText(input: unknown): string {
@@ -268,6 +281,73 @@ export function canPlayerSpeakNow(state: JsonRecord, world: any): boolean {
   return readRuntimeTurnState(state, world).canPlayerSpeak;
 }
 
+function findFirstRoleByType(roles: RuntimeStoryRole[], roleType: string): RuntimeStoryRole | undefined {
+  return roles.find((item) => sanitizeRoleType(item.roleType) === sanitizeRoleType(roleType));
+}
+
+function resolveFallbackRole(roles: RuntimeStoryRole[], turnState: RuntimeTurnState, latestPlayerMessage: string): RuntimeStoryRole {
+  const narrator = findFirstRoleByType(roles, "narrator");
+  const npcs = roles.filter((item) => sanitizeRoleType(item.roleType) === "npc");
+  const expectedRoleName = normalizeScalarText(turnState.expectedRole);
+  const expectedRoleType = sanitizeRoleType(turnState.expectedRoleType);
+  const matchedExpected = expectedRoleName
+    ? roles.find((item) => sanitizeRoleType(item.roleType) !== "player" && normalizeScalarText(item.name) === expectedRoleName)
+    : null;
+  if (matchedExpected) return matchedExpected;
+
+  if (!latestPlayerMessage) {
+    const expectedTypedRole = expectedRoleType !== "player"
+      ? roles.find((item) => sanitizeRoleType(item.roleType) === expectedRoleType && normalizeScalarText(item.name) !== normalizeScalarText(turnState.lastSpeaker))
+      : null;
+    if (expectedTypedRole) return expectedTypedRole;
+    return npcs.find((item) => normalizeScalarText(item.name) !== normalizeScalarText(turnState.lastSpeaker))
+      || npcs[0]
+      || narrator
+      || roles[0]
+      || { id: "fallback_narrator", roleType: "narrator", name: "旁白" };
+  }
+
+  if (expectedRoleType !== "player") {
+    const responder = roles.find((item) => sanitizeRoleType(item.roleType) === expectedRoleType);
+    if (responder) return responder;
+  }
+  return npcs.find((item) => normalizeScalarText(item.name) !== normalizeScalarText(turnState.lastSpeaker))
+    || npcs[0]
+    || narrator
+    || roles[0]
+    || { id: "fallback_narrator", roleType: "narrator", name: "旁白" };
+}
+
+function resolveNextFallbackRole(roles: RuntimeStoryRole[], currentRole: RuntimeStoryRole): RuntimeStoryRole {
+  const narrator = findFirstRoleByType(roles, "narrator");
+  const otherNpc = roles.find((item) => sanitizeRoleType(item.roleType) === "npc" && item.name !== currentRole.name);
+  if (sanitizeRoleType(currentRole.roleType) === "npc") {
+    return narrator || otherNpc || currentRole;
+  }
+  return otherNpc || narrator || currentRole;
+}
+
+function buildFallbackContent(role: RuntimeStoryRole, latestPlayerMessage: string, fallbackIsSkip: boolean): string {
+  const roleName = normalizeScalarText(role.name) || "旁白";
+  const roleType = sanitizeRoleType(role.roleType);
+  if (fallbackIsSkip) {
+    if (roleType === "npc") {
+      return `${roleName}见你暂时沉默，便先一步接过话头，继续推动眼前的局势。`;
+    }
+    return "你选择暂时沉默，其他角色顺势接过话头，剧情继续推进。";
+  }
+  if (!latestPlayerMessage) {
+    if (roleType === "npc") {
+      return `${roleName}率先打破僵持，开始根据眼前的异动继续行动。`;
+    }
+    return "局势仍在迅速变化，场上的角色开始根据眼前的异动继续行动。";
+  }
+  if (roleType === "npc") {
+    return `${roleName}接住了你的回应，顺着当前局势继续推进。`;
+  }
+  return "你的回应让场上的气氛发生了变化，剧情继续向前推进。";
+}
+
 function recentDialogueText(messages: RuntimeMessageInput[]): string {
   return messages
     .slice(-12)
@@ -393,6 +473,7 @@ export async function runNarrativeOrchestrator(input: OrchestratorInput): Promis
           },
         ],
         output,
+        maxRetries: input.maxRetries,
       },
       promptAiConfig as any,
     );
@@ -446,41 +527,17 @@ export async function runNarrativeOrchestrator(input: OrchestratorInput): Promis
         source: "ai",
       };
     }
-  } catch {
-    // fallback below
+    throw createRuntimeModelError("orchestrator", "模型返回结构无效或泄漏了内部编排内容");
+  } catch (err) {
+    console.warn("[story:orchestrator] error", {
+      manufacturer: (promptAiConfig as any)?.manufacturer || "",
+      model: (promptAiConfig as any)?.model || "",
+      expectedRoleType: turnState.expectedRoleType,
+      expectedRole: turnState.expectedRole,
+      message: (err as any)?.message || String(err),
+    });
+    throw createRuntimeModelError("orchestrator", (err as any)?.message || String(err));
   }
-
-  const fallbackRole = roles.find((item) => item.roleType === "narrator") || roles[0] || {
-    name: "旁白",
-    roleType: "narrator",
-  };
-  const fallbackNpc = roles.find((item) => item.roleType === "npc") || fallbackRole;
-  const latestPlayerMessage = normalizeScalarText(input.playerMessage);
-  const fallbackIsSkip = latestPlayerMessage === ".";
-  const fallbackContent = latestPlayerMessage
-    ? (fallbackIsSkip
-      ? "你选择暂时沉默，其他角色顺势接过话头，剧情继续推进。"
-      : "你的回应让气氛发生了变化，其他角色开始根据局势继续行动。")
-    : "虚空中的局势仍在迅速变化，其他角色开始根据眼前的异动继续行动。";
-  return {
-    role: fallbackRole.name,
-    roleType: fallbackRole.roleType || "narrator",
-    content: fallbackContent,
-    memoryHints: [],
-    stateDelta: {},
-    awaitUser: latestPlayerMessage ? !fallbackIsSkip : false,
-    nextRole: latestPlayerMessage
-      ? (fallbackIsSkip
-        ? normalizeScalarText(fallbackRole.name) || "旁白"
-        : normalizeScalarText(rolePairForWorld(input.world).playerRole.name) || "用户")
-      : (normalizeScalarText(fallbackNpc.name) || "旁白"),
-    nextRoleType: latestPlayerMessage
-      ? (fallbackIsSkip ? sanitizeRoleType(fallbackRole.roleType) : "player")
-      : sanitizeRoleType(fallbackNpc.roleType || "narrator"),
-    chapterOutcome: "continue",
-    nextChapterId: null,
-    source: "fallback",
-  };
 }
 
 export async function runStoryMemoryManager(input: {
@@ -532,18 +589,13 @@ export async function runStoryMemoryManager(input: {
       tags: Array.isArray((result as any)?.tags) ? (result as any).tags.map((item: unknown) => normalizeScalarText(item)).filter(Boolean) : [],
       source: "ai",
     };
-  } catch {
-    const latestFacts = input.recentMessages
-      .slice(-6)
-      .map((item) => normalizeScalarText(item.content))
-      .filter(Boolean)
-      .slice(-3);
-    return {
-      summary: latestFacts.join("；"),
-      facts: latestFacts,
-      tags: [],
-      source: "fallback",
-    };
+  } catch (err) {
+    console.warn("[story:memory] error", {
+      manufacturer: (promptAiConfig as any)?.manufacturer || "",
+      model: (promptAiConfig as any)?.model || "",
+      message: (err as any)?.message || String(err),
+    });
+    throw createRuntimeModelError("memory", (err as any)?.message || String(err));
   }
 }
 

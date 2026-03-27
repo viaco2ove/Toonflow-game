@@ -64,6 +64,20 @@ async function getVoiceConfig(userId: number, configId?: number | null, preferre
   if (configId) {
     return u.db("t_config").where({ id: configId, type: "voice", userId }).first();
   }
+  if (preferredModelType === "asr") {
+    const setting = await u.db("t_setting").where({ userId }).select("languageModel").first();
+    let storyAsrConfigId = 0;
+    try {
+      const parsed = JSON.parse(String(setting?.languageModel || "{}"));
+      storyAsrConfigId = Number((parsed as Record<string, any>)?.storyAsrModel || 0);
+    } catch {
+      storyAsrConfigId = 0;
+    }
+    if (storyAsrConfigId > 0) {
+      const selected = await u.db("t_config").where({ id: storyAsrConfigId, type: "voice", userId }).first();
+      return selected || null;
+    }
+  }
   const preferred = preferredModelType
     ? await u.db("t_config").where({ type: "voice", userId, modelType: preferredModelType }).orderBy("id", "desc").first()
     : null;

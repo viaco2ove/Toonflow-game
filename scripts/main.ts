@@ -1,12 +1,33 @@
 import { app, BrowserWindow } from "electron";
 import path from "path";
 import fs from "fs";
-import startServe, { closeServe } from "src/app";
+
+type ServeModule = typeof import("../src/app");
 
 // 默认端口配置
 const envPort = Number.parseInt((process.env.PORT || "").trim(), 10);
 const defaultPort = Number.isFinite(envPort) ? envPort : 60000;
 let mainWindow: BrowserWindow | null = null;
+let serveModulePromise: Promise<ServeModule> | null = null;
+
+function bootstrapElectronIdentity(): void {
+  if (app.getName() === "Electron") {
+    app.setName("ToonFlow");
+  }
+}
+
+async function loadServeModule(): Promise<ServeModule> {
+  serveModulePromise ??= import("../src/app");
+  return serveModulePromise;
+}
+
+async function stopServeSafely(): Promise<void> {
+  if (!serveModulePromise) return;
+  const mod = await serveModulePromise;
+  await mod.closeServe();
+}
+
+bootstrapElectronIdentity();
 
 function isWslLinux(): boolean {
   if (process.platform !== "linux") return false;
@@ -97,6 +118,7 @@ app.whenReady().then(async () => {
       AI_VIDEO_POLL_MAX_ATTEMPTS: (process.env.AI_VIDEO_POLL_MAX_ATTEMPTS || "").trim() || "(default)",
       AI_VIDEO_POLL_INTERVAL_MS: (process.env.AI_VIDEO_POLL_INTERVAL_MS || "").trim() || "(default)",
     });
+    const { default: startServe } = await loadServeModule();
     const port = await startServe(false);
     createMainWindow(Number(port));
   } catch (err) {
@@ -118,5 +140,5 @@ app.on("activate", () => {
 });
 
 app.on("before-quit", async (event) => {
-  await closeServe();
+  await stopServeSafely();
 });

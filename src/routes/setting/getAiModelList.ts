@@ -3,7 +3,30 @@ import u from "@/utils";
 import { z } from "zod";
 import { success } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
+import { getModelList as getTextModelList } from "@/utils/ai/text/modelList";
 const router = express.Router();
+
+function normalizeManufacturerKey(input: unknown): string {
+  const value = String(input || "").trim();
+  if (!value) return "";
+  if (value === "doubao") return "volcengine";
+  if (value === "deepSeek") return "deepseek";
+  if (value === "openAi") return "openai";
+  return value;
+}
+
+function appendModelOption(result: Record<string, any[]>, manufacturer: unknown, model: unknown) {
+  const manufacturerKey = normalizeManufacturerKey(manufacturer);
+  const modelName = String(model || "").trim();
+  if (!manufacturerKey || !modelName || manufacturerKey === "other") return;
+  if (!result[manufacturerKey]) {
+    result[manufacturerKey] = [];
+  }
+  const exists = result[manufacturerKey].some((item) => String(item?.value || "") === modelName);
+  if (!exists) {
+    result[manufacturerKey].push({ label: modelName, value: modelName });
+  }
+}
 
 export default router.post(
   "/",
@@ -24,14 +47,16 @@ export default router.post(
       .select("id", "manufacturer", "model");
     const result: Record<string, any[]> = {};
     for (const row of modelLists) {
-      if (!result[row.manufacturer]) {
-        result[row.manufacturer] = [];
-      }
-      result[row.manufacturer].push({ label: row.model, value: row.model });
+      appendModelOption(result, row.manufacturer, row.model);
     }
 
-    // 兼容旧库：确保文本模型列表始终包含 t8star 选项
     if (type === "text") {
+      const defaultTextModels = await getTextModelList();
+      for (const item of defaultTextModels) {
+        appendModelOption(result, item.manufacturer, item.model);
+      }
+
+      // 兼容旧库：确保文本模型列表始终包含 t8star 选项
       const t8starDefaults = [
         { label: "gpt-5.4-pro", value: "gpt-5.4-pro" },
         { label: "gemini-2.5-pro", value: "gemini-2.5-pro" },

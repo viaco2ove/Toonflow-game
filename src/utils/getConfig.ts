@@ -11,7 +11,6 @@ interface BaseConfig {
 
 interface TextResData extends BaseConfig {
   baseURL: string;
-  manufacturer: "deepSeek" | "deepseek" | "openAi" | "doubao" | "openai" | "t8star" | "other";
 }
 
 // 图像模型配置接口

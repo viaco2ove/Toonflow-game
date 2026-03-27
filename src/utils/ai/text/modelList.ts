@@ -15,14 +15,7 @@ interface Owned {
   image: boolean;
   think: boolean;
   tool: boolean;
-  instance:
-    | typeof createOpenAI
-    | typeof createDeepSeek
-    | typeof createZhipu
-    | typeof createQwen
-    | typeof createGoogleGenerativeAI
-    | typeof createAnthropic
-    | typeof createOpenAICompatible;
+  instance: (options?: any) => any;
 }
 
 const instanceMap = {
@@ -42,6 +35,100 @@ const instanceMap = {
   grsai: createOpenAI,
   t8star: createOpenAI,
 };
+
+type DefaultOwned = Omit<Owned, "manufacturer" | "instance">;
+
+const DOUBAO_TEXT_MODELS: DefaultOwned[] = [
+  {
+    model: "doubao-seed-2-0-pro-260215",
+    responseFormat: "schema",
+    image: true,
+    think: true,
+    tool: true,
+  },
+  {
+    model: "doubao-seed-2-0-lite-260215",
+    responseFormat: "schema",
+    image: true,
+    think: true,
+    tool: true,
+  },
+  {
+    model: "doubao-seed-2-0-mini-260215",
+    responseFormat: "schema",
+    image: true,
+    think: true,
+    tool: true,
+  },
+  {
+    model: "doubao-seed-1-8-251228",
+    responseFormat: "schema",
+    image: true,
+    think: true,
+    tool: true,
+  },
+  {
+    model: "doubao-seed-1-6-251015",
+    responseFormat: "schema",
+    image: true,
+    think: true,
+    tool: true,
+  },
+  {
+    model: "doubao-seed-1-6-lite-251015",
+    responseFormat: "schema",
+    image: true,
+    think: true,
+    tool: true,
+  },
+  {
+    model: "doubao-seed-1-6-flash-250828",
+    responseFormat: "schema",
+    image: true,
+    think: true,
+    tool: true,
+  },
+];
+
+function createAliasedModels(manufacturers: string[], items: DefaultOwned[]): Owned[] {
+  return manufacturers.flatMap((manufacturer) => {
+    const instance = instanceMap[manufacturer as keyof typeof instanceMap];
+    if (!instance) return [];
+    return items.map((item) => ({
+      manufacturer,
+      ...item,
+      instance,
+    }));
+  });
+}
+
+function toOwnedModel(model: any): Owned | null {
+  const manufacturer = String(model?.manufacturer || "").trim();
+  const instance = instanceMap[manufacturer as keyof typeof instanceMap];
+  const modelName = String(model?.model || "").trim();
+  if (!manufacturer || !instance || !modelName) return null;
+  return {
+    manufacturer,
+    model: modelName,
+    responseFormat: manufacturer === "t8star" ? "object" : model?.responseFormat === "object" ? "object" : "schema",
+    image: model?.image == 1 || model?.image === true,
+    think: model?.think == 1 || model?.think === true,
+    tool: model?.tool == 1 || model?.tool === true,
+    instance,
+  };
+}
+
+function mergeOwnedModels(...lists: Owned[][]): Owned[] {
+  const merged = new Map<string, Owned>();
+  for (const list of lists) {
+    for (const item of list) {
+      const key = `${String(item.manufacturer || "").trim().toLowerCase()}:${String(item.model || "").trim()}`;
+      if (!key) continue;
+      merged.set(key, item);
+    }
+  }
+  return Array.from(merged.values());
+}
 
 const modelList: Owned[] = [
   // DeepSeek
@@ -65,69 +152,7 @@ const modelList: Owned[] = [
   },
 
   // 豆包
-  {
-    manufacturer: "doubao",
-    model: "doubao-seed-2-0-pro-260215",
-    responseFormat: "schema",
-    image: true,
-    think: true,
-    instance: createOpenAI,
-    tool: true,
-  },
-  {
-    manufacturer: "doubao",
-    model: "doubao-seed-2-0-lite-260215",
-    responseFormat: "schema",
-    image: true,
-    think: true,
-    instance: createOpenAI,
-    tool: true,
-  },
-  {
-    manufacturer: "doubao",
-    model: "doubao-seed-2-0-mini-260215",
-    responseFormat: "schema",
-    image: true,
-    think: true,
-    instance: createOpenAI,
-    tool: true,
-  },
-  {
-    manufacturer: "doubao",
-    model: "doubao-seed-1-8-251228",
-    responseFormat: "schema",
-    image: true,
-    think: true,
-    instance: createOpenAI,
-    tool: true,
-  },
-  {
-    manufacturer: "doubao",
-    model: "doubao-seed-1-6-251015",
-    responseFormat: "schema",
-    image: true,
-    think: true,
-    instance: createOpenAI,
-    tool: true,
-  },
-  {
-    manufacturer: "doubao",
-    model: "doubao-seed-1-6-lite-251015",
-    responseFormat: "schema",
-    image: true,
-    think: true,
-    instance: createOpenAI,
-    tool: true,
-  },
-  {
-    manufacturer: "doubao",
-    model: "doubao-seed-1-6-flash-250828",
-    responseFormat: "schema",
-    image: true,
-    think: true,
-    instance: createOpenAI,
-    tool: true,
-  },
+  ...createAliasedModels(["volcengine", "doubao"], DOUBAO_TEXT_MODELS),
   // GLM
   {
     manufacturer: "zhipu",
@@ -521,22 +546,8 @@ export const getModelList = async () => {
   try {
     const modelLists = await db("t_textModel").select("*");
     if (!modelLists.length) return modelList;
-    return modelLists
-      .map((model) => {
-        const manufacturer = model.manufacturer || "";
-        const instance = instanceMap[manufacturer as keyof typeof instanceMap];
-        if (!instance || !model.model) return null;
-        return {
-          manufacturer,
-          model: model.model,
-          responseFormat: manufacturer === "t8star" ? "object" : model.responseFormat === "object" ? "object" : "schema",
-          image: model.image == 1,
-          think: model.think == 1,
-          tool: model.tool == 1,
-          instance,
-        } as Owned;
-      })
-      .filter(Boolean) as Owned[];
+    const dbModels = modelLists.map((model) => toOwnedModel(model)).filter(Boolean) as Owned[];
+    return mergeOwnedModels(modelList, dbModels);
   } catch {
     return modelList;
   }

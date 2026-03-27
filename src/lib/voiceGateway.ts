@@ -262,9 +262,8 @@ export async function getUserVoiceConfig(userId: number, configId?: number | nul
 }
 
 export async function getRuntimeStoryVoiceConfig(userId: number, requestedConfigId?: number | null) {
-  let requestedConfig = null as any;
   if (requestedConfigId) {
-    requestedConfig = await getUserVoiceConfig(userId, requestedConfigId);
+    return await getUserVoiceConfig(userId, requestedConfigId);
   }
 
   const setting = await u.db("t_setting").where({ userId }).select("languageModel").first();
@@ -280,12 +279,10 @@ export async function getRuntimeStoryVoiceConfig(userId: number, requestedConfig
     const runtimeConfig = await u.db("t_config")
       .where({ id: storyVoiceConfigId, type: "voice", userId })
       .first();
-    if (runtimeConfig) {
-      return runtimeConfig;
-    }
+    return runtimeConfig || null;
   }
 
-  return requestedConfig || getUserVoiceConfig(userId, requestedConfigId);
+  return getUserVoiceConfig(userId);
 }
 
 export function isLocalVoiceManufacturer(input?: string | null): boolean {
@@ -335,6 +332,9 @@ export function normalizeAliyunDirectTtsModel(input?: string | null): string {
 
 export function directAliyunVoicePresets(model?: string | null): GatewayVoicePreset[] {
   const normalizedModel = normalizeText(normalizeAliyunDirectTtsModel(model));
+  if (normalizedModel.startsWith("qwen3-tts-vc") || normalizedModel.startsWith("qwen3-tts-vd")) {
+    return [];
+  }
   if (normalizedModel.includes("qwen3-tts")) {
     return ALIYUN_DIRECT_QWEN_TTS_PRESETS.map((item) => ({ ...item }));
   }
@@ -352,6 +352,7 @@ export function directAliyunVoicePresets(model?: string | null): GatewayVoicePre
 
 export function defaultAliyunDirectVoiceId(model?: string | null): string {
   const normalizedModel = normalizeText(normalizeAliyunDirectTtsModel(model));
+  if (normalizedModel.startsWith("qwen3-tts-vc") || normalizedModel.startsWith("qwen3-tts-vd")) return "";
   if (normalizedModel.includes("qwen3-tts")) return "Cherry";
   if (normalizedModel === "qwen-tts" || normalizedModel === "qwen-tts-latest") return "Chelsie";
   if (normalizedModel === "cosyvoice-v3-flash" || normalizedModel === "cosyvoice-v3-plus") return "longanyang";
@@ -389,6 +390,16 @@ export function isAliyunDirectCosyVoiceModel(input?: string | null): boolean {
   ].includes(normalizedModel);
 }
 
+export function isAliyunDirectQwenVoiceCloneModel(input?: string | null): boolean {
+  const normalizedModel = normalizeText(normalizeAliyunDirectTtsModel(input));
+  return normalizedModel.startsWith("qwen3-tts-vc");
+}
+
+export function isAliyunDirectQwenVoiceDesignModel(input?: string | null): boolean {
+  const normalizedModel = normalizeText(normalizeAliyunDirectTtsModel(input));
+  return normalizedModel.startsWith("qwen3-tts-vd");
+}
+
 export function resolveVoiceModelModes(input: {
   manufacturer?: string | null;
   modelType?: string | null;
@@ -399,8 +410,19 @@ export function resolveVoiceModelModes(input: {
   if (modelType && modelType !== "tts") {
     return [];
   }
-  if (manufacturer === "aliyun_direct" && isAliyunDirectCosyVoiceModel(input.model)) {
-    return [...DIRECT_ALIYUN_COSYVOICE_TTS_VOICE_MODES];
+  if (manufacturer === "aliyun_direct") {
+    if (isAliyunDirectCosyVoiceModel(input.model)) {
+      return directAliyunVoicePresets(input.model).length
+        ? ["text", "clone", "mix", "prompt_voice"]
+        : ["clone", "mix", "prompt_voice"];
+    }
+    if (isAliyunDirectQwenVoiceCloneModel(input.model)) {
+      return ["clone", "mix"];
+    }
+    if (isAliyunDirectQwenVoiceDesignModel(input.model)) {
+      return ["prompt_voice"];
+    }
+    return ["text"];
   }
   return [...DEFAULT_TTS_VOICE_MODES];
 }

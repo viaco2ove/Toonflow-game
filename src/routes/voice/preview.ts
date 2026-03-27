@@ -1,5 +1,6 @@
 import express from "express";
 import axios from "axios";
+import { createHash } from "node:crypto";
 import u from "@/utils";
 import { success, error } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
@@ -12,6 +13,8 @@ import {
   getRuntimeStoryVoiceConfig,
   isAliyunVoiceManufacturer,
   isAliyunDirectCosyVoiceModel,
+  isAliyunDirectQwenVoiceCloneModel,
+  isAliyunDirectQwenVoiceDesignModel,
   isDirectAliyunManufacturer,
   normalizeAliyunDirectTtsModel,
   normalizePersistedVoiceConfig,
@@ -38,6 +41,102 @@ import { v4 as uuidv4 } from "uuid";
 const router = express.Router();
 
 type VoiceMode = "text" | "clone" | "mix" | "prompt_voice";
+type DirectAliyunCustomVoiceMode = Extract<VoiceMode, "clone" | "mix" | "prompt_voice">;
+
+const DIRECT_ALIYUN_CUSTOM_VOICE_CACHE = new Map<string, { voiceId: string; createdAt: number }>();
+const DIRECT_ALIYUN_CUSTOM_VOICE_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
+const DIRECT_ALIYUN_CUSTOM_VOICE_READY_RETRY_DELAYS_MS = [1500, 2500, 4000];
+const DIRECT_AUDIO_CONTENT_TYPE_MAP: Record<string, string> = {
+  wav: "audio/wav",
+  mp3: "audio/mpeg",
+  ogg: "audio/ogg",
+  webm: "audio/webm",
+  mp4: "audio/mp4",
+  aac: "audio/aac",
+};
+
+function trimText(input?: unknown): string {
+  return String(input || "").trim();
+}
+
+function sha1(input: string): string {
+  return createHash("sha1").update(input).digest("hex");
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function normalizeAliyunCustomizationEndpoint(baseURL?: string | null): string {
+  const base = trimText(baseURL);
+  if (!base) return "https://dashscope.aliyuncs.com/api/v1/services/audio/tts/customization";
+  if (/\/api\/v1\/services\/audio\/tts\/customization$/i.test(base)) {
+    return base;
+  }
+  if (/\/api\/v1\/services\/aigc\/multimodal-generation\/generation$/i.test(base)) {
+    return base.replace(/\/api\/v1\/services\/aigc\/multimodal-generation\/generation$/i, "/api/v1/services/audio/tts/customization");
+  }
+  const normalized = base
+    .replace(/\/compatible-mode\/v1$/i, "")
+    .replace(/\/compatible-mode$/i, "")
+    .replace(/\/api\/v1$/i, "")
+    .replace(/\/v1$/i, "")
+    .replace(/\/+$/, "");
+  return `${normalized}/api/v1/services/audio/tts/customization`;
+}
+
+function isLocalOrPrivateHostname(hostname?: string | null): boolean {
+  const normalized = trimText(hostname).toLowerCase().replace(/^\[|\]$/g, "");
+  if (!normalized) return true;
+  if (normalized === "localhost" || normalized === "::1" || normalized.endsWith(".local")) return true;
+  const ipv4 = normalized.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (!ipv4) return false;
+  const [a, b] = [Number(ipv4[1]), Number(ipv4[2])];
+  if (a === 10 || a === 127 || a === 0) return true;
+  if (a === 169 && b === 254) return true;
+  if (a === 192 && b === 168) return true;
+  if (a === 172 && b >= 16 && b <= 31) return true;
+  return false;
+}
+
+function isPublicHttpUrl(url?: string | null): boolean {
+  const raw = trimText(url);
+  if (!raw) return false;
+  try {
+    const parsed = new URL(raw);
+    if (!/^https?:$/i.test(parsed.protocol)) return false;
+    return !isLocalOrPrivateHostname(parsed.hostname);
+  } catch {
+    return false;
+  }
+}
+
+function buildDirectAliyunVoiceName(seed: string, maxLength: number): string {
+  const normalized = trimText(seed).toLowerCase().replace(/[^a-z0-9]+/g, "");
+  const fallback = "voice";
+  const raw = normalized || fallback;
+  if (raw.length <= maxLength) return raw;
+  const hash = sha1(raw).slice(0, 6);
+  const headLength = Math.max(1, maxLength - hash.length);
+  return `${raw.slice(0, headLength)}${hash}`.slice(0, maxLength);
+}
+
+function getDirectAliyunCustomVoiceCache(cacheKey: string): string {
+  const cached = DIRECT_ALIYUN_CUSTOM_VOICE_CACHE.get(cacheKey);
+  if (!cached) return "";
+  if (Date.now() - cached.createdAt > DIRECT_ALIYUN_CUSTOM_VOICE_CACHE_TTL_MS) {
+    DIRECT_ALIYUN_CUSTOM_VOICE_CACHE.delete(cacheKey);
+    return "";
+  }
+  return trimText(cached.voiceId);
+}
+
+function setDirectAliyunCustomVoiceCache(cacheKey: string, voiceId: string) {
+  DIRECT_ALIYUN_CUSTOM_VOICE_CACHE.set(cacheKey, {
+    voiceId,
+    createdAt: Date.now(),
+  });
+}
 
 function buildProxyAudioUrl(req: express.Request, configId: number | null | undefined, source: string): string {
   const rawSource = String(source || "").trim();
@@ -84,6 +183,11 @@ function inferAudioExt(source?: string | null): string {
   } catch {}
   const ext = String(raw.split(".").pop() || "").replace(/[^a-zA-Z0-9]/g, "");
   return ext || "wav";
+}
+
+function inferAudioMimeType(source?: string | null): string {
+  const ext = inferAudioExt(source).toLowerCase();
+  return DIRECT_AUDIO_CONTENT_TYPE_MAP[ext] || "audio/wav";
 }
 
 async function loadReferenceAudioBuffer(referenceAudioPath: string): Promise<Buffer> {
@@ -146,6 +250,74 @@ function normalizeMixVoiceItems(
     });
   }
   return normalized;
+}
+
+function resolveDirectAliyunBusinessPresetVoiceId(config: { model?: string | null }, preset: ReturnType<typeof findBusinessVoicePreset>): string {
+  if (!preset) return "";
+  const model = normalizeAliyunDirectTtsModel(String(config.model || "").trim());
+  const availablePresetIds = new Set(directAliyunVoicePresets(model).map((item) => String(item.voiceId || "").trim()).filter(Boolean));
+  const defaultVoiceId = defaultAliyunDirectVoiceId(model);
+  const normalizedModel = String(model || "").trim().toLowerCase();
+
+  let candidates: string[] = [];
+  if (normalizedModel.includes("qwen3-tts") || normalizedModel === "qwen-tts" || normalizedModel === "qwen-tts-latest") {
+    switch (preset.voiceId) {
+      case "story_std_male":
+        candidates = ["Ethan", "Ryan", "Marcus", "Peter"];
+        break;
+      case "story_steady_male":
+        candidates = ["Marcus", "Ethan", "Ryan", "Peter"];
+        break;
+      case "story_std_female":
+        candidates = ["Cherry", "Chelsie", "Serena", "Jada"];
+        break;
+      case "story_gentle_female":
+        candidates = ["Chelsie", "Cherry", "Serena", "Katerina"];
+        break;
+      case "story_lively_female":
+        candidates = ["Serena", "Sunny", "Cherry", "Chelsie"];
+        break;
+      case "story_narrator":
+        candidates = ["Elias", "Cherry", "Katerina", "Jada"];
+        break;
+      default:
+        candidates = preset.fallbackGender === "male" ? ["Ethan", "Marcus", "Ryan"] : ["Cherry", "Chelsie", "Serena"];
+        break;
+    }
+  } else if (isAliyunDirectCosyVoiceModel(model)) {
+    switch (preset.voiceId) {
+      case "story_std_male":
+        candidates = ["longanshuo_v3", "longanyang", "longanwen_v3"];
+        break;
+      case "story_steady_male":
+        candidates = ["longanzhi_v3", "longanwen_v3", "longanshuo_v3"];
+        break;
+      case "story_std_female":
+        candidates = ["longanya_v3", "longanling_v3", "longanqin_v3"];
+        break;
+      case "story_gentle_female":
+        candidates = ["longanya_v3", "longanqin_v3", "longanling_v3"];
+        break;
+      case "story_lively_female":
+        candidates = ["longanhuan", "longanling_v3", "longfeifei_v3"];
+        break;
+      case "story_narrator":
+        candidates = ["longanqin_v3", "longanwen_v3", "longanya_v3"];
+        break;
+      default:
+        candidates = preset.fallbackGender === "male"
+          ? ["longanyang", "longanshuo_v3", "longanwen_v3"]
+          : ["longanya_v3", "longanling_v3", "longanqin_v3"];
+        break;
+    }
+  }
+
+  for (const candidate of candidates) {
+    if (availablePresetIds.has(candidate)) {
+      return candidate;
+    }
+  }
+  return defaultVoiceId;
 }
 
 async function resolveLocalCloneGateway(userId: number): Promise<{ baseUrl: string; headers: Record<string, string> }> {
@@ -231,6 +403,300 @@ async function persistPreviewAudioBuffer(userId: number, input: Buffer, format =
   const savePath = `/user/${userId}/game/voice-preview/${uuidv4()}.${ext}`;
   await u.oss.writeFile(savePath, input);
   return savePath;
+}
+
+async function resolveDirectAliyunReferenceAudioUrl(referenceAudioSource: string): Promise<string> {
+  const source = trimText(referenceAudioSource);
+  if (!source) {
+    throw new Error("克隆模式需要参考音频");
+  }
+  if (/^https?:\/\//i.test(source) && isPublicHttpUrl(source)) {
+    return source;
+  }
+  if (!/^https?:\/\//i.test(source) && !/^data:/i.test(source)) {
+    const externalUrl = await u.oss.getExternalUrl(source);
+    if (isPublicHttpUrl(externalUrl)) {
+      return externalUrl;
+    }
+  }
+
+  const buffer = await loadReferenceAudioBuffer(source);
+  const ext = inferAudioExt(source);
+  const uploadedUrl = await u.oss.uploadTemp(buffer, `aliyun-direct-ref-${sha1(source).slice(0, 12)}.${ext}`);
+  if (isPublicHttpUrl(uploadedUrl)) {
+    return trimText(uploadedUrl);
+  }
+
+  throw new Error("阿里云官方声音复刻需要公网可访问的参考音频，请配置 TEMP_OSS 或使用公网音频地址");
+}
+
+async function resolveDirectAliyunReferenceAudioDataUri(referenceAudioSource: string): Promise<string> {
+  const source = trimText(referenceAudioSource);
+  if (!source) {
+    throw new Error("克隆模式需要参考音频");
+  }
+  if (/^data:/i.test(source)) {
+    return source;
+  }
+  const buffer = await loadReferenceAudioBuffer(source);
+  return `data:${inferAudioMimeType(source)};base64,${buffer.toString("base64")}`;
+}
+
+function extractDirectAliyunCustomVoiceId(data: Record<string, any> | null | undefined): string {
+  return trimText(
+    data?.output?.voice_id
+    || data?.output?.voiceID
+    || data?.output?.voiceId
+    || data?.voice_id
+    || data?.voiceID
+    || data?.voiceId,
+  );
+}
+
+function isDirectAliyunPromptVoiceConfigCompatible(targetModel: string, voiceDesignConfig?: VoiceDesignConfig | null): boolean {
+  const designModel = trimText(voiceDesignConfig?.model).toLowerCase();
+  if (!designModel) return false;
+  if (isAliyunDirectCosyVoiceModel(targetModel)) {
+    return designModel === "voice-enrollment" || designModel.startsWith("cosyvoice-v3");
+  }
+  if (isAliyunDirectQwenVoiceDesignModel(targetModel)) {
+    return designModel === "qwen-voice-design" || designModel.startsWith("qwen3-tts-vd");
+  }
+  return false;
+}
+
+function buildDirectAliyunCustomVoiceCacheKey(options: {
+  configId: number;
+  targetModel: string;
+  mode: DirectAliyunCustomVoiceMode;
+  referenceAudioSource?: string;
+  promptText?: string;
+  mixVoices?: Array<{ voiceId: string; weight?: number | null }>;
+}): string {
+  return sha1(JSON.stringify({
+    configId: options.configId,
+    targetModel: trimText(options.targetModel),
+    mode: options.mode,
+    referenceAudioSource: trimText(options.referenceAudioSource),
+    promptText: trimText(options.promptText),
+    mixVoices: normalizeMixVoiceItems(options.mixVoices),
+  }));
+}
+
+async function createDirectAliyunCustomVoice(options: {
+  config: any;
+  mode: DirectAliyunCustomVoiceMode;
+  referenceAudioSource?: string;
+  promptText?: string;
+  mixVoices?: Array<{ voiceId: string; weight?: number | null }>;
+  voiceDesignConfig?: VoiceDesignConfig | null;
+}): Promise<{ voiceId: string; fresh: boolean; responseData: Record<string, any> | null }> {
+  const targetModel = normalizeAliyunDirectTtsModel(trimText(options.config?.model));
+  const cacheKey = buildDirectAliyunCustomVoiceCacheKey({
+    configId: Number(options.config?.id || 0),
+    targetModel,
+    mode: options.mode,
+    referenceAudioSource: options.referenceAudioSource,
+    promptText: options.promptText,
+    mixVoices: options.mixVoices,
+  });
+  const cachedVoiceId = getDirectAliyunCustomVoiceCache(cacheKey);
+  if (cachedVoiceId) {
+    return { voiceId: cachedVoiceId, fresh: false, responseData: null };
+  }
+
+  let endpoint = normalizeAliyunCustomizationEndpoint(options.config?.baseUrl);
+  let apiKey = trimText(options.config?.apiKey);
+  let payload: Record<string, any> | null = null;
+  const preferredName = buildDirectAliyunVoiceName(`${targetModel}_${options.mode}_${cacheKey.slice(0, 8)}`, 16);
+
+  if (options.mode === "prompt_voice") {
+    if (!trimText(options.promptText)) {
+      throw new Error("提示词模式需要填写提示词");
+    }
+    if (!isDirectAliyunPromptVoiceConfigCompatible(targetModel, options.voiceDesignConfig)) {
+      throw new Error("当前语音设计模型与所选故事语音模型不兼容");
+    }
+    endpoint = normalizeAliyunCustomizationEndpoint(options.voiceDesignConfig?.baseURL || options.config?.baseUrl);
+    apiKey = trimText(options.voiceDesignConfig?.apiKey) || apiKey;
+    if (isAliyunDirectCosyVoiceModel(targetModel)) {
+      payload = {
+        model: "voice-enrollment",
+        input: {
+          action: "create_voice",
+          target_model: targetModel,
+          voice_prompt: trimText(options.promptText),
+          preview_text: BUSINESS_VOICE_PRESET_SEED_TEXT,
+          prefix: buildDirectAliyunVoiceName(preferredName, 10),
+        },
+        parameters: {
+          sample_rate: 24000,
+          response_format: "wav",
+        },
+      };
+    } else if (isAliyunDirectQwenVoiceDesignModel(targetModel)) {
+      payload = {
+        model: "qwen-voice-design",
+        input: {
+          action: "create",
+          target_model: targetModel,
+          voice_prompt: trimText(options.promptText),
+          preview_text: BUSINESS_VOICE_PRESET_SEED_TEXT,
+          preferred_name: preferredName,
+          language: "zh",
+        },
+        parameters: {
+          sample_rate: 24000,
+          response_format: "wav",
+        },
+      };
+    }
+  } else if (isAliyunDirectCosyVoiceModel(targetModel)) {
+    const publicReferenceUrl = await resolveDirectAliyunReferenceAudioUrl(trimText(options.referenceAudioSource));
+    payload = {
+      model: "voice-enrollment",
+      input: {
+        action: "create_voice",
+        target_model: targetModel,
+        url: publicReferenceUrl,
+        prefix: buildDirectAliyunVoiceName(preferredName, 10),
+      },
+      parameters: {
+        sample_rate: 24000,
+        response_format: "wav",
+      },
+    };
+  } else if (isAliyunDirectQwenVoiceCloneModel(targetModel)) {
+    const dataUri = await resolveDirectAliyunReferenceAudioDataUri(trimText(options.referenceAudioSource));
+    payload = {
+      model: "qwen-voice-enrollment",
+      input: {
+        action: "create",
+        target_model: targetModel,
+        preferred_name: preferredName,
+        audio: {
+          data: dataUri,
+        },
+      },
+      parameters: {
+        sample_rate: 24000,
+        response_format: "wav",
+      },
+    };
+  }
+
+  if (!payload) {
+    throw new Error("当前阿里云直连模型不支持该绑定模式");
+  }
+  if (!apiKey) {
+    throw new Error("当前阿里云直连模型缺少 API Key");
+  }
+
+  const response = await axios.post(endpoint, payload, {
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    timeout: 120000,
+  });
+  const responseData = response.data && typeof response.data === "object" ? response.data : null;
+  const voiceId = extractDirectAliyunCustomVoiceId(responseData);
+  if (!voiceId) {
+    throw new Error("阿里云官方复刻/设计接口未返回 voice_id");
+  }
+  setDirectAliyunCustomVoiceCache(cacheKey, voiceId);
+  return {
+    voiceId,
+    fresh: true,
+    responseData,
+  };
+}
+
+async function synthesizeDirectAliyunPreviewAudio(options: {
+  config: any;
+  headers: Record<string, string>;
+  userId: number;
+  text: string;
+  voiceId: string;
+  format: string;
+  speed?: number | null;
+}): Promise<{ sourceUrl: string; data: Record<string, any> }> {
+  const directModel = normalizeAliyunDirectTtsModel(trimText(options.config?.model));
+  if (isAliyunDirectCosyVoiceModel(directModel)) {
+    const buffer = await synthesizeAliyunDirectCosyVoiceBuffer({
+      apiKey: trimText(options.config?.apiKey),
+      baseUrl: options.config?.baseUrl,
+      model: directModel,
+      voiceId: trimText(options.voiceId),
+      text: trimText(options.text),
+      format: options.format,
+      speed: options.speed,
+    });
+    return {
+      sourceUrl: await persistPreviewAudioBuffer(options.userId, buffer, options.format),
+      data: {
+        localGenerated: true,
+        mode: "websocket",
+        voice: trimText(options.voiceId),
+        model: directModel,
+        customVoice: true,
+      },
+    };
+  }
+
+  const response = await axios.post(
+    resolveAliyunDirectTtsEndpoint(options.config?.baseUrl),
+    {
+      model: directModel,
+      input: {
+        text: trimText(options.text),
+        language_type: "Chinese",
+        voice: trimText(options.voiceId),
+      },
+    },
+    {
+      headers: options.headers,
+      timeout: 120000,
+    },
+  );
+  const responseData = response.data && typeof response.data === "object" ? response.data : {};
+  const sourceUrl = trimText(responseData?.output?.audio?.url);
+  if (!sourceUrl) {
+    throw new Error("阿里云直连语音合成未返回可用音频地址");
+  }
+  return {
+    sourceUrl,
+    data: {
+      ...responseData,
+      customVoice: true,
+    },
+  };
+}
+
+async function synthesizeDirectAliyunPreviewAudioWithRetry(options: {
+  config: any;
+  headers: Record<string, string>;
+  userId: number;
+  text: string;
+  voiceId: string;
+  format: string;
+  speed?: number | null;
+  fresh?: boolean;
+}): Promise<{ sourceUrl: string; data: Record<string, any> }> {
+  let lastError: unknown = null;
+  const maxAttempts = options.fresh ? DIRECT_ALIYUN_CUSTOM_VOICE_READY_RETRY_DELAYS_MS.length + 1 : 1;
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    try {
+      return await synthesizeDirectAliyunPreviewAudio(options);
+    } catch (err) {
+      lastError = err;
+      if (attempt >= maxAttempts - 1) {
+        break;
+      }
+      await sleep(DIRECT_ALIYUN_CUSTOM_VOICE_READY_RETRY_DELAYS_MS[attempt] || 1000);
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error("阿里云直连语音合成失败");
 }
 
 async function synthesizeDirectAliyunReferenceBuffer(options: {
@@ -493,19 +959,17 @@ export default router.post(
       const baseUrl = normalizeVoiceBaseUrl(config.baseUrl);
       const manufacturer = String(config.manufacturer || "").trim();
       const voiceDesignConfig = mode === "prompt_voice" ? await getStoryVoiceDesignConfig(userId) : null;
-      if (mode === "prompt_voice" && !voiceDesignConfig) {
-        return res.status(400).send(error("请先在设置里配置语音设计模型"));
-      }
-      const unsupportedModeReason = mode === "prompt_voice"
-        ? ""
-        : resolveUnsupportedVoiceModeReason({
-            manufacturer,
-            modelType: config.modelType,
-            model: config.model,
-            mode,
-          });
+      const unsupportedModeReason = resolveUnsupportedVoiceModeReason({
+        manufacturer,
+        modelType: config.modelType,
+        model: config.model,
+        mode,
+      });
       if (unsupportedModeReason) {
         return res.status(400).send(error(unsupportedModeReason));
+      }
+      if (mode === "prompt_voice" && !voiceDesignConfig) {
+        return res.status(400).send(error("请先在设置里配置语音设计模型"));
       }
       const suppliers = voiceSupplierFromManufacturer(manufacturer);
       const directAliyun = isDirectAliyunManufacturer(manufacturer);
@@ -557,7 +1021,9 @@ export default router.post(
 
       if (presetProvider && !directAliyun) resolvedProvider = presetProvider;
 
+      let compatibilityPresetId = "";
       if (businessPreset) {
+        compatibilityPresetId = businessPreset.voiceId;
         if (
           String(text || "").trim() === String(businessPreset.referenceText || "").trim()
           && (!speed || Number(speed) === 1)
@@ -571,6 +1037,18 @@ export default router.post(
             },
           }));
         }
+        if (directAliyun) {
+          const directFallbackVoiceId = resolveDirectAliyunBusinessPresetVoiceId(config, businessPreset);
+          if (directFallbackVoiceId) {
+            effectiveVoiceId = directFallbackVoiceId;
+            preset = providerPresetPool.find((item: { voiceId: string }) => item.voiceId === directFallbackVoiceId) || null;
+            businessPreset = null;
+            presetProvider = String(preset?.provider || "").trim();
+          }
+        }
+      }
+
+      if (businessPreset) {
         const cloned = await synthesizeWithLocalClone(
           req,
           userId,
@@ -588,6 +1066,32 @@ export default router.post(
         if (resolvedProvider) payload.provider = resolvedProvider;
       } else if (mode === "clone") {
         if (resolvedReferenceAudioSource) {
+          if (directAliyun) {
+            const customVoice = await createDirectAliyunCustomVoice({
+              config,
+              mode,
+              referenceAudioSource: resolvedReferenceAudioSource,
+            });
+            const synthesized = await synthesizeDirectAliyunPreviewAudioWithRetry({
+              config,
+              headers,
+              userId,
+              text,
+              voiceId: customVoice.voiceId,
+              format: payload.format,
+              speed,
+              fresh: customVoice.fresh,
+            });
+            const audioUrl = buildProxyAudioUrl(req, config?.id, synthesized.sourceUrl);
+            return res.status(200).send(success({
+              audioUrl,
+              data: {
+                ...synthesized.data,
+                customVoiceId: customVoice.voiceId,
+                customVoiceMode: mode,
+              },
+            }));
+          }
           const cloned = await synthesizeWithLocalClone(
             req,
             userId,
@@ -636,6 +1140,34 @@ export default router.post(
           resolvedProvider: String(payload.provider || ""),
           userId,
         });
+        if (directAliyun) {
+          const customVoice = await createDirectAliyunCustomVoice({
+            config,
+            mode,
+            referenceAudioSource: generatedReferencePath,
+            mixVoices: normalizedMixVoices,
+          });
+          const synthesized = await synthesizeDirectAliyunPreviewAudioWithRetry({
+            config,
+            headers,
+            userId,
+            text,
+            voiceId: customVoice.voiceId,
+            format: payload.format,
+            speed,
+            fresh: customVoice.fresh,
+          });
+          const audioUrl = buildProxyAudioUrl(req, config?.id, synthesized.sourceUrl);
+          return res.status(200).send(success({
+            audioUrl,
+            data: {
+              ...synthesized.data,
+              customVoiceId: customVoice.voiceId,
+              customVoiceMode: mode,
+              compatibilityReferencePath: generatedReferencePath,
+            },
+          }));
+        }
         const cloned = await synthesizeWithLocalClone(
           req,
           userId,
@@ -649,6 +1181,33 @@ export default router.post(
       } else if (mode === "prompt_voice") {
         if (!promptText) {
           return res.status(400).send(error("提示词模式需要填写提示词"));
+        }
+        if (directAliyun) {
+          const customVoice = await createDirectAliyunCustomVoice({
+            config,
+            mode,
+            promptText: String(promptText || "").trim(),
+            voiceDesignConfig,
+          });
+          const synthesized = await synthesizeDirectAliyunPreviewAudioWithRetry({
+            config,
+            headers,
+            userId,
+            text,
+            voiceId: customVoice.voiceId,
+            format: payload.format,
+            speed,
+            fresh: customVoice.fresh,
+          });
+          const audioUrl = buildProxyAudioUrl(req, config?.id, synthesized.sourceUrl);
+          return res.status(200).send(success({
+            audioUrl,
+            data: {
+              ...synthesized.data,
+              customVoiceId: customVoice.voiceId,
+              customVoiceMode: mode,
+            },
+          }));
         }
         const generatedReferencePath = await synthesizeReferenceAudioFromMode({
           config,
@@ -730,6 +1289,13 @@ export default router.post(
         return res.status(500).send(error("未返回可用音频地址"));
       }
       const audioUrl = buildProxyAudioUrl(req, config?.id, sourceUrl);
+      if (compatibilityPresetId) {
+        data = {
+          ...data,
+          compatibilityPreset: compatibilityPresetId,
+          compatibilityVoiceId: effectiveVoiceId || null,
+        };
+      }
       debugContext.result = {
         sourceUrl,
         proxied: audioUrl,

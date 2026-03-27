@@ -265,6 +265,7 @@ export default router.post(
           state,
           recentMessages,
           playerMessage: "",
+          maxRetries: 0,
         });
         applyOrchestratorResultToState(state, orchestrator);
         const emittedMessage = orchestrator.role && orchestrator.content
@@ -452,6 +453,7 @@ export default router.post(
         state,
         recentMessages,
         playerMessage: playerContent,
+        maxRetries: 0,
       });
       applyOrchestratorResultToState(state, orchestrator);
       const emittedMessage = orchestrator.role && orchestrator.content

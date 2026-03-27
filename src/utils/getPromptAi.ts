@@ -7,11 +7,21 @@ interface AiConfig {
   manufacturer: string;
 }
 
+const STRICT_MODEL_KEYS = new Set([
+  "storyOrchestratorModel",
+  "storyMemoryModel",
+  "storyImageModel",
+  "storyVoiceModel",
+  "storyAsrModel",
+  "storyVoiceDesignModel",
+]);
+
 export default async function getPromptAi(key: string, userId?: number): Promise<AiConfig | {}> {
   const resolvedUserId = Number.isFinite(Number(userId)) && Number(userId) > 0 ? Number(userId) : getCurrentUserId(0);
   if (!resolvedUserId) {
     return {};
   }
+  const strictMode = STRICT_MODEL_KEYS.has(String(key || "").trim());
   const setting = await db("t_setting").where({ userId: resolvedUserId }).select("languageModel").first();
   let selectedConfigId = 0;
   try {
@@ -27,6 +37,10 @@ export default async function getPromptAi(key: string, userId?: number): Promise
       .where({ id: selectedConfigId, userId: resolvedUserId })
       .select("model", "apiKey", "baseUrl as baseURL", "manufacturer")
       .first();
+  }
+
+  if (strictMode || selectedConfigId > 0) {
+    return aiConfigData ? (aiConfigData as AiConfig) : {};
   }
 
   if (!aiConfigData) {

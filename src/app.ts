@@ -1,6 +1,6 @@
+import "./env";
 import "./logger";
 import "./err";
-import "./env";
 import express, { Request, Response, NextFunction } from "express";
 import expressWs from "express-ws";
 import logger from "morgan";

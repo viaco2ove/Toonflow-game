@@ -140,11 +140,12 @@ const buildOptions = async (input: AIInput<any>, config: AIConfig = {}) => {
     owned = modelList.find((m) => m.manufacturer === manufacturer);
   } else {
     owned = modelList.find((m) => m.model === model && m.manufacturer === manufacturer);
-    if (!owned) owned = modelList.find((m) => m.manufacturer === manufacturer);
   }
-  if (!owned) throw new Error("不支持的厂商");
+  if (!owned) {
+    throw new Error(`模型 ${model} 与厂商 ${manufacturer} 不匹配或未注册`);
+  }
 
-  const openAICompatible = ["volcengine", "other", "openai", "modelScope", "grsai", "t8star"].includes(owned.manufacturer);
+  const openAICompatible = ["volcengine", "doubao", "other", "openai", "modelScope", "grsai", "t8star"].includes(owned.manufacturer);
   const modelInstance = owned.instance({
     apiKey,
     baseURL: baseURL!,
@@ -169,7 +170,7 @@ const buildOptions = async (input: AIInput<any>, config: AIConfig = {}) => {
   };
 
   const output = input.output ? (outputBuilders[owned.responseFormat]?.(input.output) ?? null) : null;
-  const chatModelManufacturer = ["volcengine", "other", "openai", "modelScope", "grsai", "t8star"];
+  const chatModelManufacturer = ["volcengine", "doubao", "other", "openai", "modelScope", "grsai", "t8star"];
   const modelFn = chatModelManufacturer.includes(owned.manufacturer) ? (modelInstance as OpenAIProvider).chat(model!) : modelInstance(model!);
 
   const outputKeys = input.output ? Object.keys(input.output) : [];

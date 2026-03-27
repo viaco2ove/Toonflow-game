@@ -43,9 +43,19 @@ export default async (input: VideoConfig, config?: AIConfig) => {
   if (!config || !config?.model || !config?.apiKey) throw new Error("请检查模型配置是否正确");
 
   const manufacturerFn = modelInstance[manufacturer as keyof typeof modelInstance];
-  if (!manufacturerFn) if (!manufacturerFn) throw new Error("不支持的视频厂商");
-  // const owned = modelList.find((m) => m.model === model);
-  // if (!owned) throw new Error("不支持的模型");
+  if (!manufacturerFn) throw new Error("不支持的视频厂商");
+
+  const owned = modelList.find((m) => m.model === model);
+  if (manufacturer === "other" || manufacturer === "grsai") {
+    if (owned && owned.manufacturer !== manufacturer) {
+      throw new Error(`模型 ${model} 属于 ${owned.manufacturer} 厂商，请将厂商设置为 ${owned.manufacturer}`);
+    }
+  } else {
+    if (!owned) throw new Error("不支持的视频模型");
+    if (owned.manufacturer !== manufacturer) {
+      throw new Error(`模型 ${model} 与厂商 ${manufacturer} 不匹配，应为 ${owned.manufacturer}`);
+    }
+  }
 
   // 补充图片的 base64 内容类型字符串
   if (input.imageBase64 && input.imageBase64.length > 0) {
