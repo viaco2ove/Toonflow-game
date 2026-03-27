@@ -19,6 +19,7 @@ export default router.post(
     const storyPromptCodes = new Set([
       "story-main",
       "story-orchestrator",
+      "story-speaker",
       "story-memory",
       "story-chapter",
       "story-mini-game",

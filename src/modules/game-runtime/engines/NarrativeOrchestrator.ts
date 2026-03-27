@@ -1,4 +1,3 @@
-import { z } from "zod";
 import u from "@/utils";
 import {
   JsonRecord,
@@ -37,6 +36,7 @@ export interface OrchestratorInput {
 export interface OrchestratorResult {
   role: string;
   roleType: string;
+  motive: string;
   content: string;
   memoryHints: string[];
   stateDelta: JsonRecord;
@@ -61,9 +61,16 @@ function truncateErrorMessage(input: unknown, limit = 180): string {
   return text.length > limit ? `${text.slice(0, limit)}...` : text;
 }
 
-function createRuntimeModelError(stage: "orchestrator" | "memory", reason?: unknown): Error {
-  const prefix = stage === "orchestrator" ? "编排师对接的模型异常" : "记忆管理对接的模型异常";
+function createRuntimeModelError(stage: "orchestrator" | "memory" | "speaker", reason?: unknown): Error {
   const detail = truncateErrorMessage(reason);
+  if (/^(编排师|角色发言|记忆管理)对接的模型异常/.test(detail)) {
+    return new Error(detail);
+  }
+  const prefix = stage === "memory"
+    ? "记忆管理对接的模型异常"
+    : stage === "speaker"
+      ? "角色发言对接的模型异常"
+      : "编排师对接的模型异常";
   return new Error(detail ? `${prefix}：${detail}` : prefix);
 }
 
@@ -180,7 +187,274 @@ function directiveParagraphs(input: unknown): string[] {
 function directiveExcerpt(input: unknown): string {
   const paragraphs = directiveParagraphs(input);
   if (!paragraphs.length) return "剧情继续推进。";
-  return paragraphs.slice(0, 2).join("\n").slice(0, 220);
+  return paragraphs.slice(0, 2).join("\n").slice(0, 140);
+}
+
+function shortText(input: unknown, limit = 120): string {
+  const text = normalizeScalarText(input);
+  if (!text) return "";
+  return text.length > limit ? `${text.slice(0, limit)}...` : text;
+}
+
+function summarizeJsonValue(input: unknown, maxPairs = 6): string {
+  if (!input || typeof input !== "object") return normalizeScalarText(input);
+  if (Array.isArray(input)) {
+    return input
+      .map((item) => normalizeScalarText(item))
+      .filter(Boolean)
+      .slice(0, maxPairs)
+      .join("；");
+  }
+  const record = input as Record<string, unknown>;
+  return Object.entries(record)
+    .map(([key, value]) => {
+      const normalized = Array.isArray(value) ? value.join("、") : normalizeScalarText(value);
+      if (!normalized) return "";
+      return `${key}:${normalized}`;
+    })
+    .filter(Boolean)
+    .slice(0, maxPairs)
+    .join("；");
+}
+
+function describeRole(role: RuntimeStoryRole | null | undefined): string {
+  if (!role) return "";
+  const parts = [
+    `姓名:${normalizeScalarText(role.name)}`,
+    `身份:${sanitizeRoleType(role.roleType)}`,
+    shortText(role.description, 120) ? `设定:${shortText(role.description, 120)}` : "",
+    shortText(role.sample, 80) ? `口吻:${shortText(role.sample, 80)}` : "",
+    summarizeJsonValue(role.parameterCardJson, 5) ? `参数:${shortText(summarizeJsonValue(role.parameterCardJson, 5), 160)}` : "",
+  ].filter(Boolean);
+  return parts.join("\n");
+}
+
+function summarizeStoryState(state: JsonRecord): string {
+  const parts = [
+    shortText(state.memorySummary, 180) ? `背景摘要:${shortText(state.memorySummary, 180)}` : "",
+    Array.isArray(state.memoryFacts) && state.memoryFacts.length
+      ? `关键事实:${state.memoryFacts.map((item) => shortText(item, 48)).filter(Boolean).slice(0, 5).join("；")}`
+      : "",
+  ].filter(Boolean);
+  return parts.join("\n");
+}
+
+function normalizeGeneratedLine(input: unknown, limit = 220): string {
+  const text = normalizeScalarText(input)
+    .replace(/^["'“”]+|["'“”]+$/g, "")
+    .replace(/\r/g, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  if (!text) return "";
+  return text.length > limit ? `${text.slice(0, limit)}...` : text;
+}
+
+function unwrapModelText(input: unknown): string {
+  const text = normalizeScalarText(input)
+    .replace(/^```(?:json|yaml|txt|text|markdown)?\s*/i, "")
+    .replace(/\s*```$/i, "")
+    .trim();
+  return text;
+}
+
+function parseFieldMap(rawText: string): Record<string, string> {
+  const lines = unwrapModelText(rawText)
+    .split(/\r?\n+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+  const result: Record<string, string> = {};
+  for (const line of lines) {
+    const matched = line.match(/^[-*]?\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*[:：=]\s*(.*)$/);
+    if (!matched) continue;
+    result[matched[1].toLowerCase()] = matched[2].trim();
+  }
+  return result;
+}
+
+function getPlainField(fields: Record<string, string>, ...keys: string[]): string {
+  for (const key of keys) {
+    const value = normalizeScalarText(fields[key.toLowerCase()]);
+    if (value) return value;
+  }
+  return "";
+}
+
+function parsePlainBoolean(input: unknown): boolean {
+  const value = normalizeScalarText(input).toLowerCase();
+  return value === "true" || value === "1" || value === "yes" || value === "是";
+}
+
+function parsePlainList(input: unknown): string[] {
+  return normalizeScalarText(input)
+    .split(/\s*[|｜；;]\s*/g)
+    .map((item) => normalizeScalarText(item))
+    .filter(Boolean);
+}
+
+function parsePlainStateDelta(input: unknown): JsonRecord {
+  const text = normalizeScalarText(input);
+  if (!text) return {};
+  const objectLike = parseJsonSafe<JsonRecord>(text, {});
+  if (objectLike && typeof objectLike === "object" && !Array.isArray(objectLike) && Object.keys(objectLike).length) {
+    return objectLike;
+  }
+  const result: JsonRecord = {};
+  text.split(/\s*[;；]\s*/g).forEach((item) => {
+    const matched = item.match(/^([^=:=：]+)\s*[:：=]\s*(.+)$/);
+    if (!matched) return;
+    const key = normalizeScalarText(matched[1]);
+    const rawValue = normalizeScalarText(matched[2]);
+    if (!key || !rawValue) return;
+    if (/^(true|false)$/i.test(rawValue)) {
+      result[key] = /^true$/i.test(rawValue);
+      return;
+    }
+    const num = Number(rawValue);
+    result[key] = Number.isFinite(num) ? num : rawValue;
+  });
+  return result;
+}
+
+function buildOrchestratorUserPrompt(payload: {
+  worldName: string;
+  worldIntro: string;
+  chapterTitle: string;
+  chapterDirective: string;
+  chapterOpening: string;
+  roles: RuntimeStoryRole[];
+  wildcardRoles: RuntimeStoryRole[];
+  narratorActsAsWildcardFallback: boolean;
+  storyState: string;
+  turnState: RuntimeTurnState;
+  recentDialogue: string;
+  latestPlayerMessage: string;
+}): string {
+  return [
+    "[世界]",
+    `名称: ${payload.worldName || "未命名世界"}`,
+    payload.worldIntro ? `简介: ${payload.worldIntro}` : "",
+    "",
+    "[章节内部提纲]",
+    `标题: ${payload.chapterTitle || "未命名章节"}`,
+    payload.chapterDirective ? `提纲摘录: ${payload.chapterDirective}` : "",
+    payload.chapterOpening ? `开场白: ${payload.chapterOpening}` : "",
+    "",
+    "[角色列表]",
+    ...payload.roles.map((role) => `- ${sanitizeRoleType(role.roleType)} | ${normalizeScalarText(role.name)} | ${describeRole(role)}`),
+    "",
+    "[万能角色]",
+    payload.wildcardRoles.length
+      ? payload.wildcardRoles.map((item) => `${item.name}(${sanitizeRoleType(item.roleType)})`).join("、")
+      : (payload.narratorActsAsWildcardFallback ? "无万能角色，可由旁白兜底一次性路人/环境播报" : "无"),
+    "",
+    "[剧情摘要]",
+    payload.storyState || "暂无额外摘要",
+    "",
+    "[回合状态]",
+    `can_player_speak: ${payload.turnState.canPlayerSpeak ? "true" : "false"}`,
+    `expected_role_type: ${sanitizeRoleType(payload.turnState.expectedRoleType)}`,
+    `expected_role: ${payload.turnState.expectedRole || "无"}`,
+    `last_speaker_role_type: ${sanitizeRoleType(payload.turnState.lastSpeakerRoleType)}`,
+    `last_speaker: ${payload.turnState.lastSpeaker || "无"}`,
+    "",
+    "[最近对话]",
+    payload.recentDialogue || "无",
+    "",
+    "[玩家本轮输入]",
+    payload.latestPlayerMessage || "无",
+    "",
+    "[输出字段]",
+    "role_type:",
+    "speaker:",
+    "motive:",
+    "await_user:",
+    "next_role_type:",
+    "next_speaker:",
+    "chapter_outcome:",
+    "next_chapter_id:",
+    "memory_hints:",
+    "state_delta:",
+  ].filter(Boolean).join("\n");
+}
+
+function buildSpeakerUserPrompt(payload: {
+  worldName: string;
+  worldIntro: string;
+  chapterTitle: string;
+  speakerName: string;
+  speakerRoleType: string;
+  speakerProfile: string;
+  motive: string;
+  storyState: string;
+  latestPlayerMessage: string;
+  recentDialogue: string;
+  otherRoles: string[];
+}): string {
+  return [
+    "[世界]",
+    `名称: ${payload.worldName || "未命名世界"}`,
+    payload.worldIntro ? `简介: ${payload.worldIntro}` : "",
+    "",
+    "[章节]",
+    `标题: ${payload.chapterTitle || "未命名章节"}`,
+    "",
+    "[当前说话人]",
+    `name: ${payload.speakerName}`,
+    `role_type: ${payload.speakerRoleType}`,
+    payload.speakerProfile || "",
+    "",
+    "[本轮动机]",
+    payload.motive,
+    "",
+    "[剧情摘要]",
+    payload.storyState || "暂无额外摘要",
+    "",
+    "[最近对话]",
+    payload.recentDialogue || "无",
+    "",
+    "[玩家最近输入]",
+    payload.latestPlayerMessage || "无",
+    "",
+    "[其他可见角色]",
+    payload.otherRoles.length ? payload.otherRoles.join("、") : "无",
+    "",
+    "[输出要求]",
+    "直接输出本轮真正展示给用户的一段正文，不要 JSON，不要字段名，不要代码块。",
+  ].filter(Boolean).join("\n");
+}
+
+function buildMemoryUserPrompt(payload: {
+  worldName: string;
+  chapterTitle: string;
+  recentDialogue: string;
+  currentMemory: string;
+}): string {
+  return [
+    "[世界]",
+    `名称: ${payload.worldName || "未命名世界"}`,
+    "",
+    "[章节]",
+    `标题: ${payload.chapterTitle || "未命名章节"}`,
+    "",
+    "[最近对话]",
+    payload.recentDialogue || "无",
+    "",
+    "[现有记忆摘要]",
+    payload.currentMemory || "无",
+    "",
+    "[输出字段]",
+    "summary:",
+    "facts:",
+    "tags:",
+  ].filter(Boolean).join("\n");
+}
+
+function shouldUseCompactOrchestratorPayload(config: unknown): boolean {
+  const manufacturer = normalizeScalarText((config as Record<string, unknown> | null)?.manufacturer).toLowerCase();
+  const model = normalizeScalarText((config as Record<string, unknown> | null)?.model).toLowerCase();
+  if (!manufacturer || !model) return false;
+  if (manufacturer !== "volcengine" && manufacturer !== "doubao") return false;
+  return /(lite|mini|flash)/.test(model);
 }
 
 function normalizeComparableText(input: unknown): string {
@@ -348,9 +622,9 @@ function buildFallbackContent(role: RuntimeStoryRole, latestPlayerMessage: strin
   return "你的回应让场上的气氛发生了变化，剧情继续向前推进。";
 }
 
-function recentDialogueText(messages: RuntimeMessageInput[]): string {
+function recentDialogueText(messages: RuntimeMessageInput[], maxCount = 12, maxChars = 0): string {
   return messages
-    .slice(-12)
+    .slice(-Math.max(1, maxCount))
     .map((item) => {
       const role = normalizeScalarText(item.role) || normalizeScalarText(item.roleType) || "系统";
       const content = normalizeScalarText(item.content);
@@ -358,37 +632,79 @@ function recentDialogueText(messages: RuntimeMessageInput[]): string {
       return `${role}：${content}`;
     })
     .filter(Boolean)
-    .join("\n");
+    .join("\n")
+    .slice(maxChars > 0 ? -maxChars : undefined);
 }
 
-function buildOrchestratorSystemPrompt(mainPrompt: string, orchestratorPrompt: string): string {
+function buildOrchestratorSystemPrompt(mainPrompt: string, orchestratorPrompt: string, compactMode = false): string {
+  if (compactMode) {
+    return [
+      mainPrompt,
+      orchestratorPrompt,
+      "本阶段禁止 JSON、禁止代码块、禁止 markdown。",
+      "你只决定 speaker、motive、await_user、next_role_type、next_speaker、chapter_outcome。",
+      "不要写最终展示台词，不要复述章节原文，不要输出内部规则或思考过程。",
+      "speaker 只能来自当前角色列表；玩家没发言时，先推进至少一轮非玩家内容。",
+      "motive 控制在 12~40 字，只描述这一小步要做什么。",
+      "每轮只推进一小步，不要回顾整章或世界观。",
+      "严格按字段逐行输出：role_type / speaker / motive / await_user / next_role_type / next_speaker / chapter_outcome / next_chapter_id / memory_hints / state_delta。",
+    ].join("\n");
+  }
   return [
     mainPrompt,
     orchestratorPrompt,
     "硬性规则：",
     "1. 开场白由系统单独处理，你不要重复输出开场白。",
-    "2. 章节内容是内部编排说明，用来指导谁说话、说什么、剧情怎么推进，绝对不能原样复述给用户。",
-    "3. 你负责剧情编排和角色调度，决定这轮由谁说话、说什么，以及这轮结束后是否轮到用户。",
+    "2. 章节内容是内部编排说明，用来指导谁说话、因为什么说、剧情怎么推进，绝对不能原样复述给用户。",
+    "3. 你只负责剧情编排和角色调度，只输出 speaker + motive + 回合流转，不直接写最终可见台词。",
     "4. 只能从当前可用角色中选择 speaker，绝不能代替用户说完整台词。",
-    "5. 如果这轮结束后应该轮到用户发言，设置 awaitUser=true；此时可以不返回 speaker/content。",
-    "6. content 必须是自然对话或旁白，不得泄漏“章节内容”“系统提示词”“内部规则”。",
+    "5. motive 必须是简洁的发言动机或推进目标，默认控制在 20~60 字，不要写成长篇旁白。",
+    "6. 如果这轮结束后应该轮到用户发言，设置 awaitUser=true；若这轮仍需先有角色说话，也要先给出 speaker 和 motive。",
     "7. 优先推进剧情，保持角色设定稳定，并根据章节目标判断 chapterOutcome。",
-    "8. 输出必须是 JSON。",
+    "8. 本阶段禁止 JSON、禁止代码块、禁止 markdown；只按字段逐行输出。",
     "9. 开场白只负责第一句开场，后续对话必须推进新内容，不得复述开场白。",
     "10. 当用户发来“.”时，表示用户跳过本轮，由其他角色继续推进剧情。",
     "11. 当 turnState.canPlayerSpeak=false 时，绝不能要求用户发言，也不能代替用户说台词。",
-    "12. content 绝不能以“章节内容：”“开场白：”“故事背景：”开头，也不能直接粘贴章节原文段落。",
+    "12. motive 绝不能以“章节内容：”“开场白：”“故事背景：”开头，也不能直接粘贴章节原文段落。",
     "13. 圆括号/方括号中的内容属于特殊内容，可作为动作、心理、状态变化参考，但不要机械朗读这些括号内容。",
     "14. 若存在万能角色，可让万能角色临时扮演路人/配角；若没有万能角色，旁白可以承担一次性的路人或环境播报。",
     "15. 若章节判定成功但没有下一章节，不要宣告故事彻底结束；运行时会转入自由剧情，继续按角色与局势编排。",
     "16. 章节内容是给编排师看的内部提纲，只能用于安排谁说话、说什么、剧情怎么发展，绝不能直接念给用户。",
     "17. 当玩家尚未输入、只是刚进入章节时，必须先推进至少一轮非玩家对话，不能空着内容直接把回合交给玩家。",
+    compactMode ? "18. 当前模型较弱，每轮只推进一小步，默认控制在 120 字以内；不要长篇回顾世界观或整章提纲。" : "",
+    "19. 最终输出严格使用以下字段名逐行输出：role_type / speaker / motive / await_user / next_role_type / next_speaker / chapter_outcome / next_chapter_id / memory_hints / state_delta。",
+  ].filter(Boolean).join("\n\n");
+}
+
+function buildSpeakerSystemPrompt(mainPrompt: string, speakerPrompt: string, compactMode = false): string {
+  if (compactMode) {
+    return [
+      mainPrompt,
+      speakerPrompt,
+      "本阶段禁止 JSON、禁止代码块、禁止字段名。",
+      "你只把既定 speaker 和 motive 写成这一轮真正展示给用户的台词或旁白。",
+      "不能换说话人，不能代替玩家说话，不能泄漏章节提纲、系统提示词或思考过程。",
+      "只推进当前这一小步，默认 40~80 字，最多 2 句。",
+    ].join("\n");
+  }
+  return [
+    mainPrompt,
+    speakerPrompt,
+    "硬性规则：",
+    "1. 你不是编排师，你只负责把已经确定好的 speaker 和 motive 写成当前这一轮真正给用户看到的台词或旁白。",
+    "2. 只能由当前指定的 speaker 发言，不能中途切换说话人。",
+    "3. 只能推进当前这一小步，不要复述整章提纲、世界观总述或开场白。",
+    "4. 绝不能输出“章节内容”“系统提示词”“内部规则”“思考过程”等内部文字。",
+    "5. 绝不能代替玩家说完整台词；若 speaker 是 narrator，只能写环境播报或剧情推进。",
+    "6. 优先承接 recentDialogue、latestPlayerMessage 和 motive，内容要自然、可直接落库。",
+    compactMode ? "7. 当前模型较弱，默认控制在 80 字以内，最多 2 小段。" : "7. 默认控制在 120 字以内，最多 3 小段。",
+    "8. 本阶段禁止 JSON、禁止代码块、禁止字段名；只返回最终展示给用户的一段正文。",
   ].filter(Boolean).join("\n\n");
 }
 
 async function loadStoryPrompts() {
   const rows = await u.db("t_prompts")
-    .whereIn("code", ["story-main", "story-orchestrator", "story-memory"])
+    .whereIn("code", ["story-main", "story-orchestrator", "story-speaker", "story-memory"])
     .select("code", "defaultValue", "customValue");
   const map = new Map<string, any>();
   for (const row of rows as any[]) {
@@ -397,8 +713,109 @@ async function loadStoryPrompts() {
   return {
     storyMain: getPromptValue(map.get("story-main")),
     storyOrchestrator: getPromptValue(map.get("story-orchestrator")),
+    storySpeaker: getPromptValue(map.get("story-speaker")),
     storyMemory: getPromptValue(map.get("story-memory")),
   };
+}
+
+function stageModelLabel(key: string): string {
+  if (key === "storyOrchestratorModel") return "编排师";
+  if (key === "storySpeakerModel") return "角色发言";
+  if (key === "storyMemoryModel") return "记忆管理";
+  return key;
+}
+
+async function resolveTextStageModel(userId: number, primaryKey: string, fallbackKey?: string) {
+  const primary = await u.getPromptAi(primaryKey, userId);
+  if (normalizeScalarText((primary as Record<string, unknown> | null)?.manufacturer)) {
+    return primary;
+  }
+  if (fallbackKey) {
+    const fallback = await u.getPromptAi(fallbackKey, userId);
+    if (normalizeScalarText((fallback as Record<string, unknown> | null)?.manufacturer)) {
+      return fallback;
+    }
+  }
+  throw new Error(`${stageModelLabel(primaryKey)}对接的模型未配置，请在设置中单独绑定`);
+}
+
+async function runStorySpeaker(input: {
+  userId: number;
+  world: any;
+  chapter: any;
+  state: JsonRecord;
+  recentMessages: RuntimeMessageInput[];
+  playerMessage?: string;
+  currentRole: RuntimeStoryRole;
+  motive: string;
+}): Promise<string> {
+  const prompts = await loadStoryPrompts();
+  const promptAiConfig = await resolveTextStageModel(input.userId, "storySpeakerModel");
+  const compactMode = shouldUseCompactOrchestratorPayload(promptAiConfig);
+  const roles = worldRoles(input.world);
+  const currentChapter = {
+    title: normalizeScalarText(input.chapter?.title),
+    directive: chapterDirectiveText(input.chapter),
+    directiveExcerpt: directiveExcerpt(chapterDirectiveText(input.chapter)),
+  };
+  const payload = {
+    worldName: normalizeScalarText(input.world?.name),
+    worldIntro: shortText(input.world?.intro, 120),
+    chapterTitle: currentChapter.title,
+    speakerName: normalizeScalarText(input.currentRole.name),
+    speakerRoleType: sanitizeRoleType(input.currentRole.roleType),
+    speakerProfile: describeRole(input.currentRole),
+    motive: shortText(input.motive, compactMode ? 80 : 120),
+    storyState: summarizeStoryState(input.state),
+    latestPlayerMessage: normalizeScalarText(input.playerMessage),
+    recentDialogue: compactMode ? recentDialogueText(input.recentMessages, 4, 420) : recentDialogueText(input.recentMessages, 8, 1200),
+    otherRoles: roles
+      .filter((item) => item.name !== input.currentRole.name)
+      .map((item) => `${item.name}(${sanitizeRoleType(item.roleType)})`)
+      .slice(0, compactMode ? 4 : 6),
+  };
+
+  try {
+    const result = await u.ai.text.invoke(
+      {
+        messages: [
+          {
+            role: "system",
+            content: buildSpeakerSystemPrompt(prompts.storyMain, prompts.storySpeaker || prompts.storyOrchestrator, compactMode),
+          },
+          {
+            role: "user",
+            content: buildSpeakerUserPrompt(payload),
+          },
+        ],
+      },
+      promptAiConfig as any,
+    );
+    const rawText = unwrapModelText((result as any)?.text || "");
+    const objectLike = parseJsonSafe<Record<string, unknown>>(rawText, {});
+    const fieldMap = parseFieldMap(rawText);
+    const content = normalizeGeneratedLine(
+      (objectLike && Object.keys(objectLike).length ? objectLike.content : undefined)
+      || getPlainField(fieldMap, "content")
+      || rawText,
+      compactMode ? 140 : 220,
+    );
+    if (!content) {
+      throw createRuntimeModelError("speaker", "模型返回内容为空");
+    }
+    if (looksLikeDirectiveLeak(content, currentChapter.directive, input.chapter?.openingText)) {
+      throw createRuntimeModelError("speaker", "模型返回了内部编排内容");
+    }
+    return content;
+  } catch (err) {
+    console.warn("[story:speaker] error", {
+      manufacturer: (promptAiConfig as any)?.manufacturer || "",
+      model: (promptAiConfig as any)?.model || "",
+      role: normalizeScalarText(input.currentRole.name),
+      message: (err as any)?.message || String(err),
+    });
+    throw createRuntimeModelError("speaker", (err as any)?.message || String(err));
+  }
 }
 
 function applyStateDelta(state: JsonRecord, delta: JsonRecord) {
@@ -411,7 +828,8 @@ function applyStateDelta(state: JsonRecord, delta: JsonRecord) {
 export async function runNarrativeOrchestrator(input: OrchestratorInput): Promise<OrchestratorResult> {
   const prompts = await loadStoryPrompts();
   const roles = worldRoles(input.world);
-  const promptAiConfig = await u.getPromptAi("storyOrchestratorModel", input.userId);
+  const promptAiConfig = await resolveTextStageModel(input.userId, "storyOrchestratorModel");
+  const compactMode = shouldUseCompactOrchestratorPayload(promptAiConfig);
   const turnState = readRuntimeTurnState(input.state, input.world);
   const currentChapter = {
     id: Number(input.chapter?.id || 0),
@@ -423,41 +841,23 @@ export async function runNarrativeOrchestrator(input: OrchestratorInput): Promis
     bgmPath: normalizeScalarText(input.chapter?.bgmPath),
   };
   const payload = {
-    world: {
-      id: Number(input.world?.id || 0),
-      name: normalizeScalarText(input.world?.name),
-      intro: normalizeScalarText(input.world?.intro),
-    },
-    chapter: currentChapter,
+    worldName: normalizeScalarText(input.world?.name),
+    worldIntro: shortText(input.world?.intro, compactMode ? 160 : 240),
+    chapterTitle: currentChapter.title,
+    chapterDirective: compactMode ? directiveExcerpt(currentChapter.directive) : shortText(currentChapter.directive, 360),
+    chapterOpening: compactMode ? normalizeScalarText(currentChapter.openingText).slice(0, 120) : shortText(currentChapter.openingText, 180),
     roles,
     wildcardRoles: roles
       .filter((item) => roleActsAsWildcard(item))
-      .map((item) => ({
-        id: item.id,
-        name: item.name,
-        roleType: item.roleType,
-      })),
+      .map((item) => item),
     narratorActsAsWildcardFallback: roles.every((item) => !roleActsAsWildcard(item)),
-    state: input.state,
+    storyState: summarizeStoryState(input.state),
     turnState,
-    recentDialogue: recentDialogueText(input.recentMessages),
+    recentDialogue: compactMode ? recentDialogueText(input.recentMessages, 4, 500) : recentDialogueText(input.recentMessages),
     latestPlayerMessage: normalizeScalarText(input.playerMessage),
   };
   const hasPlayerInput = payload.latestPlayerMessage.length > 0;
   const isSkip = payload.latestPlayerMessage === ".";
-
-  const output = {
-    roleType: z.string().optional().describe("本轮说话角色类型，必须是 narrator 或 npc"),
-    speaker: z.string().optional().describe("说话角色名称，必须来自当前角色列表"),
-    content: z.string().optional().describe("本轮真实输出给用户看到的内容"),
-    awaitUser: z.boolean().optional().describe("这轮结束后是否轮到用户发言"),
-    nextRoleType: z.string().optional().describe("下一轮预计发言角色类型：player / narrator / npc"),
-    nextSpeaker: z.string().optional().describe("下一轮预计发言角色名称"),
-    chapterOutcome: z.enum(["continue", "success", "failed"]).optional().describe("本轮后章节是否继续"),
-    nextChapterId: z.number().optional().describe("若章节成功且指定跳转章节，则返回章节 id"),
-    memoryHints: z.array(z.string()).optional().describe("需要记忆管理器关注的要点"),
-    stateDelta: z.record(z.string(), z.any()).optional().describe("需要写回状态的简单字段变化"),
-  };
 
   try {
     const result = await u.ai.text.invoke(
@@ -465,69 +865,144 @@ export async function runNarrativeOrchestrator(input: OrchestratorInput): Promis
         messages: [
           {
             role: "system",
-            content: buildOrchestratorSystemPrompt(prompts.storyMain, prompts.storyOrchestrator),
+            content: buildOrchestratorSystemPrompt(prompts.storyMain, prompts.storyOrchestrator, compactMode),
           },
           {
             role: "user",
-            content: JSON.stringify(payload, null, 2),
+            content: buildOrchestratorUserPrompt(payload),
           },
         ],
-        output,
         maxRetries: input.maxRetries,
       },
       promptAiConfig as any,
+	    );
+    const rawText = unwrapModelText((result as any)?.text || "");
+    const objectLike = parseJsonSafe<Record<string, unknown>>(rawText, {});
+    const fieldMap = parseFieldMap(rawText);
+    const speaker = normalizeScalarText(
+      (objectLike && Object.keys(objectLike).length ? objectLike.speaker : undefined)
+      || getPlainField(fieldMap, "speaker"),
     );
+    const roleType = sanitizeRoleType(
+      (objectLike && Object.keys(objectLike).length ? objectLike.roleType : undefined)
+      || getPlainField(fieldMap, "role_type", "roletype"),
+    );
+    const matchedRole = (speaker
+      ? roles.find((item) => normalizeScalarText(item.name) === speaker)
+      : null)
+      || (roleType !== "player"
+        ? roles.find((item) => sanitizeRoleType(item.roleType) === roleType && sanitizeRoleType(item.roleType) !== "player")
+        : null)
+      || null;
+    const motive = normalizeGeneratedLine(
+      (objectLike && Object.keys(objectLike).length ? objectLike.motive : undefined)
+      || getPlainField(fieldMap, "motive"),
+      compactMode ? 100 : 160,
+    );
+    const awaitUser = parsePlainBoolean(
+      (objectLike && Object.keys(objectLike).length ? objectLike.awaitUser : undefined)
+      || getPlainField(fieldMap, "await_user", "awaituser"),
+    );
+    const rolePair = rolePairForWorld(input.world);
+    const rawNextRoleType = normalizeScalarText(
+      (objectLike && Object.keys(objectLike).length ? objectLike.nextRoleType : undefined)
+      || getPlainField(fieldMap, "next_role_type", "nextroletype"),
+    );
+    const nextRoleType = sanitizeRoleType(rawNextRoleType || (awaitUser ? "player" : matchedRole?.roleType || turnState.expectedRoleType || "narrator"));
+    const rawNextRole = normalizeScalarText(
+      (objectLike && Object.keys(objectLike).length ? objectLike.nextSpeaker : undefined)
+      || getPlainField(fieldMap, "next_speaker", "nextspeaker"),
+    );
+    const nextRole = rawNextRole || (
+      nextRoleType === "player"
+        ? normalizeScalarText(rolePair.playerRole.name) || "用户"
+        : normalizeScalarText(matchedRole?.name || turnState.expectedRole) || "旁白"
+    );
+    const chapterOutcome = String(
+      (objectLike && Object.keys(objectLike).length ? objectLike.chapterOutcome : undefined)
+      || getPlainField(fieldMap, "chapter_outcome", "chapteroutcome")
+      || "continue",
+    ).trim().toLowerCase();
+    const nextChapterIdRaw = normalizeScalarText(
+      (objectLike && Object.keys(objectLike).length ? objectLike.nextChapterId : undefined)
+      || getPlainField(fieldMap, "next_chapter_id", "nextchapterid"),
+    );
+    const nextChapterId = Number(nextChapterIdRaw || 0);
+    const memoryHints = Array.isArray(objectLike?.memoryHints)
+      ? (objectLike as any).memoryHints.map((item: unknown) => normalizeScalarText(item)).filter(Boolean)
+      : parsePlainList(getPlainField(fieldMap, "memory_hints", "memoryhints"));
+    const stateDelta = (objectLike && objectLike.stateDelta && typeof objectLike.stateDelta === "object" && !Array.isArray(objectLike.stateDelta))
+      ? asRecord(objectLike.stateDelta)
+      : parsePlainStateDelta(getPlainField(fieldMap, "state_delta", "statedelta"));
 
-    const speaker = normalizeScalarText((result as any)?.speaker);
-    const roleType = sanitizeRoleType((result as any)?.roleType);
-    const matchedRole = roles.find((item) => item.name === speaker)
-      || roles.find((item) => item.roleType === roleType && item.roleType !== "player")
-      || roles.find((item) => item.roleType === "narrator")
-      || roles[0];
-    const content = normalizeScalarText((result as any)?.content);
-    const awaitUser = Boolean((result as any)?.awaitUser);
-    const nextRoleType = sanitizeRoleType((result as any)?.nextRoleType || "player");
-    const nextRole = normalizeScalarText((result as any)?.nextSpeaker);
-    const chapterOutcome = String((result as any)?.chapterOutcome || "continue").trim().toLowerCase();
-    const nextChapterId = Number((result as any)?.nextChapterId || 0);
-    const memoryHints = Array.isArray((result as any)?.memoryHints)
-      ? (result as any).memoryHints.map((item: unknown) => normalizeScalarText(item)).filter(Boolean)
-      : [];
-    const stateDelta = asRecord((result as any)?.stateDelta);
+    const normalizedOutcome = chapterOutcome === "failed" ? "failed" : chapterOutcome === "success" ? "success" : "continue";
+    const canYieldDirectly = awaitUser && hasPlayerInput && !matchedRole;
+    if (motive && looksLikeDirectiveLeak(motive, currentChapter.directive, currentChapter.openingText)) {
+      throw createRuntimeModelError("orchestrator", "模型返回结构无效或泄漏了内部编排内容");
+    }
 
-    if ((((matchedRole && content) || (awaitUser && hasPlayerInput))) && !looksLikeDirectiveLeak(content, currentChapter.directive, currentChapter.openingText)) {
+    if (matchedRole) {
+      if (!motive) {
+        throw createRuntimeModelError("orchestrator", "模型返回结构无效或缺少发言动机");
+      }
+      const content = await runStorySpeaker({
+        userId: input.userId,
+        world: input.world,
+        chapter: input.chapter,
+        state: input.state,
+        recentMessages: input.recentMessages,
+        playerMessage: input.playerMessage,
+        currentRole: matchedRole,
+        motive,
+      });
       if (isSkip) {
-        const skipRole = matchedRole || roles.find((item) => item.roleType === "narrator") || roles[0];
-        const skipContent = content || "你选择暂时沉默，其他角色顺势接过话头，剧情继续推进。";
         return {
-          role: skipRole?.name || "旁白",
-          roleType: sanitizeRoleType(skipRole?.roleType || "narrator"),
-          content: skipContent,
+          role: matchedRole.name,
+          roleType: sanitizeRoleType(matchedRole.roleType || "narrator"),
+          motive,
+          content,
           memoryHints,
           stateDelta,
           awaitUser: false,
-          nextRole: normalizeScalarText(skipRole?.name) || "旁白",
-          nextRoleType: sanitizeRoleType(skipRole?.roleType || "narrator"),
-          chapterOutcome: chapterOutcome === "failed" ? "failed" : chapterOutcome === "success" ? "success" : "continue",
+          nextRole: normalizeScalarText(nextRole || matchedRole.name),
+          nextRoleType: sanitizeRoleType(nextRoleType || matchedRole.roleType || "narrator"),
+          chapterOutcome: normalizedOutcome,
           nextChapterId: Number.isFinite(nextChapterId) && nextChapterId > 0 ? nextChapterId : null,
           source: "ai",
         };
       }
       return {
-        role: awaitUser ? "" : matchedRole.name,
-        roleType: awaitUser ? "player" : matchedRole.roleType,
-        content: awaitUser ? "" : content,
+        role: matchedRole.name,
+        roleType: matchedRole.roleType,
+        motive,
+        content,
         memoryHints,
         stateDelta,
         awaitUser,
         nextRole,
         nextRoleType,
-        chapterOutcome: chapterOutcome === "failed" ? "failed" : chapterOutcome === "success" ? "success" : "continue",
+        chapterOutcome: normalizedOutcome,
         nextChapterId: Number.isFinite(nextChapterId) && nextChapterId > 0 ? nextChapterId : null,
         source: "ai",
       };
     }
-    throw createRuntimeModelError("orchestrator", "模型返回结构无效或泄漏了内部编排内容");
+    if (canYieldDirectly) {
+      return {
+        role: "",
+        roleType: "player",
+        motive: "",
+        content: "",
+        memoryHints,
+        stateDelta,
+        awaitUser: true,
+        nextRole,
+        nextRoleType,
+        chapterOutcome: normalizedOutcome,
+        nextChapterId: Number.isFinite(nextChapterId) && nextChapterId > 0 ? nextChapterId : null,
+        source: "ai",
+      };
+    }
+    throw createRuntimeModelError("orchestrator", "模型返回结构无效或缺少可执行的角色编排");
   } catch (err) {
     console.warn("[story:orchestrator] error", {
       manufacturer: (promptAiConfig as any)?.manufacturer || "",
@@ -548,7 +1023,7 @@ export async function runStoryMemoryManager(input: {
   recentMessages: RuntimeMessageInput[];
 }): Promise<MemoryManagerResult> {
   const prompts = await loadStoryPrompts();
-  const promptAiConfig = await u.getPromptAi("storyMemoryModel", input.userId);
+  const promptAiConfig = await resolveTextStageModel(input.userId, "storyMemoryModel");
   const payload = {
     worldName: normalizeScalarText(input.world?.name),
     chapterTitle: normalizeScalarText(input.chapter?.title),
@@ -567,26 +1042,32 @@ export async function runStoryMemoryManager(input: {
               "输出要求：",
               "1. 只提炼对后续剧情有用的事实。",
               "2. 不写剧情正文。",
-              "3. 输出 JSON。",
+              "3. 本阶段禁止 JSON、禁止代码块，只按字段逐行输出。",
+              "4. 严格使用以下字段名：summary / facts / tags。",
             ].filter(Boolean).join("\n\n"),
           },
           {
             role: "user",
-            content: JSON.stringify(payload, null, 2),
+            content: buildMemoryUserPrompt(payload),
           },
         ],
-        output: {
-          summary: z.string().describe("本轮后的记忆摘要"),
-          facts: z.array(z.string()).optional().describe("事实列表"),
-          tags: z.array(z.string()).optional().describe("索引标签"),
-        },
       },
       promptAiConfig as any,
     );
+    const rawText = unwrapModelText((result as any)?.text || "");
+    const objectLike = parseJsonSafe<Record<string, unknown>>(rawText, {});
+    const fieldMap = parseFieldMap(rawText);
     return {
-      summary: normalizeScalarText((result as any)?.summary),
-      facts: Array.isArray((result as any)?.facts) ? (result as any).facts.map((item: unknown) => normalizeScalarText(item)).filter(Boolean) : [],
-      tags: Array.isArray((result as any)?.tags) ? (result as any).tags.map((item: unknown) => normalizeScalarText(item)).filter(Boolean) : [],
+      summary: normalizeScalarText(
+        (objectLike && Object.keys(objectLike).length ? objectLike.summary : undefined)
+        || getPlainField(fieldMap, "summary"),
+      ),
+      facts: Array.isArray(objectLike?.facts)
+        ? (objectLike as any).facts.map((item: unknown) => normalizeScalarText(item)).filter(Boolean)
+        : parsePlainList(getPlainField(fieldMap, "facts")),
+      tags: Array.isArray(objectLike?.tags)
+        ? (objectLike as any).tags.map((item: unknown) => normalizeScalarText(item)).filter(Boolean)
+        : parsePlainList(getPlainField(fieldMap, "tags")),
       source: "ai",
     };
   } catch (err) {

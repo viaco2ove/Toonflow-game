@@ -3,7 +3,7 @@ import { generateText, streamText, Output, stepCountIs, ModelMessage, LanguageMo
 import { wrapLanguageModel } from "ai";
 import { devToolsMiddleware } from "@ai-sdk/devtools";
 import { parse } from "best-effort-json-parser";
-import { getModelList } from "./modelList";
+import { getModelList, normalizeTextModelName } from "./modelList";
 import { z } from "zod";
 import { OpenAIProvider } from "@ai-sdk/openai";
 interface AIInput<T extends Record<string, z.ZodTypeAny> | undefined = undefined> {
@@ -133,7 +133,9 @@ function createDebugFetch(label: string): typeof fetch {
 
 const buildOptions = async (input: AIInput<any>, config: AIConfig = {}) => {
   if (!config || !config?.model || !config?.apiKey || !config?.manufacturer) throw new Error("请检查模型配置是否正确");
-  const { model, apiKey, baseURL, manufacturer } = { ...config };
+  const { apiKey, baseURL, manufacturer } = { ...config };
+  const requestedModel = String(config?.model || "").trim();
+  const model = normalizeTextModelName(manufacturer, requestedModel);
   let owned;
   const modelList = await getModelList();
   if (manufacturer == "other") {
@@ -178,6 +180,7 @@ const buildOptions = async (input: AIInput<any>, config: AIConfig = {}) => {
   debugLog("buildOptions", {
     manufacturer,
     model,
+    ...(requestedModel && requestedModel !== model ? { requestedModel } : {}),
     baseURL: baseURL || "",
     apiKey: maskKey(apiKey),
     ownedManufacturer: owned.manufacturer,

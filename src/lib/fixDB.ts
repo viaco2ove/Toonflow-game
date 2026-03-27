@@ -1,6 +1,21 @@
 import { Knex } from "knex";
 
 export default async (knex: Knex): Promise<void> => {
+  const legacyVolcengineTextModelAliases: Record<string, string> = {
+    "Doubao-Seed-2.0-pro": "doubao-seed-2-0-pro-260215",
+    "Doubao-Seed-2.0-lite": "doubao-seed-2-0-lite-260215",
+    "Doubao-Seed-2.0-mini": "doubao-seed-2-0-mini-260215",
+  };
+  const volcengineTextModels = [
+    { manufacturer: "volcengine", model: "doubao-seed-2-0-pro-260215", responseFormat: "object", image: 1, think: 1, tool: 1 },
+    { manufacturer: "volcengine", model: "doubao-seed-2-0-lite-260215", responseFormat: "object", image: 1, think: 1, tool: 1 },
+    { manufacturer: "volcengine", model: "doubao-seed-2-0-mini-260215", responseFormat: "object", image: 1, think: 1, tool: 1 },
+    { manufacturer: "volcengine", model: "doubao-seed-1-8-251228", responseFormat: "object", image: 1, think: 1, tool: 1 },
+    { manufacturer: "volcengine", model: "doubao-seed-1-6-251015", responseFormat: "object", image: 1, think: 1, tool: 1 },
+    { manufacturer: "volcengine", model: "doubao-seed-1-6-lite-251015", responseFormat: "object", image: 1, think: 1, tool: 1 },
+    { manufacturer: "volcengine", model: "doubao-seed-1-6-flash-250828", responseFormat: "object", image: 1, think: 1, tool: 1 },
+  ];
+
   const ensureTable = async (table: string, builder: (table: Knex.CreateTableBuilder) => void) => {
     if (!(await knex.schema.hasTable(table))) {
       await knex.schema.createTable(table, builder);
@@ -59,6 +74,41 @@ export default async (knex: Knex): Promise<void> => {
       const maxIdResult = (await knex("t_videoModel").max("id as maxId").first()) as { maxId?: number } | undefined;
       const nextId = (maxIdResult?.maxId || 0) + 1;
       await knex("t_videoModel").insert({
+        id: nextId,
+        ...item,
+      });
+    }
+  };
+
+  const upsertTextModels = async (
+    models: Array<{
+      manufacturer: string;
+      model: string;
+      responseFormat: string;
+      image: number;
+      think: number;
+      tool: number;
+    }>,
+  ) => {
+    if (!(await knex.schema.hasTable("t_textModel"))) return;
+    for (const item of models) {
+      const exists = await knex("t_textModel")
+        .where({ manufacturer: item.manufacturer, model: item.model })
+        .first();
+      if (exists) {
+        await knex("t_textModel")
+          .where({ id: (exists as any).id })
+          .update({
+            responseFormat: item.responseFormat,
+            image: item.image,
+            think: item.think,
+            tool: item.tool,
+          });
+        continue;
+      }
+      const maxIdResult = (await knex("t_textModel").max("id as maxId").first()) as { maxId?: number } | undefined;
+      const nextId = (maxIdResult?.maxId || 0) + 1;
+      await knex("t_textModel").insert({
         id: nextId,
         ...item,
       });
@@ -419,18 +469,28 @@ export default async (knex: Knex): Promise<void> => {
 
   await upsertVideoModels(kieaiModels);
 
-  // 兼容老库：补齐 t8star 文本模型
+  // 兼容老库：补齐 volcengine / t8star 文本模型
   if (await knex.schema.hasTable("t_textModel")) {
+    for (const [legacyModel, canonicalModel] of Object.entries(legacyVolcengineTextModelAliases)) {
+      await knex("t_textModel")
+        .whereIn("manufacturer", ["volcengine", "doubao"])
+        .andWhere("model", legacyModel)
+        .update({
+          model: canonicalModel,
+          responseFormat: "object",
+          image: 1,
+          think: 1,
+          tool: 1,
+        });
+    }
+
     const t8starTextModels = [
-      { manufacturer: "t8star", model: "gpt-5.4-pro", responseFormat: "schema", image: 1, think: 1, tool: 1 },
-      { manufacturer: "t8star", model: "gemini-2.5-pro", responseFormat: "schema", image: 1, think: 1, tool: 1 },
+      { manufacturer: "t8star", model: "gpt-5.4-pro", responseFormat: "object", image: 1, think: 1, tool: 1 },
+      { manufacturer: "t8star", model: "gemini-2.5-pro", responseFormat: "object", image: 1, think: 1, tool: 1 },
     ];
 
-    for (const item of t8starTextModels) {
-      const exists = await knex("t_textModel").where({ manufacturer: item.manufacturer, model: item.model }).first();
-      if (exists) continue;
-      await knex("t_textModel").insert(item);
-    }
+    await upsertTextModels(volcengineTextModels);
+    await upsertTextModels(t8starTextModels);
   }
 
   if (await knex.schema.hasTable("t_voiceModel")) {
@@ -448,6 +508,15 @@ export default async (knex: Knex): Promise<void> => {
   }
 
   if (await knex.schema.hasTable("t_config")) {
+    for (const [legacyModel, canonicalModel] of Object.entries(legacyVolcengineTextModelAliases)) {
+      await knex("t_config")
+        .where({ type: "text", model: legacyModel })
+        .whereIn("manufacturer", ["volcengine", "doubao"])
+        .update({
+          model: canonicalModel,
+        });
+    }
+
     await knex("t_config")
       .where({ type: "voice", manufacturer: "aliyun_direct" })
       .whereRaw("lower(coalesce(modelType, '')) = ?", ["tts"])
@@ -480,6 +549,7 @@ export default async (knex: Knex): Promise<void> => {
     { name: "视频提示词生成", key: "videoPrompt" },
     { name: "图片编辑", key: "editImage" },
     { name: "AI故事-编排师", key: "storyOrchestratorModel" },
+    { name: "AI故事-角色发言", key: "storySpeakerModel" },
     { name: "AI故事-记忆管理", key: "storyMemoryModel" },
     { name: "AI故事-AI生图", key: "storyImageModel" },
     { name: "AI故事-语音设计", key: "storyVoiceDesignModel" },
@@ -516,7 +586,15 @@ export default async (knex: Knex): Promise<void> => {
         type: "subAgent",
         parentCode: "story-main",
         defaultValue:
-          "你是剧情编排师。你负责生成本轮剧情动作、说话角色、台词、事件推进和分支选择。你只能使用当前运行态中的角色与章节信息，只输出可落库的结构化结果；如果需要抽记忆，输出 memory_hints。",
+          "你是剧情编排师。你只负责决定本轮由谁发言、为什么发言、局势如何推进，以及这轮后是否轮到用户。你不能直接写最终展示给用户的台词，只输出可落库的结构化编排结果；如果需要抽记忆，输出 memory_hints。",
+      },
+      {
+        code: "story-speaker",
+        name: "AI故事-角色发言",
+        type: "subAgent",
+        parentCode: "story-main",
+        defaultValue:
+          "你是角色发言器。你只根据既定的 speaker、motive、最近对话和精炼上下文，生成当前这一轮真正展示给用户看的台词或旁白。你不能改变说话人，不能泄漏内部编排内容。",
       },
       {
         code: "story-memory",
@@ -554,7 +632,8 @@ export default async (knex: Knex): Promise<void> => {
     const existingRows = await knex("t_prompts").whereIn(
       "code",
       storyPrompts.map((item) => item.code),
-    ).select("code");
+    ).select("id", "code", "customValue");
+    const existingCodeMap = new Map(existingRows.map((item: any) => [String(item.code), item]));
     const existingCodes = new Set(existingRows.map((item: any) => String(item.code)));
     let nextId = Number(((await knex("t_prompts").max({ maxId: "id" }).first()) as any)?.maxId || 0) + 1;
     const rowsToInsert = storyPrompts
@@ -566,6 +645,18 @@ export default async (knex: Knex): Promise<void> => {
       }));
     if (rowsToInsert.length) {
       await knex("t_prompts").insert(rowsToInsert);
+    }
+    for (const item of storyPrompts) {
+      const existed = existingCodeMap.get(item.code);
+      if (!existed?.id) continue;
+      await knex("t_prompts")
+        .where("id", existed.id)
+        .update({
+          name: item.name,
+          type: item.type,
+          parentCode: item.parentCode,
+          defaultValue: item.defaultValue,
+        });
     }
   }
 

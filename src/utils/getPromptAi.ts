@@ -9,6 +9,7 @@ interface AiConfig {
 
 const STRICT_MODEL_KEYS = new Set([
   "storyOrchestratorModel",
+  "storySpeakerModel",
   "storyMemoryModel",
   "storyImageModel",
   "storyVoiceModel",
@@ -56,6 +57,7 @@ export default async function getPromptAi(key: string, userId?: number): Promise
   if (!aiConfigData) {
     const fallbackTypeMap: Record<string, string> = {
       storyOrchestratorModel: "text",
+      storySpeakerModel: "text",
       storyMemoryModel: "text",
       storyImageModel: "image",
       storyVoiceModel: "voice",

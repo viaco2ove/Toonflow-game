@@ -38,52 +38,90 @@ const instanceMap = {
 
 type DefaultOwned = Omit<Owned, "manufacturer" | "instance">;
 
+const VOLCENGINE_TEXT_MANUFACTURERS = new Set(["volcengine", "doubao"]);
+const LEGACY_VOLCENGINE_TEXT_MODEL_ALIASES: Record<string, string> = {
+  "Doubao-Seed-2.0-pro": "doubao-seed-2-0-pro-260215",
+  "Doubao-Seed-2.0-lite": "doubao-seed-2-0-lite-260215",
+  "Doubao-Seed-2.0-mini": "doubao-seed-2-0-mini-260215",
+};
+const VOLCENGINE_OBJECT_RESPONSE_MODELS = new Set([
+  "doubao-seed-2-0-pro-260215",
+  "doubao-seed-2-0-lite-260215",
+  "doubao-seed-2-0-mini-260215",
+  "doubao-seed-1-8-251228",
+  "doubao-seed-1-6-251015",
+  "doubao-seed-1-6-lite-251015",
+  "doubao-seed-1-6-flash-250828",
+]);
+
+export function normalizeTextModelName(manufacturer: unknown, model: unknown): string {
+  const manufacturerKey = String(manufacturer || "").trim().toLowerCase();
+  const modelName = String(model || "").trim();
+  if (!modelName) return "";
+  if (!VOLCENGINE_TEXT_MANUFACTURERS.has(manufacturerKey)) return modelName;
+  return LEGACY_VOLCENGINE_TEXT_MODEL_ALIASES[modelName] || modelName;
+}
+
+export function normalizeTextResponseFormat(
+  manufacturer: unknown,
+  model: unknown,
+  responseFormat: unknown,
+): "schema" | "object" {
+  const manufacturerKey = String(manufacturer || "").trim().toLowerCase();
+  const modelName = normalizeTextModelName(manufacturer, model);
+  if (manufacturerKey === "t8star") return "object";
+  if (VOLCENGINE_TEXT_MANUFACTURERS.has(manufacturerKey) && VOLCENGINE_OBJECT_RESPONSE_MODELS.has(modelName)) {
+    return "object";
+  }
+  return responseFormat === "object" ? "object" : "schema";
+}
+
 const DOUBAO_TEXT_MODELS: DefaultOwned[] = [
   {
     model: "doubao-seed-2-0-pro-260215",
-    responseFormat: "schema",
+    responseFormat: "object",
     image: true,
     think: true,
     tool: true,
   },
   {
     model: "doubao-seed-2-0-lite-260215",
-    responseFormat: "schema",
+    responseFormat: "object",
     image: true,
     think: true,
     tool: true,
   },
   {
     model: "doubao-seed-2-0-mini-260215",
-    responseFormat: "schema",
+    responseFormat: "object",
     image: true,
     think: true,
     tool: true,
   },
   {
     model: "doubao-seed-1-8-251228",
-    responseFormat: "schema",
+    responseFormat: "object",
     image: true,
     think: true,
     tool: true,
   },
   {
     model: "doubao-seed-1-6-251015",
-    responseFormat: "schema",
+    responseFormat: "object",
     image: true,
     think: true,
     tool: true,
   },
   {
     model: "doubao-seed-1-6-lite-251015",
-    responseFormat: "schema",
+    responseFormat: "object",
     image: true,
     think: true,
     tool: true,
   },
   {
     model: "doubao-seed-1-6-flash-250828",
-    responseFormat: "schema",
+    responseFormat: "object",
     image: true,
     think: true,
     tool: true,
@@ -120,12 +158,12 @@ function createAliasedModels(manufacturers: string[], items: DefaultOwned[]): Ow
 function toOwnedModel(model: any): Owned | null {
   const manufacturer = String(model?.manufacturer || "").trim();
   const instance = instanceMap[manufacturer as keyof typeof instanceMap];
-  const modelName = String(model?.model || "").trim();
+  const modelName = normalizeTextModelName(manufacturer, model?.model);
   if (!manufacturer || !instance || !modelName) return null;
   return {
     manufacturer,
     model: modelName,
-    responseFormat: manufacturer === "t8star" ? "object" : model?.responseFormat === "object" ? "object" : "schema",
+    responseFormat: normalizeTextResponseFormat(manufacturer, modelName, model?.responseFormat),
     image: model?.image == 1 || model?.image === true,
     think: model?.think == 1 || model?.think === true,
     tool: model?.tool == 1 || model?.tool === true,
