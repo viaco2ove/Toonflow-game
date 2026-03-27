@@ -778,6 +778,7 @@ async function runStorySpeaker(input: {
   try {
     const result = await u.ai.text.invoke(
       {
+        plainTextOutput: true,
         messages: [
           {
             role: "system",
@@ -862,6 +863,7 @@ export async function runNarrativeOrchestrator(input: OrchestratorInput): Promis
   try {
     const result = await u.ai.text.invoke(
       {
+        plainTextOutput: true,
         messages: [
           {
             role: "system",
@@ -1024,16 +1026,20 @@ export async function runStoryMemoryManager(input: {
 }): Promise<MemoryManagerResult> {
   const prompts = await loadStoryPrompts();
   const promptAiConfig = await resolveTextStageModel(input.userId, "storyMemoryModel");
+  const compactMode = shouldUseCompactOrchestratorPayload(promptAiConfig);
   const payload = {
     worldName: normalizeScalarText(input.world?.name),
     chapterTitle: normalizeScalarText(input.chapter?.title),
-    recentDialogue: recentDialogueText(input.recentMessages),
-    currentMemory: input.state.memorySummary ?? "",
+    recentDialogue: compactMode
+      ? recentDialogueText(input.recentMessages, 6, 800)
+      : recentDialogueText(input.recentMessages, 10, 1600),
+    currentMemory: shortText(input.state.memorySummary ?? "", compactMode ? 160 : 320),
   };
 
   try {
     const result = await u.ai.text.invoke(
       {
+        plainTextOutput: true,
         messages: [
           {
             role: "system",
@@ -1084,6 +1090,39 @@ export function applyMemoryResultToState(state: JsonRecord, memory: MemoryManage
   state.memorySummary = memory.summary;
   state.memoryFacts = memory.facts;
   state.memoryTags = memory.tags;
+}
+
+export async function refreshStoryMemoryBestEffort(input: {
+  userId: number;
+  world: any;
+  chapter: any;
+  state: JsonRecord;
+  recentMessages: RuntimeMessageInput[];
+}): Promise<MemoryManagerResult | null> {
+  const recentMessages = Array.isArray(input.recentMessages) ? input.recentMessages.filter(Boolean) : [];
+  if (!recentMessages.length) return null;
+  try {
+    const memory = await runStoryMemoryManager({
+      ...input,
+      recentMessages,
+    });
+    if (!memory.summary && !memory.facts.length && !memory.tags.length) {
+      return null;
+    }
+    applyMemoryResultToState(input.state, memory);
+    return memory;
+  } catch (err) {
+    const message = normalizeScalarText((err as any)?.message || String(err));
+    if (/未配置/.test(message)) {
+      return null;
+    }
+    console.warn("[story:memory] refresh skipped", {
+      message,
+      chapterId: Number(input.chapter?.id || 0),
+      recentMessageCount: recentMessages.length,
+    });
+    return null;
+  }
 }
 
 export function applyOrchestratorResultToState(state: JsonRecord, result: OrchestratorResult) {

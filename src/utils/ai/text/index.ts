@@ -12,6 +12,7 @@ interface AIInput<T extends Record<string, z.ZodTypeAny> | undefined = undefined
   maxStep?: number;
   maxRetries?: number;
   output?: T;
+  plainTextOutput?: boolean;
   prompt?: string;
   messages?: Array<ModelMessage>;
 }
@@ -171,7 +172,9 @@ const buildOptions = async (input: AIInput<any>, config: AIConfig = {}) => {
     },
   };
 
-  const output = input.output ? (outputBuilders[owned.responseFormat]?.(input.output) ?? null) : null;
+  const output = input.output && !input.plainTextOutput
+    ? (outputBuilders[owned.responseFormat]?.(input.output) ?? null)
+    : null;
   const chatModelManufacturer = ["volcengine", "doubao", "other", "openai", "modelScope", "grsai", "t8star"];
   const modelFn = chatModelManufacturer.includes(owned.manufacturer) ? (modelInstance as OpenAIProvider).chat(model!) : modelInstance(model!);
 
@@ -189,6 +192,7 @@ const buildOptions = async (input: AIInput<any>, config: AIConfig = {}) => {
     toolCount: input.tools ? Object.keys(input.tools).length : 0,
     maxStep: maxStep ?? 0,
     outputKeys,
+    plainTextOutput: Boolean(input.plainTextOutput),
     messageCount,
     promptPreview: trimPreview(input.prompt || ""),
   });
@@ -242,7 +246,7 @@ ai.invoke = async (input: AIInput<any>, config: AIConfig) => {
       hasObject: Boolean((result as any)?.object),
       warningsCount: Array.isArray((result as any)?.warnings) ? (result as any).warnings.length : 0,
     });
-    if (options.responseFormat === "object" && input.output) {
+    if (!input.plainTextOutput && options.responseFormat === "object" && input.output) {
       const pattern = /{[^{}]*}|{(?:[^{}]*|{[^{}]*})*}/g;
       const jsonLikeTexts = Array.from(result.text.matchAll(pattern), (m) => m[0]);
 
@@ -253,7 +257,7 @@ ai.invoke = async (input: AIInput<any>, config: AIConfig) => {
       });
       return res[0];
     }
-    if (options.responseFormat === "schema" && input.output) {
+    if (!input.plainTextOutput && options.responseFormat === "schema" && input.output) {
       const objectResult =
         (result as any)?.object ??
         (result as any)?.output ??

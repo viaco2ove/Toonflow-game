@@ -46,6 +46,7 @@ type DirectAliyunCustomVoiceMode = Extract<VoiceMode, "clone" | "mix" | "prompt_
 const DIRECT_ALIYUN_CUSTOM_VOICE_CACHE = new Map<string, { voiceId: string; createdAt: number }>();
 const DIRECT_ALIYUN_CUSTOM_VOICE_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 const DIRECT_ALIYUN_CUSTOM_VOICE_READY_RETRY_DELAYS_MS = [1500, 2500, 4000];
+const DIRECT_ALIYUN_SUPPORTED_SAMPLE_RATES = new Set([8000, 16000, 22050, 24000, 44100, 48000]);
 const DIRECT_AUDIO_CONTENT_TYPE_MAP: Record<string, string> = {
   wav: "audio/wav",
   mp3: "audio/mpeg",
@@ -57,6 +58,18 @@ const DIRECT_AUDIO_CONTENT_TYPE_MAP: Record<string, string> = {
 
 function trimText(input?: unknown): string {
   return String(input || "").trim();
+}
+
+function normalizePreviewFormat(input?: unknown): string {
+  const raw = String(input || "").trim().toLowerCase();
+  if (["wav", "mp3", "pcm"].includes(raw)) return raw;
+  return "wav";
+}
+
+function normalizePreviewSampleRate(input?: unknown): number | null {
+  const value = Number(input || 0);
+  if (!Number.isFinite(value)) return null;
+  return DIRECT_ALIYUN_SUPPORTED_SAMPLE_RATES.has(value) ? value : null;
 }
 
 function sha1(input: string): string {
@@ -488,10 +501,12 @@ async function createDirectAliyunCustomVoice(options: {
   mode: DirectAliyunCustomVoiceMode;
   referenceAudioSource?: string;
   promptText?: string;
+  sampleRate?: number | null;
   mixVoices?: Array<{ voiceId: string; weight?: number | null }>;
   voiceDesignConfig?: VoiceDesignConfig | null;
 }): Promise<{ voiceId: string; fresh: boolean; responseData: Record<string, any> | null }> {
   const targetModel = normalizeAliyunDirectTtsModel(trimText(options.config?.model));
+  const requestedSampleRate = normalizePreviewSampleRate(options.sampleRate) || 24000;
   const cacheKey = buildDirectAliyunCustomVoiceCacheKey({
     configId: Number(options.config?.id || 0),
     targetModel,
@@ -530,7 +545,7 @@ async function createDirectAliyunCustomVoice(options: {
           prefix: buildDirectAliyunVoiceName(preferredName, 10),
         },
         parameters: {
-          sample_rate: 24000,
+          sample_rate: requestedSampleRate,
           response_format: "wav",
         },
       };
@@ -546,7 +561,7 @@ async function createDirectAliyunCustomVoice(options: {
           language: "zh",
         },
         parameters: {
-          sample_rate: 24000,
+          sample_rate: requestedSampleRate,
           response_format: "wav",
         },
       };
@@ -562,7 +577,7 @@ async function createDirectAliyunCustomVoice(options: {
         prefix: buildDirectAliyunVoiceName(preferredName, 10),
       },
       parameters: {
-        sample_rate: 24000,
+        sample_rate: requestedSampleRate,
         response_format: "wav",
       },
     };
@@ -579,7 +594,7 @@ async function createDirectAliyunCustomVoice(options: {
         },
       },
       parameters: {
-        sample_rate: 24000,
+        sample_rate: requestedSampleRate,
         response_format: "wav",
       },
     };
@@ -619,6 +634,7 @@ async function synthesizeDirectAliyunPreviewAudio(options: {
   text: string;
   voiceId: string;
   format: string;
+  sampleRate?: number | null;
   speed?: number | null;
 }): Promise<{ sourceUrl: string; data: Record<string, any> }> {
   const directModel = normalizeAliyunDirectTtsModel(trimText(options.config?.model));
@@ -630,6 +646,7 @@ async function synthesizeDirectAliyunPreviewAudio(options: {
       voiceId: trimText(options.voiceId),
       text: trimText(options.text),
       format: options.format,
+      sampleRate: options.sampleRate,
       speed: options.speed,
     });
     return {
@@ -680,6 +697,7 @@ async function synthesizeDirectAliyunPreviewAudioWithRetry(options: {
   text: string;
   voiceId: string;
   format: string;
+  sampleRate?: number | null;
   speed?: number | null;
   fresh?: boolean;
 }): Promise<{ sourceUrl: string; data: Record<string, any> }> {
@@ -705,8 +723,9 @@ async function synthesizeDirectAliyunReferenceBuffer(options: {
   model: string;
   voiceId: string;
   text: string;
+  sampleRate?: number | null;
 }): Promise<Buffer> {
-  const { config, headers, model, voiceId, text } = options;
+  const { config, headers, model, voiceId, text, sampleRate } = options;
   if (isAliyunDirectCosyVoiceModel(model)) {
     return synthesizeAliyunDirectCosyVoiceBuffer({
       apiKey: String(config.apiKey || "").trim(),
@@ -715,6 +734,7 @@ async function synthesizeDirectAliyunReferenceBuffer(options: {
       voiceId,
       text,
       format: "wav",
+      sampleRate,
     });
   }
 
@@ -751,6 +771,7 @@ async function synthesizeReferenceAudioFromMode(options: {
   voiceId: string;
   promptText: string;
   mixVoices: Array<{ voiceId: string; weight?: number | null }>;
+  sampleRate?: number | null;
   resolvedProvider: string;
   textSeed?: string;
   userId: number;
@@ -765,6 +786,7 @@ async function synthesizeReferenceAudioFromMode(options: {
     voiceId,
     promptText,
     mixVoices,
+    sampleRate,
     resolvedProvider,
     textSeed = BUSINESS_VOICE_PRESET_SEED_TEXT,
     userId,
@@ -814,6 +836,7 @@ async function synthesizeReferenceAudioFromMode(options: {
             model: directModel,
             voiceId: item.voiceId,
             text: textSeed,
+            sampleRate,
           }),
           weight: item.weight,
         })),
@@ -833,6 +856,7 @@ async function synthesizeReferenceAudioFromMode(options: {
         voiceId: directVoiceId,
         text: textSeed,
         format: "wav",
+        sampleRate,
       });
       await u.oss.writeFile(cachePath, buffer);
       return cachePath;
@@ -843,6 +867,7 @@ async function synthesizeReferenceAudioFromMode(options: {
       model: directModel,
       voiceId: directVoiceId,
       text: textSeed,
+      sampleRate,
     });
     await u.oss.writeFile(cachePath, buffer);
     return cachePath;
@@ -886,6 +911,7 @@ export default router.post(
     voiceId: z.string().optional().nullable(),
     speed: z.number().optional().nullable(),
     format: z.string().optional().nullable(),
+    sampleRate: z.number().optional().nullable(),
     referenceText: z.string().optional().nullable(),
     referenceAudioBase64: z.string().optional().nullable(),
     referenceAudioPath: z.string().optional().nullable(),
@@ -912,6 +938,7 @@ export default router.post(
         voiceId,
         speed,
         format,
+        sampleRate,
         referenceText,
         referenceAudioBase64,
         referenceAudioPath,
@@ -981,9 +1008,10 @@ export default router.post(
       const payload: Record<string, any> = {
         text,
         mode,
-        format: format || "wav",
+        format: normalizePreviewFormat(format),
         use_cache: true,
       };
+      const normalizedSampleRate = normalizePreviewSampleRate(sampleRate);
       if (suppliers) {
         payload.suppliers = suppliers;
       }
@@ -1071,6 +1099,7 @@ export default router.post(
               config,
               mode,
               referenceAudioSource: resolvedReferenceAudioSource,
+              sampleRate: normalizedSampleRate,
             });
             const synthesized = await synthesizeDirectAliyunPreviewAudioWithRetry({
               config,
@@ -1079,6 +1108,7 @@ export default router.post(
               text,
               voiceId: customVoice.voiceId,
               format: payload.format,
+              sampleRate: normalizedSampleRate,
               speed,
               fresh: customVoice.fresh,
             });
@@ -1137,6 +1167,7 @@ export default router.post(
           voiceId: effectiveVoiceId,
           promptText: String(promptText || "").trim(),
           mixVoices: normalizedMixVoices,
+          sampleRate: normalizedSampleRate,
           resolvedProvider: String(payload.provider || ""),
           userId,
         });
@@ -1145,6 +1176,7 @@ export default router.post(
             config,
             mode,
             referenceAudioSource: generatedReferencePath,
+            sampleRate: normalizedSampleRate,
             mixVoices: normalizedMixVoices,
           });
           const synthesized = await synthesizeDirectAliyunPreviewAudioWithRetry({
@@ -1154,6 +1186,7 @@ export default router.post(
             text,
             voiceId: customVoice.voiceId,
             format: payload.format,
+            sampleRate: normalizedSampleRate,
             speed,
             fresh: customVoice.fresh,
           });
@@ -1187,6 +1220,7 @@ export default router.post(
             config,
             mode,
             promptText: String(promptText || "").trim(),
+            sampleRate: normalizedSampleRate,
             voiceDesignConfig,
           });
           const synthesized = await synthesizeDirectAliyunPreviewAudioWithRetry({
@@ -1196,6 +1230,7 @@ export default router.post(
             text,
             voiceId: customVoice.voiceId,
             format: payload.format,
+            sampleRate: normalizedSampleRate,
             speed,
             fresh: customVoice.fresh,
           });
@@ -1218,6 +1253,7 @@ export default router.post(
           voiceId: effectiveVoiceId,
           promptText: String(promptText || "").trim(),
           mixVoices: [],
+          sampleRate: normalizedSampleRate,
           resolvedProvider,
           userId,
           voiceDesignConfig,
@@ -1248,6 +1284,7 @@ export default router.post(
             voiceId: directVoiceId,
             text: String(text || ""),
             format: payload.format,
+            sampleRate: normalizedSampleRate,
             speed,
           });
           sourceUrl = await persistPreviewAudioBuffer(userId, buffer, payload.format);
@@ -1304,9 +1341,28 @@ export default router.post(
       res.status(200).send(success({ audioUrl, data }));
     } catch (err) {
       const axiosErr = axios.isAxiosError(err) ? err : null;
+      const upstreamCode = trimText(axiosErr?.response?.data?.code);
+      const upstreamMessage = trimText(axiosErr?.response?.data?.message);
+      let responseStatus = 500;
+      let responseMessage = u.error(err).message;
+      if (
+        upstreamCode === "Audio.DecoderError"
+        || /detect audio failed/i.test(responseMessage)
+        || /detect audio failed/i.test(upstreamMessage)
+      ) {
+        responseStatus = 400;
+        responseMessage = "参考音频无法被阿里云解码，请使用采样率大于 16kHz 的 16bit WAV/MP3/M4A/AAC 音频，并确保音频中有清晰有效的人声";
+      } else if (
+        /当前语音设计模型与所选故事语音模型不兼容|请先在设置里配置语音设计模型|当前语音模型不支持该绑定模式|克隆模式需要参考音频|提示词模式需要填写提示词|混合模式需要选择音色|语音模型配置不存在|当前阿里云直连模型不支持该绑定模式|当前阿里云直连模型缺少 API Key|参考音频需要提供公网可访问的 http/i.test(responseMessage)
+      ) {
+        responseStatus = 400;
+      } else if (axiosErr?.response?.status && axiosErr.response.status >= 400 && axiosErr.response.status < 500) {
+        responseStatus = 400;
+        responseMessage = responseMessage || upstreamMessage || "语音预览请求无效";
+      }
       console.error("[voice] preview failed", {
         ...debugContext,
-        message: u.error(err).message,
+        message: responseMessage,
         stack: err instanceof Error ? err.stack : undefined,
         upstream: axiosErr
           ? {
@@ -1318,7 +1374,7 @@ export default router.post(
             }
           : null,
       });
-      res.status(500).send(error(u.error(err).message));
+      res.status(responseStatus).send(error(responseMessage));
     }
   },
 );

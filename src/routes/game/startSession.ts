@@ -14,6 +14,7 @@ import {
 } from "@/lib/gameEngine";
 import {
   advanceNarrativeUntilPlayerTurn,
+  refreshStoryMemoryBestEffort,
   resolveOpeningMessage,
   runNarrativeOrchestrator,
   RuntimeMessageInput,
@@ -133,6 +134,13 @@ export default router.post(
           initialResult: orchestrator,
         });
         openingMessages.push(...orchestrated.messages);
+        await refreshStoryMemoryBestEffort({
+          userId: currentUserId,
+          world,
+          chapter,
+          state,
+          recentMessages: openingMessages,
+        });
       }
 
       const sessionId = createGameSessionId();

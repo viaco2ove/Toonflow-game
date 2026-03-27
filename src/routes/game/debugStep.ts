@@ -15,6 +15,7 @@ import {
   applyOrchestratorResultToState,
   canPlayerSpeakNow,
   evaluateDebugChapterOutcome,
+  refreshStoryMemoryBestEffort,
   resolveOpeningMessage,
   setRuntimeTurnState,
   runNarrativeOrchestrator,
@@ -277,6 +278,24 @@ export default router.post(
             createTime: nowTs(),
           })
           : null;
+        await refreshStoryMemoryBestEffort({
+          userId,
+          world,
+          chapter: effectiveChapter,
+          state,
+          recentMessages: emittedMessage
+            ? [
+              ...recentMessages,
+              {
+                role: emittedMessage.role,
+                roleType: emittedMessage.roleType,
+                eventType: emittedMessage.eventType,
+                content: emittedMessage.content,
+                createTime: emittedMessage.createTime,
+              },
+            ]
+            : recentMessages,
+        });
 
         if (!debugFreePlotActive && orchestrator.chapterOutcome === "failed") {
           setRuntimeTurnState(state, world, {
@@ -465,6 +484,24 @@ export default router.post(
           createTime: nowTs(),
         })
         : null;
+      await refreshStoryMemoryBestEffort({
+        userId,
+        world,
+        chapter: effectiveChapter,
+        state,
+        recentMessages: emittedMessage
+          ? [
+            ...recentMessages,
+            {
+              role: emittedMessage.role,
+              roleType: emittedMessage.roleType,
+              eventType: emittedMessage.eventType,
+              content: emittedMessage.content,
+              createTime: emittedMessage.createTime,
+            },
+          ]
+          : recentMessages,
+      });
 
       if (!debugFreePlotActive && orchestrator.chapterOutcome === "failed") {
         return res.status(200).send(success({

@@ -14,6 +14,7 @@ import {
   RuntimeMessageInput,
   allowPlayerTurn,
   canPlayerSpeakNow,
+  refreshStoryMemoryBestEffort,
   resolveOpeningMessage,
   runNarrativeOrchestrator,
   setRuntimeTurnState,
@@ -348,6 +349,13 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
         initialResult: orchestrator,
       });
       transitionMessages.push(...orchestrated.messages);
+      await refreshStoryMemoryBestEffort({
+        userId: currentUserId,
+        world,
+        chapter: switchedChapter,
+        state,
+        recentMessages: transitionMessages,
+      });
       for (let index = 0; index < transitionMessages.length; index += 1) {
         const item = transitionMessages[index];
         const inserted = await db("t_sessionMessage").insert({
@@ -391,6 +399,13 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
         recentMessages,
         playerMessage: messageContent,
         initialResult: orchestrator,
+      });
+      await refreshStoryMemoryBestEffort({
+        userId: currentUserId,
+        world,
+        chapter: playChapter,
+        state,
+        recentMessages: [...recentMessages, ...orchestrated.messages],
       });
 
       for (const item of orchestrated.messages) {
