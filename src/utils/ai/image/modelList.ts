@@ -1,3 +1,5 @@
+import {createOpenAI} from "@ai-sdk/openai";
+
 interface Owned {
   manufacturer: string;
   model: string;
@@ -65,6 +67,25 @@ const modelList: Owned[] = [
     grid: true,
     type: "ti2i",
   },
+ {
+    manufacturer: "t8star",
+    model: "gemini-2.5-flash-image",
+    grid: true,
+    type: "ti2i",
+  },
+  {
+    manufacturer: "t8star",
+    model: "gemini-3-pro-image-preview",
+    grid: true,
+    type: "ti2i",
+  },
+  {
+    manufacturer: "t8star",
+    model: "gemini-3-flash-preview",
+    grid: true,
+    type: "ti2i",
+  },
+
 ];
 
 export default modelList;
