@@ -8,7 +8,7 @@ description: Playwright-based web UI automation for navigating pages, validating
 ## Overview
 Use this skill to automate browser flows with Playwright and capture evidence.
 Prefer the bundled scripts for quick checks and one-off screenshots.
-
+wsl: [playwright.yml](../../../playwright.yml)
 ## Decide the approach
 - Use `scripts/pw_screenshot.py` for single-page screenshots or visual evidence.
 - Use `scripts/pw_smoke.py` for lightweight validations (title, text, selectors).
