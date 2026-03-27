@@ -88,6 +88,21 @@ const DOUBAO_TEXT_MODELS: DefaultOwned[] = [
     think: true,
     tool: true,
   },
+  {
+    model: "glm-4-7-251222",
+    responseFormat: "schema",
+    image: true,
+    think: true,
+    tool: true,
+  },
+  {
+    model: "deepseek-v3-2-251201",
+    responseFormat: "schema",
+    image: true,
+    think: true,
+    tool: true,
+  },
+
 ];
 
 function createAliasedModels(manufacturers: string[], items: DefaultOwned[]): Owned[] {
