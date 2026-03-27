@@ -48,6 +48,19 @@ export interface OrchestratorResult {
   source: "ai" | "fallback";
 }
 
+export interface NarrativePlanSummary {
+  role: string;
+  roleType: string;
+  motive: string;
+  awaitUser: boolean;
+  nextRole: string;
+  nextRoleType: string;
+  chapterOutcome: "continue" | "success" | "failed";
+  nextChapterId: number | null;
+  memoryHints: string[];
+  source: "ai" | "fallback";
+}
+
 export interface MemoryManagerResult {
   summary: string;
   facts: string[];
@@ -79,6 +92,18 @@ export function normalizeScalarText(input: unknown): string {
   if (!text) return "";
   if (text === "null" || text === "undefined") return "";
   return text;
+}
+
+function uniqueTextList(input: unknown[], limit: number): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const item of input) {
+    const text = normalizeScalarText(item);
+    if (!text || seen.has(text)) continue;
+    seen.add(text);
+    result.push(text);
+  }
+  return result.slice(-Math.max(1, limit));
 }
 
 function getPromptValue(row: any): string {
@@ -789,6 +814,7 @@ async function runStorySpeaker(input: {
             content: buildSpeakerUserPrompt(payload),
           },
         ],
+        maxRetries: 0,
       },
       promptAiConfig as any,
     );
@@ -874,7 +900,7 @@ export async function runNarrativeOrchestrator(input: OrchestratorInput): Promis
             content: buildOrchestratorUserPrompt(payload),
           },
         ],
-        maxRetries: input.maxRetries,
+        maxRetries: input.maxRetries ?? 0,
       },
       promptAiConfig as any,
 	    );
@@ -1057,6 +1083,7 @@ export async function runStoryMemoryManager(input: {
             content: buildMemoryUserPrompt(payload),
           },
         ],
+        maxRetries: 0,
       },
       promptAiConfig as any,
     );
@@ -1090,6 +1117,47 @@ export function applyMemoryResultToState(state: JsonRecord, memory: MemoryManage
   state.memorySummary = memory.summary;
   state.memoryFacts = memory.facts;
   state.memoryTags = memory.tags;
+}
+
+export function summarizeNarrativePlan(result: OrchestratorResult | null | undefined): NarrativePlanSummary | null {
+  if (!result) return null;
+  return {
+    role: normalizeScalarText(result.role),
+    roleType: sanitizeRoleType(result.roleType),
+    motive: normalizeScalarText(result.motive),
+    awaitUser: Boolean(result.awaitUser),
+    nextRole: normalizeScalarText(result.nextRole),
+    nextRoleType: sanitizeRoleType(result.nextRoleType),
+    chapterOutcome: result.chapterOutcome === "failed"
+      ? "failed"
+      : result.chapterOutcome === "success"
+        ? "success"
+        : "continue",
+    nextChapterId: Number.isFinite(Number(result.nextChapterId)) && Number(result.nextChapterId) > 0
+      ? Number(result.nextChapterId)
+      : null,
+    memoryHints: Array.isArray(result.memoryHints)
+      ? result.memoryHints.map((item) => normalizeScalarText(item)).filter(Boolean)
+      : [],
+    source: result.source === "fallback" ? "fallback" : "ai",
+  };
+}
+
+export function applyNarrativeMemoryHintsToState(state: JsonRecord, hints: unknown[]): string[] {
+  const nextHints = uniqueTextList(Array.isArray(hints) ? hints : [], 8);
+  if (!nextHints.length) return [];
+
+  const currentFacts = Array.isArray(state.memoryFacts)
+    ? state.memoryFacts.map((item) => normalizeScalarText(item)).filter(Boolean)
+    : [];
+  const mergedFacts = uniqueTextList([...currentFacts, ...nextHints], 8);
+  state.memoryFacts = mergedFacts;
+
+  const currentSummary = normalizeScalarText(state.memorySummary);
+  if (!currentSummary) {
+    state.memorySummary = shortText(mergedFacts.join("；"), 180);
+  }
+  return mergedFacts;
 }
 
 export async function refreshStoryMemoryBestEffort(input: {
@@ -1189,6 +1257,10 @@ export async function advanceNarrativeUntilPlayerTurn(input: OrchestratorInput &
       lastSpeakerRoleType: sanitizeRoleType(current.roleType),
       lastSpeaker: normalizeScalarText(current.role),
     });
+
+    if (step >= maxAutoTurns - 1) {
+      break;
+    }
 
     current = await runNarrativeOrchestrator({
       ...input,

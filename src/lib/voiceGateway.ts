@@ -14,6 +14,9 @@ export type VoiceSupplier = "local" | "aliyun";
 const DEFAULT_TTS_VOICE_MODES: GatewayVoiceMode[] = ["text", "clone", "mix", "prompt_voice"];
 const DIRECT_ALIYUN_COSYVOICE_TTS_VOICE_MODES: GatewayVoiceMode[] = ["text", "clone", "mix"];
 const TEXT_ONLY_VOICE_MODES: GatewayVoiceMode[] = ["text"];
+const VOICE_PRESET_CACHE_TTL_MS = 2 * 60 * 1000;
+const voicePresetCache = new Map<string, { expiresAt: number; items: GatewayVoicePreset[] }>();
+const voicePresetInflight = new Map<string, Promise<GatewayVoicePreset[]>>();
 
 const ALIYUN_DIRECT_QWEN_TTS_PRESETS: GatewayVoicePreset[] = [
   {
@@ -513,9 +516,48 @@ export function normalizeVoicePreset(item: any): GatewayVoicePreset | null {
   };
 }
 
+function cloneVoicePresets(items: GatewayVoicePreset[]): GatewayVoicePreset[] {
+  return items.map((item) => ({
+    ...item,
+    modes: Array.isArray(item.modes) ? [...item.modes] : [],
+  }));
+}
+
+function voicePresetCacheKey(baseUrl: string, headers: Record<string, string>): string {
+  return JSON.stringify({
+    baseUrl: normalizeVoiceBaseUrl(baseUrl),
+    authorization: String(headers.Authorization || "").trim(),
+  });
+}
+
 export async function fetchVoicePresets(baseUrl: string, headers: Record<string, string>) {
-  const response = await axios.get(`${baseUrl}/voices`, { headers });
-  const data = (response.data as any)?.data ?? response.data;
-  const list = Array.isArray(data) ? data : Array.isArray(data?.voices) ? data.voices : [];
-  return list.map(normalizeVoicePreset).filter((item: GatewayVoicePreset | null): item is GatewayVoicePreset => !!item);
+  const cacheKey = voicePresetCacheKey(baseUrl, headers);
+  const cached = voicePresetCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cloneVoicePresets(cached.items);
+  }
+
+  const inflight = voicePresetInflight.get(cacheKey);
+  if (inflight) {
+    return cloneVoicePresets(await inflight);
+  }
+
+  const task = (async () => {
+    const response = await axios.get(`${baseUrl}/voices`, { headers });
+    const data = (response.data as any)?.data ?? response.data;
+    const list = Array.isArray(data) ? data : Array.isArray(data?.voices) ? data.voices : [];
+    const items = list.map(normalizeVoicePreset).filter((item: GatewayVoicePreset | null): item is GatewayVoicePreset => !!item);
+    voicePresetCache.set(cacheKey, {
+      expiresAt: Date.now() + VOICE_PRESET_CACHE_TTL_MS,
+      items: cloneVoicePresets(items),
+    });
+    return items;
+  })();
+
+  voicePresetInflight.set(cacheKey, task);
+  try {
+    return cloneVoicePresets(await task);
+  } finally {
+    voicePresetInflight.delete(cacheKey);
+  }
 }

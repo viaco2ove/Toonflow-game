@@ -10,14 +10,16 @@ import {
 } from "@/lib/gameEngine";
 import { getCurrentUserId } from "@/lib/requestContext";
 import {
+  applyNarrativeMemoryHintsToState,
   advanceNarrativeUntilPlayerTurn,
+  NarrativePlanSummary,
   RuntimeMessageInput,
   allowPlayerTurn,
   canPlayerSpeakNow,
-  refreshStoryMemoryBestEffort,
   resolveOpeningMessage,
   runNarrativeOrchestrator,
   setRuntimeTurnState,
+  summarizeNarrativePlan,
 } from "@/modules/game-runtime/engines/NarrativeOrchestrator";
 import { handleMiniGameTurn } from "@/modules/game-runtime/engines/MiniGameController";
 import { runTaskProgressEngine } from "@/modules/game-runtime/engines/TaskProgressEngine";
@@ -52,6 +54,7 @@ export interface AddSessionMessageResult {
   message: Record<string, any> | null;
   chapterSwitchMessage: Record<string, any> | null;
   narrativeMessage: Record<string, any> | null;
+  narrativePlan: NarrativePlanSummary | null;
   triggered: TriggerHit[];
   taskProgress: TaskProgressChange[];
   deltas: AppliedDelta[];
@@ -249,6 +252,7 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
         message: normalizeMessageOutput(messageRow),
         chapterSwitchMessage: null,
         narrativeMessage: normalizeMessageOutput(narrativeMessageRow),
+        narrativePlan: null,
         triggered: [],
         taskProgress: [],
         deltas: attrDeltas,
@@ -310,6 +314,7 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
 
   let chapterSwitchMessageRow: any = null;
   let narrativeMessageRow: any = null;
+  let narrativePlan: NarrativePlanSummary | null = null;
   if (nextChapterId && nextChapterId !== prevChapterId) {
     const switchedChapter = normalizeChapterOutput(await db("t_storyChapter").where({ id: nextChapterId }).first());
     if (switchedChapter) {
@@ -338,7 +343,9 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
         state,
         recentMessages: transitionMessages,
         playerMessage: "",
+        maxRetries: 0,
       });
+      narrativePlan = summarizeNarrativePlan(orchestrator);
       const orchestrated = await advanceNarrativeUntilPlayerTurn({
         userId: currentUserId,
         world,
@@ -347,15 +354,10 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
         recentMessages: transitionMessages,
         playerMessage: "",
         initialResult: orchestrator,
+        maxAutoTurns: 1,
       });
       transitionMessages.push(...orchestrated.messages);
-      await refreshStoryMemoryBestEffort({
-        userId: currentUserId,
-        world,
-        chapter: switchedChapter,
-        state,
-        recentMessages: transitionMessages,
-      });
+      applyNarrativeMemoryHintsToState(state, orchestrator.memoryHints);
       for (let index = 0; index < transitionMessages.length; index += 1) {
         const item = transitionMessages[index];
         const inserted = await db("t_sessionMessage").insert({
@@ -364,7 +366,15 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
           roleType: String(item.roleType || "narrator"),
           content: String(item.content || ""),
           eventType: String(item.eventType || (index === 0 ? "on_enter_chapter" : "on_orchestrated_reply")),
-          meta: toJsonText({ chapterId: Number(switchedChapter.id) }, {}),
+          meta: toJsonText({
+            chapterId: Number(switchedChapter.id),
+            source: orchestrator.source,
+            motive: orchestrator.motive,
+            nextRole: orchestrator.nextRole,
+            nextRoleType: orchestrator.nextRoleType,
+            chapterOutcome: orchestrator.chapterOutcome,
+            memoryHints: orchestrator.memoryHints,
+          }, {}),
           createTime: Number(item.createTime || now),
         });
         const insertedId = normalizeMessageId(inserted);
@@ -390,7 +400,9 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
         state,
         recentMessages,
         playerMessage: messageContent,
+        maxRetries: 0,
       });
+      narrativePlan = summarizeNarrativePlan(orchestrator);
       const orchestrated = await advanceNarrativeUntilPlayerTurn({
         userId: currentUserId,
         world,
@@ -399,14 +411,9 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
         recentMessages,
         playerMessage: messageContent,
         initialResult: orchestrator,
+        maxAutoTurns: 1,
       });
-      await refreshStoryMemoryBestEffort({
-        userId: currentUserId,
-        world,
-        chapter: playChapter,
-        state,
-        recentMessages: [...recentMessages, ...orchestrated.messages],
-      });
+      applyNarrativeMemoryHintsToState(state, orchestrator.memoryHints);
 
       for (const item of orchestrated.messages) {
         const inserted = await db("t_sessionMessage").insert({
@@ -417,6 +424,10 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
           eventType: String(item.eventType || "on_orchestrated_reply"),
           meta: toJsonText({
             source: orchestrator.source,
+            motive: orchestrator.motive,
+            nextRole: orchestrator.nextRole,
+            nextRoleType: orchestrator.nextRoleType,
+            chapterOutcome: orchestrator.chapterOutcome,
             memoryHints: orchestrator.memoryHints,
           }, {}),
           createTime: Number(item.createTime || now),
@@ -461,6 +472,7 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
     message: normalizeMessageOutput(messageRow),
     chapterSwitchMessage: normalizeMessageOutput(chapterSwitchMessageRow),
     narrativeMessage: normalizeMessageOutput(narrativeMessageRow),
+    narrativePlan,
     triggered,
     taskProgress: taskResult.taskProgressChanges,
     deltas: appliedDeltas,

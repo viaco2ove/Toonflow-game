@@ -11,11 +11,11 @@ import {
   nowTs,
 } from "@/lib/gameEngine";
 import {
+  applyNarrativeMemoryHintsToState,
   allowPlayerTurn,
   applyOrchestratorResultToState,
   canPlayerSpeakNow,
   evaluateDebugChapterOutcome,
-  refreshStoryMemoryBestEffort,
   resolveOpeningMessage,
   setRuntimeTurnState,
   runNarrativeOrchestrator,
@@ -278,24 +278,7 @@ export default router.post(
             createTime: nowTs(),
           })
           : null;
-        await refreshStoryMemoryBestEffort({
-          userId,
-          world,
-          chapter: effectiveChapter,
-          state,
-          recentMessages: emittedMessage
-            ? [
-              ...recentMessages,
-              {
-                role: emittedMessage.role,
-                roleType: emittedMessage.roleType,
-                eventType: emittedMessage.eventType,
-                content: emittedMessage.content,
-                createTime: emittedMessage.createTime,
-              },
-            ]
-            : recentMessages,
-        });
+        applyNarrativeMemoryHintsToState(state, orchestrator.memoryHints);
 
         if (!debugFreePlotActive && orchestrator.chapterOutcome === "failed") {
           setRuntimeTurnState(state, world, {
@@ -484,24 +467,7 @@ export default router.post(
           createTime: nowTs(),
         })
         : null;
-      await refreshStoryMemoryBestEffort({
-        userId,
-        world,
-        chapter: effectiveChapter,
-        state,
-        recentMessages: emittedMessage
-          ? [
-            ...recentMessages,
-            {
-              role: emittedMessage.role,
-              roleType: emittedMessage.roleType,
-              eventType: emittedMessage.eventType,
-              content: emittedMessage.content,
-              createTime: emittedMessage.createTime,
-            },
-          ]
-          : recentMessages,
-      });
+      applyNarrativeMemoryHintsToState(state, orchestrator.memoryHints);
 
       if (!debugFreePlotActive && orchestrator.chapterOutcome === "failed") {
         return res.status(200).send(success({

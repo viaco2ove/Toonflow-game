@@ -13,12 +13,13 @@ import {
   toJsonText,
 } from "@/lib/gameEngine";
 import {
+  applyNarrativeMemoryHintsToState,
   advanceNarrativeUntilPlayerTurn,
-  refreshStoryMemoryBestEffort,
   resolveOpeningMessage,
   runNarrativeOrchestrator,
   RuntimeMessageInput,
   setRuntimeTurnState,
+  summarizeNarrativePlan,
 } from "@/modules/game-runtime/engines/NarrativeOrchestrator";
 import u from "@/utils";
 
@@ -98,6 +99,7 @@ export default router.post(
       const rolePair = normalizeRolePair(world.playerRole, world.narratorRole);
       const state = normalizeSessionState(initialState, worldId, chapter ? Number(chapter.id) : null, rolePair);
       const openingMessages: RuntimeMessageInput[] = [];
+      let openingPlan: ReturnType<typeof summarizeNarrativePlan> = null;
       if (chapter) {
         const openingMessage = resolveOpeningMessage(world, chapter);
         if (openingMessage && String(openingMessage.content || "").trim()) {
@@ -123,6 +125,7 @@ export default router.post(
           state,
           recentMessages: openingMessages,
           playerMessage: "",
+          maxRetries: 0,
         });
         const orchestrated = await advanceNarrativeUntilPlayerTurn({
           userId: currentUserId,
@@ -132,15 +135,11 @@ export default router.post(
           recentMessages: openingMessages,
           playerMessage: "",
           initialResult: orchestrator,
+          maxAutoTurns: 1,
         });
+        openingPlan = summarizeNarrativePlan(orchestrator);
         openingMessages.push(...orchestrated.messages);
-        await refreshStoryMemoryBestEffort({
-          userId: currentUserId,
-          world,
-          chapter,
-          state,
-          recentMessages: openingMessages,
-        });
+        applyNarrativeMemoryHintsToState(state, orchestrator.memoryHints);
       }
 
       const sessionId = createGameSessionId();
@@ -170,13 +169,25 @@ export default router.post(
 
       if (chapter && openingMessages.length > 0) {
         await db("t_sessionMessage").insert(
-          openingMessages.map((message) => ({
+          openingMessages.map((message, index) => ({
             sessionId,
             role: String(message.role || state.narrator?.name || "旁白"),
             roleType: String(message.roleType || "narrator"),
             content: String(message.content || ""),
             eventType: String(message.eventType || "on_orchestrated_reply"),
-            meta: toJsonText({ chapterId: Number(chapter.id) }, {}),
+            meta: toJsonText({
+              chapterId: Number(chapter.id),
+              ...(index > 0 && openingPlan
+                ? {
+                    source: openingPlan.source,
+                    motive: openingPlan.motive,
+                    nextRole: openingPlan.nextRole,
+                    nextRoleType: openingPlan.nextRoleType,
+                    chapterOutcome: openingPlan.chapterOutcome,
+                    memoryHints: openingPlan.memoryHints,
+                  }
+                : {}),
+            }, {}),
             createTime: Number(message.createTime || now),
           })),
         );
