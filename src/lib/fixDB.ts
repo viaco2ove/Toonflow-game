@@ -568,6 +568,7 @@ export default async (knex: Knex): Promise<void> => {
     { name: "AI故事-角色发言", key: "storySpeakerModel" },
     { name: "AI故事-记忆管理", key: "storyMemoryModel" },
     { name: "AI故事-AI生图", key: "storyImageModel" },
+    { name: "AI故事-头像分离", key: "storyAvatarMattingModel" },
     { name: "AI故事-语音设计", key: "storyVoiceDesignModel" },
     { name: "AI故事-语音生成", key: "storyVoiceModel" },
     { name: "AI故事-语音识别", key: "storyAsrModel" },

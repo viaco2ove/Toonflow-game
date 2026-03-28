@@ -26,6 +26,7 @@ const NON_PROJECT_SCOPED_PATHS = new Set<string>([
   "/game/separateRoleAvatar",
   "/game/separateRoleAvatar/status",
   "/game/debugStep",
+  "/game/streamvoice",
 ]);
 
 function toPositiveInt(value: any): number | null {
@@ -387,7 +388,7 @@ export async function enforceResourceIsolation(req: Request, res: Response, next
     }
 
     // 语音配置按 userId 隔离
-    if (path === "/voice/getVoices" || path === "/voice/preview" || path === "/voice/transcribe") {
+    if (path === "/voice/getVoices" || path === "/voice/preview" || path === "/voice/transcribe" || path === "/game/streamvoice") {
       const configId = toPositiveInt((req.body || {}).configId);
       if (configId && !(await ensureConfigOwned(configId, userId, "voice"))) {
         return res.status(403).send({ message: "无权访问该语音模型配置" });

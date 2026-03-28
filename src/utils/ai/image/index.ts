@@ -10,6 +10,7 @@ import runninghub from "./owned/runninghub";
 import apimart from "./owned/apimart";
 import other from "./owned/other";
 import gemini from "./owned/gemini";
+import t8star from "./owned/t8star";
 
 const QUOTA_ERROR_PATTERNS = [
   /token quota exhausted/i,
@@ -36,6 +37,7 @@ const urlToBase64 = async (url: string): Promise<string> => {
 
 const modelInstance = {
   gemini: gemini,
+  t8star: t8star,
   volcengine: volcengine,
   kling: kling,
   vidu: vidu,
@@ -43,6 +45,9 @@ const modelInstance = {
   // apimart: apimart,
   other,
 } as const;
+
+const uniqueManufacturers = (ownedList: typeof modelList): string[] =>
+  Array.from(new Set(ownedList.map((item) => item.manufacturer).filter(Boolean)));
 
 export default async (input: ImageConfig, config: AIConfig) => {
   const debugImageLog = process.env.DEBUG_AI_IMAGE === "1";
@@ -62,15 +67,21 @@ export default async (input: ImageConfig, config: AIConfig) => {
   const manufacturerFn = modelInstance[manufacturer as keyof typeof modelInstance];
   if (!manufacturerFn) throw new Error("不支持的图片厂商");
 
-  const owned = modelList.find((m) => m.model === model);
+  const ownedCandidates = modelList.filter((item) => item.model === model);
+  const owned = ownedCandidates.find((item) => item.manufacturer === manufacturer);
   if (manufacturer === "other") {
-    if (owned && owned.manufacturer !== "other") {
-      throw new Error(`模型 ${model} 属于 ${owned.manufacturer} 厂商，请将厂商设置为 ${owned.manufacturer}`);
+    const matchedManufacturers = uniqueManufacturers(ownedCandidates.filter((item) => item.manufacturer !== "other"));
+    if (matchedManufacturers.length === 1) {
+      throw new Error(`模型 ${model} 属于 ${matchedManufacturers[0]} 厂商，请将厂商设置为 ${matchedManufacturers[0]}`);
+    }
+    if (matchedManufacturers.length > 1) {
+      throw new Error(`模型 ${model} 已被内置厂商占用，请将厂商设置为 ${matchedManufacturers.join(" / ")}`);
     }
   } else {
-    if (!owned) throw new Error("不支持的模型");
-    if (owned.manufacturer !== manufacturer) {
-      throw new Error(`模型 ${model} 与厂商 ${manufacturer} 不匹配，应为 ${owned.manufacturer}`);
+    if (!owned) {
+      const matchedManufacturers = uniqueManufacturers(ownedCandidates);
+      if (!matchedManufacturers.length) throw new Error("不支持的模型");
+      throw new Error(`模型 ${model} 与厂商 ${manufacturer} 不匹配，可用厂商：${matchedManufacturers.join(" / ")}`);
     }
   }
 

@@ -68,6 +68,26 @@ export default router.post(
       }
     }
 
+    if (type === "image") {
+      const briaDefaults = [
+        { label: "RMBG-2.0", value: "RMBG-2.0" },
+      ];
+      if (!result.bria) result.bria = [];
+      for (const item of briaDefaults) {
+        const exists = result.bria.some((model) => String(model?.value || "") === item.value);
+        if (!exists) result.bria.push(item);
+      }
+
+      const tencentDefaults = [
+        { label: "AIPortraitMatting", value: "AIPortraitMatting" },
+      ];
+      if (!result.tencent_ci) result.tencent_ci = [];
+      for (const item of tencentDefaults) {
+        const exists = result.tencent_ci.some((model) => String(model?.value || "") === item.value);
+        if (!exists) result.tencent_ci.push(item);
+      }
+    }
+
     res.status(200).send(success(result));
   },
 );

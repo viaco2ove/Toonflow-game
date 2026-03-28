@@ -6,7 +6,9 @@ import { validateFields } from "@/middleware/middleware";
 import { isVoiceDesignModelConfig } from "@/lib/modelConfigType";
 const router = express.Router();
 
-const SLOT_CONFIG_RULES: Record<string, { type: "text" | "image" | "voice" | "voice_design"; modelType?: "asr" | "tts" }> = {
+const DEDICATED_AVATAR_MATTING_MANUFACTURERS = new Set(["bria", "aliyun_imageseg", "tencent_ci"]);
+
+const SLOT_CONFIG_RULES: Record<string, { type: "text" | "image" | "voice" | "voice_design"; modelType?: "asr" | "tts"; manufacturer?: string | string[] }> = {
   storyboardAgent: { type: "text" },
   outlineScriptAgent: { type: "text" },
   assetsPrompt: { type: "text" },
@@ -19,6 +21,7 @@ const SLOT_CONFIG_RULES: Record<string, { type: "text" | "image" | "voice" | "vo
   assetsImage: { type: "image" },
   editImage: { type: "image" },
   storyImageModel: { type: "image" },
+  storyAvatarMattingModel: { type: "image", manufacturer: ["bria", "aliyun_imageseg", "tencent_ci"] },
   storyVoiceDesignModel: { type: "voice_design" },
   storyVoiceModel: { type: "voice", modelType: "tts" },
   storyAsrModel: { type: "voice", modelType: "asr" },
@@ -33,21 +36,31 @@ function configMatchesSlotRule(
 
   const type = String(config.type || "").trim().toLowerCase();
   const modelType = String(config.modelType || "").trim().toLowerCase();
+  const manufacturer = String(config.manufacturer || "").trim().toLowerCase();
   const isVoiceDesign = isVoiceDesignModelConfig(config);
+  const manufacturerMatched = !rule.manufacturer
+    || (Array.isArray(rule.manufacturer) ? rule.manufacturer.includes(manufacturer) : manufacturer === rule.manufacturer);
+
+  if (rule.type !== "image" && DEDICATED_AVATAR_MATTING_MANUFACTURERS.has(manufacturer)) {
+    return false;
+  }
+  if (rule.type === "image" && key !== "storyAvatarMattingModel" && DEDICATED_AVATAR_MATTING_MANUFACTURERS.has(manufacturer)) {
+    return false;
+  }
 
   if (rule.type === "voice_design") {
-    return isVoiceDesign;
+    return isVoiceDesign && manufacturerMatched;
   }
   if (rule.type === "text") {
-    return type === "text" && !isVoiceDesign;
+    return type === "text" && !isVoiceDesign && manufacturerMatched;
   }
   if (rule.type === "image") {
-    return type === "image";
+    return type === "image" && manufacturerMatched;
   }
   if (rule.type === "voice") {
     if (type !== "voice") return false;
-    if (rule.modelType === "asr") return modelType === "asr";
-    return modelType !== "asr";
+    if (rule.modelType === "asr") return modelType === "asr" && manufacturerMatched;
+    return modelType !== "asr" && manufacturerMatched;
   }
   return true;
 }

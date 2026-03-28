@@ -12,6 +12,7 @@ const STRICT_MODEL_KEYS = new Set([
   "storySpeakerModel",
   "storyMemoryModel",
   "storyImageModel",
+  "storyAvatarMattingModel",
   "storyVoiceModel",
   "storyAsrModel",
   "storyVoiceDesignModel",
@@ -60,6 +61,7 @@ export default async function getPromptAi(key: string, userId?: number): Promise
       storySpeakerModel: "text",
       storyMemoryModel: "text",
       storyImageModel: "image",
+      storyAvatarMattingModel: "image",
       storyVoiceModel: "voice",
       storyAsrModel: "asr",
     };

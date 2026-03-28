@@ -12,6 +12,27 @@
     "url": "https://github.com/HBAI-Ltd/Toonflow-app/issues",
     "email": "ltlctools@outlook.com"
   },
+  "electronmon": {
+    "patterns": [
+      "!logs",
+      "!logs/**/*",
+      "!build",
+      "!build/**/*",
+      "!tmp",
+      "!tmp/**/*",
+      "!backup",
+      "!backup/**/*",
+      "!node_modules_wsl",
+      "!node_modules_wsl/**/*",
+      "!db.sqlite",
+      "!db.sqlite*",
+      "!**/*.sqlite",
+      "!**/*.sqlite-*",
+      "!**/*.db",
+      "!**/*.db-*",
+      "!**/*.log"
+    ]
+  },
   "main": "build/main.js",
   "packageManager": "yarn@1.0.0",
   "engines": {
@@ -39,6 +60,9 @@
     "voice:regen:presets": "tsx scripts/regenerateStoryVoicePresets.ts"
   },
   "dependencies": {
+    "@alicloud/imageseg20191230": "4.0.1",
+    "@alicloud/openapi-client": "0.4.15",
+    "@alicloud/tea-util": "1.4.11",
     "@ai-sdk/anthropic": "^3.0.35",
     "@ai-sdk/deepseek": "^2.0.17",
     "@ai-sdk/devtools": "^0.0.11",
@@ -53,6 +77,7 @@
     "best-effort-json-parser": "^1.2.1",
     "better-sqlite3": "^12.6.2",
     "cors": "^2.8.5",
+    "cos-nodejs-sdk-v5": "2.15.4",
     "dotenv": "^17.2.3",
     "express": "^5.2.1",
     "express-ws": "^5.0.2",

@@ -678,9 +678,10 @@ export default async (knex: Knex, forceInit: boolean = false): Promise<void> => 
           { id: 10, configId: null, name: "AI故事-角色发言", key: "storySpeakerModel" },
           { id: 11, configId: null, name: "AI故事-记忆管理", key: "storyMemoryModel" },
           { id: 12, configId: null, name: "AI故事-AI生图", key: "storyImageModel" },
-          { id: 13, configId: null, name: "AI故事-语音生成", key: "storyVoiceModel" },
-          { id: 14, configId: null, name: "AI故事-语音识别", key: "storyAsrModel" },
-          { id: 15, configId: null, name: "AI故事-语音设计", key: "storyVoiceDesignModel" },
+          { id: 13, configId: null, name: "AI故事-头像分离", key: "storyAvatarMattingModel" },
+          { id: 14, configId: null, name: "AI故事-语音生成", key: "storyVoiceModel" },
+          { id: 15, configId: null, name: "AI故事-语音识别", key: "storyAsrModel" },
+          { id: 16, configId: null, name: "AI故事-语音设计", key: "storyVoiceDesignModel" },
         ]);
       },
     },

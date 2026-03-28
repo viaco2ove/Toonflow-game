@@ -33,11 +33,10 @@ export interface OrchestratorInput {
   maxRetries?: number;
 }
 
-export interface OrchestratorResult {
+export interface NarrativePlanResult {
   role: string;
   roleType: string;
   motive: string;
-  content: string;
   memoryHints: string[];
   stateDelta: JsonRecord;
   awaitUser: boolean;
@@ -46,6 +45,10 @@ export interface OrchestratorResult {
   chapterOutcome: "continue" | "success" | "failed";
   nextChapterId: number | null;
   source: "ai" | "fallback";
+}
+
+export interface OrchestratorResult extends NarrativePlanResult {
+  content: string;
 }
 
 export interface NarrativePlanSummary {
@@ -764,7 +767,7 @@ async function resolveTextStageModel(userId: number, primaryKey: string, fallbac
   throw new Error(`${stageModelLabel(primaryKey)}对接的模型未配置，请在设置中单独绑定`);
 }
 
-async function runStorySpeaker(input: {
+export async function runStorySpeakerContent(input: {
   userId: number;
   world: any;
   chapter: any;
@@ -852,7 +855,7 @@ function applyStateDelta(state: JsonRecord, delta: JsonRecord) {
   });
 }
 
-export async function runNarrativeOrchestrator(input: OrchestratorInput): Promise<OrchestratorResult> {
+export async function runNarrativePlan(input: OrchestratorInput): Promise<NarrativePlanResult> {
   const prompts = await loadStoryPrompts();
   const roles = worldRoles(input.world);
   const promptAiConfig = await resolveTextStageModel(input.userId, "storyOrchestratorModel");
@@ -973,22 +976,11 @@ export async function runNarrativeOrchestrator(input: OrchestratorInput): Promis
       if (!motive) {
         throw createRuntimeModelError("orchestrator", "模型返回结构无效或缺少发言动机");
       }
-      const content = await runStorySpeaker({
-        userId: input.userId,
-        world: input.world,
-        chapter: input.chapter,
-        state: input.state,
-        recentMessages: input.recentMessages,
-        playerMessage: input.playerMessage,
-        currentRole: matchedRole,
-        motive,
-      });
       if (isSkip) {
         return {
           role: matchedRole.name,
           roleType: sanitizeRoleType(matchedRole.roleType || "narrator"),
           motive,
-          content,
           memoryHints,
           stateDelta,
           awaitUser: false,
@@ -1003,7 +995,6 @@ export async function runNarrativeOrchestrator(input: OrchestratorInput): Promis
         role: matchedRole.name,
         roleType: matchedRole.roleType,
         motive,
-        content,
         memoryHints,
         stateDelta,
         awaitUser,
@@ -1019,7 +1010,6 @@ export async function runNarrativeOrchestrator(input: OrchestratorInput): Promis
         role: "",
         roleType: "player",
         motive: "",
-        content: "",
         memoryHints,
         stateDelta,
         awaitUser: true,
@@ -1041,6 +1031,37 @@ export async function runNarrativeOrchestrator(input: OrchestratorInput): Promis
     });
     throw createRuntimeModelError("orchestrator", (err as any)?.message || String(err));
   }
+}
+
+export async function runNarrativeOrchestrator(input: OrchestratorInput): Promise<OrchestratorResult> {
+  const plan = await runNarrativePlan(input);
+  if (!plan.role || sanitizeRoleType(plan.roleType) === "player" || !plan.motive) {
+    return {
+      ...plan,
+      content: "",
+    };
+  }
+  const roles = worldRoles(input.world);
+  const matchedRole = roles.find((item) => normalizeScalarText(item.name) === normalizeScalarText(plan.role))
+    || roles.find((item) => sanitizeRoleType(item.roleType) === sanitizeRoleType(plan.roleType) && sanitizeRoleType(item.roleType) !== "player")
+    || null;
+  if (!matchedRole) {
+    throw createRuntimeModelError("speaker", "未找到当前应发言角色");
+  }
+  const content = await runStorySpeakerContent({
+    userId: input.userId,
+    world: input.world,
+    chapter: input.chapter,
+    state: input.state,
+    recentMessages: input.recentMessages,
+    playerMessage: input.playerMessage,
+    currentRole: matchedRole,
+    motive: plan.motive,
+  });
+  return {
+    ...plan,
+    content,
+  };
 }
 
 export async function runStoryMemoryManager(input: {
@@ -1193,7 +1214,7 @@ export async function refreshStoryMemoryBestEffort(input: {
   }
 }
 
-export function applyOrchestratorResultToState(state: JsonRecord, result: OrchestratorResult) {
+export function applyOrchestratorResultToState(state: JsonRecord, result: NarrativePlanResult | OrchestratorResult) {
   applyStateDelta(state, result.stateDelta);
 }
 
