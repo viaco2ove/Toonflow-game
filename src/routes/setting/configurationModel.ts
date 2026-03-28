@@ -6,7 +6,7 @@ import { validateFields } from "@/middleware/middleware";
 import { isVoiceDesignModelConfig } from "@/lib/modelConfigType";
 const router = express.Router();
 
-const DEDICATED_AVATAR_MATTING_MANUFACTURERS = new Set(["bria", "aliyun_imageseg", "tencent_ci"]);
+const DEDICATED_AVATAR_MATTING_MANUFACTURERS = new Set(["bria", "aliyun_imageseg", "tencent_ci", "local_birefnet"]);
 
 const SLOT_CONFIG_RULES: Record<string, { type: "text" | "image" | "voice" | "voice_design"; modelType?: "asr" | "tts"; manufacturer?: string | string[] }> = {
   storyboardAgent: { type: "text" },
@@ -21,7 +21,7 @@ const SLOT_CONFIG_RULES: Record<string, { type: "text" | "image" | "voice" | "vo
   assetsImage: { type: "image" },
   editImage: { type: "image" },
   storyImageModel: { type: "image" },
-  storyAvatarMattingModel: { type: "image", manufacturer: ["bria", "aliyun_imageseg", "tencent_ci"] },
+  storyAvatarMattingModel: { type: "image", manufacturer: ["bria", "aliyun_imageseg", "tencent_ci", "local_birefnet"] },
   storyVoiceDesignModel: { type: "voice_design" },
   storyVoiceModel: { type: "voice", modelType: "tts" },
   storyAsrModel: { type: "voice", modelType: "asr" },

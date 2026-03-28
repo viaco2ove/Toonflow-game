@@ -6,6 +6,7 @@ import { v4 as uuidv4 } from "uuid";
 import { z } from "zod";
 import { validateFields } from "@/middleware/middleware";
 import { error, success } from "@/lib/responseFormat";
+import { LOCAL_BIREFNET_MANUFACTURER, getLocalAvatarMattingStatus, runLocalBiRefNetMatting } from "@/lib/localAvatarMatting";
 import u from "@/utils";
 
 const router = express.Router();
@@ -350,6 +351,10 @@ function isTencentAvatarMattingConfig(config: ImageAiConfig | null | undefined):
   return String(config?.manufacturer || "").trim().toLowerCase() === "tencent_ci"
     && !!String(config?.apiKey || "").trim()
     && !!String(config?.baseURL || "").trim();
+}
+
+function isLocalBiRefNetAvatarMattingConfig(config: ImageAiConfig | null | undefined): config is ImageAiConfig {
+  return String(config?.manufacturer || "").trim().toLowerCase() === LOCAL_BIREFNET_MANUFACTURER;
 }
 
 function normalizeBriaBaseUrl(baseURL?: string): string {
@@ -1049,6 +1054,33 @@ async function runTencentAvatarMattingJob(
   return await saveSeparatedRoleAvatarFiles(payload, foregroundBuffer, backgroundBuffer);
 }
 
+async function runLocalBiRefNetAvatarMattingJob(
+  payload: SeparateRoleAvatarPayload & { userId: number; projectId: number | null },
+  normalizedInput: string,
+  config: ImageAiConfig,
+): Promise<SeparateRoleAvatarResult> {
+  const safeName = String(payload.name || "").trim() || "角色";
+  const imageModelConfig = await resolveImageConfig(payload.userId);
+  const modelName = String(config.model || "").trim();
+  const [status, mattingInput, modelInputDataUrl] = await Promise.all([
+    getLocalAvatarMattingStatus({
+      manufacturer: config.manufacturer,
+      model: modelName,
+    }),
+    normalizeRoleSourceForMatting(normalizedInput),
+    createImageModelInputDataUrl(normalizedInput),
+  ]);
+  if (status.status !== "installed") {
+    throw new Error(`${status.message || "本地 BiRefNet 尚未安装"}。请先在设置 > 模型配置 > 头像分离里完成安装`);
+  }
+  const [foregroundRaw, backgroundBuffer] = await Promise.all([
+    runLocalBiRefNetMatting(mattingInput, modelName),
+    generateImageModelBackgroundBuffer(modelInputDataUrl, safeName, imageModelConfig),
+  ]);
+  const foregroundBuffer = await normalizeForegroundLayer(foregroundRaw, { skipChromaKey: true });
+  return await saveSeparatedRoleAvatarFiles(payload, foregroundBuffer, backgroundBuffer);
+}
+
 async function runImageModelAvatarMattingJob(
   payload: SeparateRoleAvatarPayload & { userId: number; projectId: number | null },
   normalizedInput: string,
@@ -1168,6 +1200,22 @@ async function runSeparateRoleAvatarJob(
         projectId: payload.projectId,
         manufacturer: avatarMattingConfig.manufacturer,
         message: u.error(err).message,
+      });
+    }
+  }
+  if (isLocalBiRefNetAvatarMattingConfig(avatarMattingConfig)) {
+    try {
+      return await runLocalBiRefNetAvatarMattingJob(payload, normalizedInput, avatarMattingConfig);
+    } catch (err) {
+      const message = u.error(err).message;
+      if (message.includes("尚未安装") || message.includes("完成安装")) {
+        throw err;
+      }
+      console.warn("[separateRoleAvatar] local birefnet matting failed, fallback to image model", {
+        userId: payload.userId,
+        projectId: payload.projectId,
+        manufacturer: avatarMattingConfig.manufacturer,
+        message,
       });
     }
   }

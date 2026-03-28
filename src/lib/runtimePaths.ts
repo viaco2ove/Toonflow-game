@@ -54,6 +54,13 @@ export function getUploadRootDir(): string {
   return resolveConfiguredPath(process.env.UPLOAD_DIR, fallback);
 }
 
+export function getLocalToolRootDir(): string {
+  const fallback = isElectronRuntime()
+    ? path.join(getUserDataDir(), "Toonflow-game/tools")
+    : path.join(process.cwd(), "Toonflow-game/tools");
+  return resolveConfiguredPath(process.env.LOCAL_TOOL_DIR, fallback);
+}
+
 export function getVoicePresetSeedDir(): string {
   const baseDir = isPackagedElectron()
     ? process.resourcesPath

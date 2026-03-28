@@ -86,6 +86,17 @@ export default router.post(
         const exists = result.tencent_ci.some((model) => String(model?.value || "") === item.value);
         if (!exists) result.tencent_ci.push(item);
       }
+
+      const localBiRefNetDefaults = [
+        { label: "birefnet-portrait", value: "birefnet-portrait" },
+        { label: "birefnet-general", value: "birefnet-general" },
+        { label: "birefnet-general-lite", value: "birefnet-general-lite" },
+      ];
+      if (!result.local_birefnet) result.local_birefnet = [];
+      for (const item of localBiRefNetDefaults) {
+        const exists = result.local_birefnet.some((model) => String(model?.value || "") === item.value);
+        if (!exists) result.local_birefnet.push(item);
+      }
     }
 
     res.status(200).send(success(result));
