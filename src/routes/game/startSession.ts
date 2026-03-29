@@ -13,6 +13,7 @@ import {
   toJsonText,
 } from "@/lib/gameEngine";
 import {
+  applyMemoryResultToState,
   applyNarrativeMemoryHintsToState,
   advanceNarrativeUntilPlayerTurn,
   resolveOpeningMessage,
@@ -20,10 +21,19 @@ import {
   RuntimeMessageInput,
   setRuntimeTurnState,
   summarizeNarrativePlan,
+  triggerStoryMemoryRefreshInBackground,
 } from "@/modules/game-runtime/engines/NarrativeOrchestrator";
 import u from "@/utils";
 
 const router = express.Router();
+
+function isPublishedWorld(row: any): boolean {
+  if (!row) return false;
+  const publishStatus = String(row.publishStatus || "").trim();
+  if (publishStatus === "published") return true;
+  const settings = parseJsonSafe<Record<string, any>>(row.settings, {});
+  return String(settings?.publishStatus || "").trim() === "published";
+}
 
 function normalizeSessionRow(row: any) {
   if (!row) return null;
@@ -43,6 +53,33 @@ function buildContentVersion(world: any, chapter: any, now: number): string {
     return `w:${worldId}@${worldVersion};c:${chapterId}@${chapterVersion}`;
   }
   return `w:${worldId}@${worldVersion}`;
+}
+
+function scheduleOpeningMemoryRefresh(params: {
+  sessionId: string;
+  userId: number;
+  world: any;
+  chapter: any;
+  state: Record<string, any>;
+  recentMessages: RuntimeMessageInput[];
+}) {
+  triggerStoryMemoryRefreshInBackground({
+    userId: params.userId,
+    world: params.world,
+    chapter: params.chapter,
+    state: params.state,
+    recentMessages: params.recentMessages,
+    onResolved: async (memory) => {
+      const row = await getGameDb()("t_gameSession").where({ sessionId: params.sessionId }).first();
+      if (!row) return;
+      const latestState = parseJsonSafe<Record<string, any>>(row.stateJson, {});
+      applyMemoryResultToState(latestState, memory);
+      await getGameDb()("t_gameSession").where({ sessionId: params.sessionId }).update({
+        stateJson: toJsonText(latestState, {}),
+        updateTime: nowTs(),
+      });
+    },
+  });
 }
 
 export default router.post(
@@ -67,11 +104,15 @@ export default router.post(
       const world = await db("t_storyWorld as w")
         .leftJoin("t_project as p", "w.projectId", "p.id")
         .where("w.id", worldId)
-        .where("p.userId", currentUserId)
-        .select("w.*")
+        .select("w.*", "p.userId as ownerUserId")
         .first();
       if (!world) {
         return res.status(404).send(error("worldId 不存在，请先创建世界观"));
+      }
+      const ownerUserId = Number(world.ownerUserId || 0);
+      const isOwnerWorld = ownerUserId > 0 && ownerUserId === currentUserId;
+      if (!isOwnerWorld && !isPublishedWorld(world)) {
+        return res.status(403).send(error("无权开始该故事会话"));
       }
 
       let chapter: any = null;
@@ -84,18 +125,6 @@ export default router.post(
       }
       chapter = normalizeChapterOutput(chapter);
 
-      const existingSession = await db("t_gameSession")
-        .where({
-          worldId: Number(worldId),
-          userId: currentUserId,
-        })
-        .orderBy("updateTime", "desc")
-        .orderBy("id", "desc")
-        .first();
-      if (existingSession) {
-        return res.status(200).send(success(normalizeSessionRow(existingSession), "已继续现有会话"));
-      }
-
       const rolePair = normalizeRolePair(world.playerRole, world.narratorRole);
       const state = normalizeSessionState(initialState, worldId, chapter ? Number(chapter.id) : null, rolePair);
       const openingMessages: RuntimeMessageInput[] = [];
@@ -107,7 +136,7 @@ export default router.post(
             role: String(openingMessage.role || state.narrator?.name || "旁白"),
             roleType: String(openingMessage.roleType || "narrator"),
             eventType: String(openingMessage.eventType || "on_enter_chapter"),
-            content: String(openingMessage.content || `进入章节《${String(chapter.title || "未命名章节")}》`),
+            content: String(openingMessage.content || ""),
             createTime: now,
           });
         }
@@ -143,11 +172,12 @@ export default router.post(
       }
 
       const sessionId = createGameSessionId();
+      const currentChapterId = Number(state.chapterId || chapter?.id || 0) || null;
       const payload = {
         sessionId,
         worldId,
         projectId: Number.isFinite(Number(projectId)) ? Number(projectId) : Number(world.projectId || 0),
-        chapterId: chapter ? Number(chapter.id) : null,
+        chapterId: currentChapterId,
         contentVersion: buildContentVersion(world, chapter, now),
         title: String(title || `${String(world.name || "世界")}-会话`).trim(),
         status: "active",
@@ -185,12 +215,33 @@ export default router.post(
                     nextRoleType: openingPlan.nextRoleType,
                     chapterOutcome: openingPlan.chapterOutcome,
                     memoryHints: openingPlan.memoryHints,
+                    triggerMemoryAgent: openingPlan.triggerMemoryAgent,
                   }
                 : {}),
             }, {}),
             createTime: Number(message.createTime || now),
           })),
         );
+      }
+
+      if (chapter && openingPlan?.triggerMemoryAgent) {
+        const rawRecentMessages = await db("t_sessionMessage").where({ sessionId }).orderBy("id", "desc").limit(20);
+        scheduleOpeningMemoryRefresh({
+          sessionId,
+          userId: currentUserId,
+          world,
+          chapter,
+          state,
+          recentMessages: rawRecentMessages
+            .reverse()
+            .map((item: any) => ({
+              role: String(item.role || ""),
+              roleType: String(item.roleType || ""),
+              eventType: String(item.eventType || ""),
+              content: String(item.content || ""),
+              createTime: Number(item.createTime || 0),
+            })),
+        });
       }
 
       const row = await db("t_gameSession").where({ sessionId }).first();

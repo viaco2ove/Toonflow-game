@@ -8,9 +8,10 @@ import {
   normalizeSessionState,
 } from "@/lib/gameEngine";
 import {
+  applyPlayerProfileFromMessageToState,
   runStorySpeakerContent,
   RuntimeMessageInput,
-  worldRoles,
+  runtimeStoryRoles,
 } from "@/modules/game-runtime/engines/NarrativeOrchestrator";
 import {
   asDebugMessage,
@@ -131,6 +132,9 @@ export default router.post(
         Number(chapter.id || 0),
         rolePair,
       );
+      if (playerContent) {
+        applyPlayerProfileFromMessageToState(state, world, playerContent);
+      }
       const messages = inputMessages.map((item) => ({
         role: String(item.role || ""),
         roleType: String(item.roleType || ""),
@@ -138,7 +142,7 @@ export default router.post(
         content: String(item.content || ""),
         createTime: Number(item.createTime || 0),
       }));
-      const recentMessages = buildDebugRecentMessages(messages, String(rolePair.playerRole.name || "用户"), playerContent);
+      const recentMessages = buildDebugRecentMessages(messages, String(state.player?.name || rolePair.playerRole.name || "用户"), playerContent);
       const roleName = String(plan.role || "").trim();
       const roleType = String(plan.roleType || "").trim() || "narrator";
       const eventType = String(plan.eventType || "on_orchestrated_reply").trim() || "on_orchestrated_reply";
@@ -155,7 +159,7 @@ export default router.post(
 
       let content = presetContent;
       if (!content) {
-        const roles = worldRoles(world);
+        const roles = runtimeStoryRoles(world, state);
         const currentRole = roles.find((item) => item.name === roleName)
           || roles.find((item) => item.roleType === roleType && roleType !== "player")
           || null;

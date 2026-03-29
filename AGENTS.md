@@ -71,3 +71,6 @@ scripts/web/index.html 只是构建后的html文件
 
 # wsl test
 [test_wsl.md](md/wsl/test_wsl.md)
+
+# 设计要点
+按钮多用奥森字体图标而不是文字

@@ -11,6 +11,7 @@ export default router.post(
   "/",
   validateFields({
     projectId: z.number().optional().nullable(),
+    includePublicPublished: z.boolean().optional().nullable(),
   }),
   async (req, res) => {
     try {
@@ -21,6 +22,7 @@ export default router.post(
 
       const db = getGameDb();
       const projectId = Number(req.body.projectId);
+      const includePublicPublished = req.body.includePublicPublished === true;
       let query = db("t_storyWorld as w")
         .leftJoin("t_project as p", "w.projectId", "p.id")
         .where("p.userId", userId);
@@ -28,10 +30,37 @@ export default router.post(
         query = query.andWhere("w.projectId", projectId);
       }
 
-      const rows = await query
+      const ownRows = await query
         .select("w.*")
         .orderBy("w.updateTime", "desc")
         .orderBy("w.id", "desc");
+
+      let rows = ownRows;
+      if (includePublicPublished) {
+        const publicRows = await db("t_storyWorld as w")
+          .leftJoin("t_project as p", "w.projectId", "p.id")
+          .whereNot("p.userId", userId)
+          .select("w.*")
+          .orderBy("w.updateTime", "desc")
+          .orderBy("w.id", "desc");
+        const publishedPublicRows = publicRows.filter((row: any) => {
+          const output = normalizeWorldOutput(row);
+          if (!output) return false;
+          return String(output.publishStatus || output.settings?.publishStatus || "draft") === "published";
+        });
+        const mergedMap = new Map<number, any>();
+        [...ownRows, ...publishedPublicRows].forEach((row: any) => {
+          const id = Number(row.id || 0);
+          if (id > 0 && !mergedMap.has(id)) {
+            mergedMap.set(id, row);
+          }
+        });
+        rows = Array.from(mergedMap.values()).sort((a: any, b: any) => {
+          const updateDiff = Number(b.updateTime || 0) - Number(a.updateTime || 0);
+          if (updateDiff !== 0) return updateDiff;
+          return Number(b.id || 0) - Number(a.id || 0);
+        });
+      }
 
       if (!rows.length) {
         return res.status(200).send(success([]));

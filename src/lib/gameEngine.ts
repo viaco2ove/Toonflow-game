@@ -24,7 +24,7 @@ export interface ChapterOpeningParts {
 
 const DEFAULT_PLAYER_ROLE: JsonRecord = {
   id: "player",
-  name: "玩家",
+  name: "用户",
   roleType: "player",
   description: "用户在故事中的主视角角色",
   attributes: {},
@@ -222,29 +222,103 @@ export function toJsonText(input: unknown, fallback: unknown = {}): string {
   }
 }
 
-export function normalizeRolePair(playerRoleRaw: unknown, narratorRoleRaw: unknown): RolePair {
-  const playerRaw = parseJsonSafe<JsonRecord>(playerRoleRaw, {});
-  const narratorRaw = parseJsonSafe<JsonRecord>(narratorRoleRaw, {});
+function normalizeOptionalNumber(input: unknown): number | null {
+  if (typeof input === "number" && Number.isFinite(input)) return input;
+  const text = normalizeEditorText(input);
+  if (!text) return null;
+  const matched = text.match(/^\d{1,6}$/);
+  if (!matched) return null;
+  const value = Number(matched[0]);
+  return Number.isFinite(value) ? value : null;
+}
 
+function normalizeStringList(input: unknown): string[] {
+  if (!Array.isArray(input)) return [];
+  return input
+    .map((item) => normalizeEditorText(item))
+    .filter(Boolean)
+    .slice(0, 64);
+}
+
+function createBasicParameterCard(input: {
+  existing?: unknown;
+  name?: unknown;
+  description?: unknown;
+  voice?: unknown;
+}): JsonRecord | null {
+  const existing = parseJsonSafe<JsonRecord>(input.existing, {});
+  const name = normalizeEditorText(existing.name ?? input.name);
+  const rawSetting = normalizeEditorText((existing as any).raw_setting ?? (existing as any).rawSetting ?? input.description);
+  const voice = normalizeEditorText(existing.voice ?? input.voice);
+  const gender = normalizeEditorText(existing.gender);
+  const age = normalizeOptionalNumber(existing.age);
+  const level = normalizeOptionalNumber(existing.level);
+  const levelDesc = normalizeEditorText(existing.level_desc ?? (existing as any).levelDesc);
+  const hp = normalizeOptionalNumber(existing.hp);
+  const mp = normalizeOptionalNumber(existing.mp);
+  const money = normalizeOptionalNumber(existing.money);
+  const next: JsonRecord = {
+    ...existing,
+    name: name || "",
+    raw_setting: rawSetting || "",
+    gender: gender || "",
+    age,
+    level: level ?? 1,
+    level_desc: levelDesc || "初入此界",
+    personality: normalizeEditorText(existing.personality),
+    appearance: normalizeEditorText(existing.appearance),
+    voice: voice || "",
+    skills: normalizeStringList(existing.skills),
+    items: normalizeStringList(existing.items),
+    equipment: normalizeStringList(existing.equipment),
+    hp: hp ?? 100,
+    mp: mp ?? 0,
+    money: money ?? 0,
+    other: Array.isArray(existing.other) ? normalizeStringList(existing.other) : [],
+  };
+
+  delete (next as any).rawSetting;
+  delete (next as any).levelDesc;
+  return next;
+}
+
+function normalizeStoryRole(roleRaw: unknown, defaults: JsonRecord): JsonRecord {
+  const raw = parseJsonSafe<JsonRecord>(roleRaw, {});
+  const normalized: JsonRecord = {
+    ...defaults,
+    ...raw,
+    roleType: String(defaults.roleType || raw.roleType || "").trim() || String(defaults.roleType || ""),
+    attributes: {
+      ...parseJsonSafe<JsonRecord>(defaults.attributes, {}),
+      ...parseJsonSafe<JsonRecord>(raw.attributes, {}),
+    },
+  };
+  normalized.parameterCardJson = createBasicParameterCard({
+    existing: raw.parameterCardJson,
+    name: normalized.name,
+    description: normalized.description,
+    voice: normalized.voice,
+  });
+  return normalized;
+}
+
+function normalizeSettingsRoles(input: unknown): JsonRecord[] {
+  if (!Array.isArray(input)) return [];
+  return input
+    .filter((item): item is JsonRecord => isRecord(item))
+    .map((item, index) => normalizeStoryRole(item, {
+      id: String(item.id || `npc_${index + 1}`),
+      roleType: String(item.roleType || "npc") || "npc",
+      name: String(item.name || `角色${index + 1}`),
+      description: String(item.description || ""),
+      attributes: {},
+    }));
+}
+
+export function normalizeRolePair(playerRoleRaw: unknown, narratorRoleRaw: unknown): RolePair {
   return {
-    playerRole: {
-      ...DEFAULT_PLAYER_ROLE,
-      ...playerRaw,
-      roleType: "player",
-      attributes: {
-        ...parseJsonSafe<JsonRecord>(DEFAULT_PLAYER_ROLE.attributes, {}),
-        ...parseJsonSafe<JsonRecord>(playerRaw.attributes, {}),
-      },
-    },
-    narratorRole: {
-      ...DEFAULT_NARRATOR_ROLE,
-      ...narratorRaw,
-      roleType: "narrator",
-      attributes: {
-        ...parseJsonSafe<JsonRecord>(DEFAULT_NARRATOR_ROLE.attributes, {}),
-        ...parseJsonSafe<JsonRecord>(narratorRaw.attributes, {}),
-      },
-    },
+    playerRole: normalizeStoryRole(playerRoleRaw, DEFAULT_PLAYER_ROLE),
+    narratorRole: normalizeStoryRole(narratorRoleRaw, DEFAULT_NARRATOR_ROLE),
   };
 }
 
@@ -267,6 +341,7 @@ export function normalizeSessionState(
   const narrator = isRecord(base.narrator) ? base.narrator : {};
   const rawTurnState = isRecord(base.turnState) ? base.turnState : {};
   const normalizedPlayerName = String(rolePair.playerRole.name || "用户").trim() || "用户";
+  const expectedRoleType = String(rawTurnState.expectedRoleType || "player").trim() || "player";
 
   return {
     version: 1,
@@ -278,6 +353,7 @@ export function normalizeSessionState(
       ...rolePair.playerRole,
       ...player,
       roleType: "player",
+      name: normalizedPlayerName,
       attributes: {
         ...parseJsonSafe<JsonRecord>(rolePair.playerRole.attributes, {}),
         ...parseJsonSafe<JsonRecord>(player.attributes, {}),
@@ -300,8 +376,10 @@ export function normalizeSessionState(
     recentEvents: Array.isArray(base.recentEvents) ? base.recentEvents : [],
     turnState: {
       canPlayerSpeak: typeof rawTurnState.canPlayerSpeak === "boolean" ? rawTurnState.canPlayerSpeak : true,
-      expectedRoleType: String(rawTurnState.expectedRoleType || "player").trim() || "player",
-      expectedRole: String(rawTurnState.expectedRole || normalizedPlayerName).trim() || normalizedPlayerName,
+      expectedRoleType,
+      expectedRole: expectedRoleType === "player"
+        ? normalizedPlayerName
+        : String(rawTurnState.expectedRole || normalizedPlayerName).trim() || normalizedPlayerName,
       lastSpeakerRoleType: String(rawTurnState.lastSpeakerRoleType || "").trim(),
       lastSpeaker: String(rawTurnState.lastSpeaker || "").trim(),
     },
@@ -376,6 +454,48 @@ function compareValue(left: unknown, right: unknown, op: string): boolean {
   return false;
 }
 
+function normalizeConditionText(input: unknown): string {
+  return String(input || "")
+    .replace(/[\s，。、“”"'‘’：:；;（）()【】\[\]\-—_·•・⋯…,.!?！？]/g, "")
+    .trim()
+    .toLowerCase();
+}
+
+function isGenericPlayerName(input: unknown): boolean {
+  const text = normalizeEditorText(input);
+  if (!text) return true;
+  return ["用户", "玩家", "主角", "我", "本人"].includes(text);
+}
+
+function hasBoundPlayerIdentity(state: JsonRecord): boolean {
+  const player = isRecord(state.player) ? state.player : {};
+  if (player.identity_bound === true) return true;
+  const card = isRecord(player.parameterCardJson) ? player.parameterCardJson : {};
+  const name = normalizeEditorText(card.name);
+  const gender = normalizeEditorText(card.gender);
+  const age = normalizeOptionalNumber(card.age);
+  return !!name && !isGenericPlayerName(name) && !!gender && age != null;
+}
+
+function evaluateNaturalLanguageCondition(text: string, ctx: ConditionContext): boolean | null {
+  const normalized = normalizeConditionText(text);
+  if (!normalized) return true;
+
+  const asksIdentity =
+    (normalized.includes("输入") || normalized.includes("填写") || normalized.includes("提供") || normalized.includes("告知") || normalized.includes("绑定"))
+    && (normalized.includes("姓名") || normalized.includes("名称") || normalized.includes("名字"))
+    && normalized.includes("性别")
+    && normalized.includes("年龄");
+  const mentionsIdentityBound =
+    (normalized.includes("身份绑定") || normalized.includes("绑定身份") || normalized.includes("完成绑定"))
+    && (normalized.includes("姓名") || normalized.includes("名称") || normalized.includes("性别") || normalized.includes("年龄"));
+
+  if (asksIdentity || mentionsIdentityBound) {
+    return hasBoundPlayerIdentity(ctx.state);
+  }
+  return null;
+}
+
 function readContextValue(ctx: ConditionContext, fieldRaw: unknown): unknown {
   const field = String(fieldRaw || "").trim();
   if (!field) return undefined;
@@ -396,6 +516,10 @@ export function evaluateCondition(input: unknown, ctx: ConditionContext): boolea
   if (typeof condition === "string") {
     const text = condition.trim();
     if (!text) return true;
+    const semanticMatched = evaluateNaturalLanguageCondition(text, ctx);
+    if (semanticMatched !== null) {
+      return semanticMatched;
+    }
     return ctx.messageContent.includes(text);
   }
 
@@ -447,6 +571,7 @@ export function normalizeWorldSettings(settingsRaw: unknown, topLevel: { coverPa
   const settings = parseJsonSafe<JsonRecord>(settingsRaw, {});
   const coverPath = String(topLevel.coverPath || "").trim();
   const publishStatus = String(topLevel.publishStatus || "").trim();
+  settings.roles = normalizeSettingsRoles(settings.roles);
   if (coverPath) {
     settings.coverPath = coverPath;
   }

@@ -13,12 +13,14 @@ import {
   applyNarrativeMemoryHintsToState,
   allowPlayerTurn,
   applyOrchestratorResultToState,
+  applyPlayerProfileFromMessageToState,
   canPlayerSpeakNow,
   evaluateDebugChapterOutcome,
   resolveOpeningMessage,
   setRuntimeTurnState,
   runNarrativeOrchestrator,
   RuntimeMessageInput,
+  triggerStoryMemoryRefreshInBackground,
 } from "@/modules/game-runtime/engines/NarrativeOrchestrator";
 import { handleMiniGameTurn } from "@/modules/game-runtime/engines/MiniGameController";
 import {
@@ -118,6 +120,9 @@ export default router.post(
         Number(chapter.id || 0),
         rolePair,
       );
+      if (playerContent) {
+        applyPlayerProfileFromMessageToState(state, world, playerContent);
+      }
       const debugFreePlotActive = isDebugFreePlotActive(state);
       const effectiveChapter = debugFreePlotActive
         ? {
@@ -134,7 +139,7 @@ export default router.post(
         content: String(item.content || ""),
         createTime: Number(item.createTime || 0),
       }));
-      const recentMessages = buildDebugRecentMessages(messages, String(rolePair.playerRole.name || "用户"), playerContent);
+      const recentMessages = buildDebugRecentMessages(messages, String(state.player?.name || rolePair.playerRole.name || "用户"), playerContent);
 
       if (!playerContent) {
         const pendingChapterId = getPendingDebugChapterId(state);
@@ -224,6 +229,15 @@ export default router.post(
           })
           : null;
         applyNarrativeMemoryHintsToState(state, orchestrator.memoryHints);
+        if (orchestrator.triggerMemoryAgent) {
+          triggerStoryMemoryRefreshInBackground({
+            userId,
+            world,
+            chapter: effectiveChapter,
+            state,
+            recentMessages: emittedMessage ? [...recentMessages, emittedMessage] : recentMessages,
+          });
+        }
 
         if (!debugFreePlotActive && orchestrator.chapterOutcome === "failed") {
           setRuntimeTurnState(state, world, {
@@ -431,6 +445,15 @@ export default router.post(
         })
         : null;
       applyNarrativeMemoryHintsToState(state, orchestrator.memoryHints);
+      if (orchestrator.triggerMemoryAgent) {
+        triggerStoryMemoryRefreshInBackground({
+          userId,
+          world,
+          chapter: effectiveChapter,
+          state,
+          recentMessages: emittedMessage ? [...recentMessages, emittedMessage] : recentMessages,
+        });
+      }
 
       if (!debugFreePlotActive && orchestrator.chapterOutcome === "failed") {
         return res.status(200).send(success(buildDebugSuccessPayload({

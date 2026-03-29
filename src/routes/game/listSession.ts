@@ -34,14 +34,6 @@ export default router.post(
       if (Number.isFinite(worldId) && worldId > 0) {
         query = query.andWhere("s.worldId", worldId);
       }
-      query = query.whereExists((builder: any) => {
-        builder
-          .select("m.id")
-          .from("t_sessionMessage as m")
-          .whereRaw("m.sessionId = s.sessionId")
-          .andWhere("m.roleType", "player");
-      });
-
       const rawSessions = await query
         .select("s.*")
         .orderBy("s.updateTime", "desc")
@@ -62,13 +54,21 @@ export default router.post(
         return res.status(200).send(success([]));
       }
 
-      const sessionIds = sessions.map((item: any) => String(item.sessionId || "")).filter(Boolean);
-      const worldIdSet = Array.from(new Set(sessions.map((item: any) => Number(item.worldId || 0)).filter((id: number) => id > 0)));
-      const chapterIdSet = Array.from(new Set(sessions.map((item: any) => Number(item.chapterId || 0)).filter((id: number) => id > 0)));
+      const sessionEntries = sessions.map((item: any) => ({
+        item,
+        runtimeState: parseJsonSafe(item.stateJson, {}),
+      }));
+      const sessionIds = sessionEntries.map(({ item }) => String(item.sessionId || "")).filter(Boolean);
+      const worldIdSet = Array.from(new Set(sessionEntries.map(({ item }) => Number(item.worldId || 0)).filter((id: number) => id > 0)));
+      const chapterIdSet = Array.from(new Set(
+        sessionEntries
+          .map(({ item, runtimeState }: any) => Number(runtimeState?.chapterId || item.chapterId || 0))
+          .filter((id: number) => id > 0),
+      ));
       const projectIdSet = Array.from(new Set(sessions.map((item: any) => Number(item.projectId || 0)).filter((id: number) => id > 0)));
 
       const [worldRows, chapterRows, projectRows] = await Promise.all([
-        worldIdSet.length ? db("t_storyWorld").whereIn("id", worldIdSet).select("id", "name", "intro", "settings") : Promise.resolve([]),
+        worldIdSet.length ? db("t_storyWorld").whereIn("id", worldIdSet).select("id", "name", "intro", "coverPath", "settings") : Promise.resolve([]),
         chapterIdSet.length ? db("t_storyChapter").whereIn("id", chapterIdSet).select("id", "title") : Promise.resolve([]),
         projectIdSet.length ? db("t_project").whereIn("id", projectIdSet).select("id", "name") : Promise.resolve([]),
       ]);
@@ -89,10 +89,10 @@ export default router.post(
         }
       });
 
-      const list = sessions.map((item: any) => {
+      const list = sessionEntries.map(({ item, runtimeState }: any) => {
         const sessionId = String(item.sessionId || "");
         const worldIdValue = Number(item.worldId || 0);
-        const chapterIdValue = Number(item.chapterId || 0);
+        const chapterIdValue = Number(runtimeState?.chapterId || item.chapterId || 0);
         const projectIdValue = Number(item.projectId || 0);
         const latest = latestMessageMap.get(sessionId);
         const worldRow = worldMap.get(worldIdValue);
@@ -102,7 +102,7 @@ export default router.post(
           worldId: worldIdValue,
           worldName: String(worldRow?.name || ""),
           worldIntro: String(worldRow?.intro || ""),
-          worldCoverPath: String(worldSettings?.coverPath || ""),
+          worldCoverPath: String(worldRow?.coverPath || worldSettings?.coverPath || worldSettings?.coverBgPath || ""),
           chapterId: chapterIdValue > 0 ? chapterIdValue : null,
           chapterTitle: chapterIdValue > 0 ? chapterNameMap.get(chapterIdValue) || "" : "",
           projectId: projectIdValue || null,

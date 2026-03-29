@@ -3,7 +3,6 @@ import { z } from "zod";
 import { validateFields } from "@/middleware/middleware";
 import { error, success } from "@/lib/responseFormat";
 import { getGameDb } from "@/lib/gameEngine";
-import u from "@/utils";
 
 const router = express.Router();
 
@@ -60,7 +59,8 @@ export default router.post(
 
       return res.status(200).send(success(true, "删除故事成功"));
     } catch (err) {
-      return res.status(500).send(error(u.error(err).message));
+      const message = err instanceof Error ? err.message : String(err || "删除故事失败");
+      return res.status(500).send(error(message));
     }
   },
 );

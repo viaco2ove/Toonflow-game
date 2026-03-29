@@ -243,6 +243,17 @@ async function fitTransparentCanvas(input: Buffer, width: number, height: number
     .toBuffer();
 }
 
+async function fillOpaqueCanvas(input: Buffer, width: number, height: number): Promise<Buffer> {
+  return await sharp(input)
+    .removeAlpha()
+    .resize(width, height, {
+      fit: "cover",
+      position: "centre",
+    })
+    .png()
+    .toBuffer();
+}
+
 async function resizeInside(input: Buffer, width: number, height: number): Promise<Buffer> {
   return await sharp(input)
     .resize(width, height, {
@@ -317,7 +328,53 @@ async function normalizeForegroundLayer(input: Buffer, options?: { skipChromaKey
 }
 
 async function normalizeBackgroundLayer(input: Buffer): Promise<Buffer> {
-  return await fitTransparentCanvas(input, AVATAR_BG_SIZE, AVATAR_BG_SIZE);
+  return await fillOpaqueCanvas(input, AVATAR_BG_SIZE, AVATAR_BG_SIZE);
+}
+
+async function createApproximateBackgroundLayer(source: Buffer, foreground: Buffer): Promise<Buffer> {
+  const sourcePng = await sharp(source)
+    .removeAlpha()
+    .png()
+    .toBuffer();
+  const sourceMeta = await sharp(sourcePng).metadata();
+  const width = Math.max(1, Number(sourceMeta.width || 0));
+  const height = Math.max(1, Number(sourceMeta.height || 0));
+
+  const blurredBase = await sharp(sourcePng)
+    .blur(28)
+    .modulate({
+      brightness: 1.01,
+      saturation: 0.94,
+    })
+    .png()
+    .toBuffer();
+
+  const subjectMask = await sharp(foreground)
+    .ensureAlpha()
+    .extractChannel("alpha")
+    .blur(22)
+    .resize(width, height, {
+      fit: "fill",
+    })
+    .png()
+    .toBuffer();
+
+  const blurredOverlay = await sharp(blurredBase)
+    .removeAlpha()
+    .joinChannel(subjectMask)
+    .png()
+    .toBuffer();
+
+  const softened = await sharp(sourcePng)
+    .composite([
+      {
+        input: blurredOverlay,
+      },
+    ])
+    .png()
+    .toBuffer();
+
+  return await normalizeBackgroundLayer(softened);
 }
 
 async function resolveImageConfig(userId: number) {
@@ -1059,24 +1116,29 @@ async function runLocalBiRefNetAvatarMattingJob(
   normalizedInput: string,
   config: ImageAiConfig,
 ): Promise<SeparateRoleAvatarResult> {
-  const safeName = String(payload.name || "").trim() || "角色";
-  const imageModelConfig = await resolveImageConfig(payload.userId);
   const modelName = String(config.model || "").trim();
-  const [status, mattingInput, modelInputDataUrl] = await Promise.all([
+  const [status, mattingInput] = await Promise.all([
     getLocalAvatarMattingStatus({
       manufacturer: config.manufacturer,
       model: modelName,
     }),
     normalizeRoleSourceForMatting(normalizedInput),
-    createImageModelInputDataUrl(normalizedInput),
   ]);
   if (status.status !== "installed") {
     throw new Error(`${status.message || "本地 BiRefNet 尚未安装"}。请先在设置 > 模型配置 > 头像分离里完成安装`);
   }
-  const [foregroundRaw, backgroundBuffer] = await Promise.all([
-    runLocalBiRefNetMatting(mattingInput, modelName),
-    generateImageModelBackgroundBuffer(modelInputDataUrl, safeName, imageModelConfig),
-  ]);
+  let foregroundRaw: Buffer;
+  try {
+    foregroundRaw = await runLocalBiRefNetMatting(mattingInput, modelName);
+  } catch (err) {
+    throw new Error(`本地 BiRefNet 前景分离失败: ${u.error(err).message}`);
+  }
+  let backgroundBuffer: Buffer;
+  try {
+    backgroundBuffer = await createApproximateBackgroundLayer(mattingInput, foregroundRaw);
+  } catch (err) {
+    throw new Error(`本地 BiRefNet 背景构建失败: ${u.error(err).message}`);
+  }
   const foregroundBuffer = await normalizeForegroundLayer(foregroundRaw, { skipChromaKey: true });
   return await saveSeparatedRoleAvatarFiles(payload, foregroundBuffer, backgroundBuffer);
 }
@@ -1208,15 +1270,13 @@ async function runSeparateRoleAvatarJob(
       return await runLocalBiRefNetAvatarMattingJob(payload, normalizedInput, avatarMattingConfig);
     } catch (err) {
       const message = u.error(err).message;
-      if (message.includes("尚未安装") || message.includes("完成安装")) {
-        throw err;
-      }
-      console.warn("[separateRoleAvatar] local birefnet matting failed, fallback to image model", {
+      console.warn("[separateRoleAvatar] local birefnet matting failed", {
         userId: payload.userId,
         projectId: payload.projectId,
         manufacturer: avatarMattingConfig.manufacturer,
         message,
       });
+      throw err;
     }
   }
   return await runImageModelAvatarMattingJob(payload, normalizedInput);

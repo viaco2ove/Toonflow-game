@@ -13,11 +13,13 @@ import {
   allowPlayerTurn,
   applyNarrativeMemoryHintsToState,
   applyOrchestratorResultToState,
+  applyPlayerProfileFromMessageToState,
   canPlayerSpeakNow,
   evaluateDebugChapterOutcome,
   runNarrativePlan,
   RuntimeMessageInput,
   setRuntimeTurnState,
+  triggerStoryMemoryRefreshInBackground,
 } from "@/modules/game-runtime/engines/NarrativeOrchestrator";
 import { handleMiniGameTurn } from "@/modules/game-runtime/engines/MiniGameController";
 import {
@@ -48,6 +50,7 @@ function buildPlanResult(plan: ({
   nextChapterId: number | null;
   source: "ai" | "fallback";
   memoryHints?: string[];
+  triggerMemoryAgent?: boolean;
   stateDelta?: Record<string, unknown>;
   eventType?: string;
   presetContent?: string;
@@ -63,6 +66,7 @@ function buildPlanResult(plan: ({
     chapterOutcome: plan.chapterOutcome || "continue",
     nextChapterId: typeof plan.nextChapterId === "number" && plan.nextChapterId > 0 ? plan.nextChapterId : null,
     source: plan.source || "ai",
+    triggerMemoryAgent: Boolean(plan.triggerMemoryAgent),
     eventType: String(plan.eventType || "on_orchestrated_reply").trim() || "on_orchestrated_reply",
     presetContent: String(plan.presetContent || "").trim() || null,
   };
@@ -113,6 +117,7 @@ function buildPresetPlan(message: {
     nextChapterId: next.nextChapterId ?? null,
     source: "fallback",
     memoryHints: [],
+    triggerMemoryAgent: false,
     stateDelta: {},
     eventType: String(message?.eventType || "on_debug"),
     presetContent: String(message?.content || ""),
@@ -171,8 +176,11 @@ export default router.post(
         Number(chapter.id || 0),
         rolePair,
       );
+      if (playerContent) {
+        applyPlayerProfileFromMessageToState(state, world, playerContent);
+      }
       const debugFreePlotActive = isDebugFreePlotActive(state);
-      const effectiveChapter = debugFreePlotActive
+      let effectiveChapter = debugFreePlotActive
         ? {
           ...chapter,
           content: "",
@@ -187,7 +195,87 @@ export default router.post(
         content: String(item.content || ""),
         createTime: Number(item.createTime || 0),
       }));
-      const recentMessages = buildDebugRecentMessages(messages, String(rolePair.playerRole.name || "用户"), playerContent);
+      const recentMessages = buildDebugRecentMessages(messages, String(state.player?.name || rolePair.playerRole.name || "用户"), playerContent);
+
+      function applyPlanTurnState(plan: {
+        awaitUser?: boolean;
+        nextRole?: string;
+        nextRoleType?: string;
+        role?: string;
+        roleType?: string;
+      }) {
+        const shouldYieldToPlayer = Boolean(plan.awaitUser) || String(plan.nextRoleType || "").trim().toLowerCase() === "player";
+        if (shouldYieldToPlayer) {
+          allowPlayerTurn(state, world, String(plan.roleType || "narrator"), String(plan.role || rolePair.narratorRole.name || "旁白"));
+          return;
+        }
+        setRuntimeTurnState(state, world, {
+          canPlayerSpeak: false,
+          expectedRoleType: String(plan.nextRoleType || "narrator"),
+          expectedRole: String(plan.nextRole || plan.role || rolePair.narratorRole.name || "旁白"),
+          lastSpeakerRoleType: String(plan.roleType || "narrator"),
+          lastSpeaker: String(plan.role || rolePair.narratorRole.name || "旁白"),
+        });
+      }
+
+      async function buildChapterStartPlan(targetChapter: any) {
+        state.chapterId = Number(targetChapter.id || 0);
+        const openingMessage = buildOpeningRuntimeMessage(world, targetChapter, String(rolePair.narratorRole.name || "旁白"));
+        setRuntimeTurnState(state, world, {
+          canPlayerSpeak: false,
+          expectedRoleType: "narrator",
+          expectedRole: String(rolePair.narratorRole.name || "旁白"),
+          lastSpeakerRoleType: String(openingMessage.roleType || "narrator"),
+          lastSpeaker: String(openingMessage.role || rolePair.narratorRole.name || "旁白"),
+        });
+        if (String(openingMessage.content || "").trim()) {
+          return {
+            chapterId: Number(targetChapter.id || 0),
+            chapterTitle: String(targetChapter.title || ""),
+            plan: buildPresetPlan(openingMessage, {
+              awaitUser: false,
+              nextRole: String(rolePair.narratorRole.name || "旁白"),
+              nextRoleType: "narrator",
+              chapterOutcome: "continue",
+            }),
+          };
+        }
+        const targetEffectiveChapter = debugFreePlotActive
+          ? {
+            ...targetChapter,
+            content: "",
+            openingText: "",
+            completionCondition: null,
+          }
+          : targetChapter;
+        effectiveChapter = targetEffectiveChapter;
+        const targetPlan = await runNarrativePlan({
+          userId,
+          world,
+          chapter: targetEffectiveChapter,
+          state,
+          recentMessages,
+          playerMessage: "",
+          maxRetries: 0,
+        });
+        applyOrchestratorResultToState(state, targetPlan);
+        applyNarrativeMemoryHintsToState(state, targetPlan.memoryHints);
+        if (targetPlan.triggerMemoryAgent) {
+          triggerStoryMemoryRefreshInBackground({
+            userId,
+            world,
+            chapter: targetEffectiveChapter,
+            state,
+            recentMessages,
+          });
+        }
+        applyPlanTurnState(targetPlan);
+        return {
+          chapterId: Number(targetChapter.id || 0),
+          chapterTitle: String(targetChapter.title || ""),
+          plan: buildPlanResult({ ...targetPlan, eventType: "on_orchestrated_reply" }),
+        };
+      }
 
       if (!playerContent) {
         const pendingChapterId = getPendingDebugChapterId(state);
@@ -205,53 +293,29 @@ export default router.post(
               plan: null,
             })));
           }
-          state.chapterId = Number(nextChapter.id || 0);
-          const openingMessage = buildOpeningRuntimeMessage(world, nextChapter, String(rolePair.narratorRole.name || "旁白"));
-          setRuntimeTurnState(state, world, {
-            canPlayerSpeak: false,
-            expectedRoleType: "narrator",
-            expectedRole: String(rolePair.narratorRole.name || "旁白"),
-            lastSpeakerRoleType: String(openingMessage.roleType || "narrator"),
-            lastSpeaker: String(openingMessage.role || rolePair.narratorRole.name || "旁白"),
-          });
+          chapter = nextChapter;
+          const nextChapterStart = await buildChapterStartPlan(nextChapter);
           return res.status(200).send(success(buildOrchestrationPayload({
             userId,
             worldId,
-            chapterId: Number(nextChapter.id || 0),
-            chapterTitle: String(nextChapter.title || ""),
+            chapterId: nextChapterStart.chapterId,
+            chapterTitle: nextChapterStart.chapterTitle,
             state,
             endDialog: null,
-            plan: buildPresetPlan(openingMessage, {
-              awaitUser: false,
-              nextRole: String(rolePair.narratorRole.name || "旁白"),
-              nextRoleType: "narrator",
-              chapterOutcome: "continue",
-            }),
+            plan: nextChapterStart.plan,
           })));
         }
 
         if (!messages.length) {
-          const openingMessage = buildOpeningRuntimeMessage(world, chapter, String(rolePair.narratorRole.name || "旁白"));
-          setRuntimeTurnState(state, world, {
-            canPlayerSpeak: false,
-            expectedRoleType: "narrator",
-            expectedRole: String(rolePair.narratorRole.name || "旁白"),
-            lastSpeakerRoleType: String(openingMessage.roleType || "narrator"),
-            lastSpeaker: String(openingMessage.role || rolePair.narratorRole.name || "旁白"),
-          });
+          const chapterStart = await buildChapterStartPlan(chapter);
           return res.status(200).send(success(buildOrchestrationPayload({
             userId,
             worldId,
-            chapterId: Number(chapter.id || 0),
-            chapterTitle: String(chapter.title || ""),
+            chapterId: chapterStart.chapterId,
+            chapterTitle: chapterStart.chapterTitle,
             state,
             endDialog: null,
-            plan: buildPresetPlan(openingMessage, {
-              awaitUser: false,
-              nextRole: String(rolePair.narratorRole.name || "旁白"),
-              nextRoleType: "narrator",
-              chapterOutcome: "continue",
-            }),
+            plan: chapterStart.plan,
           })));
         }
 
@@ -278,6 +342,15 @@ export default router.post(
         });
         applyOrchestratorResultToState(state, plan);
         applyNarrativeMemoryHintsToState(state, plan.memoryHints);
+        if (plan.triggerMemoryAgent) {
+          triggerStoryMemoryRefreshInBackground({
+            userId,
+            world,
+            chapter: effectiveChapter,
+            state,
+            recentMessages,
+          });
+        }
 
         if (!debugFreePlotActive && plan.chapterOutcome === "failed") {
           setRuntimeTurnState(state, world, {
@@ -335,43 +408,20 @@ export default router.post(
               plan: buildPlanResult({ ...plan, eventType: "on_orchestrated_reply" }),
             })));
           }
-          state.chapterId = Number(nextChapter.id || 0);
-          const openingMessage = buildOpeningRuntimeMessage(world, nextChapter, String(rolePair.narratorRole.name || "旁白"));
-          setRuntimeTurnState(state, world, {
-            canPlayerSpeak: false,
-            expectedRoleType: "narrator",
-            expectedRole: String(rolePair.narratorRole.name || "旁白"),
-            lastSpeakerRoleType: String(openingMessage.roleType || "narrator"),
-            lastSpeaker: String(openingMessage.role || rolePair.narratorRole.name || "旁白"),
-          });
+          chapter = nextChapter;
+          const nextChapterStart = await buildChapterStartPlan(nextChapter);
           return res.status(200).send(success(buildOrchestrationPayload({
             userId,
             worldId,
-            chapterId: Number(nextChapter.id || 0),
-            chapterTitle: String(nextChapter.title || ""),
+            chapterId: nextChapterStart.chapterId,
+            chapterTitle: nextChapterStart.chapterTitle,
             state,
             endDialog: null,
-            plan: buildPresetPlan(openingMessage, {
-              awaitUser: false,
-              nextRole: String(rolePair.narratorRole.name || "旁白"),
-              nextRoleType: "narrator",
-              chapterOutcome: "continue",
-            }),
+            plan: nextChapterStart.plan,
           })));
         }
 
-        const shouldYieldToPlayer = plan.awaitUser || String(plan.nextRoleType || "").trim().toLowerCase() === "player";
-        if (shouldYieldToPlayer) {
-          allowPlayerTurn(state, world, String(plan.roleType || "narrator"), String(plan.role || rolePair.narratorRole.name || "旁白"));
-        } else {
-          setRuntimeTurnState(state, world, {
-            canPlayerSpeak: false,
-            expectedRoleType: String(plan.nextRoleType || "narrator"),
-            expectedRole: String(plan.nextRole || plan.role || rolePair.narratorRole.name || "旁白"),
-            lastSpeakerRoleType: String(plan.roleType || "narrator"),
-            lastSpeaker: String(plan.role || rolePair.narratorRole.name || "旁白"),
-          });
-        }
+      applyPlanTurnState(plan);
         return res.status(200).send(success(buildOrchestrationPayload({
           userId,
           worldId,
@@ -471,28 +521,16 @@ export default router.post(
             }),
           })));
         }
-        state.chapterId = Number(nextChapter.id || 0);
-        const openingMessage = buildOpeningRuntimeMessage(world, nextChapter, String(rolePair.narratorRole.name || "旁白"));
-        setRuntimeTurnState(state, world, {
-          canPlayerSpeak: false,
-          expectedRoleType: "narrator",
-          expectedRole: String(rolePair.narratorRole.name || "旁白"),
-          lastSpeakerRoleType: String(openingMessage.roleType || "narrator"),
-          lastSpeaker: String(openingMessage.role || rolePair.narratorRole.name || "旁白"),
-        });
+        chapter = nextChapter;
+        const nextChapterStart = await buildChapterStartPlan(nextChapter);
         return res.status(200).send(success(buildOrchestrationPayload({
           userId,
           worldId,
-          chapterId: Number(nextChapter.id || 0),
-          chapterTitle: String(nextChapter.title || ""),
+          chapterId: nextChapterStart.chapterId,
+          chapterTitle: nextChapterStart.chapterTitle,
           state,
           endDialog: null,
-          plan: buildPresetPlan(openingMessage, {
-            awaitUser: false,
-            nextRole: String(rolePair.narratorRole.name || "旁白"),
-            nextRoleType: "narrator",
-            chapterOutcome: "continue",
-          }),
+          plan: nextChapterStart.plan,
         })));
       }
 
@@ -507,6 +545,15 @@ export default router.post(
       });
       applyOrchestratorResultToState(state, plan);
       applyNarrativeMemoryHintsToState(state, plan.memoryHints);
+      if (plan.triggerMemoryAgent) {
+        triggerStoryMemoryRefreshInBackground({
+          userId,
+          world,
+          chapter: effectiveChapter,
+          state,
+          recentMessages,
+        });
+      }
 
       if (!debugFreePlotActive && plan.chapterOutcome === "failed") {
         return res.status(200).send(success(buildOrchestrationPayload({
@@ -557,43 +604,20 @@ export default router.post(
             plan: buildPlanResult({ ...plan, eventType: "on_orchestrated_reply" }),
           })));
         }
-        state.chapterId = Number(nextChapter.id || 0);
-        const openingMessage = buildOpeningRuntimeMessage(world, nextChapter, String(rolePair.narratorRole.name || "旁白"));
-        setRuntimeTurnState(state, world, {
-          canPlayerSpeak: false,
-          expectedRoleType: "narrator",
-          expectedRole: String(rolePair.narratorRole.name || "旁白"),
-          lastSpeakerRoleType: String(openingMessage.roleType || "narrator"),
-          lastSpeaker: String(openingMessage.role || rolePair.narratorRole.name || "旁白"),
-        });
+        chapter = nextChapter;
+        const nextChapterStart = await buildChapterStartPlan(nextChapter);
         return res.status(200).send(success(buildOrchestrationPayload({
           userId,
           worldId,
-          chapterId: Number(nextChapter.id || 0),
-          chapterTitle: String(nextChapter.title || ""),
+          chapterId: nextChapterStart.chapterId,
+          chapterTitle: nextChapterStart.chapterTitle,
           state,
           endDialog: null,
-          plan: buildPresetPlan(openingMessage, {
-            awaitUser: false,
-            nextRole: String(rolePair.narratorRole.name || "旁白"),
-            nextRoleType: "narrator",
-            chapterOutcome: "continue",
-          }),
+          plan: nextChapterStart.plan,
         })));
       }
 
-      const shouldYieldToPlayer = plan.awaitUser || String(plan.nextRoleType || "").trim().toLowerCase() === "player";
-      if (shouldYieldToPlayer) {
-        allowPlayerTurn(state, world, String(plan.roleType || "narrator"), String(plan.role || rolePair.narratorRole.name || "旁白"));
-      } else {
-        setRuntimeTurnState(state, world, {
-          canPlayerSpeak: false,
-          expectedRoleType: String(plan.nextRoleType || "narrator"),
-          expectedRole: String(plan.nextRole || plan.role || rolePair.narratorRole.name || "旁白"),
-          lastSpeakerRoleType: String(plan.roleType || "narrator"),
-          lastSpeaker: String(plan.role || rolePair.narratorRole.name || "旁白"),
-        });
-      }
+      applyPlanTurnState(plan);
 
       return res.status(200).send(success(buildOrchestrationPayload({
         userId,

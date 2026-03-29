@@ -1,3 +1,4 @@
+import express from "express";
 import { z } from "zod";
 import {
   normalizeChapterOutput,
@@ -12,6 +13,7 @@ import {
   setRuntimeTurnState,
 } from "@/modules/game-runtime/engines/NarrativeOrchestrator";
 
+const router = express.Router();
 const DEBUG_RUNTIME_CACHE_TTL_MS = 1000 * 60 * 60;
 const DEBUG_RUNTIME_CACHE = new Map<string, {
   userId: number;
@@ -111,6 +113,12 @@ export function buildDebugStateSnapshot(state: Record<string, any>, debugRuntime
     round: Number(state.round || 0) || 0,
     turnState: cloneDebugRuntimeState(state.turnState || {}),
   };
+  if (state.player && typeof state.player === "object") {
+    snapshot.player = cloneDebugRuntimeState(state.player);
+  }
+  if (state.narrator && typeof state.narrator === "object") {
+    snapshot.narrator = cloneDebugRuntimeState(state.narrator);
+  }
   const memorySummary = String(state.memorySummary || "").trim();
   if (memorySummary) {
     snapshot.memorySummary = memorySummary;
@@ -253,3 +261,5 @@ export function setDebugOpeningTurnState(state: Record<string, any>, world: any,
     lastSpeaker: roleName,
   });
 }
+
+export default router;

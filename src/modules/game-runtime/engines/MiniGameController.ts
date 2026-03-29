@@ -64,11 +64,21 @@ interface MiniGameStepResult {
 const CONTROL_ALIASES: Record<string, string[]> = {
   view_status: ["查看状态", "状态", "局势", "看看状态", "查看局势"],
   view_rules: ["查看规则", "规则", "看看规则"],
-  resume: ["继续", "恢复小游戏", "恢复", "接着来"],
-  request_quit: ["申请退出", "退出小游戏", "退出", "离开小游戏"],
+  resume: ["继续", "继续钓鱼", "恢复小游戏", "恢复", "接着来"],
+  request_quit: ["申请退出", "退出小游戏", "退出钓鱼", "退出", "离开小游戏"],
   confirm_quit: ["确认退出", "确认离开", "确定退出", "退出确认"],
   suspend: ["暂停", "暂停小游戏", "先暂停"],
 };
+
+const TEXT_INPUT_GAME_TYPES = new Set(["research_skill", "alchemy", "upgrade_equipment"]);
+
+function isTextInputMiniGame(gameType: string) {
+  return TEXT_INPUT_GAME_TYPES.has(scalarText(gameType));
+}
+
+function uniqueTexts(items: string[]) {
+  return Array.from(new Set(items.map((item) => scalarText(item)).filter(Boolean)));
+}
 
 const PASSIVE_CONFIRM_PATTERNS = [
   /好/,
@@ -223,6 +233,8 @@ function buildMiniGameMeta(root: JsonRecord): JsonRecord {
       round: Number(session.round || 0),
       playerOptions: asArray(ui.player_options),
       publicState: asRecord(session.public_state),
+      acceptsTextInput: Boolean(ui.accepts_text_input),
+      inputHint: scalarText(ui.input_hint),
     },
   };
 }
@@ -233,6 +245,360 @@ function summarizePublicState(publicState: JsonRecord): string {
     .slice(0, 6)
     .map(([key, value]) => `${key}:${Array.isArray(value) ? value.join("/") : value}`);
   return entries.join("，");
+}
+
+function buildMiniGameUiStateItems(session: JsonRecord, rulebook: MiniGameRulebook): JsonRecord[] {
+  const publicState = asRecord(session.public_state);
+  if (rulebook.gameType === "fishing") {
+    return [
+      { key: "当前水域", value: scalarText(publicState.site_name) || "当前水域" },
+      { key: "当前状态", value: scalarText(publicState.current_status) || "准备抛竿" },
+      { key: "本轮结果", value: scalarText(publicState.last_result) || "暂无" },
+      { key: "最近收获", value: scalarText(publicState.last_reward) || "暂无" },
+    ].filter((item) => scalarText(item.value));
+  }
+  if (rulebook.gameType === "research_skill") {
+    return [
+      { key: "目标技能", value: scalarText(publicState.target_skill_name) || "待输入" },
+      { key: "当前方案", value: scalarText(publicState.last_plan) || "暂无" },
+      { key: "本次结果", value: scalarText(publicState.last_result) || "待评估" },
+      { key: "建议调整", value: scalarText(publicState.last_advice) || "暂无" },
+    ].filter((item) => scalarText(item.value));
+  }
+  if (rulebook.gameType === "alchemy") {
+    return [
+      { key: "目标丹药", value: scalarText(publicState.recipe_name) || "待输入" },
+      { key: "炼制方案", value: scalarText(publicState.last_formula) || "暂无" },
+      { key: "本次结果", value: scalarText(publicState.last_result) || "待评估" },
+      { key: "建议调整", value: scalarText(publicState.last_advice) || "暂无" },
+    ].filter((item) => scalarText(item.value));
+  }
+  if (rulebook.gameType === "upgrade_equipment") {
+    return [
+      { key: "目标装备", value: scalarText(publicState.equip_name) || "当前装备" },
+      { key: "升级方案", value: scalarText(publicState.last_plan) || "暂无" },
+      { key: "当前等级", value: scalarText(publicState.current_level) || "0" },
+      { key: "本次结果", value: scalarText(publicState.last_result) || "待评估" },
+    ].filter((item) => scalarText(item.value));
+  }
+  return Object.entries(publicState)
+    .map(([key, value]) => ({ key, value: Array.isArray(value) ? value.join("/") : scalarText(value) }))
+    .filter((item) => scalarText(item.value))
+    .slice(0, 10);
+}
+
+function buildMiniGamePhaseLabel(session: JsonRecord, rulebook: MiniGameRulebook): string {
+  const phase = scalarText(session.phase);
+  if (rulebook.gameType === "fishing") {
+    if (phase === "prepare") return "准备中";
+    if (phase === "waiting") return "等待结果";
+    if (phase === "result") return "本轮结束";
+    if (phase === "settling") return "已结束";
+  }
+  if (isTextInputMiniGame(rulebook.gameType)) {
+    if (phase === "await_input") return "等待方案";
+    if (phase === "result") return "已评估";
+    if (phase === "settling") return "已结束";
+  }
+  return phase || "进行中";
+}
+
+function buildMiniGameInputHint(rulebook: MiniGameRulebook): string {
+  if (rulebook.gameType === "research_skill") {
+    return "输入技能名称、思路或调整方案";
+  }
+  if (rulebook.gameType === "alchemy") {
+    return "输入药方、药材搭配或火候思路";
+  }
+  if (rulebook.gameType === "upgrade_equipment") {
+    return "输入装备名称和强化方案";
+  }
+  return "";
+}
+
+function normalizeInlineText(input: unknown): string {
+  return scalarText(input).replace(/\s+/g, " ").trim();
+}
+
+function createPlayerParameterCard(state: JsonRecord) {
+  const player = asRecord(state.player);
+  const card = asRecord(player.parameterCardJson);
+  card.skills = uniqueTexts(asArray<string>(card.skills));
+  card.items = uniqueTexts(asArray<string>(card.items));
+  card.equipment = uniqueTexts(asArray<string>(card.equipment));
+  player.parameterCardJson = card;
+  state.player = player;
+  return card;
+}
+
+function appendParameterCardList(state: JsonRecord, key: "skills" | "items" | "equipment", additions: string[]) {
+  const next = uniqueTexts([
+    ...asArray<string>(createPlayerParameterCard(state)[key]),
+    ...additions,
+  ]);
+  const player = asRecord(state.player);
+  const card = createPlayerParameterCard(state);
+  card[key] = next;
+  player.parameterCardJson = card;
+  state.player = player;
+}
+
+function replaceParameterCardEquipment(state: JsonRecord, fromName: string, toName: string) {
+  const player = asRecord(state.player);
+  const card = createPlayerParameterCard(state);
+  const current = uniqueTexts(asArray<string>(card.equipment));
+  const next = current.map((item) => (item === fromName ? toName : item));
+  if (!next.includes(toName)) {
+    next.push(toName);
+  }
+  card.equipment = uniqueTexts(next);
+  player.parameterCardJson = card;
+  state.player = player;
+}
+
+function collectPlayerEquipmentNames(state: JsonRecord): string[] {
+  const card = createPlayerParameterCard(state);
+  const fromInventory = asArray<JsonRecord>(state.inventory)
+    .map((item) => scalarText(item.name || item.itemName || item.title))
+    .filter(Boolean);
+  return uniqueTexts([...asArray<string>(card.equipment), ...fromInventory]);
+}
+
+function simpleSlug(input: string): string {
+  return scalarText(input)
+    .replace(/[^\p{L}\p{N}]+/gu, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 48)
+    .toLowerCase();
+}
+
+function countKeywordHits(text: string, keywords: string[]) {
+  return keywords.reduce((count, keyword) => count + (text.includes(keyword) ? 1 : 0), 0);
+}
+
+function extractQuotedName(text: string): string {
+  const matched = normalizeInlineText(text).match(/[“"《](.{2,24}?)[”"》]/);
+  return scalarText(matched?.[1]);
+}
+
+function inferSkillName(text: string): string {
+  const quoted = extractQuotedName(text);
+  if (quoted) return quoted;
+  const normalized = normalizeInlineText(text);
+  const matched = normalized.match(/(?:技能|招式|术式|功法|法术|绝招)[：:\s]*([\p{L}\p{N}一-龥]{2,24})/u);
+  if (matched?.[1]) return scalarText(matched[1]);
+  return scalarText(normalized.split(/[，。！？!?,；;：:\s]/)[0]).slice(0, 16);
+}
+
+function inferPotionName(text: string): string {
+  const quoted = extractQuotedName(text);
+  if (quoted) return quoted;
+  const normalized = normalizeInlineText(text);
+  const matched = normalized.match(/([\p{L}\p{N}一-龥]{2,20}(?:丹|药|液|散|丸))/u);
+  if (matched?.[1]) return scalarText(matched[1]);
+  const base = scalarText(normalized.split(/[，。！？!?,；;：:\s]/)[0]).slice(0, 12);
+  return base ? `${base}丹` : "自拟丹药";
+}
+
+function parseEquipmentLevel(name: string): number {
+  const text = scalarText(name);
+  const levelMatch = text.match(/(\d+)级/u);
+  if (levelMatch?.[1]) return Number(levelMatch[1] || 0);
+  const plusMatch = text.match(/\+(\d+)$/u);
+  if (plusMatch?.[1]) return Number(plusMatch[1] || 0);
+  return 0;
+}
+
+function extractAffix(text: string): string {
+  const affixes = ["火焰", "雷霆", "寒霜", "破魔", "穿透", "护体", "回灵", "爆裂", "锋锐", "附魔"];
+  return affixes.find((item) => text.includes(item)) || "";
+}
+
+function upgradeEquipmentName(name: string, affix = ""): string {
+  const current = scalarText(name);
+  const level = parseEquipmentLevel(current);
+  let next = current;
+  if (/(\d+)级/u.test(current)) {
+    next = current.replace(/(\d+)级/u, `${level + 1}级`);
+  } else if (/\+\d+$/u.test(current)) {
+    next = current.replace(/\+(\d+)$/u, `+${level + 1}`);
+  } else {
+    next = `${current}${level + 1}级`;
+  }
+  return affix && !next.includes(affix) ? `${next}（${affix}）` : next;
+}
+
+function matchEquipmentName(text: string, candidates: string[]): string {
+  const normalized = normalizeInlineText(text);
+  if (!normalized) return "";
+  const exact = candidates.find((item) => normalized.includes(item) || item.includes(normalized));
+  return scalarText(exact);
+}
+
+function buildTextMiniGameAdvice(gameType: string, text: string): string {
+  const hints: string[] = [];
+  if (text.length < 10) {
+    hints.push("把方案写得更具体一些");
+  }
+  if (gameType === "research_skill" && !/(原理|思路|测试|稳定|改良|控制|连招|法阵|回路)/.test(text)) {
+    hints.push("补充技能原理、测试方式或稳定性设计");
+  }
+  if (gameType === "alchemy" && !/(药材|主药|辅药|药引|火候|提纯|稳炉|凝丹)/.test(text)) {
+    hints.push("补上药材搭配、火候和稳炉步骤");
+  }
+  if (gameType === "upgrade_equipment" && !/(加热|锻打|校正|淬火|注灵|强化|附魔|稳固)/.test(text)) {
+    hints.push("说明加热、锻打或注灵等强化步骤");
+  }
+  return hints.length ? `建议你${hints.join("，")}。` : "建议你把资源、步骤和风险控制说得更完整一些。";
+}
+
+function evaluateResearchSkillInput(session: JsonRecord, input: MiniGameControllerInput): MiniGameStepResult {
+  const publicState = asRecord(session.public_state);
+  const plan = normalizeInlineText(input.playerMessage);
+  const skillName = inferSkillName(plan) || "新技能蓝图";
+  const keywordHits = countKeywordHits(plan, ["技能", "招式", "术式", "原理", "控制", "连招", "测试", "稳定", "改良", "回路", "法阵", "压缩"]);
+  const score = clamp(20 + Math.min(24, Math.floor(plan.length / 4)) + keywordHits * 7 + takeRng(session, 0, 22), 0, 100);
+  publicState.target_skill_name = skillName;
+  publicState.last_plan = plan;
+  publicState.last_result = score >= 68 ? `成功研发：${skillName}` : score >= 48 ? `保留了 ${skillName} 的技能碎片` : "研发失败";
+  publicState.last_advice = score >= 68 ? "建议进入实战测试，继续打磨冷却与连段。" : buildTextMiniGameAdvice("research_skill", plan);
+  session.round = Number(session.round || 1) + 1;
+  session.status = "finished";
+  session.phase = "settling";
+  if (score >= 68) {
+    session.result = "success";
+    session.finish_reason = "研发技能成功";
+    return {
+      narration: `我检查了你的研发方案。恭喜你获得技能《${skillName}》；理论闭环和稳定性都已经成立，已经可以记入角色参数。`,
+      resultTags: ["success"],
+      rewardSummary: { unlock: skillName },
+      writeback: {
+        parameterCardSkillAdd: [skillName],
+        flagsPatch: { [`skill_unlock_${simpleSlug(skillName)}`]: true },
+        memoryAdd: [`研发技能成功：${skillName}`],
+      },
+      memorySummary: `研发技能成功：${skillName}`,
+    };
+  }
+  if (score >= 48) {
+    session.result = "partial";
+    session.finish_reason = "得到技能碎片";
+    return {
+      narration: `我检查了你的研发方案。你已经摸到了《${skillName}》的雏形，但还差最后一口气；${publicState.last_advice}`,
+      resultTags: ["partial"],
+      rewardSummary: { fragment: skillName },
+      writeback: {
+        flagsPatch: { [`skill_fragment_${simpleSlug(skillName)}`]: true },
+        memoryAdd: [`研发得到技能碎片：${skillName}`],
+      },
+      memorySummary: `研发半成功：${skillName}`,
+    };
+  }
+  session.result = "failed";
+  session.finish_reason = "研发失败";
+  return {
+    narration: `我检查了你的研发方案。研发失败，暂时还无法稳定成型；${publicState.last_advice}`,
+    resultTags: ["failed"],
+    writeback: { memoryAdd: ["一次失败的技能研发尝试"] },
+    memorySummary: "研发技能失败",
+  };
+}
+
+function evaluateAlchemyInput(session: JsonRecord, input: MiniGameControllerInput): MiniGameStepResult {
+  const publicState = asRecord(session.public_state);
+  const formula = normalizeInlineText(input.playerMessage);
+  const recipeName = inferPotionName(formula);
+  const keywordHits = countKeywordHits(formula, ["药材", "主药", "辅药", "药引", "火候", "提纯", "稳炉", "搅拌", "融合", "凝丹", "文火", "武火"]);
+  const score = clamp(18 + Math.min(26, Math.floor(formula.length / 4)) + keywordHits * 7 + takeRng(session, 0, 24), 0, 100);
+  publicState.recipe_name = recipeName;
+  publicState.last_formula = formula;
+  publicState.last_result = score >= 68 ? `炼成上品${recipeName}` : score >= 50 ? `勉强炼成${recipeName}` : "炼制失败";
+  publicState.last_advice = score >= 50 ? "可以继续优化药性层次与丹香稳定度。" : buildTextMiniGameAdvice("alchemy", formula);
+  session.round = Number(session.round || 1) + 1;
+  session.status = "finished";
+  session.phase = "settling";
+  if (score >= 50) {
+    session.result = score >= 68 ? "success" : "partial";
+    session.finish_reason = "炼药完成";
+    const pillName = score >= 68 ? recipeName : `粗炼${recipeName}`;
+    return {
+      narration: `我检查了你的炼药方案。恭喜你获得药品《${pillName}》；丹炉状态和药性融合都达到了成药标准。`,
+      resultTags: [score >= 68 ? "success" : "partial"],
+      rewardSummary: { item: pillName },
+      writeback: {
+        inventoryAdd: [{ kind: "pill", name: pillName }],
+        parameterCardItemAdd: [pillName],
+        memoryAdd: [`炼药获得：${pillName}`],
+      },
+      memorySummary: `炼药完成：${pillName}`,
+    };
+  }
+  session.result = "failed";
+  session.finish_reason = "炼药失败";
+  return {
+    narration: `我检查了你的炼药方案。炼药失败；${publicState.last_advice}`,
+    resultTags: ["failed"],
+    writeback: { memoryAdd: ["一次失败的炼药尝试"] },
+    memorySummary: "炼药失败",
+  };
+}
+
+function evaluateEquipmentInput(session: JsonRecord, input: MiniGameControllerInput): MiniGameStepResult {
+  const publicState = asRecord(session.public_state);
+  const plan = normalizeInlineText(input.playerMessage);
+  const candidates = collectPlayerEquipmentNames(input.state);
+  const matched = matchEquipmentName(plan, candidates);
+  publicState.last_plan = plan;
+  publicState.equip_name = matched || scalarText(publicState.equip_name) || "当前装备";
+  publicState.current_level = parseEquipmentLevel(publicState.equip_name);
+  publicState.target_level = Number(publicState.current_level || 0) + 1;
+  session.round = Number(session.round || 1) + 1;
+  session.status = "finished";
+  session.phase = "settling";
+  if (!matched) {
+    session.result = "failed";
+    session.finish_reason = "未找到目标装备";
+    const recommend = candidates[0] ? `你没有这件装备，要不试试升级 ${candidates[0]} 吧。` : "你当前没有可升级的装备，先准备一件装备再来。";
+    publicState.last_result = "没有对应装备";
+    publicState.last_advice = recommend;
+    return {
+      narration: `我检查了你的升级方案。不好意思，你没有这个装备；${recommend}`,
+      resultTags: ["failed"],
+      writeback: { memoryAdd: ["一次未命中目标装备的强化尝试"] },
+      memorySummary: "升级装备失败：未找到目标装备",
+    };
+  }
+  const keywordHits = countKeywordHits(plan, ["加热", "锻打", "校正", "淬火", "注灵", "强化", "附魔", "稳固", "炉温", "灵石"]);
+  const score = clamp(20 + Math.min(24, Math.floor(plan.length / 4)) + keywordHits * 7 + takeRng(session, 0, 22), 0, 100);
+  const affix = extractAffix(plan);
+  if (score >= 58) {
+    session.result = score >= 78 ? "perfect" : "success";
+    session.finish_reason = "升级装备成功";
+    const upgraded = upgradeEquipmentName(matched, affix);
+    publicState.last_result = `升级成功：${upgraded}`;
+    publicState.last_advice = "建议再进行一次实战检验，确认附魔是否稳定。";
+    return {
+      narration: `我检查了你的升级方案。恭喜你升级成功，${matched} 已提升为 ${upgraded}。`,
+      resultTags: [score >= 78 ? "perfect" : "success"],
+      rewardSummary: { equipment: upgraded },
+      writeback: {
+        parameterCardEquipmentReplace: [{ from: matched, to: upgraded }],
+        flagsPatch: { equipment_upgrade_success: true },
+        memoryAdd: [`装备升级成功：${upgraded}`],
+      },
+      memorySummary: `装备升级成功：${upgraded}`,
+    };
+  }
+  session.result = "failed";
+  session.finish_reason = "升级装备失败";
+  publicState.last_result = "升级失败";
+  publicState.last_advice = buildTextMiniGameAdvice("upgrade_equipment", plan);
+  return {
+    narration: `我检查了你的升级方案。升级失败；${publicState.last_advice}`,
+    resultTags: ["failed"],
+    writeback: { memoryAdd: [`一次失败的装备升级尝试：${matched}`] },
+    memorySummary: `装备升级失败：${matched}`,
+  };
 }
 
 function gameTypeChinese(gameType: string): string {
@@ -289,10 +655,112 @@ function detectGameTrigger(message: string, recentMessages: Array<Record<string,
   return null;
 }
 
+function isMiniGameCatalogCommand(input: string): boolean {
+  const text = scalarText(input);
+  if (!text) return false;
+  return text.replace(/^#/, "").trim() === "小游戏";
+}
+
+function isForceQuitMiniGameCommand(input: string): boolean {
+  const text = scalarText(input);
+  if (!text.startsWith("#")) return false;
+  const normalized = text.replace(/^#/, "").trim();
+  return normalized === "退出" || normalized === "exit";
+}
+
+function availableMiniGameCatalog() {
+  return Object.values(RULEBOOKS).map((rulebook, index) => ({
+    index: index + 1,
+    gameType: rulebook.gameType,
+    displayName: rulebook.displayName,
+    triggerTags: rulebook.triggerTags,
+    aliases: [
+      rulebook.displayName,
+      rulebook.gameType,
+      ...rulebook.triggerTags.map((tag) => tag.replace(/^#/, "")),
+    ].map((item) => scalarText(item)).filter(Boolean),
+    ruleSummary: scalarText(rulebook.ruleSummary),
+  }));
+}
+
+function openMiniGameCatalog(state: JsonRecord): JsonRecord {
+  const catalog = {
+    open: true,
+    updateTime: nowTs(),
+    options: availableMiniGameCatalog().map((item) => ({
+      index: item.index,
+      gameType: item.gameType,
+      displayName: item.displayName,
+      commands: item.triggerTags,
+      ruleSummary: item.ruleSummary,
+    })),
+  };
+  state.miniGameCatalog = catalog;
+  return catalog;
+}
+
+function clearMiniGameCatalog(state: JsonRecord) {
+  delete state.miniGameCatalog;
+}
+
+function buildMiniGameCatalogNarration(prefix = ""): string {
+  const lines = availableMiniGameCatalog().map((item) => {
+    const command = item.triggerTags[0] || `#${item.displayName}`;
+    return `${item.index}. ${item.displayName}：${item.ruleSummary}（输入 ${command} 或 ${item.index}）`;
+  });
+  return [
+    prefix,
+    "当前可进入的小游戏如下：",
+    ...lines,
+    "你可以直接输入对应序号，或输入 #狼人杀 / #钓鱼 / #修炼 / #研发技能 / #炼药 / #挖矿 / #升级装备 进入。",
+  ].filter(Boolean).join("\n");
+}
+
+function resolveMiniGameCatalogSelection(state: JsonRecord, input: string): {
+  detected: { gameType: string; source: string } | null;
+  attempted: boolean;
+} {
+  const catalog = asRecord(state.miniGameCatalog);
+  const options = asArray<JsonRecord>(catalog.options);
+  if (!options.length) return { detected: null, attempted: false };
+  const text = scalarText(input);
+  if (!text) return { detected: null, attempted: false };
+  const normalized = text.replace(/^#/, "").trim();
+  if (!normalized) return { detected: null, attempted: false };
+  if (/^\d+$/.test(normalized)) {
+    const index = Number(normalized);
+    const matched = options.find((item) => Number(item.index || 0) === index);
+    return {
+      detected: matched ? { gameType: scalarText(matched.gameType), source: "catalog" } : null,
+      attempted: true,
+    };
+  }
+  const matched = options.find((item) => {
+    const aliases = [
+      scalarText(item.displayName),
+      scalarText(item.gameType),
+      ...asArray<string>(item.commands).map((command) => scalarText(command).replace(/^#/, "")),
+    ].filter(Boolean);
+    return aliases.some((alias) => normalized === alias || normalized.includes(alias));
+  });
+  const attempted = text.startsWith("#")
+    || options.some((item) => {
+      const name = scalarText(item.displayName);
+      return Boolean(name) && (normalized.includes(name) || name.includes(normalized));
+    });
+  return {
+    detected: matched ? { gameType: scalarText(matched.gameType), source: "catalog" } : null,
+    attempted,
+  };
+}
+
 function nextWerewolfPlayerPhase(session: JsonRecord): string {
   const hidden = asRecord(session.hidden_state);
   const roleMap = asRecord(hidden.role_map);
-  const playerRole = scalarText(roleMap.player || roleMap["玩家"] || roleMap["用户"] || "村民");
+  const playerName = scalarText(
+    asArray<JsonRecord>(session.participants).find((item) => item.role_type === "player")?.role_name,
+  ) || "用户";
+  const playerRole = scalarText(roleMap[playerName] || roleMap.player || roleMap["玩家"] || roleMap["用户"] || "村民");
   const dayCount = Number(asRecord(session.public_state).day_count || 1);
   if (dayCount <= 0) {
     asRecord(session.public_state).day_count = 1;
@@ -337,7 +805,6 @@ function werewolfOptions(session: JsonRecord): MiniGameActionOption[] {
   }
   if (phase === "day_vote") {
     return [
-      { action_id: "speak", label: "发言", desc: "发表你的怀疑与判断" },
       ...selectable.map((item) => ({ action_id: `vote:${item}`, label: `投票${item}`, desc: `白天投票淘汰 ${item}` })),
       { action_id: "abstain", label: "弃票", desc: "本轮放弃投票" },
       { action_id: "view_record", label: "查看记录", desc: "查看昨夜结果与投票历史" },
@@ -365,18 +832,175 @@ function resolveWerewolfNightNpc(session: JsonRecord) {
   session.public_state = publicState;
 }
 
+function ensureWerewolfNpcState(session: JsonRecord) {
+  const hidden = asRecord(session.hidden_state);
+  const publicState = asRecord(session.public_state);
+  const aliveList = asArray<string>(publicState.alive_list);
+  const playerName = scalarText(
+    asArray<JsonRecord>(session.participants).find((item) => item.role_type === "player")?.role_name,
+  ) || "用户";
+  const suspicionMatrix = asRecord(hidden.npc_suspicion_matrix);
+  const personality = asRecord(hidden.npc_personality_weight);
+  aliveList
+    .filter((name) => name && name !== playerName)
+    .forEach((name) => {
+      if (!personality[name]) {
+        personality[name] = {
+          logic: takeRng(session, 35, 80),
+          aggressive: takeRng(session, 25, 75),
+          trust_player: takeRng(session, -20, 20),
+          lie_skill: takeRng(session, 10, 70),
+        };
+      }
+      const npcMatrix = asRecord(suspicionMatrix[name]);
+      aliveList
+        .filter((target) => target && target !== name)
+        .forEach((target) => {
+          if (npcMatrix[target] === undefined) {
+            npcMatrix[target] = takeRng(session, 15, 55);
+          }
+        });
+      suspicionMatrix[name] = npcMatrix;
+    });
+  hidden.npc_suspicion_matrix = suspicionMatrix;
+  hidden.npc_personality_weight = personality;
+  session.hidden_state = hidden;
+}
+
+function buildWerewolfDiscussionNarration(session: JsonRecord, includePlayerLead: boolean): string {
+  ensureWerewolfNpcState(session);
+  const hidden = asRecord(session.hidden_state);
+  const publicState = asRecord(session.public_state);
+  const suspicionMatrix = asRecord(hidden.npc_suspicion_matrix);
+  const personality = asRecord(hidden.npc_personality_weight);
+  const playerName = scalarText(
+    asArray<JsonRecord>(session.participants).find((item) => item.role_type === "player")?.role_name,
+  ) || "用户";
+  const aliveList = asArray<string>(publicState.alive_list);
+  const npcNames = aliveList.filter((name) => name && name !== playerName);
+  const snippets = npcNames.map((name) => {
+    const matrix = asRecord(suspicionMatrix[name]);
+    const weights = asRecord(personality[name]);
+    const suspect = aliveList
+      .filter((target) => target && target !== name)
+      .sort((a, b) => Number(matrix[b] || 0) - Number(matrix[a] || 0))[0] || playerName;
+    if (Number(weights.aggressive || 0) >= 65) {
+      return `${name}率先拍桌，直指${suspect}昨夜反应最不对劲。`;
+    }
+    if (Number(weights.logic || 0) >= 65) {
+      return `${name}冷静梳理线索后，认为${suspect}的行动逻辑最可疑。`;
+    }
+    return `${name}反复权衡后，还是把怀疑落在了${suspect}身上。`;
+  });
+  publicState.last_discussion_summary = snippets.join("");
+  session.public_state = publicState;
+  return [
+    includePlayerLead ? "你先说出了自己的判断，火堆旁的气氛一下被点燃。" : "众人迅速围着昨夜的结果展开了讨论。",
+    ...snippets,
+    "一轮发言结束，现场准备进入投票。",
+  ].filter(Boolean).join("");
+}
+
+function chooseWerewolfNpcVoteTarget(session: JsonRecord, voterName: string, candidates: string[], playerVote: string): string {
+  ensureWerewolfNpcState(session);
+  const hidden = asRecord(session.hidden_state);
+  const suspicionMatrix = asRecord(hidden.npc_suspicion_matrix);
+  const personality = asRecord(hidden.npc_personality_weight);
+  const matrix = asRecord(suspicionMatrix[voterName]);
+  const weights = asRecord(personality[voterName]);
+  return candidates
+    .map((candidate) => {
+      let score = Number(matrix[candidate] || 0);
+      if (candidate === playerVote) {
+        score += Math.max(0, Number(weights.trust_player || 0));
+      }
+      score += takeRng(session, 0, 12);
+      return { candidate, score };
+    })
+    .sort((a, b) => b.score - a.score)[0]?.candidate || candidates[0] || "";
+}
+
+function resolveWerewolfVoteRound(session: JsonRecord, playerVote: string): { votedOut: string; narration: string } {
+  ensureWerewolfNpcState(session);
+  const publicState = asRecord(session.public_state);
+  const playerName = scalarText(
+    asArray<JsonRecord>(session.participants).find((item) => item.role_type === "player")?.role_name,
+  ) || "用户";
+  const aliveList = asArray<string>(publicState.alive_list).filter(Boolean);
+  const voteCount = new Map<string, number>();
+  const voteDetails: string[] = [];
+  const pushVote = (voter: string, target: string) => {
+    if (!target) return;
+    voteCount.set(target, Number(voteCount.get(target) || 0) + 1);
+    voteDetails.push(`${voter} 投给了 ${target}`);
+  };
+  if (playerVote && playerVote !== "弃票") {
+    pushVote(playerName, playerVote);
+  } else {
+    voteDetails.push(`${playerName} 选择弃票`);
+  }
+  aliveList
+    .filter((name) => name !== playerName)
+    .forEach((name) => {
+      const target = chooseWerewolfNpcVoteTarget(
+        session,
+        name,
+        aliveList.filter((item) => item !== name),
+        playerVote,
+      );
+      pushVote(name, target);
+    });
+  const sorted = Array.from(voteCount.entries()).sort((a, b) => b[1] - a[1]);
+  const topCount = Number(sorted[0]?.[1] || 0);
+  const tied = sorted.filter((item) => item[1] === topCount).map((item) => item[0]);
+  if (tied.length <= 1) {
+    return {
+      votedOut: tied[0] || "",
+      narration: `众人完成投票：${voteDetails.join("，")}。`,
+    };
+  }
+  const revoteCount = new Map<string, number>();
+  const revoteDetails: string[] = [];
+  const pushRevote = (voter: string, target: string) => {
+    if (!target) return;
+    revoteCount.set(target, Number(revoteCount.get(target) || 0) + 1);
+    revoteDetails.push(`${voter} 在复投时投给了 ${target}`);
+  };
+  if (playerVote && tied.includes(playerVote)) {
+    pushRevote(playerName, playerVote);
+  }
+  aliveList
+    .filter((name) => name !== playerName)
+    .forEach((name) => {
+      const target = chooseWerewolfNpcVoteTarget(session, name, tied.filter((item) => item !== name), playerVote);
+      pushRevote(name, target);
+    });
+  const revoteSorted = Array.from(revoteCount.entries()).sort((a, b) => b[1] - a[1]);
+  const revoteTop = Number(revoteSorted[0]?.[1] || 0);
+  const revoteTied = revoteSorted.filter((item) => item[1] === revoteTop).map((item) => item[0]);
+  return {
+    votedOut: revoteTied.length === 1 ? revoteTied[0] || "" : "",
+    narration: `众人完成首轮投票：${voteDetails.join("，")}。由于 ${tied.join("、")} 平票，随后进行复投：${revoteDetails.join("，")}。`,
+  };
+}
+
 function finalizeWerewolfVote(session: JsonRecord, votedOut: string): string {
   const publicState = asRecord(session.public_state);
   const hidden = asRecord(session.hidden_state);
-  const aliveList = asArray<string>(publicState.alive_list).filter((item) => item !== votedOut);
+  const noElimination = !scalarText(votedOut) || scalarText(votedOut) === "无人出局";
+  const aliveList = noElimination
+    ? asArray<string>(publicState.alive_list)
+    : asArray<string>(publicState.alive_list).filter((item) => item !== votedOut);
   const eliminatedList = asArray<string>(publicState.eliminated_list);
-  eliminatedList.push(votedOut);
+  if (!noElimination) {
+    eliminatedList.push(votedOut);
+  }
   publicState.alive_list = aliveList;
   publicState.eliminated_list = eliminatedList;
   const history = asArray<any>(publicState.public_vote_history);
-  history.push({ round: Number(session.round || 1), votedOut });
+  history.push({ round: Number(session.round || 1), votedOut: scalarText(votedOut) || "无人出局" });
   publicState.public_vote_history = history.slice(-10);
-  publicState.last_night_result = votedOut ? `白天投票淘汰：${votedOut}` : "本轮无人出局";
+  publicState.last_night_result = noElimination ? "本轮无人出局" : `白天投票淘汰：${votedOut}`;
   const roleMap = asRecord(hidden.role_map);
   const aliveRoles = aliveList.map((item) => scalarText(roleMap[item]));
   const wolfAlive = aliveRoles.filter((item) => item === "狼人").length;
@@ -399,7 +1023,9 @@ function finalizeWerewolfVote(session: JsonRecord, votedOut: string): string {
   session.phase = nextWerewolfPlayerPhase(session);
   session.status = "active";
   resolveWerewolfNightNpc(session);
-  return `${votedOut} 被票出局。天亮后将进入第 ${session.round} 轮。`;
+  return noElimination
+    ? `两轮投票都未能形成结果，本轮无人出局。天亮后将进入第 ${session.round} 轮。`
+    : `${votedOut} 被票出局。天亮后将进入第 ${session.round} 轮。`;
 }
 
 function werewolfStep(session: JsonRecord, actionId: string): MiniGameStepResult {
@@ -471,21 +1097,31 @@ function werewolfStep(session: JsonRecord, actionId: string): MiniGameStepResult
       const history = asArray<any>(publicState.public_vote_history)
         .map((item) => `第${item.round}轮：${item.votedOut}`)
         .join("；");
-      return { narration: `当前存活：${asArray<string>(publicState.alive_list).join("、")}。公开记录：${history || "暂无"}。`, resultTags: ["view_record"] };
+      return {
+        narration: `当前存活：${asArray<string>(publicState.alive_list).join("、")}。昨夜结果：${scalarText(publicState.last_night_result) || "暂无"}。公开记录：${history || "暂无"}。`,
+        resultTags: ["view_record"],
+      };
     }
     if (actionId === "begin_vote") {
       session.phase = "day_vote";
-      return { narration: "讨论结束，进入白天投票。请选择你要票出的对象。", resultTags: ["begin_vote"] };
+      return {
+        narration: `${buildWerewolfDiscussionNarration(session, false)}请选择你要票出的对象。`,
+        resultTags: ["begin_vote"],
+      };
     }
     if (actionId === "speak") {
       session.phase = "day_vote";
-      return { narration: "你表达了自己的怀疑。讨论推进后，现场进入投票环节。", resultTags: ["speak"] };
+      return {
+        narration: `${buildWerewolfDiscussionNarration(session, true)}请选择你要票出的对象。`,
+        resultTags: ["speak"],
+      };
     }
   }
   if (phase === "day_vote") {
     if (actionId.startsWith("vote:")) {
-      const votedOut = actionId.slice(5);
-      const narration = finalizeWerewolfVote(session, votedOut);
+      const voteTarget = actionId.slice(5);
+      const voteRound = resolveWerewolfVoteRound(session, voteTarget);
+      const narration = `${voteRound.narration}${finalizeWerewolfVote(session, voteRound.votedOut)}`;
       const rewardSummary = session.status === "finished"
         ? { exp: session.result === "villager_win" ? 30 : 10, relation: session.result === "villager_win" ? 3 : 1 }
         : {};
@@ -499,7 +1135,8 @@ function werewolfStep(session: JsonRecord, actionId: string): MiniGameStepResult
       return { narration, resultTags: ["vote"], rewardSummary, writeback, memorySummary: `狼人杀一局结束：${session.result || narration}` };
     }
     if (actionId === "abstain") {
-      const narration = finalizeWerewolfVote(session, "无人出局");
+      const voteRound = resolveWerewolfVoteRound(session, "弃票");
+      const narration = `${voteRound.narration}${finalizeWerewolfVote(session, voteRound.votedOut)}`;
       return { narration, resultTags: ["abstain"] };
     }
     if (actionId === "view_record") {
@@ -517,175 +1154,130 @@ function fishingOptions(session: JsonRecord): MiniGameActionOption[] {
   if (phase === "prepare") {
     return [
       { action_id: "cast", label: "抛竿", desc: "开始本次垂钓" },
-      { action_id: "change_bait", label: "换饵", desc: "更换当前鱼饵" },
-      { action_id: "finish", label: "收杆结束", desc: "结束本次钓鱼" },
+      { action_id: "finish", label: "退出钓鱼", desc: "结束本次钓鱼" },
     ];
   }
   if (phase === "waiting") {
     return [
-      { action_id: "lift_rod", label: "提竿", desc: "尝试中鱼" },
-      { action_id: "wait_more", label: "继续等待", desc: "继续观察水面动静" },
-      { action_id: "finish", label: "收杆结束", desc: "结束本次钓鱼" },
+      { action_id: "wait_more", label: "收杆看结果", desc: "立即查看这一竿有没有收获" },
+      { action_id: "finish", label: "退出钓鱼", desc: "结束本次钓鱼" },
     ];
   }
   return [
-    { action_id: "reel_in", label: "收线", desc: "拉近鱼的距离" },
-    { action_id: "let_out", label: "放线", desc: "降低鱼线张力" },
-    { action_id: "steady_rod", label: "稳杆", desc: "稳住鱼线和重心" },
-    { action_id: "side_pull", label: "侧拉", desc: "压制冲刺方向" },
-    { action_id: "strong_pull", label: "强拉", desc: "高风险快速收线" },
-    { action_id: "finish", label: "收杆结束", desc: "结束本次钓鱼" },
+    { action_id: "cast", label: "继续钓鱼", desc: "继续下一轮垂钓" },
+    { action_id: "finish", label: "退出钓鱼", desc: "结束本次钓鱼" },
   ];
+}
+
+function resolveFishingReward(session: JsonRecord): { kind: string; name: string; rarity: string; narrationType: string } {
+  const fishPool = [
+    { name: "鲫鱼", rarity: "普通" },
+    { name: "青鱼", rarity: "普通" },
+    { name: "银鲤", rarity: "普通" },
+    { name: "灵纹鱼", rarity: "稀有" },
+    { name: "古鳞鱼", rarity: "稀有" },
+  ];
+  const treasurePool = [
+    { name: "旧铜箱", rarity: "稀有" },
+    { name: "水灵石", rarity: "稀有" },
+    { name: "漂流补给箱", rarity: "普通" },
+    { name: "古旧金币", rarity: "普通" },
+  ];
+  const rewardTypeRoll = takeRng(session, 1, 100);
+  if (rewardTypeRoll > 82) {
+    const treasure = treasurePool[takeRng(session, 0, treasurePool.length - 1)];
+    return {
+      kind: "treasure",
+      name: treasure.name,
+      rarity: treasure.rarity,
+      narrationType: "宝物",
+    };
+  }
+  const fish = fishPool[takeRng(session, 0, fishPool.length - 1)];
+  return {
+    kind: "fish",
+    name: fish.name,
+    rarity: fish.rarity,
+    narrationType: "鱼获",
+  };
+}
+
+function resolveFishingRound(session: JsonRecord, siteName: string): MiniGameStepResult {
+  const publicState = asRecord(session.public_state);
+  const hidden = asRecord(session.hidden_state);
+  const roll = Number(hidden.encounter_roll || takeRng(session, 1, 100));
+  session.phase = "result";
+  if (roll <= 38) {
+    publicState.current_status = "空竿";
+    publicState.last_result = "这次空竿了";
+    publicState.last_reward = "";
+    hidden.target_fish_name = "";
+    hidden.fish_rarity = "";
+    hidden.reward_kind = "";
+    return {
+      narration: `你把鱼钩抛进 ${siteName}，片刻后水面恢复了平静，这一竿没有鱼也没有宝物。你可以继续钓鱼，或退出钓鱼。`,
+      resultTags: ["cast", "empty_hook"],
+      memorySummary: "钓鱼空竿一次",
+    };
+  }
+  const reward = resolveFishingReward(session);
+  hidden.target_fish_name = reward.name;
+  hidden.fish_rarity = reward.rarity;
+  hidden.reward_kind = reward.kind;
+  publicState.current_status = reward.narrationType === "宝物" ? "钓到宝物" : "钓到鱼获";
+  publicState.last_reward = reward.name;
+  publicState.last_result = reward.narrationType === "宝物" ? `钓到宝物：${reward.name}` : `钓到：${reward.name}`;
+  return {
+    narration: reward.narrationType === "宝物"
+      ? `你把鱼钩抛进 ${siteName}，水面猛地一晃，你顺势收杆，意外捞到了 ${reward.name}，已放入物品。你可以继续钓鱼，或退出钓鱼。`
+      : `你把鱼钩抛进 ${siteName}，鱼漂一沉，你顺势收杆，钓到了 ${reward.name}，已放入物品。你可以继续钓鱼，或退出钓鱼。`,
+    resultTags: ["cast", "success", reward.kind],
+    rewardSummary: { loot: reward.name },
+    writeback: {
+      inventoryAdd: [{ kind: reward.kind, name: reward.name, rarity: reward.rarity }],
+      memoryAdd: [`钓鱼收获：${reward.name}`],
+    },
+    memorySummary: `钓鱼成功，收获 ${reward.name}`,
+  };
 }
 
 function fishingStep(session: JsonRecord, actionId: string): MiniGameStepResult {
   const publicState = asRecord(session.public_state);
   const hidden = asRecord(session.hidden_state);
-  const resource = asRecord(session.resource_state);
   const currentPhase = normalizePhase(session.phase, "prepare");
+  const siteName = scalarText(publicState.site_name) || "水面";
   if (actionId === "finish") {
     session.status = "finished";
     session.phase = "settling";
-    session.result = publicState.hook_state === "landed" ? "completed" : "cancelled";
-    session.finish_reason = publicState.hook_state === "landed" ? "成功收杆" : "玩家主动结束";
-    const fishName = scalarText(hidden.target_fish_name);
-    const writeback = publicState.hook_state === "landed" && fishName
-      ? {
-          inventoryAdd: [{ kind: "fish", name: fishName, rarity: scalarText(hidden.fish_rarity) || "普通" }],
-          playerAttributePatch: { stamina: Math.max(0, 100 - Number(publicState.stamina || 100)) },
-          memoryAdd: [`钓鱼收获：${fishName}`],
-        }
-      : {};
+    session.result = scalarText(publicState.last_reward) ? "completed" : "cancelled";
+    session.finish_reason = "玩家结束钓鱼";
+    publicState.current_status = "已结束";
     return {
-      narration: publicState.hook_state === "landed" && fishName ? `你成功收杆，获得了 ${fishName}。` : "你结束了本次钓鱼。",
+      narration: scalarText(publicState.last_reward)
+        ? `你收起鱼竿，带着 ${scalarText(publicState.last_reward)} 结束了这次钓鱼。`
+        : "你收起鱼竿，结束了这次钓鱼。",
       resultTags: ["finish"],
-      rewardSummary: publicState.hook_state === "landed" && fishName ? { loot: fishName } : {},
-      writeback,
-      memorySummary: publicState.hook_state === "landed" && fishName ? `钓鱼成功，收获 ${fishName}` : "钓鱼提前结束",
+      rewardSummary: scalarText(publicState.last_reward) ? { loot: scalarText(publicState.last_reward) } : {},
+      memorySummary: scalarText(publicState.last_reward)
+        ? `钓鱼结束，最近收获 ${scalarText(publicState.last_reward)}`
+        : "钓鱼提前结束",
     };
   }
-  if (currentPhase === "prepare") {
-    if (actionId === "change_bait") {
-      const baitList = ["基础鱼饵", "谷香鱼饵", "灵性鱼饵"];
-      publicState.bait_name = baitList[takeRng(session, 0, baitList.length - 1)];
-      return { narration: `你更换了鱼饵，当前使用：${publicState.bait_name}。`, resultTags: ["change_bait"] };
-    }
+  if (currentPhase === "prepare" || currentPhase === "result") {
     if (actionId === "cast") {
-      session.phase = "waiting";
-      publicState.hook_state = "waiting";
+      if (currentPhase === "result") {
+        session.round = Number(session.round || 1) + 1;
+      }
+      publicState.last_result = "";
+      publicState.last_reward = "";
       hidden.encounter_roll = takeRng(session, 1, 100);
-      return { narration: `你将鱼钩抛入 ${scalarText(publicState.site_name) || "水面"}，等待鱼儿上钩。`, resultTags: ["cast"] };
+      return resolveFishingRound(session, siteName);
     }
   }
   if (currentPhase === "waiting") {
-    const hookChance = clamp(40 + (scalarText(publicState.bait_name).includes("灵") ? 20 : 0), 10, 95);
-    const roll = Number(hidden.encounter_roll || takeRng(session, 1, 100));
-    if (actionId === "wait_more") {
-      hidden.encounter_roll = takeRng(session, 1, 100);
-      return { narration: `水面传来轻微波动，你继续沉住气等待。当前中鱼机会约 ${hookChance}% 。`, resultTags: ["wait_more"] };
+    if (actionId === "wait_more" || actionId === "cast") {
+      return resolveFishingRound(session, siteName);
     }
-    if (actionId === "lift_rod") {
-      if (roll <= hookChance) {
-        session.phase = "hook_fight";
-        publicState.hook_state = "hooked";
-        publicState.line_tension = 35;
-        publicState.fish_distance = 85;
-        hidden.fish_stamina = takeRng(session, 55, 85);
-        hidden.fish_power = takeRng(session, 40, 75);
-        hidden.fish_escape_rate = takeRng(session, 10, 30);
-        hidden.target_fish_name = ["鲫鱼", "青鱼", "银鲤", "灵鱼", "古鳞鱼"][takeRng(session, 0, 4)];
-        hidden.fish_rarity = hidden.target_fish_name === "灵鱼" || hidden.target_fish_name === "古鳞鱼" ? "稀有" : "普通";
-        return { narration: `鱼线猛地一沉，你成功中鱼！目标似乎是 ${hidden.target_fish_name}。`, resultTags: ["hooked"] };
-      }
-      hidden.encounter_roll = takeRng(session, 1, 100);
-      return { narration: "你提竿过早，水下没有真正咬钩，只泛起一圈涟漪。", resultTags: ["empty_hook"] };
-    }
-  }
-  if (currentPhase === "hook_fight") {
-    const tension = Number(publicState.line_tension || 0);
-    const distance = Number(publicState.fish_distance || 0);
-    const fishStamina = Number(hidden.fish_stamina || 0);
-    const next = {
-      line_tension: tension,
-      fish_distance: distance,
-      fish_stamina: fishStamina,
-    };
-    if (actionId === "reel_in") {
-      next.fish_distance -= 20;
-      next.line_tension += 20;
-      next.fish_stamina -= 10;
-    } else if (actionId === "let_out") {
-      next.fish_distance += 10;
-      next.line_tension -= 25;
-    } else if (actionId === "steady_rod") {
-      next.fish_distance -= 5;
-      next.line_tension -= 15;
-      next.fish_stamina -= 5;
-    } else if (actionId === "side_pull") {
-      next.fish_distance -= 15;
-      next.line_tension += 10;
-      next.fish_stamina -= 15;
-    } else if (actionId === "strong_pull") {
-      next.fish_distance -= 30;
-      next.line_tension += 35;
-      next.fish_stamina -= 25;
-    } else {
-      return { narration: "当前局面只能通过拉扯鱼线来处理，请选择一个合法动作。", resultTags: ["invalid"] };
-    }
-    next.line_tension = clamp(next.line_tension, 0, 140);
-    next.fish_distance = clamp(next.fish_distance, -10, 150);
-    next.fish_stamina = clamp(next.fish_stamina, -10, 120);
-    publicState.line_tension = next.line_tension;
-    publicState.fish_distance = next.fish_distance;
-    hidden.fish_stamina = next.fish_stamina;
-    publicState.stamina = clamp(Number(publicState.stamina || 100) - 8, 0, 100);
-    publicState.focus = clamp(Number(publicState.focus || 80) - 5, 0, 100);
-    if (next.line_tension >= 100) {
-      session.status = "finished";
-      session.phase = "settling";
-      session.result = "failed";
-      session.finish_reason = "断线失败";
-      publicState.hook_state = "broken";
-      return {
-        narration: "鱼线承受不住巨大的拉力，当场崩断，这次钓鱼失败了。",
-        resultTags: ["failed", "line_break"],
-        memorySummary: "钓鱼失败，鱼线断裂",
-      };
-    }
-    if (next.fish_distance > 120) {
-      session.status = "finished";
-      session.phase = "settling";
-      session.result = "failed";
-      session.finish_reason = "脱钩失败";
-      publicState.hook_state = "escaped";
-      return {
-        narration: "鱼儿猛冲脱离控制，鱼钩被甩开，目标逃脱了。",
-        resultTags: ["failed", "escape"],
-        memorySummary: "钓鱼失败，目标脱钩逃走",
-      };
-    }
-    if (next.fish_distance <= 0 && next.fish_stamina <= 0) {
-      publicState.hook_state = "landed";
-      session.status = "finished";
-      session.phase = "settling";
-      session.result = "success";
-      session.finish_reason = "成功上岸";
-      const fishName = scalarText(hidden.target_fish_name) || "鱼获";
-      return {
-        narration: `你稳稳收住鱼线，把 ${fishName} 拖上了岸。`,
-        resultTags: ["success", "landed"],
-        rewardSummary: { loot: fishName },
-        writeback: {
-          inventoryAdd: [{ kind: "fish", name: fishName, rarity: scalarText(hidden.fish_rarity) || "普通" }],
-          memoryAdd: [`钓鱼收获：${fishName}`],
-        },
-        memorySummary: `钓鱼成功，钓到了 ${fishName}`,
-      };
-    }
-    return {
-      narration: `你继续与鱼儿角力。张力 ${publicState.line_tension}，距离 ${publicState.fish_distance}，鱼的体力还在下降。`,
-      resultTags: ["hook_fight"],
-    };
   }
   return { narration: "当前阶段无法执行该动作。", resultTags: ["invalid"] };
 }
@@ -747,13 +1339,13 @@ function cultivationStep(session: JsonRecord, actionId: string): MiniGameStepRes
         session.result = "success";
         session.finish_reason = "突破成功";
         return {
-          narration: "你抓住了突破契机，经脉顺畅贯通，这次修炼突破成功。",
+          narration: "你抓住了突破契机，经脉顺畅贯通，这次修炼突破成功，并在破境时获得了一层新的感悟。",
           resultTags: ["success", "breakthrough"],
-          rewardSummary: { exp: 60, realmProgress: 1 },
+          rewardSummary: { exp: 60, realmProgress: 1, insight: 20 },
           writeback: {
-            playerAttributePatch: { cultivationExp: 60, realmProgress: 1 },
-            flagsPatch: { cultivation_breakthrough: true },
-            memoryAdd: ["修炼突破成功"],
+            playerAttributePatch: { cultivationExp: 60, realmProgress: 1, cultivationInsight: 20 },
+            flagsPatch: { cultivation_breakthrough: true, cultivation_insight_awake: true },
+            memoryAdd: ["修炼突破成功", "修炼时获得新感悟"],
           },
           memorySummary: "本次修炼突破成功",
         };
@@ -779,31 +1371,32 @@ function cultivationStep(session: JsonRecord, actionId: string): MiniGameStepRes
     return { narration: "这次冲关准备仍然不足，你感到经脉微微刺痛，只能暂时压住反噬。", resultTags: ["risky_breakthrough"] };
   }
   if (actionId === "finish") {
+    const expGain = Math.max(10, Math.floor(Number(publicState.breakthrough_progress || 0) / 4));
+    const insightGain = Math.max(6, Math.floor(Number(publicState.insight || 0) / 5));
     session.status = "finished";
     session.phase = "settling";
     session.result = "partial";
     session.finish_reason = "安全收功";
     return {
-      narration: "你选择稳妥收功，把本轮修炼成果沉淀下来。",
+      narration: "你选择稳妥收功，把本轮修炼成果沉淀下来，也顺势理清了几分修行感悟。",
       resultTags: ["finish"],
-      rewardSummary: { exp: Math.max(10, Math.floor(Number(publicState.breakthrough_progress || 0) / 4)) },
-      writeback: { playerAttributePatch: { cultivationExp: Math.max(10, Math.floor(Number(publicState.breakthrough_progress || 0) / 4)) }, memoryAdd: ["一次稳妥收功的修炼"] },
+      rewardSummary: { exp: expGain, insight: insightGain },
+      writeback: {
+        playerAttributePatch: { cultivationExp: expGain, cultivationInsight: insightGain },
+        memoryAdd: ["一次稳妥收功的修炼", "修炼收功后整理出新的感悟"],
+      },
       memorySummary: "本次修炼平稳收功",
     };
   }
   return { narration: "当前无法执行该动作。", resultTags: ["invalid"] };
 }
 
-function researchOptions(): MiniGameActionOption[] {
-  return [
-    { action_id: "theory", label: "理论推演", desc: "提升理论进度" },
-    { action_id: "sample", label: "样本拆解", desc: "拆解样本换取理论增益" },
-    { action_id: "prototype", label: "原型实验", desc: "推进原型进度" },
-    { action_id: "debug", label: "故障排查", desc: "恢复稳定性" },
-    { action_id: "ask_partner", label: "请教同伴", desc: "请求协助" },
-    { action_id: "force_iter", label: "强行迭代", desc: "高风险快速推进" },
-    { action_id: "finalize", label: "定稿封存", desc: "达到条件后结束研发" },
-  ];
+function researchOptions(session?: JsonRecord): MiniGameActionOption[] {
+  const phase = normalizePhase(session?.phase, "await_input");
+  if (["await_input", "result", "settling"].includes(phase)) {
+    return [];
+  }
+  return [];
 }
 
 function researchStep(session: JsonRecord, actionId: string): MiniGameStepResult {
@@ -856,16 +1449,12 @@ function researchStep(session: JsonRecord, actionId: string): MiniGameStepResult
   return { narration: `研发继续推进。理论 ${publicState.theory_progress}，原型 ${publicState.prototype_progress}，稳定 ${publicState.stability_score}。`, resultTags: [actionId] };
 }
 
-function alchemyOptions(): MiniGameActionOption[] {
-  return [
-    { action_id: "heat_up", label: "升火", desc: "提高炉火温度" },
-    { action_id: "cool_down", label: "降火", desc: "压低火候" },
-    { action_id: "add_herb", label: "投药", desc: "投入下一份药材" },
-    { action_id: "stir", label: "搅拌", desc: "促进药性融合" },
-    { action_id: "steady_furnace", label: "稳炉", desc: "稳定丹炉" },
-    { action_id: "purify", label: "提纯", desc: "提高药液纯度" },
-    { action_id: "condense", label: "凝丹", desc: "尝试成丹" },
-  ];
+function alchemyOptions(session?: JsonRecord): MiniGameActionOption[] {
+  const phase = normalizePhase(session?.phase, "await_input");
+  if (["await_input", "result", "settling"].includes(phase)) {
+    return [];
+  }
+  return [];
 }
 
 function alchemyStep(session: JsonRecord, actionId: string): MiniGameStepResult {
@@ -991,15 +1580,12 @@ function miningStep(session: JsonRecord, actionId: string): MiniGameStepResult {
   return { narration: `矿脉剩余 ${publicState.vein_hp}，危险度 ${publicState.danger}，负重 ${publicState.bag_load}。`, resultTags: [actionId] };
 }
 
-function forgeOptions(): MiniGameActionOption[] {
-  return [
-    { action_id: "heat", label: "加热", desc: "提高锻造热度" },
-    { action_id: "hammer", label: "锻打", desc: "推进锻造进度" },
-    { action_id: "align", label: "校正", desc: "恢复稳定性" },
-    { action_id: "quench", label: "淬火", desc: "同步装备灵性" },
-    { action_id: "infuse", label: "注灵", desc: "提高灵性同步" },
-    { action_id: "finalize", label: "收工定型", desc: "完成本次强化" },
-  ];
+function forgeOptions(session?: JsonRecord): MiniGameActionOption[] {
+  const phase = normalizePhase(session?.phase, "await_input");
+  if (["await_input", "result", "settling"].includes(phase)) {
+    return [];
+  }
+  return [];
 }
 
 function forgeStep(session: JsonRecord, actionId: string): MiniGameStepResult {
@@ -1132,11 +1718,11 @@ const RULEBOOKS: Record<string, MiniGameRulebook> = {
     gameType: "fishing",
     displayName: "钓鱼",
     version: "1.0",
-    goal: "通过控线与耐心把目标鱼获拉上岸",
-    phaseOrder: ["prepare", "cast", "waiting", "hook_fight", "landing", "settling"],
+    goal: "抛竿后立即结算，看看能否钓到鱼或宝物",
+    phaseOrder: ["prepare", "waiting", "result", "settling"],
     triggerTags: ["#钓鱼"],
     passivePatterns: [/钓鱼/, /去钓鱼/, /开始钓鱼/, /抛竿/],
-    ruleSummary: "先抛竿等待，再控线与鱼角力。张力过高会断线，距离过远会脱钩。",
+    ruleSummary: "点击抛竿后立刻结算结果。可能空竿，也可能钓到鱼或宝物；有收获会直接加入物品。",
     setup: (ctx, sessionId, entrySource) => ({
       session_id: sessionId,
       game_type: "fishing",
@@ -1151,14 +1737,11 @@ const RULEBOOKS: Record<string, MiniGameRulebook> = {
       participants: buildParticipants(ctx, 1),
       public_state: buildSimplePublicState({
         site_name: "当前水域",
-        bait_name: "基础鱼饵",
-        stamina: 100,
-        focus: 80,
-        line_tension: 0,
-        fish_distance: 0,
-        hook_state: "idle",
+        current_status: "准备抛竿",
+        last_result: "",
+        last_reward: "",
       }),
-      hidden_state: { target_fish_name: "", fish_stamina: 0, fish_power: 0, fish_escape_rate: 0, encounter_roll: 0, fish_rarity: "普通" },
+      hidden_state: { target_fish_name: "", encounter_roll: 0, fish_rarity: "", reward_kind: "" },
       resource_state: {},
       rng_state: { seed: `${ctx.world?.id || 0}:${ctx.chapter?.id || 0}:fishing:${sessionId}`, cursor: 0, queue: buildRngQueue(`${ctx.world?.id || 0}:${ctx.chapter?.id || 0}:fishing:${sessionId}`) },
       action_log_ids: [], result: "ongoing", finish_reason: "", reward_preview: {}, writeback_whitelist: ["player_state.inventory", "memory_state.mid_term"], can_suspend: true, can_quit: true, resume_token: `resume_${sessionId}`,
@@ -1200,28 +1783,34 @@ const RULEBOOKS: Record<string, MiniGameRulebook> = {
     gameType: "research_skill",
     displayName: "研发技能",
     version: "1.0",
-    goal: "通过理论、原型与稳定性积累研发出技能蓝图",
-    phaseOrder: ["theory_research", "prototype_test", "debug_refine", "finalize", "settling"],
+    goal: "输入技能研发方案，由系统判断是否成功并写回角色参数",
+    phaseOrder: ["await_input", "result", "settling"],
     triggerTags: ["#研发技能"],
     passivePatterns: [/研发技能/, /研发.*技能/, /自创招式/, /开发技能/],
-    ruleSummary: "理论、原型、稳定性三条线同时达标后才能定稿。轮次耗尽则只留下碎片或笔记。",
+    ruleSummary: "旁白先交代研发目标，随后直接输入技能名称、原理与测试思路。系统会判断成功、半成功或失败，并给出建议。",
     setup: (ctx, sessionId, entrySource) => ({
       session_id: sessionId,
       game_type: "research_skill",
       rulebook_version: "1.0",
       status: "active",
-      phase: "theory_research",
+      phase: "await_input",
       round: 1,
       sub_turn: 0,
       entry_source: entrySource,
       chapter_id: Number(ctx.chapter?.id || 0) || null,
       scene_id: scalarText(ctx.chapter?.title) || "workbench",
       participants: buildParticipants(ctx, 1),
-      public_state: buildSimplePublicState({ target_skill_name: "新技能蓝图", complexity: 2, theory_progress: 0, prototype_progress: 0, stability_score: 70, turn_left: 6 }),
+      public_state: buildSimplePublicState({
+        target_skill_name: "新技能蓝图",
+        complexity: 2,
+        last_plan: "",
+        last_result: "",
+        last_advice: "",
+      }),
       hidden_state: { inspiration_roll: 0, failure_threshold: 60, synergy_bonus: 0, mentor_bonus: 0 },
       resource_state: {},
       rng_state: { seed: `${ctx.world?.id || 0}:${ctx.chapter?.id || 0}:research_skill:${sessionId}`, cursor: 0, queue: buildRngQueue(`${ctx.world?.id || 0}:${ctx.chapter?.id || 0}:research_skill:${sessionId}`) },
-      action_log_ids: [], result: "ongoing", finish_reason: "", reward_preview: {}, writeback_whitelist: ["skill_unlocks", "memory_state.mid_term"], can_suspend: true, can_quit: true, resume_token: `resume_${sessionId}`,
+      action_log_ids: [], result: "ongoing", finish_reason: "", reward_preview: {}, writeback_whitelist: ["player_state.parameter_card", "player_state.flags", "memory_state.mid_term"], can_suspend: true, can_quit: true, resume_token: `resume_${sessionId}`,
     }),
     options: researchOptions,
     applyAction: researchStep,
@@ -1230,28 +1819,33 @@ const RULEBOOKS: Record<string, MiniGameRulebook> = {
     gameType: "alchemy",
     displayName: "炼药",
     version: "1.0",
-    goal: "控制火候、药性与稳定度，最终成功凝丹",
-    phaseOrder: ["heat_control", "fusion", "refine", "condense", "settling"],
+    goal: "输入炼药方案，由系统判断是否成丹并写回物品与参数卡",
+    phaseOrder: ["await_input", "result", "settling"],
     triggerTags: ["#炼药"],
     passivePatterns: [/炼药/, /炼丹/, /开炉炼药/],
-    ruleSummary: "围绕热度、纯度、融合、毒性、稳定度推进。毒性爆表或稳定归零即失败。",
+    ruleSummary: "旁白先说明当前丹炉局势，随后直接输入药方、药材搭配和火候思路。系统会评估成丹结果并给出建议。",
     setup: (ctx, sessionId, entrySource) => ({
       session_id: sessionId,
       game_type: "alchemy",
       rulebook_version: "1.0",
       status: "active",
-      phase: "heat_control",
+      phase: "await_input",
       round: 1,
       sub_turn: 0,
       entry_source: entrySource,
       chapter_id: Number(ctx.chapter?.id || 0) || null,
       scene_id: scalarText(ctx.chapter?.title) || "alchemy_furnace",
       participants: buildParticipants(ctx, 1),
-      public_state: buildSimplePublicState({ heat: 50, purity: 20, fusion: 15, toxicity: 0, stability: 65 }),
+      public_state: buildSimplePublicState({
+        recipe_name: "基础丹方",
+        last_formula: "",
+        last_result: "",
+        last_advice: "",
+      }),
       hidden_state: { recipe_name: "基础丹方", target_heat: 65 },
       resource_state: {},
       rng_state: { seed: `${ctx.world?.id || 0}:${ctx.chapter?.id || 0}:alchemy:${sessionId}`, cursor: 0, queue: buildRngQueue(`${ctx.world?.id || 0}:${ctx.chapter?.id || 0}:alchemy:${sessionId}`) },
-      action_log_ids: [], result: "ongoing", finish_reason: "", reward_preview: {}, writeback_whitelist: ["player_state.inventory", "memory_state.mid_term"], can_suspend: true, can_quit: true, resume_token: `resume_${sessionId}`,
+      action_log_ids: [], result: "ongoing", finish_reason: "", reward_preview: {}, writeback_whitelist: ["player_state.inventory", "player_state.parameter_card", "memory_state.mid_term"], can_suspend: true, can_quit: true, resume_token: `resume_${sessionId}`,
     }),
     options: alchemyOptions,
     applyAction: alchemyStep,
@@ -1290,28 +1884,36 @@ const RULEBOOKS: Record<string, MiniGameRulebook> = {
     gameType: "upgrade_equipment",
     displayName: "升级装备",
     version: "1.0",
-    goal: "通过短回合锻造降低失败风险并完成装备升级",
-    phaseOrder: ["heat_up", "forge", "temper", "infuse", "finalize", "settling"],
+    goal: "输入装备强化方案，由系统判断升级结果并写回装备参数",
+    phaseOrder: ["await_input", "result", "settling"],
     triggerTags: ["#升级装备"],
     passivePatterns: [/升级装备/, /强化装备/, /锻造装备/],
-    ruleSummary: "热度、进度、稳定、灵性同步共同决定结果。MVP 默认不掉级，失败主要扣材料与耐久。",
+    ruleSummary: "旁白先说明锻造场景，随后直接输入要强化的装备和方案。系统会给出成功、失败或改进建议，并写回装备结果。",
     setup: (ctx, sessionId, entrySource) => ({
       session_id: sessionId,
       game_type: "upgrade_equipment",
       rulebook_version: "1.0",
       status: "active",
-      phase: "heat_up",
+      phase: "await_input",
       round: 1,
       sub_turn: 0,
       entry_source: entrySource,
       chapter_id: Number(ctx.chapter?.id || 0) || null,
       scene_id: scalarText(ctx.chapter?.title) || "forge",
       participants: buildParticipants(ctx, 1),
-      public_state: buildSimplePublicState({ equip_id: "equip_current", equip_name: "当前装备", equip_type: "武器", current_level: 0, target_level: 1, forge_heat: 40, forge_progress: 0, stability: 70, spirit_sync: 10 }),
+      public_state: buildSimplePublicState({
+        equip_id: "equip_current",
+        equip_name: "当前装备",
+        equip_type: "武器",
+        current_level: 0,
+        last_plan: "",
+        last_result: "",
+        last_advice: "",
+      }),
       hidden_state: { optimal_heat_min: 60, optimal_heat_max: 80, failure_risk: 20, bonus_affix_roll: 0 },
       resource_state: {},
       rng_state: { seed: `${ctx.world?.id || 0}:${ctx.chapter?.id || 0}:upgrade_equipment:${sessionId}`, cursor: 0, queue: buildRngQueue(`${ctx.world?.id || 0}:${ctx.chapter?.id || 0}:upgrade_equipment:${sessionId}`) },
-      action_log_ids: [], result: "ongoing", finish_reason: "", reward_preview: {}, writeback_whitelist: ["player_state.inventory", "memory_state.mid_term"], can_suspend: true, can_quit: true, resume_token: `resume_${sessionId}`,
+      action_log_ids: [], result: "ongoing", finish_reason: "", reward_preview: {}, writeback_whitelist: ["player_state.parameter_card", "player_state.flags", "memory_state.mid_term"], can_suspend: true, can_quit: true, resume_token: `resume_${sessionId}`,
     }),
     options: forgeOptions,
     applyAction: forgeStep,
@@ -1331,6 +1933,24 @@ function applyMiniGameWriteback(state: JsonRecord, writeback: JsonRecord) {
   if (inventoryAdd.length && allow("player_state.inventory")) {
     const currentInventory = asArray<any>(state.inventory);
     state.inventory = [...currentInventory, ...inventoryAdd];
+  }
+  const parameterCardSkillAdd = uniqueTexts(asArray<string>(writeback.parameterCardSkillAdd));
+  if (parameterCardSkillAdd.length && allow("player_state.parameter_card")) {
+    appendParameterCardList(state, "skills", parameterCardSkillAdd);
+  }
+  const parameterCardItemAdd = uniqueTexts(asArray<string>(writeback.parameterCardItemAdd));
+  if (parameterCardItemAdd.length && allow("player_state.parameter_card")) {
+    appendParameterCardList(state, "items", parameterCardItemAdd);
+  }
+  const parameterCardEquipmentReplace = asArray<JsonRecord>(writeback.parameterCardEquipmentReplace);
+  if (parameterCardEquipmentReplace.length && allow("player_state.parameter_card")) {
+    parameterCardEquipmentReplace.forEach((item) => {
+      const fromName = scalarText(item.from);
+      const toName = scalarText(item.to);
+      if (fromName && toName) {
+        replaceParameterCardEquipment(state, fromName, toName);
+      }
+    });
   }
   const playerAttributePatch = asRecord(writeback.playerAttributePatch);
   if (Object.keys(playerAttributePatch).length && allow("player_state.resources")) {
@@ -1392,12 +2012,17 @@ function applyMiniGameWriteback(state: JsonRecord, writeback: JsonRecord) {
 function refreshRuntimeUi(root: JsonRecord, narration: string, rulebook: MiniGameRulebook) {
   const session = asRecord(root.session);
   const ui = asRecord(root.ui);
-  const options = rulebook.options(session);
+  const acceptsTextInput = isTextInputMiniGame(rulebook.gameType) && !["finished", "aborted"].includes(scalarText(session.status));
+  const options = acceptsTextInput ? [] : rulebook.options(session);
   session.player_options = options;
   ui.narration = narration;
   ui.player_options = options;
   ui.status_text = `第 ${Number(session.round || 1)} 轮 · ${scalarText(session.phase) || "进行中"}`;
+  ui.phase_label = buildMiniGamePhaseLabel(session, rulebook);
   ui.rule_summary = rulebook.ruleSummary;
+  ui.state_items = buildMiniGameUiStateItems(session, rulebook);
+  ui.accepts_text_input = acceptsTextInput;
+  ui.input_hint = acceptsTextInput ? buildMiniGameInputHint(rulebook) : "";
   root.session = session;
   root.ui = ui;
 }
@@ -1407,8 +2032,20 @@ function buildStartNarration(rulebook: MiniGameRulebook, session: JsonRecord): s
   if (rulebook.gameType === "werewolf") {
     const player = asArray<JsonRecord>(session.participants).find((item) => item.role_type === "player");
     const roleMap = asRecord(asRecord(session.hidden_state).role_map);
-    const playerRole = scalarText(roleMap[player?.role_name || "用户"]) || "村民";
-    return `小游戏已开始：${rulebook.displayName}。你的身份是 ${playerRole}。当前阶段：${scalarText(session.phase)}。`;
+      const playerRole = scalarText(roleMap[player?.role_name || "用户"]) || "村民";
+      return `小游戏已开始：${rulebook.displayName}。你的身份是 ${playerRole}。当前阶段：${scalarText(session.phase)}。`;
+  }
+  if (rulebook.gameType === "fishing") {
+    return `你来到 ${scalarText(publicState.site_name) || "水边"}，准备开始钓鱼。先点击“抛竿”。`;
+  }
+  if (rulebook.gameType === "research_skill") {
+    return "研发技能开始了。直接输入技能名称、研发思路和测试方案，我会立即帮你判断能否成型。";
+  }
+  if (rulebook.gameType === "alchemy") {
+    return "炼药开始了。直接输入药方、药材搭配和火候思路，我会立刻检查这次能否成丹。";
+  }
+  if (rulebook.gameType === "upgrade_equipment") {
+    return "升级装备开始了。直接输入你要强化的装备和方案，我会立即检查这次强化是否成功。";
   }
   return `小游戏已开始：${rulebook.displayName}。当前阶段：${scalarText(session.phase)}。可见状态：${summarizePublicState(publicState) || "暂无"}。`;
 }
@@ -1427,10 +2064,39 @@ function normalizeActionId(input: string, options: MiniGameActionOption[]): stri
 function buildStatusNarration(root: JsonRecord, rulebook: MiniGameRulebook): string {
   const session = asRecord(root.session);
   const publicState = asRecord(session.public_state);
+  if (rulebook.gameType === "fishing") {
+    const reward = scalarText(publicState.last_reward);
+    return [
+      `钓鱼状态：${scalarText(publicState.current_status) || "准备抛竿"}。`,
+      scalarText(publicState.last_result) ? `本轮结果：${scalarText(publicState.last_result)}。` : "",
+      reward ? `最近收获：${reward}。` : "",
+    ].filter(Boolean).join("");
+  }
+  if (rulebook.gameType === "research_skill") {
+    return `研发状态：${scalarText(publicState.last_result) || "等待方案"}。${scalarText(publicState.last_advice) || "直接输入技能名称、原理和测试思路。"}。`;
+  }
+  if (rulebook.gameType === "alchemy") {
+    return `炼药状态：${scalarText(publicState.last_result) || "等待方案"}。${scalarText(publicState.last_advice) || "直接输入药材搭配、火候与凝丹思路。"}。`;
+  }
+  if (rulebook.gameType === "upgrade_equipment") {
+    return `强化状态：${scalarText(publicState.last_result) || "等待方案"}。${scalarText(publicState.last_advice) || "直接输入装备名称以及加热、锻打、注灵方案。"}。`;
+  }
   return `${rulebook.displayName}当前处于 ${scalarText(session.phase)}，第 ${Number(session.round || 1)} 轮。公开状态：${summarizePublicState(publicState) || "暂无"}。`;
 }
 
 function buildRuleNarration(rulebook: MiniGameRulebook): string {
+  if (rulebook.gameType === "fishing") {
+    return "钓鱼规则：点击抛竿后立刻结算结果。可能空竿，也可能钓到鱼或宝物；有收获会直接加入物品。";
+  }
+  if (rulebook.gameType === "research_skill") {
+    return "研发技能规则：直接输入技能名称、原理、测试方式和改良思路。我会判断是成功研发、保留碎片还是失败，并把结果写回角色参数或记忆。";
+  }
+  if (rulebook.gameType === "alchemy") {
+    return "炼药规则：直接输入药方、药材搭配、火候与稳炉思路。我会判断是成丹、勉强成丹还是失败，并把结果写回背包和参数卡。";
+  }
+  if (rulebook.gameType === "upgrade_equipment") {
+    return "升级装备规则：直接输入目标装备和强化方案。我会判断升级结果，并把新装备名称或失败记录写回角色参数。";
+  }
   return `${rulebook.displayName}规则：${rulebook.ruleSummary}`;
 }
 
@@ -1441,10 +2107,42 @@ export async function handleMiniGameTurn(input: MiniGameControllerInput): Promis
   const hasActiveGame = isMiniGameActiveState(state);
 
   if (!hasActiveGame) {
-    const detected = detectGameTrigger(input.playerMessage, input.recentMessages);
+    if (isMiniGameCatalogCommand(input.playerMessage)) {
+      const catalog = openMiniGameCatalog(state);
+      return {
+        intercepted: true,
+        runtime: root,
+        message: {
+          role: scalarText(input.world?.narratorRole?.name) || "旁白",
+          roleType: "narrator",
+          eventType: "on_mini_game_catalog",
+          content: buildMiniGameCatalogNarration(),
+          meta: { miniGameCatalog: catalog },
+        },
+      };
+    }
+
+    const catalogSelection = resolveMiniGameCatalogSelection(state, input.playerMessage);
+    if (catalogSelection.attempted && !catalogSelection.detected) {
+      const catalog = openMiniGameCatalog(state);
+      return {
+        intercepted: true,
+        runtime: root,
+        message: {
+          role: scalarText(input.world?.narratorRole?.name) || "旁白",
+          roleType: "narrator",
+          eventType: "on_mini_game_catalog_invalid",
+          content: buildMiniGameCatalogNarration("未识别到对应小游戏。"),
+          meta: { miniGameCatalog: catalog },
+        },
+      };
+    }
+
+    const detected = catalogSelection.detected || detectGameTrigger(input.playerMessage, input.recentMessages);
     if (!detected) return null;
     const rulebook = RULEBOOKS[detected.gameType];
     if (!rulebook) return null;
+    clearMiniGameCatalog(state);
     const session = rulebook.setup(input, gameSessionId(detected.gameType), detected.source);
     root.rulebook = {
       gameType: rulebook.gameType,
@@ -1537,7 +2235,12 @@ export async function handleMiniGameTurn(input: MiniGameControllerInput): Promis
     if (scalarText(activeSession.status) === "suspended") {
       activeSession.status = "active";
     }
-    const narration = buildStatusNarration(root, rulebook);
+    if (activeSession.pending_exit) {
+      activeSession.pending_exit = false;
+    }
+    const narration = rulebook.gameType === "fishing"
+      ? "继续钓鱼吧，直接选择上面的操作。"
+      : buildStatusNarration(root, rulebook);
     refreshRuntimeUi(root, narration, rulebook);
     return {
       intercepted: true,
@@ -1551,9 +2254,51 @@ export async function handleMiniGameTurn(input: MiniGameControllerInput): Promis
       },
     };
   }
-  if (controlAction === "request_quit") {
+  if (isForceQuitMiniGameCommand(input.playerMessage)) {
+    activeSession.status = "aborted";
+    activeSession.phase = "settling";
+    activeSession.result = "aborted";
+    activeSession.finish_reason = "玩家使用 #退出 强制结束小游戏";
+    activeSession.pending_exit = false;
+    const narration = `你已强制退出 ${rulebook.displayName}，当前可继续回到主线剧情。`;
+    refreshRuntimeUi(root, narration, rulebook);
+    return {
+      intercepted: true,
+      runtime: root,
+      message: {
+        role: scalarText(input.world?.narratorRole?.name) || "旁白",
+        roleType: "narrator",
+        eventType: "on_mini_game_abort",
+        content: narration,
+        meta: buildMiniGameMeta(root),
+      },
+    };
+  }
+  if (controlAction === "request_quit" || (controlAction === "confirm_quit" && rulebook.gameType === "fishing")) {
+    if (rulebook.gameType === "fishing") {
+      activeSession.status = "aborted";
+      activeSession.phase = "settling";
+      activeSession.result = "aborted";
+      activeSession.finish_reason = "玩家退出钓鱼";
+      activeSession.pending_exit = false;
+      const narration = "你收起鱼竿，退出了钓鱼。";
+      refreshRuntimeUi(root, narration, rulebook);
+      return {
+        intercepted: true,
+        runtime: root,
+        message: {
+          role: scalarText(input.world?.narratorRole?.name) || "旁白",
+          roleType: "narrator",
+          eventType: "on_mini_game_abort",
+          content: narration,
+          meta: buildMiniGameMeta(root),
+        },
+      };
+    }
     activeSession.pending_exit = true;
-    const narration = "当前小游戏仍在进行。若要放弃本局，请再输入“确认退出”。";
+    const narration = rulebook.gameType === "fishing"
+      ? "要结束这次钓鱼吗？再点一次“确认退出”。"
+      : "当前小游戏仍在进行。若要放弃本局，请再输入“确认退出”。";
     refreshRuntimeUi(root, narration, rulebook);
     return {
       intercepted: true,
@@ -1573,7 +2318,9 @@ export async function handleMiniGameTurn(input: MiniGameControllerInput): Promis
     activeSession.result = "aborted";
     activeSession.finish_reason = "玩家确认退出小游戏";
     activeSession.pending_exit = false;
-    const narration = `你退出了 ${rulebook.displayName}。本局状态已保留为结束，可继续回到主线剧情。`;
+    const narration = rulebook.gameType === "fishing"
+      ? "你收起鱼竿，退出了钓鱼。"
+      : `你退出了 ${rulebook.displayName}。本局状态已保留为结束，可继续回到主线剧情。`;
     refreshRuntimeUi(root, narration, rulebook);
     return {
       intercepted: true,
@@ -1605,6 +2352,85 @@ export async function handleMiniGameTurn(input: MiniGameControllerInput): Promis
   }
 
   const options = rulebook.options(activeSession);
+  if (isTextInputMiniGame(rulebook.gameType)) {
+    const textInput = normalizeInlineText(input.playerMessage);
+    if (!textInput) {
+      const narration = `当前仍在 ${rulebook.displayName} 中，请直接输入你的方案。${buildMiniGameInputHint(rulebook)}。`;
+      refreshRuntimeUi(root, narration, rulebook);
+      return {
+        intercepted: true,
+        runtime: root,
+        message: {
+          role: scalarText(input.world?.narratorRole?.name) || "旁白",
+          roleType: "narrator",
+          eventType: "on_mini_game_invalid",
+          content: narration,
+          meta: buildMiniGameMeta(root),
+        },
+      };
+    }
+    const beforePublicState = deepCloneRecord(asRecord(activeSession.public_state));
+    const beforeHiddenState = deepCloneRecord(asRecord(activeSession.hidden_state));
+    const beforeResourceState = deepCloneRecord(asRecord(activeSession.resource_state));
+    let step: MiniGameStepResult;
+    if (rulebook.gameType === "research_skill") {
+      step = evaluateResearchSkillInput(activeSession, input);
+    } else if (rulebook.gameType === "alchemy") {
+      step = evaluateAlchemyInput(activeSession, input);
+    } else {
+      step = evaluateEquipmentInput(activeSession, input);
+    }
+    const stateDelta = {
+      public_state: buildStateDelta(beforePublicState, asRecord(activeSession.public_state)),
+      hidden_state: buildStateDelta(beforeHiddenState, asRecord(activeSession.hidden_state)),
+      resource_state: buildStateDelta(beforeResourceState, asRecord(activeSession.resource_state)),
+    };
+    if (step.writeback && Object.keys(step.writeback).length) {
+      root.writeback = step.writeback;
+      applyMiniGameWriteback(state, step.writeback);
+    }
+    if (scalarText(step.memorySummary)) {
+      root.memorySummary = scalarText(step.memorySummary);
+    }
+    const narration = scalarText(step.narration) || `${rulebook.displayName}继续进行中。`;
+    refreshRuntimeUi(root, narration, rulebook);
+    const ui = asRecord(root.ui);
+    ui.last_state_delta = stateDelta;
+    ui.reward_summary = step.rewardSummary || {};
+    ui.memory_summary = scalarText(step.memorySummary);
+    root.ui = ui;
+    pushMiniGameLog(root, {
+      round: Number(activeSession.round || 1),
+      phase: scalarText(activeSession.phase),
+      actor_id: "player",
+      action_id: "text_input",
+      action_payload_json: { input: input.playerMessage },
+      rng_used: step.rngUsed || [],
+      result_json: {
+        narration,
+        resultTags: step.resultTags || [],
+        stateDelta,
+        rewardSummary: step.rewardSummary || {},
+        writebackDelta: step.writeback || {},
+        memorySummary: scalarText(step.memorySummary),
+      },
+      created_at: nowTs(),
+    });
+    const eventType = scalarText(activeSession.status) === "finished" || scalarText(activeSession.status) === "aborted"
+      ? "on_mini_game_finish"
+      : "on_mini_game";
+    return {
+      intercepted: true,
+      runtime: root,
+      message: {
+        role: scalarText(input.world?.narratorRole?.name) || "旁白",
+        roleType: "narrator",
+        eventType,
+        content: narration,
+        meta: buildMiniGameMeta(root),
+      },
+    };
+  }
   const actionId = normalizeActionId(input.playerMessage, options);
   if (!actionId) {
     const narration = `当前仍在 ${rulebook.displayName} 中，请先完成、暂停或退出小游戏。当前合法动作：${options.map((item) => item.label).join("、")}。`;

@@ -8,6 +8,7 @@ import u from "@/utils";
 const router = express.Router();
 
 type GenerateType = "role" | "scene";
+type ImageModelBindingKey = "storyImageModel" | "editImage" | "assetsImage";
 
 function extractBase64(content: string): Buffer {
   const match = String(content || "").match(/base64,([A-Za-z0-9+/=]+)/);
@@ -72,6 +73,8 @@ export default router.post(
     aspectRatio: z.string().optional().nullable(),
   }),
   async (req, res) => {
+    let resolvedModelKey: ImageModelBindingKey | "" = "";
+    let resolvedApiConfig: Record<string, unknown> = {};
     try {
       const { projectId, type, prompt, name, base64, base64List } = req.body as {
         projectId: number;
@@ -93,11 +96,16 @@ export default router.post(
         return res.status(403).send(error("无权访问该项目"));
       }
 
-      let apiConfig = await u.getPromptAi("editImage", userId);
-      if (!(apiConfig as any)?.manufacturer) {
-        apiConfig = await u.getPromptAi("assetsImage", userId);
+      const imageModelKeys: ImageModelBindingKey[] = ["storyImageModel", "editImage", "assetsImage"];
+      for (const key of imageModelKeys) {
+        const config = await u.getPromptAi(key, userId);
+        if ((config as any)?.manufacturer) {
+          resolvedModelKey = key;
+          resolvedApiConfig = config as Record<string, unknown>;
+          break;
+        }
       }
-      if (!(apiConfig as any)?.manufacturer) {
+      if (!(resolvedApiConfig as any)?.manufacturer) {
         return res.status(400).send(error("未配置图片模型，请先在设置中配置图片模型"));
       }
 
@@ -116,7 +124,7 @@ export default router.post(
           size,
           aspectRatio,
         },
-        apiConfig as any,
+        resolvedApiConfig as any,
       );
 
       const buffer = extractBase64(contentStr);
@@ -126,6 +134,15 @@ export default router.post(
 
       res.status(200).send(success({ path, filePath: imagePath }));
     } catch (err) {
+      console.warn("[generateImage] failed", {
+        userId: Number((req as any)?.user?.id || 0),
+        projectId: Number((req.body as any)?.projectId || 0),
+        type: String((req.body as any)?.type || ""),
+        modelKey: resolvedModelKey || "(unresolved)",
+        manufacturer: String((resolvedApiConfig as any)?.manufacturer || ""),
+        model: String((resolvedApiConfig as any)?.model || ""),
+        message: u.error(err).message,
+      });
       res.status(500).send(error(u.error(err).message));
     }
   },

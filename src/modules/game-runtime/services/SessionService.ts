@@ -10,16 +10,19 @@ import {
 } from "@/lib/gameEngine";
 import { getCurrentUserId } from "@/lib/requestContext";
 import {
+  applyMemoryResultToState,
   applyNarrativeMemoryHintsToState,
   advanceNarrativeUntilPlayerTurn,
   NarrativePlanSummary,
   RuntimeMessageInput,
   allowPlayerTurn,
+  applyPlayerProfileFromMessageToState,
   canPlayerSpeakNow,
   resolveOpeningMessage,
   runNarrativeOrchestrator,
   setRuntimeTurnState,
   summarizeNarrativePlan,
+  triggerStoryMemoryRefreshInBackground,
 } from "@/modules/game-runtime/engines/NarrativeOrchestrator";
 import { handleMiniGameTurn } from "@/modules/game-runtime/engines/MiniGameController";
 import { runTaskProgressEngine } from "@/modules/game-runtime/engines/TaskProgressEngine";
@@ -104,9 +107,49 @@ function buildRecentMessages(rows: any[]): RuntimeMessageInput[] {
 }
 
 function resolveDefaultRoleName(roleType: string, state: Record<string, any>): string {
-  if (roleType === "player") return String(state.player?.name || "玩家");
+  if (roleType === "player") return String(state.player?.name || "用户");
   if (roleType === "narrator") return String(state.narrator?.name || "旁白");
   return "系统";
+}
+
+async function resolveNextChapterIdByOrder(db: any, worldId: number, chapterId: number | null): Promise<number | null> {
+  const currentChapterId = Number(chapterId || 0);
+  if (!Number.isFinite(currentChapterId) || currentChapterId <= 0) return null;
+  const chapters = await db("t_storyChapter")
+    .where({ worldId })
+    .orderBy("sort", "asc")
+    .orderBy("id", "asc");
+  const currentIndex = chapters.findIndex((item: any) => Number(item.id || 0) === currentChapterId);
+  const next = currentIndex >= 0 ? chapters[currentIndex + 1] : null;
+  const nextId = Number(next?.id || 0);
+  return Number.isFinite(nextId) && nextId > 0 ? nextId : null;
+}
+
+function scheduleSessionMemoryRefresh(params: {
+  sessionId: string;
+  userId: number;
+  world: any;
+  chapter: any;
+  state: Record<string, any>;
+  recentMessages: RuntimeMessageInput[];
+}) {
+  triggerStoryMemoryRefreshInBackground({
+    userId: params.userId,
+    world: params.world,
+    chapter: params.chapter,
+    state: params.state,
+    recentMessages: params.recentMessages,
+    onResolved: async (memory) => {
+      const row = await getGameDb()("t_gameSession").where({ sessionId: params.sessionId }).first();
+      if (!row) return;
+      const latestState = parseJsonSafe<Record<string, any>>(row.stateJson, {});
+      applyMemoryResultToState(latestState, memory);
+      await getGameDb()("t_gameSession").where({ sessionId: params.sessionId }).update({
+        stateJson: toJsonText(latestState, {}),
+        updateTime: nowTs(),
+      });
+    },
+  });
 }
 
 export async function addSessionMessage(input: AddSessionMessageInput): Promise<AddSessionMessageResult> {
@@ -140,10 +183,13 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
   state.round = Number(state.round || 0) + 1;
 
   const roleTypeValue = String(input.roleType || "player").trim() || "player";
-  const roleValue = String(input.role || resolveDefaultRoleName(roleTypeValue, state)).trim() || "系统";
   const eventTypeValue = String(input.eventType || "on_message").trim() || "on_message";
   const messageContent = String(input.content || "");
   const metaObj = parseJsonMaybe(input.meta);
+  if (roleTypeValue === "player" && eventTypeValue === "on_message" && messageContent.trim()) {
+    applyPlayerProfileFromMessageToState(state, world, messageContent);
+  }
+  const roleValue = String(input.role || resolveDefaultRoleName(roleTypeValue, state)).trim() || "系统";
 
   if (roleTypeValue === "player" && eventTypeValue === "on_message" && messageContent.trim() && !canPlayerSpeakNow(state, world)) {
     throw new SessionServiceError(409, "当前还没轮到用户发言");
@@ -166,6 +212,8 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
   const currentChapter = prevChapterId
     ? normalizeChapterOutput(await db("t_storyChapter").where({ id: prevChapterId }).first())
     : null;
+  let asyncMemoryRefreshRequested = false;
+  let asyncMemoryRefreshChapter: any = null;
 
   pushRecentEvent(state, {
     messageId,
@@ -293,8 +341,15 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
     ...triggerResult.triggerHits,
     ...(taskResult.triggerHit ? [taskResult.triggerHit] : []),
   ];
-  const nextChapterId = taskResult.nextChapterId;
-  const sessionStatus = taskResult.sessionStatus;
+  let nextChapterId = taskResult.nextChapterId;
+  let sessionStatus = taskResult.sessionStatus;
+  if (sessionStatus === "chapter_completed" && (!nextChapterId || nextChapterId === prevChapterId)) {
+    const resolvedNextChapterId = await resolveNextChapterIdByOrder(db, Number(sessionRow.worldId || 0), prevChapterId);
+    if (resolvedNextChapterId && resolvedNextChapterId !== prevChapterId) {
+      nextChapterId = resolvedNextChapterId;
+      sessionStatus = "active";
+    }
+  }
   state.chapterId = nextChapterId;
 
   if (appliedDeltas.length > 0) {
@@ -325,7 +380,7 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
           role: String(openingMessage.role || state.narrator?.name || "旁白"),
           roleType: String(openingMessage.roleType || "narrator"),
           eventType: String(openingMessage.eventType || "on_enter_chapter"),
-          content: String(openingMessage.content || `进入章节《${String(switchedChapter.title || "未命名章节")}》`),
+          content: String(openingMessage.content || ""),
           createTime: now,
         });
       }
@@ -346,6 +401,8 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
         maxRetries: 0,
       });
       narrativePlan = summarizeNarrativePlan(orchestrator);
+      asyncMemoryRefreshRequested = Boolean(orchestrator.triggerMemoryAgent);
+      asyncMemoryRefreshChapter = switchedChapter;
       const orchestrated = await advanceNarrativeUntilPlayerTurn({
         userId: currentUserId,
         world,
@@ -374,6 +431,7 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
             nextRoleType: orchestrator.nextRoleType,
             chapterOutcome: orchestrator.chapterOutcome,
             memoryHints: orchestrator.memoryHints,
+            triggerMemoryAgent: orchestrator.triggerMemoryAgent,
           }, {}),
           createTime: Number(item.createTime || now),
         });
@@ -403,6 +461,8 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
         maxRetries: 0,
       });
       narrativePlan = summarizeNarrativePlan(orchestrator);
+      asyncMemoryRefreshRequested = Boolean(orchestrator.triggerMemoryAgent);
+      asyncMemoryRefreshChapter = playChapter;
       const orchestrated = await advanceNarrativeUntilPlayerTurn({
         userId: currentUserId,
         world,
@@ -429,6 +489,7 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
             nextRoleType: orchestrator.nextRoleType,
             chapterOutcome: orchestrator.chapterOutcome,
             memoryHints: orchestrator.memoryHints,
+            triggerMemoryAgent: orchestrator.triggerMemoryAgent,
           }, {}),
           createTime: Number(item.createTime || now),
         });
@@ -462,6 +523,18 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
       round: Number(state.round || 0),
     },
   });
+
+  if (asyncMemoryRefreshRequested && asyncMemoryRefreshChapter) {
+    const rawRecentMessagesForMemory = await db("t_sessionMessage").where({ sessionId }).orderBy("id", "desc").limit(20);
+    scheduleSessionMemoryRefresh({
+      sessionId,
+      userId: currentUserId,
+      world,
+      chapter: asyncMemoryRefreshChapter,
+      state,
+      recentMessages: buildRecentMessages(rawRecentMessagesForMemory),
+    });
+  }
 
   const messageRow = await db("t_sessionMessage").where({ id: messageId }).first();
   return {

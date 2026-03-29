@@ -63,8 +63,9 @@ void (async () => {
   console.error("[db] bootstrap failed:", err);
 });
 
-const dbClient = Object.assign(<TName extends TableName>(table: TName) => db<RowType<TName>, RowType<TName>[]>(table), db);
+const dbClient = Object.assign(<TName extends TableName>(table: TName) => db<RowType<TName>, RowType<TName>[]>(table), db) as typeof db & (<TName extends TableName>(table: TName) => ReturnType<typeof db>);
 dbClient.schema = db.schema;
+dbClient.transaction = db.transaction.bind(db);
 export default dbClient;
 
 export { db };

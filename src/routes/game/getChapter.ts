@@ -2,10 +2,23 @@ import express from "express";
 import { z } from "zod";
 import { validateFields } from "@/middleware/middleware";
 import { error, success } from "@/lib/responseFormat";
-import { getGameDb, normalizeChapterOutput } from "@/lib/gameEngine";
+import { getGameDb, normalizeChapterOutput, parseJsonSafe } from "@/lib/gameEngine";
 import u from "@/utils";
 
 const router = express.Router();
+
+function canAccessPublishedWorld(row: any, currentUserId: number): boolean {
+  const ownerUserId = Number(row?.ownerUserId || 0);
+  if (ownerUserId > 0 && ownerUserId === currentUserId) {
+    return true;
+  }
+  const publishStatus = String(row?.publishStatus || row?.worldPublishStatus || "").trim();
+  if (publishStatus === "published") {
+    return true;
+  }
+  const settings = parseJsonSafe<Record<string, any>>(row?.settings || row?.worldSettings, {});
+  return String(settings?.publishStatus || "").trim() === "published";
+}
 
 export default router.post(
   "/",
@@ -30,10 +43,12 @@ export default router.post(
           .leftJoin("t_storyWorld as w", "c.worldId", "w.id")
           .leftJoin("t_project as p", "w.projectId", "p.id")
           .where("c.id", chapterIdNum)
-          .where("p.userId", currentUserId)
-          .select("c.*")
+          .select("c.*", "w.publishStatus as worldPublishStatus", "w.settings as worldSettings", "p.userId as ownerUserId")
           .first();
         if (!row) return res.status(404).send(error("未找到章节"));
+        if (!canAccessPublishedWorld(row, currentUserId)) {
+          return res.status(403).send(error("无权访问该章节"));
+        }
         return res.status(200).send(success(normalizeChapterOutput(row)));
       }
 
@@ -44,10 +59,12 @@ export default router.post(
       const world = await db("t_storyWorld as w")
         .leftJoin("t_project as p", "w.projectId", "p.id")
         .where("w.id", worldIdNum)
-        .where("p.userId", currentUserId)
-        .select("w.id")
+        .select("w.id", "w.publishStatus", "w.settings", "p.userId as ownerUserId")
         .first();
       if (!world) {
+        return res.status(404).send(error("未找到世界"));
+      }
+      if (!canAccessPublishedWorld(world, currentUserId)) {
         return res.status(403).send(error("无权访问该世界"));
       }
 

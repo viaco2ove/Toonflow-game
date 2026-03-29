@@ -35,11 +35,12 @@ export default router.post(
       }
 
       const state = parseJsonSafe(row.stateJson, {});
+      const activeChapterId = Number(state.chapterId || row.chapterId || 0) || null;
       const messageLimitNum = Number(messageLimit);
       const limit = Number.isFinite(messageLimitNum) && messageLimitNum > 0 ? Math.min(messageLimitNum, 200) : 50;
 
       const world = await db("t_storyWorld").where({ id: Number(row.worldId || 0) }).first();
-      const chapter = row.chapterId ? await db("t_storyChapter").where({ id: Number(row.chapterId) }).first() : null;
+      const chapter = activeChapterId ? await db("t_storyChapter").where({ id: activeChapterId }).first() : null;
       const snapshot = await db("t_sessionStateSnapshot").where({ sessionId: sessionIdValue }).orderBy("id", "desc").first();
       const rawMessages = await db("t_sessionMessage").where({ sessionId: sessionIdValue }).orderBy("id", "desc").limit(limit);
       const messages = rawMessages.reverse().map((item: any) => normalizeMessageOutput(item));
@@ -47,6 +48,7 @@ export default router.post(
       res.status(200).send(
         success({
           ...row,
+          chapterId: activeChapterId,
           state,
           world: normalizeWorldOutput(world),
           chapter: normalizeChapterOutput(chapter),
