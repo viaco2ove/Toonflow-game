@@ -15,6 +15,19 @@ function normalizeBaseUrl(input: string | null | undefined): string {
   return (base || "http://127.0.0.1:8000").replace(/\/+$/, "");
 }
 
+function normalizeAliyunCompatibleBaseUrl(input: string | null | undefined): string {
+  const base = normalizeBaseUrl(input);
+  if (/\/compatible-mode$/i.test(base)) {
+    return base;
+  }
+  return `${base}/compatible-mode`;
+}
+
+function isAliyunCompatibleChatAsrModel(input: string | null | undefined): boolean {
+  const model = String(input || "").trim().toLowerCase();
+  return model.startsWith("qwen3-asr");
+}
+
 function parseBase64Audio(input: string): { buffer: Buffer; mime: string; ext: string } {
   const match = input.match(/^data:([^;]+);base64,(.+)$/);
   let base64 = input;
@@ -85,6 +98,29 @@ async function getVoiceConfig(userId: number, configId?: number | null, preferre
   return u.db("t_config").where({ type: "voice", userId }).orderBy("id", "desc").first();
 }
 
+function extractChoiceContentText(input: any): string {
+  if (typeof input === "string") {
+    return input.trim();
+  }
+  if (Array.isArray(input)) {
+    return input
+      .map((item) => {
+        if (typeof item === "string") return item;
+        if (typeof item?.text === "string") return item.text;
+        if (typeof item?.content === "string") return item.content;
+        if (typeof item?.output_text === "string") return item.output_text;
+        return "";
+      })
+      .join("")
+      .trim();
+  }
+  if (typeof input === "object" && input) {
+    if (typeof input.text === "string") return input.text.trim();
+    if (typeof input.content === "string") return input.content.trim();
+  }
+  return "";
+}
+
 function parseTranscribeResult(data: any): { text: string; segments: any[]; confidence: number | null } {
   let text =
     (typeof data?.text === "string" ? data.text : "") ||
@@ -92,6 +128,7 @@ function parseTranscribeResult(data: any): { text: string; segments: any[]; conf
     (typeof data?.result?.text === "string" ? data.result.text : "") ||
     (typeof data?.data?.text === "string" ? data.data.text : "") ||
     (typeof data?.output?.text === "string" ? data.output.text : "") ||
+    extractChoiceContentText(data?.choices?.[0]?.message?.content) ||
     "";
 
   const segmentsRaw = data?.segments ?? data?.result?.segments ?? data?.data?.segments ?? data?.output?.segments ?? [];
@@ -175,8 +212,11 @@ export default router.post(
         audio = parseAudioFromPath(filePath, fileBuffer);
       }
 
+      const compatibleBaseUrl = normalizeAliyunCompatibleBaseUrl(config.baseUrl);
       const endpointCandidates = directAliyun
-        ? [`${baseUrl}/v1/audio/transcriptions`, `${baseUrl}/v1/asr`, `${baseUrl}/v1/asr/transcribe`, `${baseUrl}/v1/transcribe`]
+        ? isAliyunCompatibleChatAsrModel(modelName)
+          ? [`${compatibleBaseUrl}/v1/chat/completions`, `${compatibleBaseUrl}/v1/audio/transcriptions`]
+          : [`${compatibleBaseUrl}/v1/audio/transcriptions`, `${compatibleBaseUrl}/v1/asr`, `${compatibleBaseUrl}/v1/asr/transcribe`, `${compatibleBaseUrl}/v1/transcribe`]
         : [`${baseUrl}/v1/asr`, `${baseUrl}/v1/audio/transcriptions`, `${baseUrl}/v1/asr/transcribe`, `${baseUrl}/v1/transcribe`];
 
       const errors: string[] = [];
@@ -185,7 +225,50 @@ export default router.post(
 
       for (const endpoint of endpointCandidates) {
         try {
-          if (endpoint.endsWith("/audio/transcriptions")) {
+          if (endpoint.endsWith("/chat/completions")) {
+            const audioDataUrl = `data:${audio.mime};base64,${audio.buffer.toString("base64")}`;
+            const instruction = [
+              "请将这段语音转写成简体中文文本。",
+              lang ? `目标语言：${String(lang)}` : "",
+              prompt ? `补充提示：${String(prompt)}` : "",
+              "只返回转写结果正文，不要补充解释。",
+            ]
+              .filter(Boolean)
+              .join("\n");
+
+            const response = await axios.post(
+              endpoint,
+              {
+                model: modelName || "qwen3-asr-flash",
+                messages: [
+                  {
+                    role: "user",
+                    content: [
+                      {
+                        type: "input_audio",
+                        input_audio: {
+                          data: audioDataUrl,
+                          format: audio.ext,
+                        },
+                      },
+                      {
+                        type: "text",
+                        text: instruction,
+                      },
+                    ],
+                  },
+                ],
+              },
+              {
+                headers: {
+                  ...headers,
+                  "Content-Type": "application/json",
+                },
+                timeout: 120000,
+              },
+            );
+            rawData = response.data || {};
+          } else if (endpoint.endsWith("/audio/transcriptions")) {
             const form = new FormData();
             const effectiveModel = modelName || "whisper-1";
 
