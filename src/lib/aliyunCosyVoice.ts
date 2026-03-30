@@ -26,6 +26,14 @@ function normalizeSampleRate(input?: number | null): number {
   return 22050;
 }
 
+function normalizePlayableCosyVoiceText(input: string): string {
+  const text = String(input || "").replace(/\s+/g, " ").trim();
+  if (!text) return "";
+  const compact = text.replace(/\s+/g, "");
+  const meaningful = compact.replace(/[0-9０-９.,!?;:，。！？；：、…·"'“”‘’`~!@#$%^&*()\-_=+\[\]{}<>\\/|]+/g, "");
+  return meaningful ? text : "";
+}
+
 export async function synthesizeAliyunDirectCosyVoiceBuffer(options: CosyVoiceOptions): Promise<Buffer> {
   const { apiKey, baseUrl, model, voiceId, text } = options;
   if (!String(apiKey || "").trim()) {
@@ -36,6 +44,10 @@ export async function synthesizeAliyunDirectCosyVoiceBuffer(options: CosyVoiceOp
   }
   if (!String(voiceId || "").trim()) {
     throw new Error("CosyVoice 直连缺少音色 ID");
+  }
+  const playableText = normalizePlayableCosyVoiceText(String(text || ""));
+  if (!playableText) {
+    throw new Error("CosyVoice 不支持仅标点、编号或空白的短文本");
   }
   if (!String(text || "").trim()) {
     throw new Error("语音生成文本不能为空");
@@ -143,8 +155,8 @@ export async function synthesizeAliyunDirectCosyVoiceBuffer(options: CosyVoiceOp
             streaming: "duplex",
           },
           payload: {
-            input: {
-              text: String(text || "").trim(),
+              input: {
+              text: playableText,
             },
           },
         });
@@ -185,13 +197,21 @@ export async function synthesizeAliyunDirectCosyVoiceBuffer(options: CosyVoiceOp
       }
 
       if (event === "task-failed") {
+        const code = String(
+          parsed?.header?.error_code
+          || parsed?.payload?.output?.code
+          || parsed?.payload?.code
+          || parsed?.code
+          || "",
+        ).trim();
         const message = String(
           parsed?.payload?.output?.message
           || parsed?.payload?.message
           || parsed?.message
           || "CosyVoice 任务失败",
         ).trim();
-        fail(new Error(message));
+        const detail = code ? `CosyVoice 任务失败(${code}): ${message || "未提供错误信息"}` : `CosyVoice 任务失败: ${message || "未提供错误信息"}`;
+        fail(new Error(detail));
       }
     });
 
