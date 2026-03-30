@@ -1,0 +1,80 @@
+FROM node:24-bookworm-slim AS deps
+
+WORKDIR /app
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends python3 make g++ ca-certificates git \
+  && rm -rf /var/lib/apt/lists/* \
+  && npm config set registry https://registry.npmmirror.com/ \
+  && npm install -g yarn@1.0.0 --force \
+  && yarn config set registry https://registry.npmmirror.com/
+
+COPY package.json yarn.lock ./
+
+RUN yarn install --frozen-lockfile
+
+FROM deps AS builder
+
+COPY tsconfig.json ./
+COPY src/ ./src/
+COPY scripts/ ./scripts/
+COPY res/ ./res/
+
+RUN yarn build
+
+FROM deps AS prod-deps
+
+RUN rm -rf /app/node_modules
+
+COPY package.json yarn.lock ./
+
+RUN yarn install --frozen-lockfile --production
+
+FROM node:24-bookworm-slim
+
+WORKDIR /app
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV NODE_ENV=prod
+ENV PREFER_PROCESS_ENV=1
+ENV PORT=60002
+ENV DB_PATH=/data/toonflow/db.sqlite
+ENV UPLOAD_DIR=/data/toonflow/uploads
+ENV LOCAL_TOOL_DIR=/data/toonflow/tools
+ENV LOG_PATH=/data/toonflow/logs
+ENV OSSURL=http://127.0.0.1:8080/
+ENV TEMP_OSS=
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends \
+    nginx \
+    supervisor \
+    python3 \
+    python3-venv \
+    python3-pip \
+    ffmpeg \
+    curl \
+    tini \
+    ca-certificates \
+  && rm -rf /var/lib/apt/lists/* \
+  && npm config set registry https://registry.npmmirror.com/ \
+  && npm install -g pm2@latest \
+  && mkdir -p /var/lib/nginx/logs /var/log/nginx /data/toonflow
+
+COPY --from=prod-deps /app/node_modules ./node_modules
+COPY --from=builder /app/build ./build
+COPY --from=builder /app/scripts/web /usr/share/nginx/html
+COPY --from=builder /app/package.json ./
+COPY --from=builder /app/yarn.lock ./
+COPY --from=builder /app/res ./res
+COPY docker/nginx.autodl.conf /etc/nginx/conf.d/default.conf
+COPY docker/supervisord.autodl.conf /etc/supervisor/conf.d/toonflow-autodl.conf
+
+RUN mkdir -p /app/env
+
+EXPOSE 80
+EXPOSE 60002
+
+CMD ["/usr/bin/tini", "--", "/usr/bin/supervisord", "-c", "/etc/supervisor/conf.d/toonflow-autodl.conf"]

@@ -1,0 +1,28 @@
+services:
+  toonflow-autodl:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.autodl
+    image: toonflow:autodl
+    container_name: toonflow-autodl
+    restart: unless-stopped
+    ports:
+      - "${AUTODL_HTTP_PORT:-6006}:80"
+    environment:
+      NODE_ENV: prod
+      PREFER_PROCESS_ENV: "1"
+      PORT: "60002"
+      DB_PATH: /data/toonflow/db.sqlite
+      UPLOAD_DIR: /data/toonflow/uploads
+      LOCAL_TOOL_DIR: /data/toonflow/tools
+      LOG_PATH: /data/toonflow/logs
+      OSSURL: ${AUTODL_PUBLIC_URL:-http://127.0.0.1:6006/}
+      TEMP_OSS: ${TEMP_OSS:-}
+    volumes:
+      - ../data/autodl:/data/toonflow
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost/"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
