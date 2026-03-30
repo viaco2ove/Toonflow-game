@@ -6,7 +6,7 @@ type ServeModule = typeof import("../src/app");
 
 // 默认端口配置
 const envPort = Number.parseInt((process.env.PORT || "").trim(), 10);
-const defaultPort = Number.isFinite(envPort) ? envPort : 60000;
+const defaultPort = Number.isFinite(envPort) ? envPort : 60002;
 let mainWindow: BrowserWindow | null = null;
 let serveModulePromise: Promise<ServeModule> | null = null;
 

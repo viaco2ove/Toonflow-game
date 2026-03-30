@@ -175,8 +175,8 @@ Create a `pm2.json` file:
   "exec_mode": "cluster",
   "env": {
     "NODE_ENV": "prod",
-    "PORT": 60000,
-    "OSSURL": "http://127.0.0.1:60000/"
+    "PORT": 60002,
+    "OSSURL": "http://127.0.0.1:60002/"
   }
 }
 ```
@@ -257,13 +257,13 @@ To deploy or customize the frontend separately, refer to the frontend repo:
    - Launch dev server with Node.js:
 
      ```bash
-     yarn dev #port 60000
+     yarn dev #port 60002
      ```
 
    - Use Bun to quickly start dev server:
 
      ```bash
-     yarn bun:dev #port 60000
+     yarn bun:dev #port 60002
      ```
 
 4. **Build the Project**

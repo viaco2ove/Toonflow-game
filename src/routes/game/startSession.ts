@@ -126,7 +126,7 @@ export default router.post(
       chapter = normalizeChapterOutput(chapter);
 
       const rolePair = normalizeRolePair(world.playerRole, world.narratorRole);
-      const state = normalizeSessionState(initialState, worldId, chapter ? Number(chapter.id) : null, rolePair);
+      const state = normalizeSessionState(initialState, worldId, chapter ? Number(chapter.id) : null, rolePair, world);
       const openingMessages: RuntimeMessageInput[] = [];
       let openingPlan: ReturnType<typeof summarizeNarrativePlan> = null;
       if (chapter) {

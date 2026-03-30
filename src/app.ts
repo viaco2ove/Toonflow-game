@@ -125,7 +125,7 @@ export default async function startServe(randomPort: Boolean = false) {
   });
 
   const configuredPort = Number.parseInt((process.env.PORT || "").trim(), 10);
-  const port = randomPort ? 0 : Number.isFinite(configuredPort) ? configuredPort : 60000;
+  const port = randomPort ? 0 : Number.isFinite(configuredPort) ? configuredPort : 60002;
   return await new Promise((resolve, reject) => {
     server = app.listen(port, async (v) => {
       const address = server?.address();

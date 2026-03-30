@@ -157,7 +157,7 @@ function buildProxyAudioUrl(req: express.Request, configId: number | null | unde
   const protocol = String(req.headers["x-forwarded-proto"] || req.protocol || "http")
     .split(",")[0]
     .trim();
-  const host = String(req.headers["x-forwarded-host"] || req.get("host") || "127.0.0.1:60000")
+  const host = String(req.headers["x-forwarded-host"] || req.get("host") || "127.0.0.1:60002")
     .split(",")[0]
     .trim();
   const rawToken = String(req.headers.authorization || req.query.token || "").replace(/^Bearer\s+/i, "").trim();

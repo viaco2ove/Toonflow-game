@@ -5,9 +5,10 @@ import { error, success } from "@/lib/responseFormat";
 import {
   getGameDb,
   normalizeChapterOutput,
+  normalizeRolePair,
+  normalizeSessionState,
   normalizeMessageOutput,
   normalizeWorldOutput,
-  parseJsonSafe,
 } from "@/lib/gameEngine";
 import u from "@/utils";
 
@@ -34,12 +35,20 @@ export default router.post(
         return res.status(404).send(error("会话不存在"));
       }
 
-      const state = parseJsonSafe(row.stateJson, {});
-      const activeChapterId = Number(state.chapterId || row.chapterId || 0) || null;
+      const world = await db("t_storyWorld").where({ id: Number(row.worldId || 0) }).first();
+      const rolePair = normalizeRolePair(world?.playerRole, world?.narratorRole);
+      const provisionalChapterId = Number(row.chapterId || 0) || null;
+      const state = normalizeSessionState(
+        row.stateJson,
+        Number(row.worldId || 0),
+        provisionalChapterId,
+        rolePair,
+        world,
+      );
+      const activeChapterId = Number(state.chapterId || provisionalChapterId || 0) || null;
       const messageLimitNum = Number(messageLimit);
       const limit = Number.isFinite(messageLimitNum) && messageLimitNum > 0 ? Math.min(messageLimitNum, 200) : 50;
 
-      const world = await db("t_storyWorld").where({ id: Number(row.worldId || 0) }).first();
       const chapter = activeChapterId ? await db("t_storyChapter").where({ id: activeChapterId }).first() : null;
       const snapshot = await db("t_sessionStateSnapshot").where({ sessionId: sessionIdValue }).orderBy("id", "desc").first();
       const rawMessages = await db("t_sessionMessage").where({ sessionId: sessionIdValue }).orderBy("id", "desc").limit(limit);
@@ -55,7 +64,13 @@ export default router.post(
           latestSnapshot: snapshot
             ? {
                 ...snapshot,
-                state: parseJsonSafe(snapshot.stateJson, {}),
+                state: normalizeSessionState(
+                  snapshot.stateJson,
+                  Number(row.worldId || 0),
+                  activeChapterId,
+                  rolePair,
+                  world,
+                ),
               }
             : null,
           messages,

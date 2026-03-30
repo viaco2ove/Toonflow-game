@@ -250,6 +250,7 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
     Number(sessionRow.worldId || 0),
     prevChapterId,
     rolePair,
+    world,
   );
   state.round = Number(state.round || 0) + 1;
 
@@ -628,6 +629,7 @@ export async function continueSessionNarrative(sessionIdInput: string): Promise<
     Number(sessionRow.worldId || 0),
     prevChapterId,
     rolePair,
+    world,
   );
   if (canPlayerSpeakNow(state, world)) {
     throw new SessionServiceError(409, "当前已轮到用户发言");

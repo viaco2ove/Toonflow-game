@@ -12,7 +12,7 @@ services:
     restart: unless-stopped
     ports:
       - "80"
-      - "60000:60000"
+      - "60002:60002"
     environment:
       - NODE_ENV=prod
     volumes:

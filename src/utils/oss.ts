@@ -55,7 +55,7 @@ class OSS {
     }
     const safePath = normalizeUserPath(userRelPath);
     // URL 始终使用 /，所以这里需要将系统分隔符转回 /
-    const url = (process.env.OSSURL || "").trim() || `http://127.0.0.1:${process.env.PORT || "60000"}/`;
+    const url = (process.env.OSSURL || "").trim() || `http://127.0.0.1:${process.env.PORT || "60002"}/`;
     return `${url}${safePath.split(path.sep).join("/")}`;
   }
 

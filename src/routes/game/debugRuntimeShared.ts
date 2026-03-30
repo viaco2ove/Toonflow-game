@@ -249,7 +249,7 @@ export function buildDebugRecentMessages(
 
 export function normalizeDebugRuntimeState(rawState: unknown, worldId: number, chapterId: number, world: any) {
   const rolePair = normalizeRolePair(world.playerRole, world.narratorRole);
-  return normalizeSessionState(rawState, worldId, chapterId, rolePair);
+  return normalizeSessionState(rawState, worldId, chapterId, rolePair, world);
 }
 
 export function setDebugOpeningTurnState(state: Record<string, any>, world: any, roleName: string, roleType = "narrator") {

@@ -92,7 +92,7 @@ Fcitx 5 Configuration (Ubuntu) 增加拼音
 - 修复内容：
   - 新增 WSL 检测
   - WSL 下启用兼容参数：禁用 GPU、切换 `use-gl=swiftshader`、强制 `ozone-platform=x11`
-  - 修正主窗口端口使用：改为使用 `startServe` 返回端口，不再硬编码 `60000`
+  - 修正主窗口端口使用：改为使用 `startServe` 返回端口，不再硬编码 `60002`
 - 说明：
   - 该修复属于 WSL/Electron 稳定性兼容，不影响 Windows 原生运行
 

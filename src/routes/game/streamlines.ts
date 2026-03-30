@@ -131,6 +131,7 @@ export default router.post(
         worldId,
         Number(chapter.id || 0),
         rolePair,
+        world,
       );
       if (playerContent) {
         applyPlayerProfileFromMessageToState(state, world, playerContent);

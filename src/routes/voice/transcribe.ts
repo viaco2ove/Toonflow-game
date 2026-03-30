@@ -1,6 +1,10 @@
 import express from "express";
 import axios from "axios";
 import FormData from "form-data";
+import { spawn, spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
+import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import u from "@/utils";
 import { success, error } from "@/lib/responseFormat";
@@ -9,6 +13,14 @@ import { z } from "zod";
 import { isDirectAliyunManufacturer, normalizeAliyunDirectAsrModel, voiceSupplierFromManufacturer } from "@/lib/voiceGateway";
 
 const router = express.Router();
+const COMMON_WIN_FFMPEG_PATHS = [
+  "D:\\Program Files\\ffmpeg-master-latest-win64-gpl-shared\\bin\\ffmpeg.exe",
+  "C:\\Program Files\\ffmpeg-master-latest-win64-gpl-shared\\bin\\ffmpeg.exe",
+  "D:\\Program Files\\ffmpeg\\bin\\ffmpeg.exe",
+  "C:\\Program Files\\ffmpeg\\bin\\ffmpeg.exe",
+];
+const TRANSCODE_AUDIO_EXTS = new Set(["webm", "mp4", "m4a", "aac", "ogg", "oga"]);
+let cachedFfmpegPath = "";
 
 function normalizeBaseUrl(input: string | null | undefined): string {
   const base = String(input || "").trim();
@@ -28,6 +40,70 @@ function isAliyunCompatibleChatAsrModel(input: string | null | undefined): boole
   return model.startsWith("qwen3-asr");
 }
 
+function convertWindowsPathToWsl(input: string): string {
+  const raw = String(input || "").trim();
+  const match = raw.match(/^([A-Za-z]):\\(.*)$/);
+  if (!match) return raw;
+  const drive = match[1]!.toLowerCase();
+  const tail = match[2]!.replace(/\\/g, "/");
+  return `/mnt/${drive}/${tail}`;
+}
+
+function discoverFfmpegPath(): string {
+  if (cachedFfmpegPath) return cachedFfmpegPath;
+  const envPath = String(process.env.FFMPEG_PATH || "").trim();
+  if (envPath && existsSync(envPath)) {
+    cachedFfmpegPath = envPath;
+    return cachedFfmpegPath;
+  }
+  for (const candidate of COMMON_WIN_FFMPEG_PATHS) {
+    if (existsSync(candidate)) {
+      cachedFfmpegPath = candidate;
+      return cachedFfmpegPath;
+    }
+    const wslCandidate = convertWindowsPathToWsl(candidate);
+    if (wslCandidate !== candidate && existsSync(wslCandidate)) {
+      cachedFfmpegPath = wslCandidate;
+      return cachedFfmpegPath;
+    }
+  }
+  const syncLookup = process.platform === "win32"
+    ? spawnSync("where", ["ffmpeg"], { encoding: "utf8", windowsHide: true })
+    : spawnSync("cmd.exe", ["/c", "where", "ffmpeg"], { encoding: "utf8", windowsHide: true });
+  const stdout = String(syncLookup.stdout || "").trim();
+  const firstLine = stdout.split(/\r?\n/).map((line) => line.trim()).find(Boolean) || "";
+  if (firstLine) {
+    const normalized = existsSync(firstLine) ? firstLine : convertWindowsPathToWsl(firstLine);
+    if (existsSync(normalized)) {
+      cachedFfmpegPath = normalized;
+      return cachedFfmpegPath;
+    }
+  }
+  throw new Error("未找到 ffmpeg，无法处理当前录音格式");
+}
+
+async function runFfmpeg(ffmpegPath: string, args: string[]): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn(ffmpegPath, args, {
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stderr = "";
+    child.stderr.on("data", (chunk) => {
+      stderr += String(chunk || "");
+    });
+    child.on("error", (err) => reject(err));
+    child.on("close", (code) => {
+      if (code === 0) {
+        resolve();
+        return;
+      }
+      const trimmed = stderr.trim().split(/\r?\n/).slice(-6).join("\n").trim();
+      reject(new Error(trimmed || `ffmpeg 执行失败（退出码 ${code ?? -1}）`));
+    });
+  });
+}
+
 function parseBase64Audio(input: string): { buffer: Buffer; mime: string; ext: string } {
   const match = input.match(/^data:([^;]+);base64,(.+)$/);
   let base64 = input;
@@ -45,6 +121,8 @@ function parseBase64Audio(input: string): { buffer: Buffer; mime: string; ext: s
     "audio/ogg": "ogg",
     "audio/webm": "webm",
     "audio/mp4": "mp4",
+    "audio/m4a": "m4a",
+    "audio/x-m4a": "m4a",
     "audio/aac": "aac",
   };
 
@@ -63,6 +141,7 @@ function parseAudioFromPath(filePath: string, buffer: Buffer): { buffer: Buffer;
     ogg: "audio/ogg",
     webm: "audio/webm",
     mp4: "audio/mp4",
+    m4a: "audio/mp4",
     aac: "audio/aac",
   };
 
@@ -73,9 +152,55 @@ function parseAudioFromPath(filePath: string, buffer: Buffer): { buffer: Buffer;
   };
 }
 
+async function normalizeAsrAudio(input: { buffer: Buffer; mime: string; ext: string }) {
+  if (!TRANSCODE_AUDIO_EXTS.has(String(input.ext || "").trim().toLowerCase())) {
+    return input;
+  }
+  const ffmpegPath = discoverFfmpegPath();
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "toonflow-asr-audio-"));
+  try {
+    const inputExt = String(input.ext || "bin").trim().toLowerCase() || "bin";
+    const inputPath = path.join(tempDir, `input.${inputExt}`);
+    const outputPath = path.join(tempDir, "normalized.wav");
+    await fs.writeFile(inputPath, input.buffer);
+    await runFfmpeg(ffmpegPath, [
+      "-y",
+      "-i",
+      inputPath,
+      "-ac",
+      "1",
+      "-ar",
+      "16000",
+      "-f",
+      "wav",
+      outputPath,
+    ]);
+    const buffer = await fs.readFile(outputPath);
+    return {
+      buffer,
+      mime: "audio/wav",
+      ext: "wav",
+    };
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true }).catch(() => undefined);
+  }
+}
+
 async function getVoiceConfig(userId: number, configId?: number | null, preferredModelType?: "tts" | "asr") {
   if (configId) {
-    return u.db("t_config").where({ id: configId, type: "voice", userId }).first();
+    const selected = await u.db("t_config").where({ id: configId, type: "voice", userId }).first();
+    if (!selected) return null;
+    if (preferredModelType !== "asr") return selected;
+    const modelType = String(selected.modelType || "").trim().toLowerCase();
+    if (modelType === "asr") return selected;
+    if (isDirectAliyunManufacturer(selected.manufacturer)) {
+      return {
+        ...selected,
+        modelType: "asr",
+        model: normalizeAliyunDirectAsrModel(null),
+      };
+    }
+    return null;
   }
   if (preferredModelType === "asr") {
     const setting = await u.db("t_setting").where({ userId }).select("languageModel").first();
@@ -90,6 +215,18 @@ async function getVoiceConfig(userId: number, configId?: number | null, preferre
       const selected = await u.db("t_config").where({ id: storyAsrConfigId, type: "voice", userId }).first();
       return selected || null;
     }
+    const latestDirectAliyun = await u.db("t_config")
+      .where({ type: "voice", userId, manufacturer: "aliyun_direct" })
+      .orderBy("id", "desc")
+      .first();
+    if (latestDirectAliyun) {
+      return {
+        ...latestDirectAliyun,
+        modelType: "asr",
+        model: normalizeAliyunDirectAsrModel(null),
+      };
+    }
+    return null;
   }
   const preferred = preferredModelType
     ? await u.db("t_config").where({ type: "voice", userId, modelType: preferredModelType }).orderBy("id", "desc").first()
@@ -195,8 +332,18 @@ export default router.post(
       const manufacturer = String(config.manufacturer || "").trim();
       const suppliers = voiceSupplierFromManufacturer(manufacturer);
       const directAliyun = isDirectAliyunManufacturer(manufacturer);
+      const configModelType = String(config.modelType || "").trim().toLowerCase();
+      if (!directAliyun && configModelType && configModelType !== "asr" && !String(model || "").trim()) {
+        return res.status(400).send(error("当前未配置语音识别模型"));
+      }
       const modelName = directAliyun
-        ? normalizeAliyunDirectAsrModel(String(model || config.model || "").trim())
+        ? normalizeAliyunDirectAsrModel(
+            String(
+              model
+              || (configModelType === "asr" ? config.model : "")
+              || "",
+            ).trim(),
+          )
         : String(model || config.model || "").trim();
       const headers: Record<string, string> = {};
       if (config.apiKey) {
@@ -211,12 +358,11 @@ export default router.post(
         const fileBuffer = await u.oss.getFile(filePath);
         audio = parseAudioFromPath(filePath, fileBuffer);
       }
+      audio = await normalizeAsrAudio(audio);
 
       const compatibleBaseUrl = normalizeAliyunCompatibleBaseUrl(config.baseUrl);
       const endpointCandidates = directAliyun
-        ? isAliyunCompatibleChatAsrModel(modelName)
-          ? [`${compatibleBaseUrl}/v1/chat/completions`, `${compatibleBaseUrl}/v1/audio/transcriptions`]
-          : [`${compatibleBaseUrl}/v1/audio/transcriptions`, `${compatibleBaseUrl}/v1/asr`, `${compatibleBaseUrl}/v1/asr/transcribe`, `${compatibleBaseUrl}/v1/transcribe`]
+        ? [`${compatibleBaseUrl}/v1/chat/completions`]
         : [`${baseUrl}/v1/asr`, `${baseUrl}/v1/audio/transcriptions`, `${baseUrl}/v1/asr/transcribe`, `${baseUrl}/v1/transcribe`];
 
       const errors: string[] = [];

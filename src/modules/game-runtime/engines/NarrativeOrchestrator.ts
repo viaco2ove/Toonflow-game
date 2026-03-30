@@ -169,6 +169,22 @@ function applyRuntimeRoleOverlay(base: RuntimeStoryRole, runtimeRole: unknown): 
   };
 }
 
+function findRuntimeNpcOverlay(runtimeState: JsonRecord, role: RuntimeStoryRole): unknown {
+  const npcBag = asRecord(runtimeState.npcs);
+  if (!Object.keys(npcBag).length) return null;
+  const roleId = normalizeScalarText(role.id);
+  const roleName = normalizeScalarText(role.name);
+  for (const entry of Object.values(npcBag)) {
+    const raw = asRecord(entry);
+    const entryId = normalizeScalarText(raw.id);
+    const entryName = normalizeScalarText(raw.name);
+    if ((roleId && entryId && entryId === roleId) || (roleName && entryName && entryName === roleName)) {
+      return raw;
+    }
+  }
+  return null;
+}
+
 export function runtimeStoryRoles(world: any, state?: JsonRecord | null): RuntimeStoryRole[] {
   const roles = worldRoles(world);
   const runtimeState = asRecord(state);
@@ -179,7 +195,7 @@ export function runtimeStoryRoles(world: any, state?: JsonRecord | null): Runtim
     if (sanitizeRoleType(role.roleType) === "narrator") {
       return applyRuntimeRoleOverlay(role, runtimeState.narrator);
     }
-    return role;
+    return applyRuntimeRoleOverlay(role, findRuntimeNpcOverlay(runtimeState, role));
   });
 }
 

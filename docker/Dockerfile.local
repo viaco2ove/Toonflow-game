@@ -88,7 +88,7 @@ EOF
 ENV NODE_ENV=prod
 
 EXPOSE 80
-EXPOSE 60000
+EXPOSE 60002
 
 # 启动时创建必要目录（防止 volume 挂载覆盖）
 CMD sh -c "mkdir -p /var/log/nginx /var/lib/nginx/logs && exec supervisord -c /etc/supervisord.conf"

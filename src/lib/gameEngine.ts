@@ -240,6 +240,32 @@ function normalizeStringList(input: unknown): string[] {
     .slice(0, 64);
 }
 
+function extractParameterCardText(source: string, patterns: RegExp[]): string {
+  for (const pattern of patterns) {
+    const matched = source.match(pattern);
+    const value = normalizeEditorText(matched?.[1]);
+    if (value) return value;
+  }
+  return "";
+}
+
+function inferGenderFromText(source: string): string {
+  const explicit = extractParameterCardText(source, [
+    /性别\s*[:：]\s*(男|女)/i,
+  ]);
+  if (explicit === "男" || explicit === "女") return explicit;
+  if (/(少女|女子|女性|女人|女孩|女生|御姐|她\b|女主)/.test(source)) return "女";
+  if (/(少年|男子|男性|男人|男孩|男生|他\b|男主)/.test(source)) return "男";
+  return "";
+}
+
+function inferAgeFromText(source: string): number | null {
+  const matched = source.match(/(\d{1,3})\s*岁/);
+  if (!matched) return null;
+  const value = Number(matched[1]);
+  return Number.isFinite(value) ? value : null;
+}
+
 function createBasicParameterCard(input: {
   existing?: unknown;
   name?: unknown;
@@ -250,10 +276,13 @@ function createBasicParameterCard(input: {
   const name = normalizeEditorText(existing.name ?? input.name);
   const rawSetting = normalizeEditorText((existing as any).raw_setting ?? (existing as any).rawSetting ?? input.description);
   const voice = normalizeEditorText(existing.voice ?? input.voice);
-  const gender = normalizeEditorText(existing.gender);
-  const age = normalizeOptionalNumber(existing.age);
+  const inferredGender = inferGenderFromText(rawSetting);
+  const inferredAge = inferAgeFromText(rawSetting);
+  const gender = normalizeEditorText(existing.gender) || inferredGender;
+  const age = normalizeOptionalNumber(existing.age) ?? inferredAge;
   const level = normalizeOptionalNumber(existing.level);
-  const levelDesc = normalizeEditorText(existing.level_desc ?? (existing as any).levelDesc);
+  const levelDesc = normalizeEditorText(existing.level_desc ?? (existing as any).levelDesc)
+    || extractParameterCardText(rawSetting, [/境界\s*[:：]\s*([^\n，。；;]+)/, /等级(?:称号)?\s*[:：]\s*([^\n，。；;]+)/, /修为\s*[:：]\s*([^\n，。；;]+)/]);
   const hp = normalizeOptionalNumber(existing.hp);
   const mp = normalizeOptionalNumber(existing.mp);
   const money = normalizeOptionalNumber(existing.money);
@@ -265,8 +294,10 @@ function createBasicParameterCard(input: {
     age,
     level: level ?? 1,
     level_desc: levelDesc || "初入此界",
-    personality: normalizeEditorText(existing.personality),
-    appearance: normalizeEditorText(existing.appearance),
+    personality: normalizeEditorText(existing.personality)
+      || extractParameterCardText(rawSetting, [/性格\s*[:：]\s*([^\n]+)/, /特点\s*[:：]\s*([^\n]+)/]),
+    appearance: normalizeEditorText(existing.appearance)
+      || extractParameterCardText(rawSetting, [/外貌\s*[:：]\s*([^\n]+)/, /形象\s*[:：]\s*([^\n]+)/, /长相\s*[:：]\s*([^\n]+)/]),
     voice: voice || "",
     skills: normalizeStringList(existing.skills),
     items: normalizeStringList(existing.items),
@@ -322,6 +353,56 @@ export function normalizeRolePair(playerRoleRaw: unknown, narratorRoleRaw: unkno
   };
 }
 
+function findNpcRuntimeOverlay(source: JsonRecord, role: JsonRecord): JsonRecord {
+  const candidates = [
+    source[String(role.id || "").trim()],
+    source[String(role.name || "").trim()],
+  ];
+  for (const item of candidates) {
+    if (isRecord(item)) return item;
+  }
+  const matchedEntry = Object.values(source).find((item) => {
+    if (!isRecord(item)) return false;
+    return String(item.id || "").trim() === String(role.id || "").trim()
+      || String(item.name || "").trim() === String(role.name || "").trim();
+  });
+  return isRecord(matchedEntry) ? matchedEntry : {};
+}
+
+function normalizeRuntimeNpcMap(rawNpcs: unknown, npcRolesRaw: unknown): JsonRecord {
+  const source = parseJsonSafe<JsonRecord>(rawNpcs, {});
+  const defaults = normalizeSettingsRoles(npcRolesRaw).filter((item) => item.roleType === "npc");
+  const normalized: JsonRecord = {};
+  const consumedKeys = new Set<string>();
+
+  defaults.forEach((role) => {
+    const runtimeOverlay = findNpcRuntimeOverlay(source, role);
+    const normalizedRole = normalizeStoryRole(runtimeOverlay, role);
+    const roleId = String(normalizedRole.id || role.id || normalizedRole.name || "").trim();
+    if (!roleId) return;
+    normalized[roleId] = normalizedRole;
+    consumedKeys.add(String(role.id || "").trim());
+    consumedKeys.add(String(role.name || "").trim());
+  });
+
+  Object.entries(source).forEach(([key, value]) => {
+    if (consumedKeys.has(String(key || "").trim()) || !isRecord(value)) return;
+    const fallbackDefaults: JsonRecord = {
+      id: String(value.id || key || "").trim() || key,
+      roleType: String(value.roleType || "npc").trim() || "npc",
+      name: String(value.name || key || "").trim() || key,
+      description: String(value.description || "").trim(),
+      attributes: {},
+    };
+    const normalizedRole = normalizeStoryRole(value, fallbackDefaults);
+    const roleId = String(normalizedRole.id || key || normalizedRole.name || "").trim();
+    if (!roleId) return;
+    normalized[roleId] = normalizedRole;
+  });
+
+  return normalized;
+}
+
 export function createGameSessionId(): string {
   return `gs_${Date.now()}_${u.uuid().replace(/-/g, "").slice(0, 10)}`;
 }
@@ -335,11 +416,17 @@ export function normalizeSessionState(
   worldId: number,
   chapterId: number | null,
   rolePair: RolePair,
+  worldRaw?: unknown,
 ): JsonRecord {
   const base = parseJsonSafe<JsonRecord>(raw, {});
   const player = isRecord(base.player) ? base.player : {};
   const narrator = isRecord(base.narrator) ? base.narrator : {};
   const rawTurnState = isRecord(base.turnState) ? base.turnState : {};
+  const world = parseJsonSafe<JsonRecord>(worldRaw, {});
+  const settings = normalizeWorldSettings(world.settings, {
+    coverPath: world.coverPath,
+    publishStatus: world.publishStatus,
+  });
   const normalizedPlayerName = String(rolePair.playerRole.name || "用户").trim() || "用户";
   const expectedRoleType = String(rawTurnState.expectedRoleType || "player").trim() || "player";
 
@@ -370,7 +457,7 @@ export function normalizeSessionState(
     },
     flags: isRecord(base.flags) ? base.flags : {},
     vars: isRecord(base.vars) ? base.vars : {},
-    npcs: isRecord(base.npcs) ? base.npcs : {},
+    npcs: normalizeRuntimeNpcMap(base.npcs, settings.roles),
     inventory: Array.isArray(base.inventory) ? base.inventory : [],
     unlockedRoles: Array.isArray(base.unlockedRoles) ? base.unlockedRoles : [],
     recentEvents: Array.isArray(base.recentEvents) ? base.recentEvents : [],
