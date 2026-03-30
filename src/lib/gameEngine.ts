@@ -272,6 +272,12 @@ function createBasicParameterCard(input: {
   description?: unknown;
   voice?: unknown;
 }): JsonRecord | null {
+  const hasExisting = input.existing !== null
+    && input.existing !== undefined
+    && !(typeof input.existing === "string" && !String(input.existing).trim());
+  if (!hasExisting) {
+    return null;
+  }
   const existing = parseJsonSafe<JsonRecord>(input.existing, {});
   const name = normalizeEditorText(existing.name ?? input.name);
   const rawSetting = normalizeEditorText((existing as any).raw_setting ?? (existing as any).rawSetting ?? input.description);

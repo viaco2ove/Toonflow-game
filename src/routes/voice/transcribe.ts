@@ -213,7 +213,17 @@ async function getVoiceConfig(userId: number, configId?: number | null, preferre
     }
     if (storyAsrConfigId > 0) {
       const selected = await u.db("t_config").where({ id: storyAsrConfigId, type: "voice", userId }).first();
-      return selected || null;
+      if (!selected) return null;
+      const modelType = String(selected.modelType || "").trim().toLowerCase();
+      if (modelType === "asr") return selected;
+      if (isDirectAliyunManufacturer(selected.manufacturer)) {
+        return {
+          ...selected,
+          modelType: "asr",
+          model: normalizeAliyunDirectAsrModel(null),
+        };
+      }
+      return null;
     }
     const latestDirectAliyun = await u.db("t_config")
       .where({ type: "voice", userId, manufacturer: "aliyun_direct" })
