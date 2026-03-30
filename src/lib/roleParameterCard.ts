@@ -1,3 +1,9 @@
+import {
+  getGameDb,
+  nowTs,
+  parseJsonSafe,
+  toJsonText,
+} from "@/lib/gameEngine";
 import u from "@/utils";
 
 type JsonRecord = Record<string, any>;
@@ -109,6 +115,25 @@ function normalizeParameterCard(input: unknown, fallback: {
     mp: mp ?? 0,
     money: money ?? 0,
     other: normalizeList(source.other ?? fieldMap["other"]),
+  };
+}
+
+function hasUsableParameterCard(input: unknown): boolean {
+  const card = asRecord(input);
+  if (!Object.keys(card).length) return false;
+  return Object.values(card).some((value) => {
+    if (Array.isArray(value)) return value.length > 0;
+    if (typeof value === "number") return Number.isFinite(value);
+    return Boolean(normalizeText(value));
+  });
+}
+
+function parseSettingsWithRoles(input: unknown): JsonRecord {
+  const settings = parseJsonSafe<JsonRecord>(input, {});
+  const roles = Array.isArray(settings.roles) ? settings.roles : [];
+  return {
+    ...settings,
+    roles,
   };
 }
 
@@ -251,4 +276,66 @@ export async function enrichWorldRolesWithAiParameterCards(input: {
       roles: npcRoles,
     },
   };
+}
+
+export async function ensureWorldRolesWithAiParameterCards(input: {
+  userId: number;
+  world: unknown;
+  persist?: boolean;
+}): Promise<JsonRecord> {
+  const world = asRecord(input.world);
+  if (!Object.keys(world).length) return world;
+
+  const settings = parseSettingsWithRoles(world.settings);
+  const roles = Array.isArray(settings.roles) ? settings.roles : [];
+  const needsCards = [
+    world.playerRole,
+    world.narratorRole,
+    ...roles,
+  ].some((role) => {
+    const rawRole = asRecord(role);
+    return !hasUsableParameterCard(rawRole.parameterCardJson);
+  });
+
+  if (!needsCards) {
+    return {
+      ...world,
+      settings,
+    };
+  }
+
+  const enriched = await enrichWorldRolesWithAiParameterCards({
+    userId: Number(input.userId || 0),
+    worldName: normalizeText(world.name),
+    worldIntro: normalizeText(world.intro),
+    playerRole: world.playerRole,
+    narratorRole: world.narratorRole,
+    settings,
+  });
+
+  const nextSettings = {
+    ...settings,
+    ...asRecord(enriched.settings),
+    roles: Array.isArray(asRecord(enriched.settings).roles) ? asRecord(enriched.settings).roles : [],
+  };
+
+  const nextWorld: JsonRecord = {
+    ...world,
+    playerRole: enriched.playerRole,
+    narratorRole: enriched.narratorRole,
+    settings: nextSettings,
+  };
+
+  if (input.persist && Number(world.id || 0) > 0) {
+    await getGameDb()("t_storyWorld")
+      .where({ id: Number(world.id) })
+      .update({
+        playerRole: toJsonText(enriched.playerRole, {}),
+        narratorRole: toJsonText(enriched.narratorRole, {}),
+        settings: toJsonText(nextSettings, {}),
+        updateTime: nowTs(),
+      });
+  }
+
+  return nextWorld;
 }

@@ -24,6 +24,7 @@ const instanceMap = {
   volcengine: createOpenAI,
   doubao: createOpenAI,
   openai: createOpenAI,
+  lmstudio: createOpenAICompatible,
   zhipu: createZhipu,
   qwen: createQwen,
   gemini: createGoogleGenerativeAI,
@@ -201,6 +202,16 @@ const modelList: Owned[] = [
     image: false,
     think: true,
     instance: createDeepSeek,
+    tool: true,
+  },
+  // LM Studio 本地 OpenAI-Compatible 服务，默认模型按 qwen3.5-9b 兜底
+  {
+    manufacturer: "lmstudio",
+    model: "qwen3.5-9b",
+    responseFormat: "schema",
+    image: false,
+    think: false,
+    instance: createOpenAICompatible,
     tool: true,
   },
 

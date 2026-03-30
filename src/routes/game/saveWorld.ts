@@ -10,7 +10,7 @@ import {
   nowTs,
   toJsonText,
 } from "@/lib/gameEngine";
-import { enrichWorldRolesWithAiParameterCards } from "@/lib/roleParameterCard";
+import { ensureWorldRolesWithAiParameterCards } from "@/lib/roleParameterCard";
 import u from "@/utils";
 
 const router = express.Router();
@@ -43,15 +43,7 @@ export default router.post(
         return res.status(403).send(error("无权访问该项目"));
       }
 
-      const enrichedRoles = await enrichWorldRolesWithAiParameterCards({
-        userId: currentUserId,
-        worldName: String(name || "").trim(),
-        worldIntro: String(intro || "").trim(),
-        playerRole,
-        narratorRole,
-        settings,
-      });
-      const rolePair = normalizeRolePair(enrichedRoles.playerRole, enrichedRoles.narratorRole);
+      const rolePair = normalizeRolePair(playerRole, narratorRole);
 
       const worldIdNum = Number(worldId);
       let existing: any = null;
@@ -69,7 +61,7 @@ export default router.post(
 
       const normalizedCoverPath = String(coverPath || "").trim();
       const normalizedPublishStatus = String(publishStatus || existing?.publishStatus || "draft").trim() || "draft";
-      const normalizedSettings = normalizeWorldSettings(enrichedRoles.settings, {
+      const normalizedSettings = normalizeWorldSettings(settings, {
         coverPath: normalizedCoverPath,
         publishStatus: normalizedPublishStatus,
       });
@@ -103,6 +95,25 @@ export default router.post(
       }
 
       const row = await db("t_storyWorld").where({ id }).first();
+      void ensureWorldRolesWithAiParameterCards({
+        userId: currentUserId,
+        world: {
+          ...row,
+          id,
+          name: payload.name,
+          intro: payload.intro,
+          playerRole: rolePair.playerRole,
+          narratorRole: rolePair.narratorRole,
+          settings: normalizedSettings,
+        },
+        persist: true,
+      }).catch((asyncErr) => {
+        console.warn("[saveWorld] async role parameter card generation failed", {
+          worldId: id,
+          userId: currentUserId,
+          message: (asyncErr as any)?.message || String(asyncErr),
+        });
+      });
       res.status(200).send(success(normalizeWorldOutput(row), existing ? "更新世界观成功" : "创建世界观成功"));
     } catch (err) {
       res.status(500).send(error(u.error(err).message));

@@ -12,6 +12,7 @@ import {
   nowTs,
   toJsonText,
 } from "@/lib/gameEngine";
+import { ensureWorldRolesWithAiParameterCards } from "@/lib/roleParameterCard";
 import {
   applyMemoryResultToState,
   applyNarrativeMemoryHintsToState,
@@ -101,7 +102,7 @@ export default router.post(
       const db = getGameDb();
       const now = nowTs();
 
-      const world = await db("t_storyWorld as w")
+      let world = await db("t_storyWorld as w")
         .leftJoin("t_project as p", "w.projectId", "p.id")
         .where("w.id", worldId)
         .select("w.*", "p.userId as ownerUserId")
@@ -114,6 +115,11 @@ export default router.post(
       if (!isOwnerWorld && !isPublishedWorld(world)) {
         return res.status(403).send(error("无权开始该故事会话"));
       }
+      world = await ensureWorldRolesWithAiParameterCards({
+        userId: ownerUserId > 0 ? ownerUserId : currentUserId,
+        world,
+        persist: isOwnerWorld,
+      });
 
       let chapter: any = null;
       const chapterIdNum = Number(chapterId);

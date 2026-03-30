@@ -73,12 +73,14 @@ export interface MemoryManagerResult {
   source: "ai" | "fallback";
 }
 
+// 截断错误信息，避免日志和报错文本过长。
 function truncateErrorMessage(input: unknown, limit = 180): string {
   const text = normalizeScalarText(input);
   if (!text) return "";
   return text.length > limit ? `${text.slice(0, limit)}...` : text;
 }
 
+// 按阶段包装模型异常，统一成前后端可读的错误信息。
 function createRuntimeModelError(stage: "orchestrator" | "memory" | "speaker", reason?: unknown): Error {
   const detail = truncateErrorMessage(reason);
   if (/^(编排师|角色发言|记忆管理)对接的模型异常/.test(detail)) {
@@ -92,6 +94,7 @@ function createRuntimeModelError(stage: "orchestrator" | "memory" | "speaker", r
   return new Error(detail ? `${prefix}：${detail}` : prefix);
 }
 
+// 归一化单值文本，过滤空串和 null/undefined。
 export function normalizeScalarText(input: unknown): string {
   const text = String(input ?? "").trim();
   if (!text) return "";
@@ -99,6 +102,7 @@ export function normalizeScalarText(input: unknown): string {
   return text;
 }
 
+// 对文本列表去重并保留最近的若干项。
 function uniqueTextList(input: unknown[], limit: number): string[] {
   const seen = new Set<string>();
   const result: string[] = [];
@@ -111,16 +115,19 @@ function uniqueTextList(input: unknown[], limit: number): string[] {
   return result.slice(-Math.max(1, limit));
 }
 
+// 读取 prompt 配置里的自定义值或默认值。
 function getPromptValue(row: any): string {
   const customValue = normalizeScalarText(row?.customValue);
   if (customValue) return customValue;
   return normalizeScalarText(row?.defaultValue);
 }
 
+// 将未知输入尽量解析为 JSON 对象记录。
 function asRecord(input: unknown): JsonRecord {
   return parseJsonSafe<JsonRecord>(input, {});
 }
 
+// 从世界定义里组装玩家、旁白和 NPC 角色列表。
 export function worldRoles(world: any): RuntimeStoryRole[] {
   const rolePair = normalizeRolePair(world?.playerRole, world?.narratorRole);
   const settings = asRecord(world?.settings);
@@ -155,6 +162,7 @@ export function worldRoles(world: any): RuntimeStoryRole[] {
   ];
 }
 
+// 用运行时状态覆盖基础角色信息。
 function applyRuntimeRoleOverlay(base: RuntimeStoryRole, runtimeRole: unknown): RuntimeStoryRole {
   const raw = asRecord(runtimeRole);
   if (!Object.keys(raw).length) return base;
@@ -169,6 +177,7 @@ function applyRuntimeRoleOverlay(base: RuntimeStoryRole, runtimeRole: unknown): 
   };
 }
 
+// 在运行时状态里查找与当前 NPC 对应的覆盖数据。
 function findRuntimeNpcOverlay(runtimeState: JsonRecord, role: RuntimeStoryRole): unknown {
   const npcBag = asRecord(runtimeState.npcs);
   if (!Object.keys(npcBag).length) return null;
@@ -185,6 +194,7 @@ function findRuntimeNpcOverlay(runtimeState: JsonRecord, role: RuntimeStoryRole)
   return null;
 }
 
+// 合并基础角色与运行时覆盖，得到当前剧情真正可用的角色列表。
 export function runtimeStoryRoles(world: any, state?: JsonRecord | null): RuntimeStoryRole[] {
   const roles = worldRoles(world);
   const runtimeState = asRecord(state);
@@ -199,6 +209,7 @@ export function runtimeStoryRoles(world: any, state?: JsonRecord | null): Runtim
   });
 }
 
+// 生成章节开场消息，优先使用章节配置的开场白。
 export function resolveOpeningMessage(world: any, chapter: any) {
   const roles = worldRoles(world);
   const openingText = normalizeScalarText(chapter?.openingText);
@@ -227,10 +238,12 @@ export function resolveOpeningMessage(world: any, chapter: any) {
   };
 }
 
+// 提取章节内部提纲文本，供编排器判断剧情走向。
 function chapterDirectiveText(chapter: any): string {
   return normalizeScalarText(chapter?.content);
 }
 
+// 判断角色是否能临时承担万能角色或路人兜底职责。
 function roleActsAsWildcard(role: RuntimeStoryRole | undefined): boolean {
   if (!role) return false;
   const haystack = [
@@ -244,6 +257,7 @@ function roleActsAsWildcard(role: RuntimeStoryRole | undefined): boolean {
   return /万能角色|万能/.test(haystack);
 }
 
+// 规范化角色类型，防止脏值污染回合状态。
 function sanitizeRoleType(input: unknown): string {
   const value = normalizeScalarText(input).toLowerCase();
   if (value === "player") return "player";
@@ -251,6 +265,7 @@ function sanitizeRoleType(input: unknown): string {
   return "narrator";
 }
 
+// 将章节提纲按段拆开，方便后续摘要和匹配。
 function directiveParagraphs(input: unknown): string[] {
   return normalizeScalarText(input)
     .split(/\r?\n+/)
@@ -258,6 +273,7 @@ function directiveParagraphs(input: unknown): string[] {
     .filter(Boolean);
 }
 
+// 截取章节提纲的短摘要，供精简提示词使用。
 function directiveExcerpt(input: unknown): string {
   const paragraphs = directiveParagraphs(input);
   if (!paragraphs.length) return "剧情继续推进。";
@@ -266,6 +282,7 @@ function directiveExcerpt(input: unknown): string {
 
 const CHAPTER_USER_INTERACTION_PATTERN = /(用户行动|仅对用户|请发言|请直接输入|你可以[:：]?|唯一行动机会|检测到异常|你是唯一仍可行动的人|⚠️|👉)/;
 
+// 从章节提纲中抽取明确要求用户发言或行动的节点。
 function extractChapterUserInteractionText(input: unknown): string {
   const text = normalizeScalarText(input).replace(/\r\n/g, "\n");
   if (!text) return "";
@@ -313,12 +330,14 @@ function extractChapterUserInteractionText(input: unknown): string {
   return uniqueTextList(blocks, 3).join("\n\n");
 }
 
+// 将任意输入压缩成指定长度内的可读文本。
 function shortText(input: unknown, limit = 120): string {
   const text = normalizeScalarText(input);
   if (!text) return "";
   return text.length > limit ? `${text.slice(0, limit)}...` : text;
 }
 
+// 将对象或数组压缩成短摘要，便于塞进 prompt。
 function summarizeJsonValue(input: unknown, maxPairs = 6): string {
   if (!input || typeof input !== "object") return normalizeScalarText(input);
   if (Array.isArray(input)) {
@@ -340,8 +359,36 @@ function summarizeJsonValue(input: unknown, maxPairs = 6): string {
     .join("；");
 }
 
-function describeRole(role: RuntimeStoryRole | null | undefined): string {
+// 将参数卡压成适合编排模型读取的短文本，只保留关键人物属性。
+function summarizeParameterCardText(input: unknown): string {
+  const card = asRecord(input);
+  if (!Object.keys(card).length) return "";
+  const parts = [
+    normalizeScalarText(card.name) ? `角色名:${normalizeScalarText(card.name)}` : "",
+    normalizeScalarText(card.gender) ? `性别:${normalizeScalarText(card.gender)}` : "",
+    card.age != null && normalizeScalarText(card.age) ? `年龄:${normalizeScalarText(card.age)}` : "",
+    card.level != null && normalizeScalarText(card.level) ? `等级:${normalizeScalarText(card.level)}` : "",
+    normalizeScalarText(card.level_desc || card.levelDesc) ? `等级称号:${normalizeScalarText(card.level_desc || card.levelDesc)}` : "",
+    normalizeScalarText(card.raw_setting || card.rawSetting) ? `设定摘要:${shortText(card.raw_setting || card.rawSetting, 28)}` : "",
+    normalizeScalarText(card.personality) ? `性格:${shortText(card.personality, 24)}` : "",
+    normalizeScalarText(card.appearance) ? `外貌:${shortText(card.appearance, 24)}` : "",
+    normalizeScalarText(card.voice) ? `音色:${shortText(card.voice, 24)}` : "",
+    Array.isArray(card.skills) && card.skills.length ? `技能:${card.skills.map((item: unknown) => normalizeScalarText(item)).filter(Boolean).slice(0, 3).join("、")}` : "",
+    Array.isArray(card.items) && card.items.length ? `物品:${card.items.map((item: unknown) => normalizeScalarText(item)).filter(Boolean).slice(0, 3).join("、")}` : "",
+    Array.isArray(card.equipment) && card.equipment.length ? `装备:${card.equipment.map((item: unknown) => normalizeScalarText(item)).filter(Boolean).slice(0, 3).join("、")}` : "",
+    Number.isFinite(Number(card.hp)) ? `血量:${Number(card.hp)}` : "",
+    Number.isFinite(Number(card.mp)) ? `蓝量:${Number(card.mp)}` : "",
+    Number.isFinite(Number(card.money)) ? `金钱:${Number(card.money)}` : "",
+    Array.isArray(card.other) && card.other.length ? `其他:${card.other.map((item: unknown) => normalizeScalarText(item)).filter(Boolean).slice(0, 3).join("、")}` : "",
+  ].filter(Boolean);
+  return parts.join("|");
+}
+// 将角色的基础信息、口吻和参数卡压成编排模型可读的短摘要，避免把整份设定直接塞给模型。
+function describeRole(role: RuntimeStoryRole | null | undefined, compactMode = false): string {
   if (!role) return "";
+  if (compactMode) {
+    return summarizeParameterCardText(role.parameterCardJson) || `角色名:${normalizeScalarText(role.name)}`;
+  }
   const parts = [
     `姓名:${normalizeScalarText(role.name)}`,
     `身份:${sanitizeRoleType(role.roleType)}`,
@@ -352,6 +399,7 @@ function describeRole(role: RuntimeStoryRole | null | undefined): string {
   return parts.join("\n");
 }
 
+// 压缩当前故事状态，给编排模型只留关键记忆。
 function summarizeStoryState(state: JsonRecord): string {
   const parts = [
     shortText(state.memorySummary, 180) ? `背景摘要:${shortText(state.memorySummary, 180)}` : "",
@@ -362,6 +410,7 @@ function summarizeStoryState(state: JsonRecord): string {
   return parts.join("\n");
 }
 
+// 清洗模型返回的普通文本行，去掉多余引号和超长内容。
 function normalizeGeneratedLine(input: unknown, limit = 220): string {
   const text = normalizeScalarText(input)
     .replace(/^["'“”]+|["'“”]+$/g, "")
@@ -372,12 +421,14 @@ function normalizeGeneratedLine(input: unknown, limit = 220): string {
   return text.length > limit ? `${text.slice(0, limit)}...` : text;
 }
 
+// 去掉舞台提示尾部多余标点，避免括号内容难读。
 function trimStageDirectionTail(input: string): string {
   return normalizeScalarText(input)
     .replace(/[：:，,；;、\s]+$/g, "")
     .trim();
 }
 
+// 将动作描写与台词拆开，保证朗读和展示都更自然。
 function formatDialogueWithStageDirection(content: string, roleType: string): string {
   const normalized = normalizeGeneratedLine(content, 220);
   if (!normalized) return "";
@@ -410,6 +461,7 @@ function formatDialogueWithStageDirection(content: string, roleType: string): st
   return normalized;
 }
 
+// 去掉模型返回里包裹的代码块标记。
 function unwrapModelText(input: unknown): string {
   const text = normalizeScalarText(input)
     .replace(/^```(?:json|yaml|txt|text|markdown)?\s*/i, "")
@@ -418,6 +470,7 @@ function unwrapModelText(input: unknown): string {
   return text;
 }
 
+// 从纯文本中解析 key:value 形式的字段。
 function parseFieldMap(rawText: string): Record<string, string> {
   const lines = unwrapModelText(rawText)
     .split(/\r?\n+/)
@@ -432,6 +485,7 @@ function parseFieldMap(rawText: string): Record<string, string> {
   return result;
 }
 
+// 按候选字段名顺序获取第一个可用值。
 function getPlainField(fields: Record<string, string>, ...keys: string[]): string {
   for (const key of keys) {
     const value = normalizeScalarText(fields[key.toLowerCase()]);
@@ -440,11 +494,13 @@ function getPlainField(fields: Record<string, string>, ...keys: string[]): strin
   return "";
 }
 
+// 解析纯文本布尔值。
 function parsePlainBoolean(input: unknown): boolean {
   const value = normalizeScalarText(input).toLowerCase();
   return value === "true" || value === "1" || value === "yes" || value === "是";
 }
 
+// 解析纯文本列表字段。
 function parsePlainList(input: unknown): string[] {
   return normalizeScalarText(input)
     .split(/\s*[|｜；;]\s*/g)
@@ -452,6 +508,7 @@ function parsePlainList(input: unknown): string[] {
     .filter(Boolean);
 }
 
+// 解析纯文本里的状态增量，兜底成键值对对象。
 function parsePlainStateDelta(input: unknown): JsonRecord {
   const text = normalizeScalarText(input);
   if (!text) return {};
@@ -476,6 +533,7 @@ function parsePlainStateDelta(input: unknown): JsonRecord {
   return result;
 }
 
+// 把世界、章节、角色、状态拼成编排师可直接消费的用户提示词。
 function buildOrchestratorUserPrompt(payload: {
   worldName: string;
   worldIntro: string;
@@ -490,7 +548,53 @@ function buildOrchestratorUserPrompt(payload: {
   turnState: RuntimeTurnState;
   recentDialogue: string;
   latestPlayerMessage: string;
-}): string {
+},compactMode = false): string {
+  if (compactMode) {
+    return [
+      "[世界]",
+      `名称:${payload.worldName || "未命名世界"}`,
+      payload.worldIntro ? `简介:${payload.worldIntro}` : "",
+      "",
+      "[章节]",
+      `标题:${payload.chapterTitle || "未命名章节"}`,
+      payload.chapterDirective ? `提纲:${payload.chapterDirective}` : "",
+      payload.chapterUserTurns ? `用户节点:${payload.chapterUserTurns}` : "",
+      payload.chapterOpening ? `开场:${payload.chapterOpening}` : "",
+      "",
+      "[角色]",
+      ...payload.roles.map((role) => `- ${sanitizeRoleType(role.roleType)}|${normalizeScalarText(role.name)}|${describeRole(role, true)}`),
+      "",
+      "[万能]",
+      payload.wildcardRoles.length
+        ? payload.wildcardRoles.map((item) => `${item.name}(${sanitizeRoleType(item.roleType)})`).join("、")
+        : (payload.narratorActsAsWildcardFallback ? "旁白兜底" : "无"),
+      "",
+      "[摘要]",
+      payload.storyState || "无",
+      "",
+      "[回合]",
+      `player:${payload.turnState.canPlayerSpeak ? "true" : "false"} | expected:${sanitizeRoleType(payload.turnState.expectedRoleType)}/${payload.turnState.expectedRole || "无"} | last:${sanitizeRoleType(payload.turnState.lastSpeakerRoleType)}/${payload.turnState.lastSpeaker || "无"}`,
+      "",
+      "[最近]",
+      payload.recentDialogue || "无",
+      "",
+      "[玩家]",
+      payload.latestPlayerMessage || "无",
+      "",
+      "[输出]",
+      "role_type:",
+      "speaker:",
+      "motive:",
+      "await_user:",
+      "next_role_type:",
+      "next_speaker:",
+      "chapter_outcome:",
+      "next_chapter_id:",
+      "memory_hints:",
+      "trigger_memory_agent:",
+      "state_delta:",
+    ].filter(Boolean).join("\n");
+  }
   return [
     "[世界]",
     `名称: ${payload.worldName || "未命名世界"}`,
@@ -541,6 +645,7 @@ function buildOrchestratorUserPrompt(payload: {
   ].filter(Boolean).join("\n");
 }
 
+// 把当前说话人和上下文拼成角色发言提示词。
 function buildSpeakerUserPrompt(payload: {
   worldName: string;
   worldIntro: string;
@@ -587,6 +692,7 @@ function buildSpeakerUserPrompt(payload: {
   ].filter(Boolean).join("\n");
 }
 
+// 把最近对话和现有记忆拼成记忆管理提示词。
 function buildMemoryUserPrompt(payload: {
   worldName: string;
   chapterTitle: string;
@@ -613,6 +719,7 @@ function buildMemoryUserPrompt(payload: {
   ].filter(Boolean).join("\n");
 }
 
+// 判断当前模型是否需要走精简版提示词。
 function shouldUseCompactOrchestratorPayload(config: unknown): boolean {
   const manufacturer = normalizeScalarText((config as Record<string, unknown> | null)?.manufacturer).toLowerCase();
   const model = normalizeScalarText((config as Record<string, unknown> | null)?.model).toLowerCase();
@@ -621,6 +728,7 @@ function shouldUseCompactOrchestratorPayload(config: unknown): boolean {
   return /(lite|mini|flash)/.test(model);
 }
 
+// 生成便于做相似度比较的归一化文本。
 function normalizeComparableText(input: unknown): string {
   return normalizeScalarText(input)
     .replace(/\s+/g, "")
@@ -628,6 +736,7 @@ function normalizeComparableText(input: unknown): string {
     .toLowerCase();
 }
 
+// 检测模型输出是否泄漏了章节提纲或开场白。
 function looksLikeDirectiveLeak(content: unknown, chapterDirective: unknown, openingText: unknown): boolean {
   const text = normalizeScalarText(content);
   if (!text) return false;
@@ -667,10 +776,12 @@ type RuntimeTurnState = {
   lastSpeaker: string;
 };
 
+// 从世界对象里拿到玩家与旁白角色对。
 function rolePairForWorld(world: any) {
   return normalizeRolePair(world?.playerRole, world?.narratorRole);
 }
 
+// 读取当前回合状态，决定谁该发言。
 export function readRuntimeTurnState(state: JsonRecord, world: any): RuntimeTurnState {
   const raw = asRecord(state.turnState);
   const rolePair = rolePairForWorld(world);
@@ -684,6 +795,7 @@ export function readRuntimeTurnState(state: JsonRecord, world: any): RuntimeTurn
   };
 }
 
+// 写回当前回合状态，并返回规范化后的结果。
 export function setRuntimeTurnState(
   state: JsonRecord,
   world: any,
@@ -704,6 +816,7 @@ export function setRuntimeTurnState(
   return readRuntimeTurnState(state, world);
 }
 
+// 将性别文本统一成男/女。
 function normalizeGenderValue(input: unknown): string {
   const text = normalizeScalarText(input);
   if (!text) return "";
@@ -712,6 +825,7 @@ function normalizeGenderValue(input: unknown): string {
   return "";
 }
 
+// 将年龄文本解析成合法数字。
 function normalizeAgeValue(input: unknown): number | null {
   const text = normalizeScalarText(input);
   if (!text) return null;
@@ -722,6 +836,7 @@ function normalizeAgeValue(input: unknown): number | null {
   return value;
 }
 
+// 从玩家输入里解析姓名、性别和年龄。
 function parsePlayerProfileFromMessage(message: string, currentName: string): {
   name?: string;
   gender?: string;
@@ -788,6 +903,7 @@ function parsePlayerProfileFromMessage(message: string, currentName: string): {
   return result;
 }
 
+// 将玩家资料写回运行时状态和参数卡。
 export function applyPlayerProfileFromMessageToState(state: JsonRecord, world: any, message: unknown): JsonRecord {
   const text = normalizeScalarText(message);
   const rolePair = rolePairForWorld(world);
@@ -803,7 +919,7 @@ export function applyPlayerProfileFromMessageToState(state: JsonRecord, world: a
     ...rolePair.playerRole,
     ...currentPlayer,
     roleType: "player",
-    name: displayName,
+    name: normalizeScalarText(parsed.name || currentPlayer.name || displayName) || displayName,
   } as JsonRecord;
   const nextCard = asRecord(nextPlayer.parameterCardJson);
   nextCard.name = normalizeScalarText(parsed.name || nextCard.name || displayName) || displayName;
@@ -842,12 +958,13 @@ export function applyPlayerProfileFromMessageToState(state: JsonRecord, world: a
     && (!normalizeScalarText(turnState.expectedRole) || normalizeScalarText(turnState.expectedRole) === currentName || normalizeScalarText(turnState.expectedRole) === normalizeScalarText(parsed.name))
   ) {
     setRuntimeTurnState(state, world, {
-      expectedRole: displayName,
+      expectedRole: normalizeScalarText(nextPlayer.name || displayName) || displayName,
     });
   }
   return nextPlayer;
 }
 
+// 切回玩家可发言状态。
 export function allowPlayerTurn(state: JsonRecord, world: any, lastSpeakerRoleType = "", lastSpeaker = ""): RuntimeTurnState {
   const rolePair = rolePairForWorld(world);
   return setRuntimeTurnState(state, world, {
@@ -859,14 +976,17 @@ export function allowPlayerTurn(state: JsonRecord, world: any, lastSpeakerRoleTy
   });
 }
 
+// 判断当前是否轮到玩家发言。
 export function canPlayerSpeakNow(state: JsonRecord, world: any): boolean {
   return readRuntimeTurnState(state, world).canPlayerSpeak;
 }
 
+// 在角色列表里找第一个指定类型的角色。
 function findFirstRoleByType(roles: RuntimeStoryRole[], roleType: string): RuntimeStoryRole | undefined {
   return roles.find((item) => sanitizeRoleType(item.roleType) === sanitizeRoleType(roleType));
 }
 
+// 选择当前回合的回退发言角色。
 function resolveFallbackRole(roles: RuntimeStoryRole[], turnState: RuntimeTurnState, latestPlayerMessage: string): RuntimeStoryRole {
   const narrator = findFirstRoleByType(roles, "narrator");
   const npcs = roles.filter((item) => sanitizeRoleType(item.roleType) === "npc");
@@ -900,6 +1020,7 @@ function resolveFallbackRole(roles: RuntimeStoryRole[], turnState: RuntimeTurnSt
     || { id: "fallback_narrator", roleType: "narrator", name: "旁白" };
 }
 
+// 选择下一位回退接话的角色。
 function resolveNextFallbackRole(roles: RuntimeStoryRole[], currentRole: RuntimeStoryRole): RuntimeStoryRole {
   const narrator = findFirstRoleByType(roles, "narrator");
   const otherNpc = roles.find((item) => sanitizeRoleType(item.roleType) === "npc" && item.name !== currentRole.name);
@@ -909,6 +1030,7 @@ function resolveNextFallbackRole(roles: RuntimeStoryRole[], currentRole: Runtime
   return otherNpc || narrator || currentRole;
 }
 
+// 构造模型不可用时的兜底发言内容。
 function buildFallbackContent(role: RuntimeStoryRole, latestPlayerMessage: string, fallbackIsSkip: boolean): string {
   const roleName = normalizeScalarText(role.name) || "旁白";
   const roleType = sanitizeRoleType(role.roleType);
@@ -930,6 +1052,7 @@ function buildFallbackContent(role: RuntimeStoryRole, latestPlayerMessage: strin
   return "你的回应让场上的气氛发生了变化，剧情继续向前推进。";
 }
 
+// 拼接最近对话，作为编排/发言的上下文。
 function recentDialogueText(messages: RuntimeMessageInput[], maxCount = 12, maxChars = 0): string {
   return messages
     .slice(-Math.max(1, maxCount))
@@ -944,6 +1067,7 @@ function recentDialogueText(messages: RuntimeMessageInput[], maxCount = 12, maxC
     .slice(maxChars > 0 ? -maxChars : undefined);
 }
 
+// 组装编排师的系统提示词。
 function buildOrchestratorSystemPrompt(mainPrompt: string, orchestratorPrompt: string, compactMode = false): string {
   if (compactMode) {
     return [
@@ -987,6 +1111,7 @@ function buildOrchestratorSystemPrompt(mainPrompt: string, orchestratorPrompt: s
   ].filter(Boolean).join("\n\n");
 }
 
+// 组装角色发言器的系统提示词。
 function buildSpeakerSystemPrompt(mainPrompt: string, speakerPrompt: string, compactMode = false): string {
   if (compactMode) {
     return [
@@ -1017,6 +1142,7 @@ function buildSpeakerSystemPrompt(mainPrompt: string, speakerPrompt: string, com
   ].filter(Boolean).join("\n\n");
 }
 
+// 从数据库读取故事编排相关 prompt。
 async function loadStoryPrompts() {
   const rows = await u.db("t_prompts")
     .whereIn("code", ["story-main", "story-orchestrator", "story-speaker", "story-memory"])
@@ -1033,6 +1159,7 @@ async function loadStoryPrompts() {
   };
 }
 
+// 给不同阶段的模型配置生成中文标签。
 function stageModelLabel(key: string): string {
   if (key === "storyOrchestratorModel") return "编排师";
   if (key === "storySpeakerModel") return "角色发言";
@@ -1040,6 +1167,7 @@ function stageModelLabel(key: string): string {
   return key;
 }
 
+// 解析阶段模型配置，必要时回退到备用槽位。
 async function resolveTextStageModel(userId: number, primaryKey: string, fallbackKey?: string) {
   const primary = await u.getPromptAi(primaryKey, userId);
   if (normalizeScalarText((primary as Record<string, unknown> | null)?.manufacturer)) {
@@ -1054,6 +1182,7 @@ async function resolveTextStageModel(userId: number, primaryKey: string, fallbac
   throw new Error(`${stageModelLabel(primaryKey)}对接的模型未配置，请在设置中单独绑定`);
 }
 
+// 调用模型生成当前角色的具体台词或旁白正文。
 export async function runStorySpeakerContent(input: {
   userId: number;
   world: any;
@@ -1136,6 +1265,7 @@ export async function runStorySpeakerContent(input: {
   }
 }
 
+// 把模型返回的状态增量应用到运行时状态。
 function applyStateDelta(state: JsonRecord, delta: JsonRecord) {
   if (!delta || typeof delta !== "object" || Array.isArray(delta)) return;
   Object.entries(delta).forEach(([key, value]) => {
@@ -1143,7 +1273,20 @@ function applyStateDelta(state: JsonRecord, delta: JsonRecord) {
   });
 }
 
+// 调用编排模型，决定本轮谁说话、为什么说、以及是否轮到玩家。
 export async function runNarrativePlan(input: OrchestratorInput): Promise<NarrativePlanResult> {
+  const start = Date.now();
+  try {
+    const result = await doRunNarrativePlan(input);
+    return result;
+  } finally {
+    const cost = Date.now() - start;
+    console.log(`[runNarrativePlan] 耗时: ${cost}ms`);
+  }
+}
+
+// 调用编排模型，决定本轮谁说话、为什么说、以及是否轮到玩家。
+async function doRunNarrativePlan(input: OrchestratorInput): Promise<NarrativePlanResult> {
   const prompts = await loadStoryPrompts();
   const roles = runtimeStoryRoles(input.world, input.state);
   const promptAiConfig = await resolveTextStageModel(input.userId, "storyOrchestratorModel");
@@ -1179,6 +1322,14 @@ export async function runNarrativePlan(input: OrchestratorInput): Promise<Narrat
   const isSkip = payload.latestPlayerMessage === ".";
 
   try {
+    const userPrompt = buildOrchestratorUserPrompt(payload, compactMode);
+    console.log("[orchestrator] userPrompt.length=", userPrompt.length);
+    console.log("[orchestrator] roles=", payload.roles.length);
+    console.log("[orchestrator] recentDialogue.length=", payload.recentDialogue.length);
+    console.log("[orchestrator] chapterDirective.length=", payload.chapterDirective.length);
+    console.log("[orchestrator] chapterUserTurns.length=", payload.chapterUserTurns.length);
+    console.log("[orchestrator] storyState.length=", payload.storyState.length);
+    // 发送请求 进行编排
     const result = await u.ai.text.invoke(
       {
         plainTextOutput: true,
@@ -1189,7 +1340,7 @@ export async function runNarrativePlan(input: OrchestratorInput): Promise<Narrat
           },
           {
             role: "user",
-            content: buildOrchestratorUserPrompt(payload),
+            content: userPrompt,
           },
         ],
         maxRetries: input.maxRetries ?? 0,
@@ -1329,7 +1480,9 @@ export async function runNarrativePlan(input: OrchestratorInput): Promise<Narrat
   }
 }
 
+// 先编排再补正文，得到完整的一轮剧情结果。
 export async function runNarrativeOrchestrator(input: OrchestratorInput): Promise<OrchestratorResult> {
+  // 调用编排函数
   const plan = await runNarrativePlan(input);
   if (!plan.role || sanitizeRoleType(plan.roleType) === "player" || !plan.motive) {
     return {
@@ -1360,6 +1513,7 @@ export async function runNarrativeOrchestrator(input: OrchestratorInput): Promis
   };
 }
 
+// 调用记忆管理模型，压缩对后续剧情有用的信息。
 export async function runStoryMemoryManager(input: {
   userId: number;
   world: any;
@@ -1430,12 +1584,14 @@ export async function runStoryMemoryManager(input: {
   }
 }
 
+// 把记忆管理结果写回运行时 state。
 export function applyMemoryResultToState(state: JsonRecord, memory: MemoryManagerResult) {
   state.memorySummary = memory.summary;
   state.memoryFacts = memory.facts;
   state.memoryTags = memory.tags;
 }
 
+// 将完整编排结果压缩成前端和日志都好读的摘要。
 export function summarizeNarrativePlan(result: OrchestratorResult | null | undefined): NarrativePlanSummary | null {
   if (!result) return null;
   return {
@@ -1461,6 +1617,7 @@ export function summarizeNarrativePlan(result: OrchestratorResult | null | undef
   };
 }
 
+// 合并编排师返回的记忆提示词到当前 state。
 export function applyNarrativeMemoryHintsToState(state: JsonRecord, hints: unknown[]): string[] {
   const nextHints = uniqueTextList(Array.isArray(hints) ? hints : [], 8);
   if (!nextHints.length) return [];
@@ -1478,6 +1635,7 @@ export function applyNarrativeMemoryHintsToState(state: JsonRecord, hints: unkno
   return mergedFacts;
 }
 
+// 尝试刷新记忆，失败则静默降级，不影响主剧情。
 export async function refreshStoryMemoryBestEffort(input: {
   userId: number;
   world: any;
@@ -1511,6 +1669,7 @@ export async function refreshStoryMemoryBestEffort(input: {
   }
 }
 
+// 后台触发记忆刷新，不阻塞当前回合返回。
 export function triggerStoryMemoryRefreshInBackground(input: {
   userId: number;
   world: any;
@@ -1540,10 +1699,12 @@ export function triggerStoryMemoryRefreshInBackground(input: {
   })();
 }
 
+// 把编排结果里的状态增量应用到运行时 state。
 export function applyOrchestratorResultToState(state: JsonRecord, result: NarrativePlanResult | OrchestratorResult) {
   applyStateDelta(state, result.stateDelta);
 }
 
+// 自动连续推进剧情，直到轮到玩家发言或章节结束。
 export async function advanceNarrativeUntilPlayerTurn(input: OrchestratorInput & {
   initialResult: OrchestratorResult;
   maxAutoTurns?: number;
@@ -1630,6 +1791,7 @@ export async function advanceNarrativeUntilPlayerTurn(input: OrchestratorInput &
   };
 }
 
+// 比较调试章节条件里的左右值。
 function compareDebugValue(left: unknown, right: unknown, op: string): boolean {
   if (op === "equals" || op === "eq") return String(left ?? "").trim().toLowerCase() === String(right ?? "").trim().toLowerCase();
   if (op === "contains") return String(left ?? "").toLowerCase().includes(String(right ?? "").toLowerCase());
@@ -1653,6 +1815,7 @@ function compareDebugValue(left: unknown, right: unknown, op: string): boolean {
   return false;
 }
 
+// 递归求值调试章节里的条件树。
 function evaluateDebugConditionNode(
   input: unknown,
   ctx: {
@@ -1696,6 +1859,7 @@ function evaluateDebugConditionNode(
   return compareDebugValue(target, value, op);
 }
 
+// 判断章节是否配置了有效的完成条件。
 function hasEffectiveCondition(input: unknown): boolean {
   if (input === null || input === undefined) return false;
   if (typeof input === "string") return input.trim().length > 0;
@@ -1704,6 +1868,7 @@ function hasEffectiveCondition(input: unknown): boolean {
   return true;
 }
 
+// 从调试条件中提取成功或失败结果。
 function extractDebugOutcome(input: unknown): "success" | "failed" {
   if (!input || typeof input !== "object" || Array.isArray(input)) return "success";
   const raw = String(
@@ -1716,6 +1881,7 @@ function extractDebugOutcome(input: unknown): "success" | "failed" {
   return ["failed", "fail", "failure", "lose", "dead"].includes(raw) ? "failed" : "success";
 }
 
+// 从调试条件中提取下一章节 ID。
 function extractDebugNextChapterId(input: unknown): number | null {
   if (!input || typeof input !== "object" || Array.isArray(input)) return null;
   const raw = (input as Record<string, unknown>).nextChapterId ?? (input as Record<string, unknown>).nextChapter;
@@ -1723,6 +1889,7 @@ function extractDebugNextChapterId(input: unknown): number | null {
   return Number.isFinite(id) && id > 0 ? id : null;
 }
 
+// 判断调试章节当前是否满足成功/失败条件。
 export function evaluateDebugChapterOutcome(
   chapter: any,
   latestMessage: string,

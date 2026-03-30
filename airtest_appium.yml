@@ -53,3 +53,4 @@ device:
   type: Virtual
   name: Pixel 8 Pro
   dba: windows
+  exsample: "Ran cmd.exe /c adb -s emulator-5554 shell dumpsys window | rg -i \"mCurrentFocus|mFocusedApp\""

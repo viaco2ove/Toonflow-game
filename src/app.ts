@@ -12,6 +12,7 @@ import jwt from "jsonwebtoken";
 import { getUploadRootDir } from "@/lib/runtimePaths";
 import { runWithRequestContext } from "@/lib/requestContext";
 import { enforceResourceIsolation } from "@/middleware/resourceIsolation";
+import { startSessionMemoryWorker, stopSessionMemoryWorker } from "@/modules/game-runtime/services/SessionMemoryWorker";
 import { syncBundledVoicePresetSeeds } from "@/lib/voicePresetSeeds";
 
 function ensureNoProxyForLocalhost() {
@@ -63,6 +64,7 @@ export default async function startServe(randomPort: Boolean = false) {
   if (syncedVoicePresetSeeds > 0) {
     console.log(`[voice] synced bundled preset seeds: ${syncedVoicePresetSeeds}`);
   }
+  startSessionMemoryWorker();
 
   app.use(express.static(rootDir));
 
@@ -142,6 +144,7 @@ export function closeServe(): Promise<void> {
     if (server) {
       server.close((err?: Error) => {
         if (err) return reject(err);
+        stopSessionMemoryWorker();
         console.log("[server] closed");
         resolve();
       });

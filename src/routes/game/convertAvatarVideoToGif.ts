@@ -164,42 +164,82 @@ export default router.post(
         const inputExt = inferVideoExtension(base64Data, String(fileName || ""));
         const inputPath = path.join(tempDir, `input.${inputExt}`);
         const palettePath = path.join(tempDir, "palette.png");
+        const webpPath = path.join(tempDir, "avatar.webp");
         const gifPath = path.join(tempDir, "avatar.gif");
         const backgroundPath = path.join(tempDir, "background.png");
         await fs.writeFile(inputPath, extractBase64(base64Data));
 
-        const cropGif = `fps=${GIF_FPS},scale=${AVATAR_GIF_SIDE}:${AVATAR_GIF_SIDE}:force_original_aspect_ratio=increase,crop=${AVATAR_GIF_SIDE}:${AVATAR_GIF_SIDE}`;
-        const cropBg = `scale=${AVATAR_BG_SIDE}:${AVATAR_BG_SIDE}:force_original_aspect_ratio=increase,crop=${AVATAR_BG_SIDE}:${AVATAR_BG_SIDE}`;
+        // GIF 本身只有有限色彩，先做高质量缩放并显式转成 RGB，再生成调色板，能明显减少偏色和色块。
+        const cropGif = `fps=${GIF_FPS},scale=${AVATAR_GIF_SIDE}:${AVATAR_GIF_SIDE}:force_original_aspect_ratio=increase:flags=lanczos,crop=${AVATAR_GIF_SIDE}:${AVATAR_GIF_SIDE},format=rgb24`;
+        const cropBg = `scale=${AVATAR_BG_SIDE}:${AVATAR_BG_SIDE}:force_original_aspect_ratio=increase:flags=lanczos,crop=${AVATAR_BG_SIDE}:${AVATAR_BG_SIDE}`;
+        const cropWebp = `fps=${GIF_FPS},scale=${AVATAR_GIF_SIDE}:${AVATAR_GIF_SIDE}:force_original_aspect_ratio=increase:flags=lanczos,crop=${AVATAR_GIF_SIDE}:${AVATAR_GIF_SIDE},format=rgba`;
 
-        await runFfmpeg(ffmpegPath, [
-          "-y",
-          "-ss",
-          "0",
-          "-t",
-          String(MAX_GIF_DURATION_SECONDS),
-          "-i",
-          inputPath,
-          "-vf",
-          `${cropGif},palettegen=max_colors=128:stats_mode=diff`,
-          palettePath,
-        ]);
+        let animatedPath = "";
+        let animatedExt = "";
+        try {
+          await runFfmpeg(ffmpegPath, [
+            "-y",
+            "-ss",
+            "0",
+            "-t",
+            String(MAX_GIF_DURATION_SECONDS),
+            "-i",
+            inputPath,
+            "-vf",
+            cropWebp,
+            "-c:v",
+            "libwebp",
+            "-lossless",
+            "0",
+            "-q:v",
+            "80",
+            "-compression_level",
+            "6",
+            "-preset",
+            "picture",
+            "-loop",
+            "0",
+            "-an",
+            webpPath,
+          ]);
+          animatedPath = webpPath;
+          animatedExt = "webp";
+        } catch (webpErr) {
+          console.warn("[convertAvatarVideoToGif] webp encode failed, fallback to gif", {
+            message: (webpErr as any)?.message || String(webpErr),
+          });
+          await runFfmpeg(ffmpegPath, [
+            "-y",
+            "-ss",
+            "0",
+            "-t",
+            String(MAX_GIF_DURATION_SECONDS),
+            "-i",
+            inputPath,
+            "-vf",
+            `${cropGif},palettegen=max_colors=256:stats_mode=full`,
+            palettePath,
+          ]);
 
-        await runFfmpeg(ffmpegPath, [
-          "-y",
-          "-ss",
-          "0",
-          "-t",
-          String(MAX_GIF_DURATION_SECONDS),
-          "-i",
-          inputPath,
-          "-i",
-          palettePath,
-          "-lavfi",
-          `${cropGif}[x];[x][1:v]paletteuse=dither=bayer:bayer_scale=5`,
-          "-loop",
-          "0",
-          gifPath,
-        ]);
+          await runFfmpeg(ffmpegPath, [
+            "-y",
+            "-ss",
+            "0",
+            "-t",
+            String(MAX_GIF_DURATION_SECONDS),
+            "-i",
+            inputPath,
+            "-i",
+            palettePath,
+            "-lavfi",
+            `${cropGif}[x];[x][1:v]paletteuse=dither=sierra2_4a:diff_mode=rectangle`,
+            "-loop",
+            "0",
+            gifPath,
+          ]);
+          animatedPath = gifPath;
+          animatedExt = "gif";
+        }
 
         await runFfmpeg(ffmpegPath, [
           "-y",
@@ -215,12 +255,12 @@ export default router.post(
         ]);
 
         const [gifBuffer, bgBuffer] = await Promise.all([
-          fs.readFile(gifPath),
+          fs.readFile(animatedPath || gifPath),
           fs.readFile(backgroundPath),
         ]);
 
         const basePath = roleMediaBasePath(userId, normalizedProjectId);
-        const foregroundFilePath = `${basePath}/${uuidv4()}.gif`;
+        const foregroundFilePath = `${basePath}/${uuidv4()}.${animatedExt || "gif"}`;
         const backgroundFilePath = `${basePath}/${uuidv4()}.png`;
         await Promise.all([
           u.oss.writeFile(foregroundFilePath, gifBuffer),
@@ -236,6 +276,7 @@ export default router.post(
           foregroundFilePath,
           backgroundPath: backgroundUrl,
           backgroundFilePath,
+          foregroundExt: animatedExt || "gif",
         }));
       } finally {
         await fs.rm(tempDir, { recursive: true, force: true }).catch(() => undefined);

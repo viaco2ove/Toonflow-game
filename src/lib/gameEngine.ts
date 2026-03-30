@@ -339,6 +339,34 @@ function normalizeStoryRole(roleRaw: unknown, defaults: JsonRecord): JsonRecord 
   return normalized;
 }
 
+function hasUsableParameterCard(input: unknown): boolean {
+  if (!isRecord(input)) return false;
+  return Object.values(input).some((value) => {
+    if (Array.isArray(value)) return value.length > 0;
+    if (typeof value === "number") return Number.isFinite(value);
+    return !isNullLikeText(normalizeEditorText(value));
+  });
+}
+
+function mergeRuntimeRoleWithStoryRole(storyRole: JsonRecord, runtimeRoleRaw: unknown, fallbackName?: string): JsonRecord {
+  const runtimeRole = parseJsonSafe<JsonRecord>(runtimeRoleRaw, {});
+  const runtimeAttributes = parseJsonSafe<JsonRecord>(runtimeRole.attributes, {});
+  const merged: JsonRecord = {
+    ...storyRole,
+    ...runtimeRole,
+    name: normalizeEditorText(runtimeRole.name) || normalizeEditorText(storyRole.name) || fallbackName || "",
+    roleType: normalizeEditorText(runtimeRole.roleType) || normalizeEditorText(storyRole.roleType),
+    attributes: {
+      ...parseJsonSafe<JsonRecord>(storyRole.attributes, {}),
+      ...runtimeAttributes,
+    },
+  };
+  merged.parameterCardJson = hasUsableParameterCard(runtimeRole.parameterCardJson)
+    ? runtimeRole.parameterCardJson
+    : (hasUsableParameterCard(storyRole.parameterCardJson) ? storyRole.parameterCardJson : null);
+  return merged;
+}
+
 function normalizeSettingsRoles(input: unknown): JsonRecord[] {
   if (!Array.isArray(input)) return [];
   return input
@@ -383,7 +411,7 @@ function normalizeRuntimeNpcMap(rawNpcs: unknown, npcRolesRaw: unknown): JsonRec
 
   defaults.forEach((role) => {
     const runtimeOverlay = findNpcRuntimeOverlay(source, role);
-    const normalizedRole = normalizeStoryRole(runtimeOverlay, role);
+    const normalizedRole = mergeRuntimeRoleWithStoryRole(role, runtimeOverlay, String(role.name || role.id || ""));
     const roleId = String(normalizedRole.id || role.id || normalizedRole.name || "").trim();
     if (!roleId) return;
     normalized[roleId] = normalizedRole;
@@ -400,7 +428,8 @@ function normalizeRuntimeNpcMap(rawNpcs: unknown, npcRolesRaw: unknown): JsonRec
       description: String(value.description || "").trim(),
       attributes: {},
     };
-    const normalizedRole = normalizeStoryRole(value, fallbackDefaults);
+    const normalizedFallback = normalizeStoryRole(value, fallbackDefaults);
+    const normalizedRole = mergeRuntimeRoleWithStoryRole(normalizedFallback, value, String(fallbackDefaults.name || key || ""));
     const roleId = String(normalizedRole.id || key || normalizedRole.name || "").trim();
     if (!roleId) return;
     normalized[roleId] = normalizedRole;
@@ -433,7 +462,9 @@ export function normalizeSessionState(
     coverPath: world.coverPath,
     publishStatus: world.publishStatus,
   });
-  const normalizedPlayerName = String(rolePair.playerRole.name || "用户").trim() || "用户";
+  const mergedPlayer = mergeRuntimeRoleWithStoryRole(rolePair.playerRole, player, "用户");
+  const mergedNarrator = mergeRuntimeRoleWithStoryRole(rolePair.narratorRole, narrator, "旁白");
+  const normalizedPlayerName = String(mergedPlayer.name || rolePair.playerRole.name || "用户").trim() || "用户";
   const expectedRoleType = String(rawTurnState.expectedRoleType || "player").trim() || "player";
 
   return {
@@ -443,23 +474,14 @@ export function normalizeSessionState(
     round: Number.isFinite(Number(base.round)) ? Number(base.round) : 0,
     ...base,
     player: {
-      ...rolePair.playerRole,
-      ...player,
+      ...mergedPlayer,
       roleType: "player",
       name: normalizedPlayerName,
-      attributes: {
-        ...parseJsonSafe<JsonRecord>(rolePair.playerRole.attributes, {}),
-        ...parseJsonSafe<JsonRecord>(player.attributes, {}),
-      },
     },
     narrator: {
-      ...rolePair.narratorRole,
-      ...narrator,
+      ...mergedNarrator,
       roleType: "narrator",
-      attributes: {
-        ...parseJsonSafe<JsonRecord>(rolePair.narratorRole.attributes, {}),
-        ...parseJsonSafe<JsonRecord>(narrator.attributes, {}),
-      },
+      name: String(mergedNarrator.name || rolePair.narratorRole.name || "旁白").trim() || "旁白",
     },
     flags: isRecord(base.flags) ? base.flags : {},
     vars: isRecord(base.vars) ? base.vars : {},

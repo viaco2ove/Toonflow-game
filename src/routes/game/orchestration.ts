@@ -39,6 +39,7 @@ import u from "@/utils";
 
 const router = express.Router();
 
+// 把编排器/兜底返回统一收口成前端稳定可消费的计划结构。
 function buildPlanResult(plan: ({
   role: string;
   roleType: string;
@@ -72,6 +73,7 @@ function buildPlanResult(plan: ({
   };
 }
 
+// 调试态不落库，前端每轮都回传 state，这里把快照重新缓存并回填给客户端。
 function buildOrchestrationPayload(params: {
   userId: number;
   worldId: number;
@@ -94,6 +96,7 @@ function buildOrchestrationPayload(params: {
   };
 }
 
+// 对固定消息（开场白、失败提示、小游戏返回等）套一层与 AI 编排相同的 plan 外形。
 function buildPresetPlan(message: {
   role?: unknown;
   roleType?: unknown;
@@ -205,6 +208,7 @@ export default router.post(
         role?: string;
         roleType?: string;
       }) {
+        // 调试编排也复用正式会话的 turn-state 规则，保证“该轮到谁说”在前后端一致。
         const shouldYieldToPlayer = Boolean(plan.awaitUser) || String(plan.nextRoleType || "").trim().toLowerCase() === "player";
         if (shouldYieldToPlayer) {
           allowPlayerTurn(state, world, String(plan.roleType || "narrator"), String(plan.role || rolePair.narratorRole.name || "旁白"));
@@ -229,6 +233,7 @@ export default router.post(
           lastSpeakerRoleType: String(openingMessage.roleType || "narrator"),
           lastSpeaker: String(openingMessage.role || rolePair.narratorRole.name || "旁白"),
         });
+        // 有显式章节开场词时，先把这一句完整返回给前端；没有时再直接跑一次编排器。
         if (String(openingMessage.content || "").trim()) {
           return {
             chapterId: Number(targetChapter.id || 0),
@@ -250,6 +255,7 @@ export default router.post(
           }
           : targetChapter;
         effectiveChapter = targetEffectiveChapter;
+        // 调用大模型进行编排
         const targetPlan = await runNarrativePlan({
           userId,
           world,
@@ -259,6 +265,10 @@ export default router.post(
           playerMessage: "",
           maxRetries: 0,
         });
+        const cost = Date.now() - start;
+        console.log(
+          `[runNarrativePlan] userId=${input.userId} chapter=${input.chapter?.id} 耗时=${cost}ms`
+        );
         applyOrchestratorResultToState(state, targetPlan);
         applyNarrativeMemoryHintsToState(state, targetPlan.memoryHints);
         if (targetPlan.triggerMemoryAgent) {
@@ -281,6 +291,7 @@ export default router.post(
       if (!playerContent) {
         const pendingChapterId = getPendingDebugChapterId(state);
         if (pendingChapterId) {
+          // 上一轮已经宣告章节完成，但前端还没请求下一轮时，用 pending 标记串起新章节开场。
           const nextChapter = normalizeChapterOutput(await db("t_storyChapter").where({ id: pendingChapterId, worldId }).first());
           setPendingDebugChapterId(state, null);
           if (!nextChapter) {
@@ -308,6 +319,7 @@ export default router.post(
         }
 
         if (!messages.length) {
+          // 首次进入调试页时没有历史消息，直接生成当前章节开场。
           const chapterStart = await buildChapterStartPlan(chapter);
           return res.status(200).send(success(buildOrchestrationPayload({
             userId,
@@ -422,7 +434,7 @@ export default router.post(
           })));
         }
 
-      applyPlanTurnState(plan);
+        applyPlanTurnState(plan);
         return res.status(200).send(success(buildOrchestrationPayload({
           userId,
           worldId,
@@ -448,6 +460,7 @@ export default router.post(
         mode: "debug",
       });
       if (miniGameResult?.intercepted) {
+        // 小游戏命中了自己的状态机时，剧情编排本轮直接让位给小游戏结果。
         const presetMessage = miniGameResult.message
           ? {
             role: miniGameResult.message.role,
@@ -473,6 +486,7 @@ export default router.post(
         })));
       }
 
+      // 调试模式允许先走显式章节完成判定，再决定是否进入下一章或自由剧情。
       const outcome = debugFreePlotActive ? { result: "continue" as const, nextChapterId: null } : evaluateDebugChapterOutcome(chapter, playerContent, recentMessages);
       if (outcome.result === "failed") {
         const message = {
@@ -501,6 +515,7 @@ export default router.post(
       if (outcome.result === "success") {
         const nextChapter = normalizeChapterOutput(await resolveNextChapter(db, worldId, chapter, outcome.nextChapterId));
         if (!nextChapter) {
+          // 没有下一章时，调试态自动转入自由剧情，方便继续压编排与角色发言。
           (state as any).debugFreePlot = {
             active: true,
             fromChapterId: Number(chapter.id || 0),

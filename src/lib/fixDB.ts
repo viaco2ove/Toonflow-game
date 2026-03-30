@@ -15,6 +15,9 @@ export default async (knex: Knex): Promise<void> => {
     { manufacturer: "volcengine", model: "doubao-seed-1-6-lite-251015", responseFormat: "object", image: 1, think: 1, tool: 1 },
     { manufacturer: "volcengine", model: "doubao-seed-1-6-flash-250828", responseFormat: "object", image: 1, think: 1, tool: 1 },
   ];
+  const lmstudioTextModels = [
+    { manufacturer: "lmstudio", model: "qwen3.5-9b", responseFormat: "schema", image: 0, think: 0, tool: 1 },
+  ];
 
   const ensureTable = async (table: string, builder: (table: Knex.CreateTableBuilder) => void) => {
     if (!(await knex.schema.hasTable(table))) {
@@ -505,6 +508,7 @@ export default async (knex: Knex): Promise<void> => {
       { manufacturer: "t8star", model: "gemini-2.5-pro", responseFormat: "object", image: 1, think: 1, tool: 1 },
     ];
 
+    await upsertTextModels(lmstudioTextModels);
     await upsertTextModels(volcengineTextModels);
     await upsertTextModels(t8starTextModels);
   }

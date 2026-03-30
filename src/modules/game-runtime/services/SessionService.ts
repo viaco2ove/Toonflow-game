@@ -8,6 +8,7 @@ import {
   parseJsonSafe,
   toJsonText,
 } from "@/lib/gameEngine";
+import { ensureWorldRolesWithAiParameterCards } from "@/lib/roleParameterCard";
 import { getCurrentUserId } from "@/lib/requestContext";
 import {
   applyMemoryResultToState,
@@ -147,7 +148,7 @@ function buildSessionRuntimeMeta(state: Record<string, any>, lineIndex: number) 
 async function countSessionMessages(db: any, sessionId: string): Promise<number> {
   const row = await db("t_sessionMessage")
     .where({ sessionId })
-    .count<{ count?: number | string }>({ count: "*" })
+    .count({ count: "*" })
     .first();
   const raw = Array.isArray(row) ? row[0]?.count : row?.count;
   const count = Number(raw || 0);
@@ -178,7 +179,10 @@ async function insertSessionNarrativeMessages(params: {
     });
     const insertedId = normalizeMessageId(inserted);
     const row = await params.db("t_sessionMessage").where({ id: insertedId }).first();
-    insertedRows.push(normalizeMessageOutput(row));
+    const normalizedRow = row ? normalizeMessageOutput(row) : null;
+    if (normalizedRow) {
+      insertedRows.push(normalizedRow);
+    }
   }
   return insertedRows;
 }
@@ -223,6 +227,22 @@ function scheduleSessionMemoryRefresh(params: {
   });
 }
 
+async function loadSessionWorldWithEnsuredRoles(db: any, worldId: number, currentUserId: number) {
+  let world = await db("t_storyWorld as w")
+    .leftJoin("t_project as p", "w.projectId", "p.id")
+    .where("w.id", worldId)
+    .select("w.*", "p.userId as ownerUserId")
+    .first();
+  if (!world) return null;
+  const ownerUserId = Number(world.ownerUserId || 0);
+  world = await ensureWorldRolesWithAiParameterCards({
+    userId: ownerUserId > 0 ? ownerUserId : currentUserId,
+    world,
+    persist: ownerUserId > 0 && ownerUserId === currentUserId,
+  });
+  return world;
+}
+
 export async function addSessionMessage(input: AddSessionMessageInput): Promise<AddSessionMessageResult> {
   const db = getGameDb();
   const now = nowTs();
@@ -240,7 +260,7 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
     throw new SessionServiceError(403, "无权访问该会话");
   }
 
-  const world = await db("t_storyWorld").where({ id: Number(sessionRow.worldId || 0) }).first();
+  const world = await loadSessionWorldWithEnsuredRoles(db, Number(sessionRow.worldId || 0), currentUserId);
   const rolePair = normalizeRolePair(world?.playerRole, world?.narratorRole);
   const prevChapterId = Number(sessionRow.chapterId || 0) || null;
   const prevStatus = String(sessionRow.status || "active");
@@ -372,8 +392,8 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
         state,
         message: normalizeMessageOutput(messageRow),
         chapterSwitchMessage: null,
-        narrativeMessage: normalizeMessageOutput(narrativeMessageRow),
-        generatedMessages: narrativeMessageRow ? [normalizeMessageOutput(narrativeMessageRow)] : [],
+        narrativeMessage: narrativeMessageRow ? normalizeMessageOutput(narrativeMessageRow) : null,
+        generatedMessages: narrativeMessageRow ? [normalizeMessageOutput(narrativeMessageRow)].filter(Boolean) as Record<string, any>[] : [],
         narrativePlan: null,
         triggered: [],
         taskProgress: [],
@@ -622,7 +642,7 @@ export async function continueSessionNarrative(sessionIdInput: string): Promise<
 
   const prevChapterId = Number(sessionRow.chapterId || 0) || null;
   const prevStatus = String(sessionRow.status || "active");
-  const world = await db("t_storyWorld").where({ id: Number(sessionRow.worldId || 0) }).first();
+  const world = await loadSessionWorldWithEnsuredRoles(db, Number(sessionRow.worldId || 0), currentUserId);
   const rolePair = normalizeRolePair(world?.playerRole, world?.narratorRole);
   const state = normalizeSessionState(
     sessionRow.stateJson,

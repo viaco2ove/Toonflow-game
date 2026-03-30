@@ -10,6 +10,7 @@ import {
   normalizeMessageOutput,
   normalizeWorldOutput,
 } from "@/lib/gameEngine";
+import { ensureWorldRolesWithAiParameterCards } from "@/lib/roleParameterCard";
 import u from "@/utils";
 
 const router = express.Router();
@@ -35,7 +36,19 @@ export default router.post(
         return res.status(404).send(error("会话不存在"));
       }
 
-      const world = await db("t_storyWorld").where({ id: Number(row.worldId || 0) }).first();
+      let world = await db("t_storyWorld as w")
+        .leftJoin("t_project as p", "w.projectId", "p.id")
+        .where("w.id", Number(row.worldId || 0))
+        .select("w.*", "p.userId as ownerUserId")
+        .first();
+      const ownerUserId = Number(world?.ownerUserId || 0);
+      if (world) {
+        world = await ensureWorldRolesWithAiParameterCards({
+          userId: ownerUserId > 0 ? ownerUserId : currentUserId,
+          world,
+          persist: ownerUserId > 0 && ownerUserId === currentUserId,
+        });
+      }
       const rolePair = normalizeRolePair(world?.playerRole, world?.narratorRole);
       const provisionalChapterId = Number(row.chapterId || 0) || null;
       const state = normalizeSessionState(

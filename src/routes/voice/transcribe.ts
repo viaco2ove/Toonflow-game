@@ -28,11 +28,19 @@ function normalizeBaseUrl(input: string | null | undefined): string {
 }
 
 function normalizeAliyunCompatibleBaseUrl(input: string | null | undefined): string {
-  const base = normalizeBaseUrl(input);
-  if (/\/compatible-mode$/i.test(base)) {
+  const base = normalizeBaseUrl(input)
+    .replace(/\/chat\/completions$/i, "")
+    .replace(/\/+$/, "");
+  if (/\/compatible-mode\/v1$/i.test(base)) {
     return base;
   }
-  return `${base}/compatible-mode`;
+  if (/\/compatible-mode$/i.test(base)) {
+    return `${base}/v1`;
+  }
+  if (/\/v1$/i.test(base) && /compatible-mode/i.test(base)) {
+    return base;
+  }
+  return `${base.replace(/\/v1$/i, "")}/compatible-mode/v1`;
 }
 
 function isAliyunCompatibleChatAsrModel(input: string | null | undefined): boolean {
@@ -372,7 +380,7 @@ export default router.post(
 
       const compatibleBaseUrl = normalizeAliyunCompatibleBaseUrl(config.baseUrl);
       const endpointCandidates = directAliyun
-        ? [`${compatibleBaseUrl}/v1/chat/completions`]
+        ? [`${compatibleBaseUrl}/chat/completions`]
         : [`${baseUrl}/v1/asr`, `${baseUrl}/v1/audio/transcriptions`, `${baseUrl}/v1/asr/transcribe`, `${baseUrl}/v1/transcribe`];
 
       const errors: string[] = [];
@@ -383,14 +391,12 @@ export default router.post(
         try {
           if (endpoint.endsWith("/chat/completions")) {
             const audioDataUrl = `data:${audio.mime};base64,${audio.buffer.toString("base64")}`;
-            const instruction = [
-              "请将这段语音转写成简体中文文本。",
-              lang ? `目标语言：${String(lang)}` : "",
-              prompt ? `补充提示：${String(prompt)}` : "",
-              "只返回转写结果正文，不要补充解释。",
-            ]
-              .filter(Boolean)
-              .join("\n");
+            const asrOptions: Record<string, any> = {
+              enable_itn: false,
+            };
+            if (lang) {
+              asrOptions.language = String(lang);
+            }
 
             const response = await axios.post(
               endpoint,
@@ -404,16 +410,13 @@ export default router.post(
                         type: "input_audio",
                         input_audio: {
                           data: audioDataUrl,
-                          format: audio.ext,
                         },
-                      },
-                      {
-                        type: "text",
-                        text: instruction,
                       },
                     ],
                   },
                 ],
+                stream: false,
+                asr_options: asrOptions,
               },
               {
                 headers: {
