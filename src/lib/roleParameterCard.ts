@@ -1,0 +1,254 @@
+import u from "@/utils";
+
+type JsonRecord = Record<string, any>;
+
+function normalizeText(input: unknown): string {
+  const text = String(input ?? "").trim();
+  if (!text || text === "null" || text === "undefined") return "";
+  return text;
+}
+
+function asRecord(input: unknown): JsonRecord {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    return {};
+  }
+  return { ...(input as JsonRecord) };
+}
+
+function normalizeList(input: unknown): string[] {
+  if (Array.isArray(input)) {
+    return input.map((item) => normalizeText(item)).filter(Boolean).slice(0, 24);
+  }
+  return String(input || "")
+    .split(/\r?\n|[；;、,，]/)
+    .map((item) => normalizeText(item))
+    .filter(Boolean)
+    .slice(0, 24);
+}
+
+function unwrapModelText(input: unknown): string {
+  const text = normalizeText(input);
+  if (!text) return "";
+  return text
+    .replace(/^```(?:json)?/i, "")
+    .replace(/```$/i, "")
+    .trim();
+}
+
+function parseFieldMap(rawText: string): Record<string, string> {
+  const fields: Record<string, string> = {};
+  const lines = unwrapModelText(rawText)
+    .split(/\r?\n/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+  for (const line of lines) {
+    const match = line.match(/^([a-zA-Z0-9_]+)\s*[:：]\s*(.+)$/);
+    if (!match) continue;
+    fields[String(match[1] || "").trim().toLowerCase()] = String(match[2] || "").trim();
+  }
+  return fields;
+}
+
+function parseBestEffortJson(rawText: string): JsonRecord {
+  const text = unwrapModelText(rawText);
+  if (!text) return {};
+  try {
+    const parsed = JSON.parse(text);
+    return asRecord(parsed);
+  } catch {
+    return {};
+  }
+}
+
+function numberOrNull(input: unknown): number | null {
+  const text = normalizeText(input);
+  if (!text) return null;
+  const value = Number(text);
+  if (!Number.isFinite(value)) return null;
+  return Math.floor(value);
+}
+
+function normalizeParameterCard(input: unknown, fallback: {
+  name: string;
+  description: string;
+  voice: string;
+}): JsonRecord {
+  const source = asRecord(input);
+  const fieldMap = parseFieldMap(typeof input === "string" ? input : "");
+
+  const read = (...keys: string[]) => {
+    for (const key of keys) {
+      const value = normalizeText(source[key]);
+      if (value) return value;
+      const mapped = normalizeText(fieldMap[key.toLowerCase()]);
+      if (mapped) return mapped;
+    }
+    return "";
+  };
+
+  const age = numberOrNull(source.age ?? fieldMap["age"]);
+  const level = numberOrNull(source.level ?? fieldMap["level"]);
+  const hp = numberOrNull(source.hp ?? fieldMap["hp"]);
+  const mp = numberOrNull(source.mp ?? fieldMap["mp"]);
+  const money = numberOrNull(source.money ?? fieldMap["money"]);
+
+  return {
+    name: read("name") || fallback.name,
+    raw_setting: read("raw_setting", "rawSetting") || fallback.description,
+    gender: read("gender"),
+    age,
+    level: level ?? 1,
+    level_desc: read("level_desc", "levelDesc") || "初入此界",
+    personality: read("personality"),
+    appearance: read("appearance"),
+    voice: read("voice") || fallback.voice,
+    skills: normalizeList(source.skills ?? fieldMap["skills"]),
+    items: normalizeList(source.items ?? fieldMap["items"]),
+    equipment: normalizeList(source.equipment ?? fieldMap["equipment"]),
+    hp: hp ?? 100,
+    mp: mp ?? 0,
+    money: money ?? 0,
+    other: normalizeList(source.other ?? fieldMap["other"]),
+  };
+}
+
+async function resolveRoleCardModel(userId: number) {
+  const primary = await u.getPromptAi("storyMemoryModel", userId);
+  if (normalizeText((primary as JsonRecord)?.manufacturer)) {
+    return primary;
+  }
+  const fallback = await u.getPromptAi("storyOrchestratorModel", userId);
+  if (normalizeText((fallback as JsonRecord)?.manufacturer)) {
+    return fallback;
+  }
+  return {};
+}
+
+async function generateRoleParameterCardWithAi(input: {
+  userId: number;
+  worldName: string;
+  worldIntro: string;
+  role: JsonRecord;
+}): Promise<JsonRecord | null> {
+  const config = await resolveRoleCardModel(input.userId);
+  if (!normalizeText((config as JsonRecord)?.manufacturer)) {
+    return null;
+  }
+  const role = asRecord(input.role);
+  const roleName = normalizeText(role.name);
+  const roleDesc = normalizeText(role.description);
+  const roleVoice = normalizeText(role.voice);
+  const roleType = normalizeText(role.roleType) || "npc";
+  if (!roleName && !roleDesc) {
+    return null;
+  }
+
+  const systemPrompt = [
+    "你是故事角色参数卡生成器。",
+    "你的任务是根据角色设定，生成用于故事编辑保存的静态角色参数卡。",
+    "只输出 JSON，不要解释，不要代码块。",
+    "字段固定为：name, raw_setting, gender, age, level, level_desc, personality, appearance, voice, skills, items, equipment, hp, mp, money, other。",
+    "如果信息不足，字符串填空串，列表填空数组，数值用合理默认值。",
+    "这是静态设定卡，不要写剧情正文，不要写当前对话进度。",
+  ].join("\n");
+
+  const userPrompt = JSON.stringify(
+    {
+      world: {
+        name: input.worldName,
+        intro: input.worldIntro,
+      },
+      role: {
+        id: normalizeText(role.id),
+        name: roleName,
+        roleType,
+        description: roleDesc,
+        voice: roleVoice,
+        sample: normalizeText(role.sample),
+      },
+      outputRules: {
+        keepStaticOnly: true,
+        language: "zh-CN",
+      },
+    },
+    null,
+    2,
+  );
+
+  try {
+    const result = await u.ai.text.invoke(
+      {
+        plainTextOutput: true,
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userPrompt },
+        ],
+        maxRetries: 0,
+      },
+      config as any,
+    );
+    const rawText = unwrapModelText((result as any)?.text || "");
+    const parsed = parseBestEffortJson(rawText);
+    const card = normalizeParameterCard(Object.keys(parsed).length ? parsed : rawText, {
+      name: roleName,
+      description: roleDesc,
+      voice: roleVoice,
+    });
+    return card;
+  } catch (err) {
+    console.warn("[role:param-card] ai failed", {
+      role: roleName,
+      roleType,
+      manufacturer: (config as JsonRecord)?.manufacturer || "",
+      model: (config as JsonRecord)?.model || "",
+      message: (err as any)?.message || String(err),
+    });
+    return null;
+  }
+}
+
+async function enrichRole(userId: number, worldName: string, worldIntro: string, role: unknown): Promise<JsonRecord> {
+  const raw = asRecord(role);
+  if (!Object.keys(raw).length) return raw;
+  const generated = await generateRoleParameterCardWithAi({
+    userId,
+    worldName,
+    worldIntro,
+    role: raw,
+  });
+  if (!generated) return raw;
+  return {
+    ...raw,
+    parameterCardJson: generated,
+  };
+}
+
+export async function enrichWorldRolesWithAiParameterCards(input: {
+  userId: number;
+  worldName: string;
+  worldIntro: string;
+  playerRole: unknown;
+  narratorRole: unknown;
+  settings: unknown;
+}): Promise<{
+  playerRole: JsonRecord;
+  narratorRole: JsonRecord;
+  settings: JsonRecord;
+}> {
+  const rawSettings = asRecord(input.settings);
+  const rawRoles = Array.isArray(rawSettings.roles) ? rawSettings.roles : [];
+  const [playerRole, narratorRole, ...npcRoles] = await Promise.all([
+    enrichRole(input.userId, input.worldName, input.worldIntro, input.playerRole),
+    enrichRole(input.userId, input.worldName, input.worldIntro, input.narratorRole),
+    ...rawRoles.map((role) => enrichRole(input.userId, input.worldName, input.worldIntro, role)),
+  ]);
+
+  return {
+    playerRole,
+    narratorRole,
+    settings: {
+      ...rawSettings,
+      roles: npcRoles,
+    },
+  };
+}
