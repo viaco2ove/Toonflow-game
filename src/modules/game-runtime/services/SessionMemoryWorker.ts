@@ -7,7 +7,6 @@ import {
   parseJsonSafe,
   toJsonText,
 } from "@/lib/gameEngine";
-import { ensureWorldRolesWithAiParameterCards } from "@/lib/roleParameterCard";
 import { refreshStoryMemoryBestEffort } from "@/modules/game-runtime/engines/NarrativeOrchestrator";
 
 type JsonRecord = Record<string, any>;
@@ -43,15 +42,9 @@ async function loadWorldForSession(db: any, worldId: number, userId: number) {
     .select("w.*", "p.userId as ownerUserId")
     .first();
   if (!world) return null;
-  const ownerUserId = Number(world.ownerUserId || 0);
-  world = await ensureWorldRolesWithAiParameterCards({
-    userId: ownerUserId > 0 ? ownerUserId : userId,
-    world,
-    persist: ownerUserId > 0 && ownerUserId === userId,
-  });
   return {
     world,
-    ownerUserId,
+    ownerUserId: Number(world.ownerUserId || 0),
   };
 }
 

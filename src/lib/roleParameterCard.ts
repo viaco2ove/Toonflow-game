@@ -262,18 +262,28 @@ export async function enrichWorldRolesWithAiParameterCards(input: {
 }> {
   const rawSettings = asRecord(input.settings);
   const rawRoles = Array.isArray(rawSettings.roles) ? rawSettings.roles : [];
-  const [playerRole, narratorRole, ...npcRoles] = await Promise.all([
-    enrichRole(input.userId, input.worldName, input.worldIntro, input.playerRole),
-    enrichRole(input.userId, input.worldName, input.worldIntro, input.narratorRole),
-    ...rawRoles.map((role) => enrichRole(input.userId, input.worldName, input.worldIntro, role)),
-  ]);
+  const nextPlayerRole = hasUsableParameterCard(asRecord(input.playerRole)?.parameterCardJson)
+    ? asRecord(input.playerRole)
+    : await enrichRole(input.userId, input.worldName, input.worldIntro, input.playerRole);
+  const nextNarratorRole = hasUsableParameterCard(asRecord(input.narratorRole)?.parameterCardJson)
+    ? asRecord(input.narratorRole)
+    : await enrichRole(input.userId, input.worldName, input.worldIntro, input.narratorRole);
+  const nextNpcRoles = await Promise.all(
+    rawRoles.map((role) => {
+      const rawRole = asRecord(role);
+      if (hasUsableParameterCard(rawRole.parameterCardJson)) {
+        return rawRole;
+      }
+      return enrichRole(input.userId, input.worldName, input.worldIntro, rawRole);
+    }),
+  );
 
   return {
-    playerRole,
-    narratorRole,
+    playerRole: nextPlayerRole,
+    narratorRole: nextNarratorRole,
     settings: {
       ...rawSettings,
-      roles: npcRoles,
+      roles: nextNpcRoles,
     },
   };
 }

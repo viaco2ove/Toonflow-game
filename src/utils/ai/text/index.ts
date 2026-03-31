@@ -5,7 +5,6 @@ import { devToolsMiddleware } from "@ai-sdk/devtools";
 import { parse } from "best-effort-json-parser";
 import { getModelList, normalizeTextModelName } from "./modelList";
 import { z } from "zod";
-import { OpenAIProvider } from "@ai-sdk/openai";
 interface AIInput<T extends Record<string, z.ZodTypeAny> | undefined = undefined> {
   system?: string;
   tools?: Record<string, Tool>;
@@ -176,7 +175,13 @@ const buildOptions = async (input: AIInput<any>, config: AIConfig = {}) => {
     ? (outputBuilders[owned.responseFormat]?.(input.output) ?? null)
     : null;
   const chatModelManufacturer = ["volcengine", "doubao", "other", "openai", "modelScope", "grsai", "t8star", "lmstudio"];
-  const modelFn = chatModelManufacturer.includes(owned.manufacturer) ? (modelInstance as OpenAIProvider).chat(model!) : modelInstance(model!);
+  const modelFactory =
+    typeof (modelInstance as any).chatModel === "function"
+      ? (modelId: string) => (modelInstance as any).chatModel(modelId)
+      : typeof (modelInstance as any).chat === "function"
+        ? (modelId: string) => (modelInstance as any).chat(modelId)
+        : (modelId: string) => modelInstance(modelId);
+  const modelFn = chatModelManufacturer.includes(owned.manufacturer) ? modelFactory(model!) : modelInstance(model!);
 
   const outputKeys = input.output ? Object.keys(input.output) : [];
   const messageCount = Array.isArray(input.messages) ? input.messages.length : 0;

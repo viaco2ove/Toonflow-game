@@ -24,7 +24,11 @@ const instanceMap = {
   volcengine: createOpenAI,
   doubao: createOpenAI,
   openai: createOpenAI,
-  lmstudio: createOpenAICompatible,
+  lmstudio: (options: OpenAIProviderSettings) =>
+    createOpenAICompatible({
+      ...options,
+      supportsStructuredOutputs: true,
+    }),
   zhipu: createZhipu,
   qwen: createQwen,
   gemini: createGoogleGenerativeAI,
@@ -211,7 +215,11 @@ const modelList: Owned[] = [
     responseFormat: "schema",
     image: false,
     think: false,
-    instance: createOpenAICompatible,
+    instance: (options: OpenAIProviderSettings) =>
+      createOpenAICompatible({
+        ...options,
+        supportsStructuredOutputs: true,
+      }),
     tool: true,
   },
 
