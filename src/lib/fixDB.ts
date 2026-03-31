@@ -18,6 +18,16 @@ export default async (knex: Knex): Promise<void> => {
   const lmstudioTextModels = [
     { manufacturer: "lmstudio", model: "qwen3.5-9b", responseFormat: "schema", image: 0, think: 0, tool: 1 },
   ];
+  const autodlTextModels = [
+    { manufacturer: "autodl_chat", model: "DeepSeek-R1-0528", responseFormat: "object", image: 0, think: 1, tool: 1 },
+    { manufacturer: "autodl_chat", model: "GLM-5", responseFormat: "object", image: 0, think: 1, tool: 1 },
+    { manufacturer: "autodl_chat", model: "DeepSeek-V3.2", responseFormat: "object", image: 0, think: 1, tool: 1 },
+    { manufacturer: "autodl_chat", model: "MiniMax-M2.7", responseFormat: "object", image: 0, think: 1, tool: 1 },
+    { manufacturer: "autodl_chat", model: "MiniMax-M2.5", responseFormat: "object", image: 0, think: 1, tool: 1 },
+    { manufacturer: "autodl_chat", model: "Qwen3.5-397B-A17B", responseFormat: "object", image: 0, think: 1, tool: 1 },
+    { manufacturer: "autodl_chat", model: "Kimi-K2.5", responseFormat: "object", image: 0, think: 1, tool: 1 },
+    { manufacturer: "autodl_chat", model: "gpt-5.4", responseFormat: "object", image: 0, think: 1, tool: 1 },
+  ];
 
   const ensureTable = async (table: string, builder: (table: Knex.CreateTableBuilder) => void) => {
     if (!(await knex.schema.hasTable(table))) {

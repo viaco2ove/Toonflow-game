@@ -579,7 +579,7 @@ function normalizeConditionText(input: unknown): string {
 function isGenericPlayerName(input: unknown): boolean {
   const text = normalizeEditorText(input);
   if (!text) return true;
-  return ["用户", "玩家", "主角", "我", "本人"].includes(text);
+  return ["用户", "用户", "主角", "我", "本人"].includes(text);
 }
 
 function hasBoundPlayerIdentity(state: JsonRecord): boolean {

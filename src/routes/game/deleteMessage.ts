@@ -59,7 +59,7 @@ export default router.post(
         return res.status(409).send(error("当前只支持删除最后一条台词"));
       }
       if (String(targetMessage.roleType || "").trim() !== "player") {
-        return res.status(409).send(error("当前只支持删除最后一条玩家台词"));
+        return res.status(409).send(error("当前只支持删除最后一条用户台词"));
       }
 
       const previousMessage = await db("t_sessionMessage")

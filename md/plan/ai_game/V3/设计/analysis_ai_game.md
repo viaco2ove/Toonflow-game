@@ -84,7 +84,7 @@
 - `game_session`（一次游玩）
 - `session_message`（对话日志）
 - `session_state_snapshot`（关键帧存档）
-- `entity_state_delta`（角色/玩家属性变化）
+- `entity_state_delta`（角色/用户属性变化）
 
 策略：
 1. 聊天记录与状态变化分离存储，便于回放与回滚。

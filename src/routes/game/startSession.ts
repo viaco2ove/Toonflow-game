@@ -115,10 +115,17 @@ export default router.post(
       if (!isOwnerWorld && !isPublishedWorld(world)) {
         return res.status(403).send(error("无权开始该故事会话"));
       }
-      world = await ensureWorldRolesWithAiParameterCards({
+      // 角色参数卡的补齐改成后台进行，避免首次进入故事时被慢模型卡住。
+      void ensureWorldRolesWithAiParameterCards({
         userId: ownerUserId > 0 ? ownerUserId : currentUserId,
         world,
         persist: isOwnerWorld,
+      }).catch((err) => {
+        console.warn("[startSession] async role parameter card generation failed", {
+          worldId: Number(worldId || 0),
+          userId: currentUserId,
+          message: (err as any)?.message || String(err),
+        });
       });
 
       let chapter: any = null;

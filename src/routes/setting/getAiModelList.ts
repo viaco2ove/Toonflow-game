@@ -10,6 +10,7 @@ function normalizeManufacturerKey(input: unknown): string {
   const value = String(input || "").trim();
   if (!value) return "";
   if (value === "doubao") return "volcengine";
+  if (value === "autodl") return "autodl_chat";
   if (value === "deepSeek") return "deepseek";
   if (value === "openAi") return "openai";
   return value;

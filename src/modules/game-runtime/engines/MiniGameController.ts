@@ -760,7 +760,7 @@ function nextWerewolfPlayerPhase(session: JsonRecord): string {
   const playerName = scalarText(
     asArray<JsonRecord>(session.participants).find((item) => item.role_type === "player")?.role_name,
   ) || "用户";
-  const playerRole = scalarText(roleMap[playerName] || roleMap.player || roleMap["玩家"] || roleMap["用户"] || "村民");
+  const playerRole = scalarText(roleMap[playerName] || roleMap.player || roleMap["用户"] || roleMap["用户"] || "村民");
   const dayCount = Number(asRecord(session.public_state).day_count || 1);
   if (dayCount <= 0) {
     asRecord(session.public_state).day_count = 1;
@@ -775,7 +775,7 @@ function werewolfOptions(session: JsonRecord): MiniGameActionOption[] {
   const phase = normalizePhase(session.phase, "day_discussion");
   const publicState = asRecord(session.public_state);
   const aliveList = asArray<string>(publicState.alive_list);
-  const selectable = aliveList.filter((item) => item && item !== "用户" && item !== "玩家");
+  const selectable = aliveList.filter((item) => item && item !== "用户" && item !== "用户");
   if (phase === "night_wolf") {
     return [
       ...selectable.map((item) => ({ action_id: `kill:${item}`, label: `击杀${item}`, desc: `夜间袭击 ${item}` })),
@@ -1250,7 +1250,7 @@ function fishingStep(session: JsonRecord, actionId: string): MiniGameStepResult 
     session.status = "finished";
     session.phase = "settling";
     session.result = scalarText(publicState.last_reward) ? "completed" : "cancelled";
-    session.finish_reason = "玩家结束钓鱼";
+    session.finish_reason = "用户结束钓鱼";
     publicState.current_status = "已结束";
     return {
       narration: scalarText(publicState.last_reward)
@@ -1858,7 +1858,7 @@ const RULEBOOKS: Record<string, MiniGameRulebook> = {
     phaseOrder: ["survey", "excavate", "risk_check", "haul", "settling"],
     triggerTags: ["#挖矿"],
     passivePatterns: [/挖矿/, /采矿/, /下矿/],
-    ruleSummary: "危险度越高、稳定度越低，坍塌风险越大。优先允许玩家带伤撤离，不直接破坏主线。",
+    ruleSummary: "危险度越高、稳定度越低，坍塌风险越大。优先允许用户带伤撤离，不直接破坏主线。",
     setup: (ctx, sessionId, entrySource) => ({
       session_id: sessionId,
       game_type: "mining",
@@ -2258,7 +2258,7 @@ export async function handleMiniGameTurn(input: MiniGameControllerInput): Promis
     activeSession.status = "aborted";
     activeSession.phase = "settling";
     activeSession.result = "aborted";
-    activeSession.finish_reason = "玩家使用 #退出 强制结束小游戏";
+    activeSession.finish_reason = "用户使用 #退出 强制结束小游戏";
     activeSession.pending_exit = false;
     const narration = `你已强制退出 ${rulebook.displayName}，当前可继续回到主线剧情。`;
     refreshRuntimeUi(root, narration, rulebook);
@@ -2279,7 +2279,7 @@ export async function handleMiniGameTurn(input: MiniGameControllerInput): Promis
       activeSession.status = "aborted";
       activeSession.phase = "settling";
       activeSession.result = "aborted";
-      activeSession.finish_reason = "玩家退出钓鱼";
+      activeSession.finish_reason = "用户退出钓鱼";
       activeSession.pending_exit = false;
       const narration = "你收起鱼竿，退出了钓鱼。";
       refreshRuntimeUi(root, narration, rulebook);
@@ -2316,7 +2316,7 @@ export async function handleMiniGameTurn(input: MiniGameControllerInput): Promis
     activeSession.status = "aborted";
     activeSession.phase = "settling";
     activeSession.result = "aborted";
-    activeSession.finish_reason = "玩家确认退出小游戏";
+    activeSession.finish_reason = "用户确认退出小游戏";
     activeSession.pending_exit = false;
     const narration = rulebook.gameType === "fishing"
       ? "你收起鱼竿，退出了钓鱼。"

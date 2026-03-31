@@ -134,7 +134,7 @@ function buildSessionRuntimeMeta(state: Record<string, any>, lineIndex: number) 
     status: "generated",
     nextRole: String(
       canPlayerSpeakNow
-        ? state.player?.name || "玩家"
+        ? state.player?.name || "用户"
         : turnState.expectedRole || "",
     ).trim(),
     nextRoleType: String(
@@ -227,19 +227,35 @@ function scheduleSessionMemoryRefresh(params: {
   });
 }
 
-async function loadSessionWorldWithEnsuredRoles(db: any, worldId: number, currentUserId: number) {
+// 后台补扫参数卡，只在缺卡时才会真正生成，不阻塞用户发送主流程。
+function scheduleSessionRoleParameterCardRefresh(params: {
+  userId: number;
+  world: any;
+}) {
+  void (async () => {
+    const ownerUserId = Number(params.world?.ownerUserId || 0);
+    await ensureWorldRolesWithAiParameterCards({
+      userId: ownerUserId > 0 ? ownerUserId : params.userId,
+      world: params.world,
+      persist: ownerUserId > 0 && ownerUserId === params.userId,
+    });
+  })().catch((err) => {
+    console.warn("[session:role-card] refresh skipped", {
+      userId: params.userId,
+      worldId: Number(params.world?.id || 0),
+      message: (err as any)?.message || String(err),
+    });
+  });
+}
+
+// 用户发言主链路只读取已保存的世界设定，避免每次发言都触发角色补卡模型。
+async function loadSessionWorld(db: any, worldId: number) {
   let world = await db("t_storyWorld as w")
     .leftJoin("t_project as p", "w.projectId", "p.id")
     .where("w.id", worldId)
     .select("w.*", "p.userId as ownerUserId")
     .first();
   if (!world) return null;
-  const ownerUserId = Number(world.ownerUserId || 0);
-  world = await ensureWorldRolesWithAiParameterCards({
-    userId: ownerUserId > 0 ? ownerUserId : currentUserId,
-    world,
-    persist: ownerUserId > 0 && ownerUserId === currentUserId,
-  });
   return world;
 }
 
@@ -260,7 +276,7 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
     throw new SessionServiceError(403, "无权访问该会话");
   }
 
-  const world = await loadSessionWorldWithEnsuredRoles(db, Number(sessionRow.worldId || 0), currentUserId);
+  const world = await loadSessionWorld(db, Number(sessionRow.worldId || 0));
   const rolePair = normalizeRolePair(world?.playerRole, world?.narratorRole);
   const prevChapterId = Number(sessionRow.chapterId || 0) || null;
   const prevStatus = String(sessionRow.status || "active");
@@ -599,6 +615,10 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
       recentMessages: buildRecentMessages(rawRecentMessagesForMemory),
     });
   }
+  scheduleSessionRoleParameterCardRefresh({
+    userId: currentUserId,
+    world,
+  });
 
   const messageRow = await db("t_sessionMessage").where({ id: messageId }).first();
   const activeChapter = nextChapterId
@@ -642,7 +662,7 @@ export async function continueSessionNarrative(sessionIdInput: string): Promise<
 
   const prevChapterId = Number(sessionRow.chapterId || 0) || null;
   const prevStatus = String(sessionRow.status || "active");
-  const world = await loadSessionWorldWithEnsuredRoles(db, Number(sessionRow.worldId || 0), currentUserId);
+  const world = await loadSessionWorld(db, Number(sessionRow.worldId || 0));
   const rolePair = normalizeRolePair(world?.playerRole, world?.narratorRole);
   const state = normalizeSessionState(
     sessionRow.stateJson,
@@ -739,6 +759,10 @@ export async function continueSessionNarrative(sessionIdInput: string): Promise<
       recentMessages: recentMessagesForMemory.slice(-20),
     });
   }
+  scheduleSessionRoleParameterCardRefresh({
+    userId: currentUserId,
+    world,
+  });
 
   return {
     sessionId,

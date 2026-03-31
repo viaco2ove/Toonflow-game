@@ -144,10 +144,23 @@ const buildOptions = async (input: AIInput<any>, config: AIConfig = {}) => {
     owned = modelList.find((m) => m.model === model && m.manufacturer === manufacturer);
   }
   if (!owned) {
-    throw new Error(`模型 ${model} 与厂商 ${manufacturer} 不匹配或未注册`);
+    const manufacturerKey = String(manufacturer || "").trim().toLowerCase();
+    if (manufacturerKey === "autodl_chat" || manufacturerKey === "autodl") {
+      const fallback = modelList.find((item) => String(item.manufacturer || "").trim().toLowerCase() === manufacturerKey);
+      if (fallback) {
+        owned = {
+          ...fallback,
+          model,
+          responseFormat: "object",
+        };
+      }
+    }
+    if (!owned) {
+      throw new Error(`模型 ${model} 与厂商 ${manufacturer} 不匹配或未注册`);
+    }
   }
 
-  const openAICompatible = ["volcengine", "doubao", "other", "openai", "modelScope", "grsai", "t8star", "lmstudio"].includes(owned.manufacturer);
+  const openAICompatible = ["volcengine", "doubao", "other", "openai", "modelScope", "grsai", "t8star", "lmstudio", "autodl_chat", "autodl"].includes(owned.manufacturer);
   const modelInstance = owned.instance({
     apiKey,
     baseURL: baseURL!,
@@ -174,7 +187,7 @@ const buildOptions = async (input: AIInput<any>, config: AIConfig = {}) => {
   const output = input.output && !input.plainTextOutput
     ? (outputBuilders[owned.responseFormat]?.(input.output) ?? null)
     : null;
-  const chatModelManufacturer = ["volcengine", "doubao", "other", "openai", "modelScope", "grsai", "t8star", "lmstudio"];
+  const chatModelManufacturer = ["volcengine", "doubao", "other", "openai", "modelScope", "grsai", "t8star", "lmstudio", "autodl_chat", "autodl"];
   const modelFactory =
     typeof (modelInstance as any).chatModel === "function"
       ? (modelId: string) => (modelInstance as any).chatModel(modelId)

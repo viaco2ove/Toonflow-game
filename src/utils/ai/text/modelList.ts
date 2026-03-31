@@ -27,8 +27,16 @@ const instanceMap = {
   lmstudio: (options: OpenAIProviderSettings) =>
     createOpenAICompatible({
       ...options,
+      baseURL: options.baseURL || "",
       supportsStructuredOutputs: true,
-    }),
+      // LM Studio 本地推理不启用 token / prompt 缓存，避免服务端按缓存路径处理请求。
+      transformRequestBody: (body: Record<string, any>) => ({
+        ...body,
+        prompt_cache: false,
+      }),
+    } as any),
+  autodl_chat: createOpenAICompatible,
+  autodl: createOpenAICompatible,
   zhipu: createZhipu,
   qwen: createQwen,
   gemini: createGoogleGenerativeAI,
@@ -44,6 +52,7 @@ const instanceMap = {
 type DefaultOwned = Omit<Owned, "manufacturer" | "instance">;
 
 const VOLCENGINE_TEXT_MANUFACTURERS = new Set(["volcengine", "doubao"]);
+const AUTODL_TEXT_MANUFACTURERS = new Set(["autodl_chat", "autodl"]);
 const LEGACY_VOLCENGINE_TEXT_MODEL_ALIASES: Record<string, string> = {
   "Doubao-Seed-2.0-pro": "doubao-seed-2-0-pro-260215",
   "Doubao-Seed-2.0-lite": "doubao-seed-2-0-lite-260215",
@@ -63,6 +72,7 @@ export function normalizeTextModelName(manufacturer: unknown, model: unknown): s
   const manufacturerKey = String(manufacturer || "").trim().toLowerCase();
   const modelName = String(model || "").trim();
   if (!modelName) return "";
+  if (AUTODL_TEXT_MANUFACTURERS.has(manufacturerKey)) return modelName;
   if (!VOLCENGINE_TEXT_MANUFACTURERS.has(manufacturerKey)) return modelName;
   return LEGACY_VOLCENGINE_TEXT_MODEL_ALIASES[modelName] || modelName;
 }
@@ -75,6 +85,7 @@ export function normalizeTextResponseFormat(
   const manufacturerKey = String(manufacturer || "").trim().toLowerCase();
   const modelName = normalizeTextModelName(manufacturer, model);
   if (manufacturerKey === "t8star") return "object";
+  if (AUTODL_TEXT_MANUFACTURERS.has(manufacturerKey)) return "object";
   if (VOLCENGINE_TEXT_MANUFACTURERS.has(manufacturerKey) && VOLCENGINE_OBJECT_RESPONSE_MODELS.has(modelName)) {
     return "object";
   }
@@ -148,6 +159,65 @@ const DOUBAO_TEXT_MODELS: DefaultOwned[] = [
 
 ];
 
+const AUTODL_TEXT_MODELS: DefaultOwned[] = [
+  {
+    model: "DeepSeek-R1-0528",
+    responseFormat: "object",
+    image: false,
+    think: true,
+    tool: true,
+  },
+  {
+    model: "GLM-5",
+    responseFormat: "object",
+    image: false,
+    think: true,
+    tool: true,
+  },
+  {
+    model: "DeepSeek-V3.2",
+    responseFormat: "object",
+    image: false,
+    think: true,
+    tool: true,
+  },
+  {
+    model: "MiniMax-M2.7",
+    responseFormat: "object",
+    image: false,
+    think: true,
+    tool: true,
+  },
+  {
+    model: "MiniMax-M2.5",
+    responseFormat: "object",
+    image: false,
+    think: true,
+    tool: true,
+  },
+  {
+    model: "Qwen3.5-397B-A17B",
+    responseFormat: "object",
+    image: false,
+    think: true,
+    tool: true,
+  },
+  {
+    model: "Kimi-K2.5",
+    responseFormat: "object",
+    image: false,
+    think: true,
+    tool: true,
+  },
+  {
+    model: "gpt-5.4",
+    responseFormat: "object",
+    image: false,
+    think: true,
+    tool: true,
+  },
+];
+
 function createAliasedModels(manufacturers: string[], items: DefaultOwned[]): Owned[] {
   return manufacturers.flatMap((manufacturer) => {
     const instance = instanceMap[manufacturer as keyof typeof instanceMap];
@@ -218,13 +288,16 @@ const modelList: Owned[] = [
     instance: (options: OpenAIProviderSettings) =>
       createOpenAICompatible({
         ...options,
+        baseURL: options.baseURL || "",
         supportsStructuredOutputs: true,
-      }),
+      } as any),
     tool: true,
   },
 
   // 豆包
   ...createAliasedModels(["volcengine", "doubao"], DOUBAO_TEXT_MODELS),
+  // AutoDL
+  ...createAliasedModels(["autodl_chat", "autodl"], AUTODL_TEXT_MODELS),
   // GLM
   {
     manufacturer: "zhipu",

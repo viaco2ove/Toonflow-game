@@ -256,6 +256,7 @@ export default router.post(
           : targetChapter;
         effectiveChapter = targetEffectiveChapter;
         // 调用大模型进行编排
+        const start = Date.now();
         const targetPlan = await runNarrativePlan({
           userId,
           world,
@@ -267,7 +268,7 @@ export default router.post(
         });
         const cost = Date.now() - start;
         console.log(
-          `[runNarrativePlan] userId=${input.userId} chapter=${input.chapter?.id} 耗时=${cost}ms`
+          `[runNarrativePlan] userId=${userId} chapter=${targetEffectiveChapter.id} 耗时=${cost}ms`
         );
         applyOrchestratorResultToState(state, targetPlan);
         applyNarrativeMemoryHintsToState(state, targetPlan.memoryHints);

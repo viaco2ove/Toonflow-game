@@ -10,7 +10,7 @@ import u from "@/utils";
 import { success, error } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
 import { z } from "zod";
-import { isDirectAliyunManufacturer, normalizeAliyunDirectAsrModel, voiceSupplierFromManufacturer } from "@/lib/voiceGateway";
+import { isDirectAliyunManufacturer, normalizeAliyunDirectAsrModel, resolveAliyunDirectAsrEndpoint, voiceSupplierFromManufacturer } from "@/lib/voiceGateway";
 
 const router = express.Router();
 const COMMON_WIN_FFMPEG_PATHS = [
@@ -380,7 +380,10 @@ export default router.post(
 
       const compatibleBaseUrl = normalizeAliyunCompatibleBaseUrl(config.baseUrl);
       const endpointCandidates = directAliyun
-        ? [`${compatibleBaseUrl}/chat/completions`]
+        ? [
+          resolveAliyunDirectAsrEndpoint(config.baseUrl),
+          `${compatibleBaseUrl}/chat/completions`,
+        ]
         : [`${baseUrl}/v1/asr`, `${baseUrl}/v1/audio/transcriptions`, `${baseUrl}/v1/asr/transcribe`, `${baseUrl}/v1/transcribe`];
 
       const errors: string[] = [];
@@ -389,7 +392,41 @@ export default router.post(
 
       for (const endpoint of endpointCandidates) {
         try {
-          if (endpoint.endsWith("/chat/completions")) {
+          if (endpoint.endsWith("/services/aigc/multimodal-generation/generation")) {
+            const audioDataUrl = `data:${audio.mime};base64,${audio.buffer.toString("base64")}`;
+            const response = await axios.post(
+              endpoint,
+              {
+                model: modelName || "qwen3-asr-flash",
+                input: {
+                  messages: [
+                    {
+                      role: "user",
+                      content: [
+                        {
+                          audio: audioDataUrl,
+                        },
+                      ],
+                    },
+                  ],
+                },
+                parameters: {
+                  asr_options: {
+                    enable_itn: false,
+                    ...(lang ? { language: String(lang) } : {}),
+                  },
+                },
+              },
+              {
+                headers: {
+                  ...headers,
+                  "Content-Type": "application/json",
+                },
+                timeout: 120000,
+              },
+            );
+            rawData = response.data || {};
+          } else if (endpoint.endsWith("/chat/completions")) {
             const audioDataUrl = `data:${audio.mime};base64,${audio.buffer.toString("base64")}`;
             const asrOptions: Record<string, any> = {
               enable_itn: false,
@@ -504,7 +541,15 @@ export default router.post(
           usedEndpoint = endpoint;
           break;
         } catch (err: any) {
-          const message = err?.response?.data?.message || err?.message || String(err);
+          const responseData = err?.response?.data;
+          const responseMessage = typeof responseData?.message === "string"
+            ? responseData.message
+            : typeof responseData === "string"
+              ? responseData
+              : responseData
+                ? JSON.stringify(responseData)
+                : "";
+          const message = responseMessage || err?.message || String(err);
           errors.push(`[${endpoint}] ${message}`);
         }
       }

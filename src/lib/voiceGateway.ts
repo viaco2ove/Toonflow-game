@@ -383,6 +383,10 @@ export function resolveAliyunDirectTtsEndpoint(input: string | null | undefined)
   return `${normalized}/api/v1/services/aigc/multimodal-generation/generation`;
 }
 
+export function resolveAliyunDirectAsrEndpoint(input: string | null | undefined): string {
+  return resolveAliyunDirectTtsEndpoint(input);
+}
+
 export function isAliyunDirectCosyVoiceModel(input?: string | null): boolean {
   const normalizedModel = normalizeText(normalizeAliyunDirectTtsModel(input));
   return [

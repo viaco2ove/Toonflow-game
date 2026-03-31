@@ -29,6 +29,23 @@ function debugLog(step: string, payload?: Record<string, unknown>) {
   }
 }
 
+function normalizeTestAiErrorMessage(input: string): string {
+  const message = String(input || "").trim();
+  const lower = message.toLowerCase();
+  if (lower.includes("insufficient account balance") || lower.includes("insufficient_balance")) {
+    return "账户余额不足";
+  }
+  return message;
+}
+
+function resolveTestAiStatusCode(input: string): number {
+  const lower = String(input || "").trim().toLowerCase();
+  if (lower.includes("insufficient account balance") || lower.includes("insufficient_balance")) {
+    return 402;
+  }
+  return 500;
+}
+
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, timeoutMessage: string): Promise<T> {
   let timer: NodeJS.Timeout | null = null;
   try {
@@ -64,14 +81,14 @@ export default router.post(
     });
 
     try {
-      const isT8Star = String(manufacturer || "").trim().toLowerCase() === "t8star";
-      const testPrompt = isT8Star
+      const manufacturerKey = String(manufacturer || "").trim().toLowerCase();
+      const testPrompt = manufacturerKey === "t8star"
         ? "请直接回复：T8Star 文本模型连通成功"
-        : "请调用工具获取北京的天气，并回答我多少气温";
+        : `请直接回复：${manufacturer || "文本模型"}连通成功`;
 
       const result = await withTimeout(
         u.ai.text.invoke(
-          isT8Star
+          manufacturerKey === "t8star"
             ? {
                 prompt: testPrompt,
               }
@@ -106,13 +123,14 @@ export default router.post(
       debugLog("success", {
         manufacturer,
         modelName,
-        isT8Star,
+        manufacturerKey,
         costMs: Date.now() - startedAt,
         replyPreview: trimPreview(reply),
       });
       res.status(200).send(success(reply));
     } catch (err) {
-      const msg = u.error(err).message;
+      const rawMessage = u.error(err).message;
+      const msg = normalizeTestAiErrorMessage(rawMessage);
       debugLog("failed", {
         manufacturer,
         modelName,
@@ -120,11 +138,12 @@ export default router.post(
         errorName: (err as any)?.name || "",
         errorCode: (err as any)?.code || "",
         message: msg,
+        rawMessage,
       });
       if (DEBUG_MODE && (err as any)?.stack) {
         console.error("[testAI] stack", (err as any).stack);
       }
-      res.status(500).send(error(msg));
+      res.status(resolveTestAiStatusCode(rawMessage)).send(error(msg));
     }
   },
 );

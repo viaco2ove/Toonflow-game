@@ -7,6 +7,11 @@ import u from "@/utils";
 
 const router = express.Router();
 
+interface SessionEntry {
+  item: any;
+  runtimeState: Record<string, any>;
+}
+
 export default router.post(
   "/",
   validateFields({
@@ -34,6 +39,14 @@ export default router.post(
       if (Number.isFinite(worldId) && worldId > 0) {
         query = query.andWhere("s.worldId", worldId);
       }
+      query = query.whereExists(function filterPlayableHistory() {
+        this.select(db.raw("1"))
+          .from("t_sessionMessage as m")
+          .whereRaw("m.sessionId = s.sessionId")
+          .andWhere("m.roleType", "player")
+          .andWhere("m.eventType", "on_message")
+          .andWhereRaw("trim(coalesce(m.content, '')) <> ''");
+      });
       const rawSessions = await query
         .select("s.*")
         .orderBy("s.updateTime", "desc")
@@ -54,15 +67,15 @@ export default router.post(
         return res.status(200).send(success([]));
       }
 
-      const sessionEntries = sessions.map((item: any) => ({
+      const sessionEntries: SessionEntry[] = sessions.map((item: any) => ({
         item,
         runtimeState: parseJsonSafe(item.stateJson, {}),
       }));
-      const sessionIds = sessionEntries.map(({ item }) => String(item.sessionId || "")).filter(Boolean);
-      const worldIdSet = Array.from(new Set(sessionEntries.map(({ item }) => Number(item.worldId || 0)).filter((id: number) => id > 0)));
+      const sessionIds = sessionEntries.map((entry: SessionEntry) => String(entry.item.sessionId || "")).filter(Boolean);
+      const worldIdSet = Array.from(new Set(sessionEntries.map((entry: SessionEntry) => Number(entry.item.worldId || 0)).filter((id: number) => id > 0)));
       const chapterIdSet = Array.from(new Set(
         sessionEntries
-          .map(({ item, runtimeState }: any) => Number(runtimeState?.chapterId || item.chapterId || 0))
+          .map((entry: SessionEntry) => Number(entry.runtimeState?.chapterId || entry.item.chapterId || 0))
           .filter((id: number) => id > 0),
       ));
       const projectIdSet = Array.from(new Set(sessions.map((item: any) => Number(item.projectId || 0)).filter((id: number) => id > 0)));
@@ -89,7 +102,8 @@ export default router.post(
         }
       });
 
-      const list = sessionEntries.map(({ item, runtimeState }: any) => {
+      const list = sessionEntries.map((entry: SessionEntry) => {
+        const { item, runtimeState } = entry;
         const sessionId = String(item.sessionId || "");
         const worldIdValue = Number(item.worldId || 0);
         const chapterIdValue = Number(runtimeState?.chapterId || item.chapterId || 0);

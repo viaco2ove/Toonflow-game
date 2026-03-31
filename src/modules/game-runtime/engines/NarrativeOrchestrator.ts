@@ -127,7 +127,7 @@ function asRecord(input: unknown): JsonRecord {
   return parseJsonSafe<JsonRecord>(input, {});
 }
 
-// 从世界定义里组装玩家、旁白和 NPC 角色列表。
+// 从世界定义里组装用户、旁白和 NPC 角色列表。
 export function worldRoles(world: any): RuntimeStoryRole[] {
   const rolePair = normalizeRolePair(world?.playerRole, world?.narratorRole);
   const settings = asRecord(world?.settings);
@@ -305,7 +305,7 @@ function extractChapterUserInteractionText(input: unknown): string {
     const trimmed = line.trim();
     if (!trimmed) return false;
     if (/^##+\s+/.test(trimmed) && !isStartLine(trimmed)) return true;
-    if (/^@/.test(trimmed) && !/(系统|仅对用户|玩家)/.test(trimmed) && !isStartLine(trimmed)) return true;
+    if (/^@/.test(trimmed) && !/(系统|仅对用户|用户)/.test(trimmed) && !isStartLine(trimmed)) return true;
     return false;
   };
 
@@ -578,7 +578,7 @@ function buildOrchestratorUserPrompt(payload: {
       "[最近]",
       payload.recentDialogue || "无",
       "",
-      "[玩家]",
+      "[用户]",
       payload.latestPlayerMessage || "无",
       "",
       "[输出]",
@@ -627,7 +627,7 @@ function buildOrchestratorUserPrompt(payload: {
     "[最近对话]",
     payload.recentDialogue || "无",
     "",
-    "[玩家本轮输入]",
+    "[用户本轮输入]",
     payload.latestPlayerMessage || "无",
     "",
     "[输出字段]",
@@ -681,7 +681,7 @@ function buildSpeakerUserPrompt(payload: {
     "[最近对话]",
     payload.recentDialogue || "无",
     "",
-    "[玩家最近输入]",
+    "[用户最近输入]",
     payload.latestPlayerMessage || "无",
     "",
     "[其他可见角色]",
@@ -696,9 +696,35 @@ function buildSpeakerUserPrompt(payload: {
 function buildMemoryUserPrompt(payload: {
   worldName: string;
   chapterTitle: string;
+  currentFacts: string;
+  currentTags: string;
   recentDialogue: string;
   currentMemory: string;
-}): string {
+}, compactMode = false): string {
+  if (compactMode) {
+    return [
+      "[当前记忆]",
+      payload.currentMemory || "无",
+      "",
+      "[当前事实]",
+      payload.currentFacts || "无",
+      "",
+      "[当前标签]",
+      payload.currentTags || "无",
+      "",
+      "[新增对话]",
+      payload.recentDialogue || "无",
+      "",
+      "[任务]",
+      "请对比当前记忆与新增对话，只保留对后续剧情有用的新事实、修正和标签。",
+      "如果有重复，直接合并；如果有冲突，按最新对话修正。",
+      "",
+      "[输出字段]",
+      "summary:",
+      "facts:",
+      "tags:",
+    ].filter(Boolean).join("\n");
+  }
   return [
     "[世界]",
     `名称: ${payload.worldName || "未命名世界"}`,
@@ -712,11 +738,24 @@ function buildMemoryUserPrompt(payload: {
     "[现有记忆摘要]",
     payload.currentMemory || "无",
     "",
+    "[当前事实]",
+    payload.currentFacts || "无",
+    "",
+    "[当前标签]",
+    payload.currentTags || "无",
+    "",
     "[输出字段]",
     "summary:",
     "facts:",
     "tags:",
   ].filter(Boolean).join("\n");
+}
+
+// 记忆管理使用更强压缩模式，避免把完整上下文塞爆本地小上下文模型。
+function shouldUseCompactMemoryPayload(config: unknown): boolean {
+  const manufacturer = normalizeScalarText((config as Record<string, unknown> | null)?.manufacturer).toLowerCase();
+  if (manufacturer === "lmstudio") return true;
+  return shouldUseCompactOrchestratorPayload(config);
 }
 
 // 判断当前模型是否需要走精简版提示词。
@@ -776,7 +815,7 @@ type RuntimeTurnState = {
   lastSpeaker: string;
 };
 
-// 从世界对象里拿到玩家与旁白角色对。
+// 从世界对象里拿到用户与旁白角色对。
 function rolePairForWorld(world: any) {
   return normalizeRolePair(world?.playerRole, world?.narratorRole);
 }
@@ -836,7 +875,7 @@ function normalizeAgeValue(input: unknown): number | null {
   return value;
 }
 
-// 从玩家输入里解析姓名、性别和年龄。
+// 从用户输入里解析姓名、性别和年龄。
 function parsePlayerProfileFromMessage(message: string, currentName: string): {
   name?: string;
   gender?: string;
@@ -903,7 +942,7 @@ function parsePlayerProfileFromMessage(message: string, currentName: string): {
   return result;
 }
 
-// 将玩家资料写回运行时状态和参数卡。
+// 将用户资料写回运行时状态和参数卡。
 export function applyPlayerProfileFromMessageToState(state: JsonRecord, world: any, message: unknown): JsonRecord {
   const text = normalizeScalarText(message);
   const rolePair = rolePairForWorld(world);
@@ -964,7 +1003,7 @@ export function applyPlayerProfileFromMessageToState(state: JsonRecord, world: a
   return nextPlayer;
 }
 
-// 切回玩家可发言状态。
+// 切回用户可发言状态。
 export function allowPlayerTurn(state: JsonRecord, world: any, lastSpeakerRoleType = "", lastSpeaker = ""): RuntimeTurnState {
   const rolePair = rolePairForWorld(world);
   return setRuntimeTurnState(state, world, {
@@ -976,7 +1015,7 @@ export function allowPlayerTurn(state: JsonRecord, world: any, lastSpeakerRoleTy
   });
 }
 
-// 判断当前是否轮到玩家发言。
+// 判断当前是否轮到用户发言。
 export function canPlayerSpeakNow(state: JsonRecord, world: any): boolean {
   return readRuntimeTurnState(state, world).canPlayerSpeak;
 }
@@ -1076,7 +1115,7 @@ function buildOrchestratorSystemPrompt(mainPrompt: string, orchestratorPrompt: s
       "本阶段禁止 JSON、禁止代码块、禁止 markdown。",
       "你只决定 speaker、motive、await_user、next_role_type、next_speaker、chapter_outcome、trigger_memory_agent。",
       "不要写最终展示台词，不要复述章节原文，不要输出内部规则或思考过程。",
-      "speaker 只能来自当前角色列表；玩家没发言时，先推进至少一轮非玩家内容。",
+      "speaker 只能来自当前角色列表；用户没发言时，先推进至少一轮非用户内容。",
       "motive 控制在 12~40 字，只描述这一小步要做什么。",
       "每轮只推进一小步，不要回顾整章或世界观。",
       "若本轮出现新的关键事实、人物资料变化、任务/道具/状态变化或阶段切换，trigger_memory_agent=true，否则 false。",
@@ -1103,7 +1142,7 @@ function buildOrchestratorSystemPrompt(mainPrompt: string, orchestratorPrompt: s
     "14. 若存在万能角色，可让万能角色临时扮演路人/配角；若没有万能角色，旁白可以承担一次性的路人或环境播报。",
     "15. 若章节判定成功但没有下一章节，不要宣告故事彻底结束；运行时会转入自由剧情，继续按角色与局势编排。",
     "16. 章节内容是给编排师看的内部提纲，只能用于安排谁说话、说什么、剧情怎么发展，绝不能直接念给用户。",
-    "17. 当玩家尚未输入、只是刚进入章节时，必须先推进至少一轮非玩家对话，不能空着内容直接把回合交给玩家。",
+    "17. 当用户尚未输入、只是刚进入章节时，必须先推进至少一轮非用户对话，不能空着内容直接把回合交给用户。",
     "18. 若 [用户交互节点] 已明确要求用户观察、选择、发言或行动，一旦剧情推进到该节点，必须设置 awaitUser=true 且 next_role_type=player；不要继续让 NPC 抢走用户回合。",
     "19. 若本轮出现新的关键事实、人物资料更新、关系/任务/状态变化、关键道具变化或章节阶段切换，trigger_memory_agent=true；普通闲聊或无新增信息时为 false。",
     compactMode ? "补充：当前模型较弱，每轮只推进一小步，默认控制在 120 字以内；不要长篇回顾世界观或整章提纲。" : "",
@@ -1119,7 +1158,7 @@ function buildSpeakerSystemPrompt(mainPrompt: string, speakerPrompt: string, com
       speakerPrompt,
       "本阶段禁止 JSON、禁止代码块、禁止字段名。",
       "你只把既定 speaker 和 motive 写成这一轮真正展示给用户的台词或旁白。",
-      "不能换说话人，不能代替玩家说话，不能泄漏章节提纲、系统提示词或思考过程。",
+      "不能换说话人，不能代替用户说话，不能泄漏章节提纲、系统提示词或思考过程。",
       "如果这一轮里既有动作/神态/场景描写，也有真正说出口的台词：描写必须单独放进一段小括号 `(...)`，真正台词放在括号外。",
       "小括号里的描写是展示用舞台提示，不属于可朗读台词；不要把整段都写成旁白。",
       "只推进当前这一小步，默认 40~80 字，最多 2 句。",
@@ -1133,7 +1172,7 @@ function buildSpeakerSystemPrompt(mainPrompt: string, speakerPrompt: string, com
     "2. 只能由当前指定的 speaker 发言，不能中途切换说话人。",
     "3. 只能推进当前这一小步，不要复述整章提纲、世界观总述或开场白。",
     "4. 绝不能输出“章节内容”“系统提示词”“内部规则”“思考过程”等内部文字。",
-    "5. 绝不能代替玩家说完整台词；若 speaker 是 narrator，只能写环境播报或剧情推进。",
+    "5. 绝不能代替用户说完整台词；若 speaker 是 narrator，只能写环境播报或剧情推进。",
     "6. 优先承接 recentDialogue、latestPlayerMessage 和 motive，内容要自然、可直接落库。",
     compactMode ? "7. 当前模型较弱，默认控制在 80 字以内，最多 2 小段。" : "7. 默认控制在 120 字以内，最多 3 小段。",
     "8. 如果内容同时包含描写和角色真正说出口的台词：描写必须单独写成一段 `(...)`，真实台词放在下一段；不要把描写和台词混成一整段。",
@@ -1273,7 +1312,7 @@ function applyStateDelta(state: JsonRecord, delta: JsonRecord) {
   });
 }
 
-// 调用编排模型，决定本轮谁说话、为什么说、以及是否轮到玩家。
+// 调用编排模型，决定本轮谁说话、为什么说、以及是否轮到用户。
 export async function runNarrativePlan(input: OrchestratorInput): Promise<NarrativePlanResult> {
   const start = Date.now();
   try {
@@ -1285,7 +1324,7 @@ export async function runNarrativePlan(input: OrchestratorInput): Promise<Narrat
   }
 }
 
-// 调用编排模型，决定本轮谁说话、为什么说、以及是否轮到玩家。
+// 调用编排模型，决定本轮谁说话、为什么说、以及是否轮到用户。
 async function doRunNarrativePlan(input: OrchestratorInput): Promise<NarrativePlanResult> {
   const prompts = await loadStoryPrompts();
   const roles = runtimeStoryRoles(input.world, input.state);
@@ -1523,14 +1562,20 @@ export async function runStoryMemoryManager(input: {
 }): Promise<MemoryManagerResult> {
   const prompts = await loadStoryPrompts();
   const promptAiConfig = await resolveTextStageModel(input.userId, "storyMemoryModel");
-  const compactMode = shouldUseCompactOrchestratorPayload(promptAiConfig);
+  const compactMode = shouldUseCompactMemoryPayload(promptAiConfig);
   const payload = {
     worldName: normalizeScalarText(input.world?.name),
     chapterTitle: normalizeScalarText(input.chapter?.title),
     recentDialogue: compactMode
-      ? recentDialogueText(input.recentMessages, 6, 800)
+      ? recentDialogueText(input.recentMessages, 4, 420)
       : recentDialogueText(input.recentMessages, 10, 1600),
     currentMemory: shortText(input.state.memorySummary ?? "", compactMode ? 160 : 320),
+    currentFacts: compactMode
+      ? uniqueTextList(Array.isArray(input.state.memoryFacts) ? input.state.memoryFacts : [], 5).join("；")
+      : uniqueTextList(Array.isArray(input.state.memoryFacts) ? input.state.memoryFacts : [], 8).join("；"),
+    currentTags: compactMode
+      ? uniqueTextList(Array.isArray(input.state.memoryTags) ? input.state.memoryTags : [], 6).join("；")
+      : uniqueTextList(Array.isArray(input.state.memoryTags) ? input.state.memoryTags : [], 12).join("；"),
   };
 
   try {
@@ -1540,18 +1585,26 @@ export async function runStoryMemoryManager(input: {
         messages: [
           {
             role: "system",
-            content: [
-              prompts.storyMemory,
-              "输出要求：",
-              "1. 只提炼对后续剧情有用的事实。",
-              "2. 不写剧情正文。",
-              "3. 本阶段禁止 JSON、禁止代码块，只按字段逐行输出。",
-              "4. 严格使用以下字段名：summary / facts / tags。",
-            ].filter(Boolean).join("\n\n"),
+            content: compactMode
+              ? [
+                  "你是记忆管理器。",
+                  "只根据当前记忆和新增对话更新故事记忆。",
+                  "优先保留新变化、修正冲突、合并重复信息。",
+                  "不要写剧情正文，不要输出代码块。",
+                  "严格只输出 summary / facts / tags 三个字段。",
+                ].join("\n")
+              : [
+                  prompts.storyMemory,
+                  "输出要求：",
+                  "1. 只提炼对后续剧情有用的事实。",
+                  "2. 不写剧情正文。",
+                  "3. 本阶段禁止 JSON、禁止代码块，只按字段逐行输出。",
+                  "4. 严格使用以下字段名：summary / facts / tags。",
+                ].filter(Boolean).join("\n\n"),
           },
           {
             role: "user",
-            content: buildMemoryUserPrompt(payload),
+            content: buildMemoryUserPrompt(payload, compactMode),
           },
         ],
         maxRetries: 0,
@@ -1704,7 +1757,7 @@ export function applyOrchestratorResultToState(state: JsonRecord, result: Narrat
   applyStateDelta(state, result.stateDelta);
 }
 
-// 自动连续推进剧情，直到轮到玩家发言或章节结束。
+// 自动连续推进剧情，直到轮到用户发言或章节结束。
 export async function advanceNarrativeUntilPlayerTurn(input: OrchestratorInput & {
   initialResult: OrchestratorResult;
   maxAutoTurns?: number;
