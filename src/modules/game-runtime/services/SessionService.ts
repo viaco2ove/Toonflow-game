@@ -618,6 +618,18 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
   }
 
   if (input.orchestrate === false) {
+    if (roleTypeValue === "player" && eventTypeValue === "on_message" && messageContent.trim()) {
+      if (nextChapterId && nextChapterId !== prevChapterId) {
+        setPendingSessionChapterId(state, nextChapterId);
+      }
+      setRuntimeTurnState(state, world, {
+        canPlayerSpeak: false,
+        expectedRoleType: "narrator",
+        expectedRole: String(state.narrator?.name || "旁白"),
+        lastSpeakerRoleType: "player",
+        lastSpeaker: roleValue,
+      });
+    }
     const stateJson = toJsonText(state, {});
     await db("t_gameSession").where({ sessionId }).update({
       stateJson,
