@@ -1,4 +1,0 @@
-[2026-03-30 20:16:13.286] [LOG] Database path: D:\Users\viaco\tools\Toonflow-game\toonflow-game-app\Toonflow-game\db.sqlite
-[2026-03-30 20:16:14.626] [LOG] Upload dir: D:\Users\viaco\tools\Toonflow-game\toonflow-game-app\Toonflow-game\uploads
-[2026-03-30 20:16:17.042] [LOG] [server] started at http://localhost:60002
-[2026-03-30 20:16:17.052] [LOG] [初始化数据库] 创建数据表: t_roleAvatarTask
