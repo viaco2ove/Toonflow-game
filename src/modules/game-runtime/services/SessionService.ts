@@ -27,12 +27,19 @@ import {
   summarizeNarrativePlan,
   triggerStoryMemoryRefreshInBackground,
 } from "@/modules/game-runtime/engines/NarrativeOrchestrator";
+import {
+  recordChapterProgressSignals,
+  initializeChapterProgressForState,
+  markCurrentUserNodeCompleted,
+  syncChapterProgressWithRuntime,
+} from "@/modules/game-runtime/engines/ChapterProgressEngine";
 import { handleMiniGameTurn } from "@/modules/game-runtime/engines/MiniGameController";
 import { runTaskProgressEngine } from "@/modules/game-runtime/engines/TaskProgressEngine";
 import {
   applyAttributeChanges,
   runTriggerEngine,
 } from "@/modules/game-runtime/engines/TriggerEngine";
+import { evaluateRuntimeOutcome } from "@/modules/game-runtime/services/ChapterRuntimeService";
 import { persistSnapshotIfNeeded } from "@/modules/game-runtime/services/SnapshotService";
 import {
   AppliedDelta,
@@ -80,8 +87,6 @@ export interface SessionNarrativePlanResult {
   awaitUser: boolean;
   nextRole: string;
   nextRoleType: string;
-  chapterOutcome: "continue" | "success" | "failed";
-  nextChapterId: number | null;
   source: "ai" | "fallback";
   triggerMemoryAgent: boolean;
   eventType: string;
@@ -209,8 +214,6 @@ function buildSessionPlanResult(plan: ({
   awaitUser?: unknown;
   nextRole?: unknown;
   nextRoleType?: unknown;
-  chapterOutcome?: unknown;
-  nextChapterId?: unknown;
   source?: unknown;
   triggerMemoryAgent?: unknown;
   eventType?: unknown;
@@ -224,14 +227,6 @@ function buildSessionPlanResult(plan: ({
     awaitUser: Boolean(plan.awaitUser),
     nextRole: String(plan.nextRole || "").trim(),
     nextRoleType: String(plan.nextRoleType || "").trim(),
-    chapterOutcome: plan.chapterOutcome === "failed"
-      ? "failed"
-      : plan.chapterOutcome === "success"
-        ? "success"
-        : "continue",
-    nextChapterId: Number.isFinite(Number(plan.nextChapterId)) && Number(plan.nextChapterId) > 0
-      ? Number(plan.nextChapterId)
-      : null,
     source: plan.source === "fallback" ? "fallback" : "ai",
     triggerMemoryAgent: Boolean(plan.triggerMemoryAgent),
     eventType: String(plan.eventType || "on_orchestrated_reply").trim() || "on_orchestrated_reply",
@@ -460,6 +455,10 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
   const currentChapter = prevChapterId
     ? normalizeChapterOutput(await db("t_storyChapter").where({ id: prevChapterId }).first())
     : null;
+  if (currentChapter) {
+    initializeChapterProgressForState(currentChapter, state);
+    syncChapterProgressWithRuntime(currentChapter, state);
+  }
   let asyncMemoryRefreshRequested = false;
   let asyncMemoryRefreshChapter: any = null;
 
@@ -472,6 +471,9 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
   });
 
   if (roleTypeValue === "player" && eventTypeValue === "on_message" && messageContent.trim()) {
+    if (currentChapter) {
+      markCurrentUserNodeCompleted(currentChapter, state, messageId);
+    }
     const rawRecentMessages = await db("t_sessionMessage").where({ sessionId }).orderBy("id", "desc").limit(20);
     const recentMessages = buildRecentMessages(rawRecentMessages);
     const miniGameResult = await handleMiniGameTurn({
@@ -500,8 +502,8 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
         await db("t_entityStateDelta").insert(deltaRows);
       }
 
-      let narrativeMessageRow: any = null;
-      if (miniGameResult.message) {
+	      let narrativeMessageRow: any = null;
+	      if (miniGameResult.message) {
         const inserted = await db("t_sessionMessage").insert({
           sessionId,
           role: String(miniGameResult.message.role || state.narrator?.name || "旁白"),
@@ -511,12 +513,15 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
           meta: toJsonText(miniGameResult.message.meta || {}, {}),
           createTime: now,
         });
-        const narrativeMessageId = normalizeMessageId(inserted);
-        narrativeMessageRow = await db("t_sessionMessage").where({ id: narrativeMessageId }).first();
-      }
+	        const narrativeMessageId = normalizeMessageId(inserted);
+	        narrativeMessageRow = await db("t_sessionMessage").where({ id: narrativeMessageId }).first();
+	      }
 
-      const stateJson = toJsonText(state, {});
-      await db("t_gameSession").where({ sessionId }).update({
+	      if (currentChapter) {
+	        syncChapterProgressWithRuntime(currentChapter, state);
+	      }
+	      const stateJson = toJsonText(state, {});
+	      await db("t_gameSession").where({ sessionId }).update({
         stateJson,
         chapterId: prevChapterId,
         status: prevStatus,
@@ -593,6 +598,29 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
   ];
   let nextChapterId = taskResult.nextChapterId;
   let sessionStatus = taskResult.sessionStatus;
+  if (currentChapter) {
+    recordChapterProgressSignals(currentChapter, state, {
+      messageContent,
+      triggered,
+      taskProgress: taskResult.taskProgressChanges,
+      deltas: appliedDeltas,
+    });
+    syncChapterProgressWithRuntime(currentChapter, state);
+  }
+  if (currentChapter) {
+    const mergedOutcome = evaluateRuntimeOutcome({
+      chapter: currentChapter,
+      state,
+      messageContent,
+      eventType: eventTypeValue,
+      meta: metaObj,
+      fallbackStatus: sessionStatus,
+      fallbackChapterId: nextChapterId || prevChapterId,
+      applyToState: true,
+    });
+    sessionStatus = mergedOutcome.sessionStatus;
+    nextChapterId = mergedOutcome.nextChapterId;
+  }
   if (sessionStatus === "chapter_completed" && (!nextChapterId || nextChapterId === prevChapterId)) {
     const resolvedNextChapterId = await resolveNextChapterIdByOrder(db, Number(sessionRow.worldId || 0), prevChapterId);
     if (resolvedNextChapterId && resolvedNextChapterId !== prevChapterId) {
@@ -629,6 +657,9 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
         lastSpeakerRoleType: "player",
         lastSpeaker: roleValue,
       });
+      if (currentChapter) {
+        syncChapterProgressWithRuntime(currentChapter, state);
+      }
     }
     const stateJson = toJsonText(state, {});
     await db("t_gameSession").where({ sessionId }).update({
@@ -704,6 +735,8 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
         lastSpeakerRoleType: String(transitionMessages[transitionMessages.length - 1]?.roleType || "narrator"),
         lastSpeaker: String(transitionMessages[transitionMessages.length - 1]?.role || state.narrator?.name || "旁白"),
       });
+      initializeChapterProgressForState(switchedChapter, state);
+      syncChapterProgressWithRuntime(switchedChapter, state);
       const orchestrator = await runNarrativeOrchestrator({
         userId: currentUserId,
         world,
@@ -712,6 +745,8 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
         recentMessages: transitionMessages,
         playerMessage: "",
         maxRetries: 0,
+        allowControlHints: false,
+        allowStateDelta: false,
       });
       narrativePlan = summarizeNarrativePlan(orchestrator);
       asyncMemoryRefreshRequested = Boolean(orchestrator.triggerMemoryAgent);
@@ -754,6 +789,8 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
         recentMessages,
         playerMessage: messageContent,
         maxRetries: 0,
+        allowControlHints: false,
+        allowStateDelta: false,
       });
       narrativePlan = summarizeNarrativePlan(orchestrator);
       asyncMemoryRefreshRequested = Boolean(orchestrator.triggerMemoryAgent);
@@ -778,6 +815,7 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
         eventTypeFallback: "on_orchestrated_reply",
       });
       narrativeMessageRow = generatedMessages[generatedMessages.length - 1] || null;
+      syncChapterProgressWithRuntime(playChapter, state);
 
     }
   }
@@ -894,6 +932,8 @@ export async function continueSessionNarrative(sessionIdInput: string): Promise<
     recentMessages,
     playerMessage: "",
     maxRetries: 0,
+    allowControlHints: false,
+    allowStateDelta: false,
   });
   const narrativePlan = summarizeNarrativePlan(orchestrator);
   applyNarrativeMemoryHintsToState(state, orchestrator.memoryHints);
@@ -916,11 +956,32 @@ export async function continueSessionNarrative(sessionIdInput: string): Promise<
     now,
     eventTypeFallback: "on_orchestrated_reply",
   });
-  const sessionStatus = orchestrator.chapterOutcome === "failed" ? "failed" : prevStatus;
+  const latestGeneratedMessage = generatedMessages[generatedMessages.length - 1];
+  const mergedOutcome = evaluateRuntimeOutcome({
+    chapter,
+    state,
+    messageContent: String(latestGeneratedMessage?.content || ""),
+    eventType: String(latestGeneratedMessage?.eventType || "on_orchestrated_reply"),
+    meta: {},
+    fallbackStatus: prevStatus,
+    fallbackChapterId: prevChapterId,
+    applyToState: true,
+  });
+  let sessionStatus = mergedOutcome.sessionStatus;
+  let nextChapterId = mergedOutcome.nextChapterId;
+  if (sessionStatus === "chapter_completed" && (!nextChapterId || nextChapterId === prevChapterId)) {
+    const resolvedNextChapterId = await resolveNextChapterIdByOrder(db, Number(sessionRow.worldId || 0), prevChapterId);
+    if (resolvedNextChapterId && resolvedNextChapterId !== prevChapterId) {
+      nextChapterId = resolvedNextChapterId;
+      sessionStatus = "active";
+    }
+  }
+  initializeChapterProgressForState(chapter, state);
+  syncChapterProgressWithRuntime(chapter, state);
   const stateJson = toJsonText(state, {});
   await db("t_gameSession").where({ sessionId }).update({
     stateJson,
-    chapterId: prevChapterId,
+    chapterId: nextChapterId,
     status: sessionStatus,
     updateTime: now,
   });
@@ -933,7 +994,7 @@ export async function continueSessionNarrative(sessionIdInput: string): Promise<
     now,
     policy: {
       saveSnapshot: true,
-      nextChapterId: prevChapterId,
+      nextChapterId,
       prevChapterId,
       sessionStatus,
       prevStatus,
@@ -969,8 +1030,8 @@ export async function continueSessionNarrative(sessionIdInput: string): Promise<
   return {
     sessionId,
     status: sessionStatus,
-    chapterId: prevChapterId,
-    chapter,
+    chapterId: nextChapterId,
+    chapter: nextChapterId ? normalizeChapterOutput(await db("t_storyChapter").where({ id: nextChapterId }).first()) : null,
     state,
     message: null,
     chapterSwitchMessage: null,
@@ -1015,6 +1076,13 @@ export async function orchestrateSessionTurn(sessionIdInput: string): Promise<Se
   const rawRecentMessages = await db("t_sessionMessage").where({ sessionId }).orderBy("id", "desc").limit(20);
   const recentMessages = buildRecentMessages(rawRecentMessages);
   const finalizeOrchestrationResult = async (result: SessionOrchestrationResult): Promise<SessionOrchestrationResult> => {
+    const activeChapter = result.chapterId
+      ? normalizeChapterOutput(await db("t_storyChapter").where({ id: result.chapterId }).first())
+      : null;
+    if (activeChapter) {
+      initializeChapterProgressForState(activeChapter, state);
+      syncChapterProgressWithRuntime(activeChapter, state);
+    }
     const expectedSpeaker = buildSessionExpectedSpeaker(state);
     setPendingSessionNarrativePlan(state, result.plan);
     await db("t_gameSession").where({ sessionId }).update({
@@ -1055,8 +1123,6 @@ export async function orchestrateSessionTurn(sessionIdInput: string): Promise<Se
           awaitUser: false,
           nextRole: String(state.narrator?.name || "旁白"),
           nextRoleType: "narrator",
-          chapterOutcome: "continue",
-          nextChapterId: null,
           source: "fallback",
           triggerMemoryAgent: false,
           eventType: String(openingMessage.eventType || "on_enter_chapter"),
@@ -1072,13 +1138,15 @@ export async function orchestrateSessionTurn(sessionIdInput: string): Promise<Se
       recentMessages: [],
       playerMessage: "",
       maxRetries: 0,
+      allowControlHints: false,
+      allowStateDelta: false,
     });
     applyOrchestratorResultToState(state, plan);
     applyNarrativeMemoryHintsToState(state, plan.memoryHints);
     applyPlanTurnStateToSessionState(state, world, plan);
     return finalizeOrchestrationResult({
       sessionId,
-      status: plan.chapterOutcome === "failed" ? "failed" : sessionStatus,
+      status: sessionStatus,
       chapterId: Number(chapter.id || 0) || null,
       expectedRole: "",
       expectedRoleType: "",
@@ -1143,15 +1211,29 @@ export async function orchestrateSessionTurn(sessionIdInput: string): Promise<Se
     recentMessages,
     playerMessage: "",
     maxRetries: 0,
+    allowControlHints: false,
+    allowStateDelta: false,
   });
   applyOrchestratorResultToState(state, plan);
   applyNarrativeMemoryHintsToState(state, plan.memoryHints);
+  const latestRecentMessage = recentMessages[recentMessages.length - 1];
+  const mergedOutcome = evaluateRuntimeOutcome({
+    chapter,
+    state,
+    messageContent: String(latestRecentMessage?.content || ""),
+    eventType: String(latestRecentMessage?.eventType || "on_message"),
+    meta: {},
+    fallbackStatus: sessionStatus,
+    fallbackChapterId: Number(chapter.id || 0) || null,
+    applyToState: true,
+  });
 
-  let nextStatus = plan.chapterOutcome === "failed" ? "failed" : sessionStatus;
-  let nextChapterId = Number(chapter.id || 0) || null;
+  let nextStatus = mergedOutcome.sessionStatus;
+  let nextChapterId = mergedOutcome.nextChapterId;
   let nextChapter = chapter;
-  if (plan.chapterOutcome === "success") {
-    const resolvedNextChapterId = Number(plan.nextChapterId || 0) || await resolveNextChapterIdByOrder(db, Number(sessionRow.worldId || 0), Number(chapter.id || 0));
+  if (mergedOutcome.outcome === "success") {
+    const resolvedNextChapterId = Number(mergedOutcome.nextChapterId || 0)
+      || await resolveNextChapterIdByOrder(db, Number(sessionRow.worldId || 0), Number(chapter.id || 0));
     if (resolvedNextChapterId && resolvedNextChapterId !== Number(chapter.id || 0)) {
       const resolvedNextChapter = normalizeChapterOutput(await db("t_storyChapter").where({ id: resolvedNextChapterId }).first());
       if (resolvedNextChapter) {
@@ -1207,8 +1289,8 @@ export async function commitSessionNarrativeTurn(input: CommitSessionNarrativeTu
     world,
   );
   const pendingPlan = getPendingSessionNarrativePlan(state);
-  const nextChapterId = Number(input.chapterId || prevChapterId || 0) || null;
-  const sessionStatus = String(input.status || prevStatus || "active").trim() || "active";
+  let nextChapterId = Number(input.chapterId || prevChapterId || 0) || null;
+  let sessionStatus = String(input.status || prevStatus || "active").trim() || "active";
   const createTime = Number(input.createTime || now) || now;
   const insertedRows = await insertSessionNarrativeMessages({
     db,
@@ -1225,6 +1307,33 @@ export async function commitSessionNarrativeTurn(input: CommitSessionNarrativeTu
     eventTypeFallback: String(input.eventType || pendingPlan?.eventType || "on_orchestrated_reply"),
   });
   setPendingSessionNarrativePlan(state, null);
+  const chapter = nextChapterId
+    ? normalizeChapterOutput(await db("t_storyChapter").where({ id: nextChapterId }).first())
+    : null;
+  if (chapter) {
+    const latestGeneratedMessage = insertedRows[insertedRows.length - 1];
+    const mergedOutcome = evaluateRuntimeOutcome({
+      chapter,
+      state,
+      messageContent: String(latestGeneratedMessage?.content || input.content || ""),
+      eventType: String(latestGeneratedMessage?.eventType || input.eventType || pendingPlan?.eventType || "on_orchestrated_reply"),
+      meta: {},
+      fallbackStatus: sessionStatus,
+      fallbackChapterId: nextChapterId,
+      applyToState: true,
+    });
+    sessionStatus = mergedOutcome.sessionStatus;
+    nextChapterId = mergedOutcome.nextChapterId;
+    if (sessionStatus === "chapter_completed" && (!nextChapterId || nextChapterId === prevChapterId)) {
+      const resolvedNextChapterId = await resolveNextChapterIdByOrder(db, Number(sessionRow.worldId || 0), prevChapterId);
+      if (resolvedNextChapterId && resolvedNextChapterId !== prevChapterId) {
+        nextChapterId = resolvedNextChapterId;
+        sessionStatus = "active";
+      }
+    }
+    initializeChapterProgressForState(chapter, state);
+    syncChapterProgressWithRuntime(chapter, state);
+  }
   const stateJson = toJsonText(state, {});
   await db("t_gameSession").where({ sessionId }).update({
     stateJson,
@@ -1247,18 +1356,18 @@ export async function commitSessionNarrativeTurn(input: CommitSessionNarrativeTu
       round: Number(state.round || 0),
     },
   });
-  const chapter = nextChapterId
-    ? normalizeChapterOutput(await db("t_storyChapter").where({ id: nextChapterId }).first())
-    : null;
   scheduleSessionRoleParameterCardRefresh({
     userId: currentUserId,
     world,
   });
+  const activeChapter = nextChapterId
+    ? normalizeChapterOutput(await db("t_storyChapter").where({ id: nextChapterId }).first())
+    : null;
   return {
     sessionId,
     status: sessionStatus,
     chapterId: nextChapterId,
-    chapter,
+    chapter: activeChapter,
     state,
     message: null,
     chapterSwitchMessage: null,

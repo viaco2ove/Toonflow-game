@@ -27,6 +27,62 @@ export interface ChapterDialogueLine {
   line: string;
 }
 
+export interface ChapterProgressState {
+  phaseId: string;
+  phaseIndex: number;
+  userNodeId: string;
+  userNodeIndex: number;
+  userNodeStatus: "idle" | "waiting_input" | "completed" | "skipped";
+  completedEvents: string[];
+  pendingGoal: string;
+  fixedOutcomeLocked: boolean;
+  lastEvaluatedMessageId: number;
+}
+
+export interface ChapterRuntimeUserNode {
+  id: string;
+  label: string;
+  triggerHint: string;
+  promptRole: string;
+  promptText: string;
+  suggestions: string[];
+}
+
+export interface ChapterRuntimePhase {
+  id: string;
+  label: string;
+  kind: "opening" | "scene" | "user" | "fixed";
+  targetSummary: string;
+  userNodeId: string | null;
+  allowedSpeakers: string[];
+  nextPhaseIds: string[];
+  defaultNextPhaseId: string | null;
+  requiredEventIds: string[];
+  completionEventIds: string[];
+  advanceSignals: string[];
+  relatedFixedEventIds: string[];
+}
+
+export interface ChapterRuntimeOutline {
+  openingMessages: Array<{
+    role: string;
+    roleType: string;
+    content: string;
+  }>;
+  phases: ChapterRuntimePhase[];
+  userNodes: ChapterRuntimeUserNode[];
+  fixedEvents: Array<{
+    id: string;
+    label: string;
+    requiredBeforeFinish: boolean;
+  }>;
+  endingRules: {
+    success: string[];
+    failure: string[];
+    nextChapterId: number | null;
+  };
+}
+
 const DEFAULT_PLAYER_ROLE: JsonRecord = {
   id: "player",
   name: "用户",
@@ -106,6 +162,457 @@ function splitParagraphs(input: string): string[] {
     .split(/\n\s*\n+/)
     .map((item) => item.trim())
     .filter(Boolean);
+}
+
+function slugifyRuntimeKey(input: unknown, fallback: string): string {
+  const text = normalizeEditorText(input)
+    .toLowerCase()
+    .replace(/[^a-z0-9\u4e00-\u9fa5]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  return text || fallback;
+}
+
+function normalizeSuggestionList(input: string): string[] {
+  return String(input || "")
+    .replace(/\r\n/g, "\n")
+    .split("\n")
+    .map((item) => item.trim())
+    .filter((item) => /^[-*]\s+/.test(item))
+    .map((item) => item.replace(/^[-*]\s+/, "").trim())
+    .filter(Boolean);
+}
+
+function normalizeRuntimeSummary(input: string, fallback: string): string {
+  const text = String(input || "")
+    .replace(/\r\n/g, "\n")
+    .replace(/^@([^:\n：]+)\s*[:：]\s*/gm, "")
+    .replace(/^[-*]\s+/gm, "")
+    .replace(/\n+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return text.slice(0, 80) || fallback;
+}
+
+function normalizePhaseSignalList(input: unknown[]): string[] {
+  return Array.from(new Set(
+    (Array.isArray(input) ? input : [])
+      .map((item) => normalizeEditorText(item))
+      .filter(Boolean)
+      .map((item) => item.slice(0, 80)),
+  ));
+}
+
+function splitRuntimeDirectiveItems(input: string): string[] {
+  return String(input || "")
+    .replace(/\r\n/g, "\n")
+    .split(/[\n,，;；|]+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function getUserNodeRuntimeMarker(userNodeId: string): string {
+  return `user_node:${String(userNodeId || "").trim()}`;
+}
+
+function getPhaseRuntimeMarker(phaseId: string): string {
+  return `phase:${String(phaseId || "").trim()}`;
+}
+
+function isUserNodeHeading(input: string): boolean {
+  return /用户行动|用户交互|用户节点|唯一干预机会/u.test(String(input || ""));
+}
+
+function extractRuntimeSections(input: unknown): Array<{ heading: string; body: string }> {
+  const text = normalizeEditorText(input);
+  if (!text) return [];
+  const headingRegex = /^##\s*(.+)$/gm;
+  const sections: Array<{ heading: string; body: string }> = [];
+  const matches = Array.from(text.matchAll(headingRegex));
+  for (let i = 0; i < matches.length; i += 1) {
+    const current = matches[i];
+    const next = matches[i + 1];
+    const bodyStart = (current.index ?? 0) + current[0].length;
+    const bodyEnd = next?.index ?? text.length;
+    sections.push({
+      heading: String(current[1] || "").trim(),
+      body: text.slice(bodyStart, bodyEnd).trim(),
+    });
+  }
+  return sections;
+}
+
+function parsePhaseDirectiveLines(input: string): {
+  cleanedBody: string;
+  allowedSpeakers: string[];
+  nextPhaseRefs: string[];
+  defaultNextPhaseRef: string | null;
+  requiredEventIds: string[];
+  completionEventIds: string[];
+  advanceSignals: string[];
+  relatedFixedEventIds: string[];
+} {
+  const lines = String(input || "").replace(/\r\n/g, "\n").split("\n");
+  const cleanedLines: string[] = [];
+  const allowedSpeakers: string[] = [];
+  const nextPhaseRefs: string[] = [];
+  let defaultNextPhaseRef = "";
+  const requiredEventIds: string[] = [];
+  const completionEventIds: string[] = [];
+  const advanceSignals: string[] = [];
+  const relatedFixedEventIds: string[] = [];
+  for (const rawLine of lines) {
+    const line = String(rawLine || "").trim();
+    if (!line) {
+      cleanedLines.push(rawLine);
+      continue;
+    }
+    let matched = line.match(/^@(?:下一阶段|phase_next)\s*[:：]\s*(.+)$/i);
+    if (matched) {
+      nextPhaseRefs.push(...splitRuntimeDirectiveItems(String(matched[1] || "")));
+      continue;
+    }
+    matched = line.match(/^@(?:默认下一阶段|default_next_phase)\s*[:：]\s*(.+)$/i);
+    if (matched) {
+      defaultNextPhaseRef = splitRuntimeDirectiveItems(String(matched[1] || ""))[0] || "";
+      continue;
+    }
+    matched = line.match(/^@(?:允许角色|allowed_speakers)\s*[:：]\s*(.+)$/i);
+    if (matched) {
+      allowedSpeakers.push(...splitRuntimeDirectiveItems(String(matched[1] || "")));
+      continue;
+    }
+    matched = line.match(/^@(?:阶段前置|phase_requires)\s*[:：]\s*(.+)$/i);
+    if (matched) {
+      requiredEventIds.push(...splitRuntimeDirectiveItems(String(matched[1] || "")));
+      continue;
+    }
+    matched = line.match(/^@(?:阶段完成|phase_completion)\s*[:：]\s*(.+)$/i);
+    if (matched) {
+      completionEventIds.push(...splitRuntimeDirectiveItems(String(matched[1] || "")));
+      continue;
+    }
+    matched = line.match(/^@(?:阶段信号|phase_signals)\s*[:：]\s*(.+)$/i);
+    if (matched) {
+      advanceSignals.push(...splitRuntimeDirectiveItems(String(matched[1] || "")));
+      continue;
+    }
+    matched = line.match(/^@(?:关联结果|phase_fixed_events)\s*[:：]\s*(.+)$/i);
+    if (matched) {
+      relatedFixedEventIds.push(...splitRuntimeDirectiveItems(String(matched[1] || "")));
+      continue;
+    }
+    cleanedLines.push(rawLine);
+  }
+  return {
+    cleanedBody: cleanedLines.join("\n").trim(),
+    allowedSpeakers: Array.from(new Set(allowedSpeakers)),
+    nextPhaseRefs: Array.from(new Set(nextPhaseRefs)),
+    defaultNextPhaseRef: defaultNextPhaseRef.trim() || null,
+    requiredEventIds: Array.from(new Set(requiredEventIds)),
+    completionEventIds: Array.from(new Set(completionEventIds)),
+    advanceSignals: normalizePhaseSignalList(advanceSignals),
+    relatedFixedEventIds: Array.from(new Set(relatedFixedEventIds)),
+  };
+}
+
+function resolvePhaseReference(
+  input: unknown,
+  phases: Array<{ id: string; label: string }>,
+): string | null {
+  const raw = normalizeEditorText(input);
+  if (!raw) return null;
+  const normalizedRaw = raw.toLowerCase();
+  const slug = slugifyRuntimeKey(raw, "");
+  const matched = phases.find((item) => {
+    const id = String(item.id || "").trim();
+    const label = String(item.label || "").trim();
+    return id === raw
+      || id.toLowerCase() === normalizedRaw
+      || label === raw
+      || label.toLowerCase() === normalizedRaw
+      || slugifyRuntimeKey(label, "") === slug;
+  });
+  return matched?.id || null;
+}
+
+function extractRuntimeUserNodesFromContent(input: unknown): ChapterRuntimeUserNode[] {
+  return extractRuntimeSections(input)
+    .filter((section) => isUserNodeHeading(section.heading))
+    .map((section, index) => {
+      const phaseDirectives = parsePhaseDirectiveLines(section.body);
+      const promptRoleMatch = phaseDirectives.cleanedBody.match(/@([^:\n：]+)\s*[:：]/);
+      return {
+        id: `user_node_${index + 1}_${slugifyRuntimeKey(section.heading, String(index + 1))}`,
+        label: section.heading,
+        triggerHint: section.heading,
+        promptRole: String(promptRoleMatch?.[1] || "系统").trim() || "系统",
+        promptText: phaseDirectives.cleanedBody,
+        suggestions: normalizeSuggestionList(phaseDirectives.cleanedBody),
+      };
+    });
+}
+
+function extractDialogueSignalsFromSectionBody(input: string): string[] {
+  const lines = String(input || "")
+    .replace(/\r\n/g, "\n")
+    .split("\n")
+    .map((item) => item.trim())
+    .filter(Boolean);
+  const signals: string[] = [];
+  for (const line of lines) {
+    const matched = line.match(/^@([^:\n：]+)\s*[:：]\s*(.+)$/);
+    if (!matched) continue;
+    const role = String(matched[1] || "").trim();
+    const content = String(matched[2] || "").trim();
+    if (role) signals.push(role);
+    if (content) signals.push(content.slice(0, 80));
+  }
+  return normalizePhaseSignalList(signals);
+}
+
+function collectRelatedFixedEventIds(
+  section: { heading: string; body: string },
+  fixedEvents: ChapterRuntimeOutline["fixedEvents"],
+): string[] {
+  const sectionText = normalizeRuntimeSummary(`${section.heading}\n${section.body}`, section.heading);
+  return fixedEvents
+    .filter((item) => {
+      const label = String(item.label || "").trim();
+      if (!label) return false;
+      return sectionText.includes(label) || label.includes(section.heading) || section.heading.includes(label);
+    })
+    .map((item) => item.id);
+}
+
+function extractRuntimePhasesFromContent(
+  input: unknown,
+  userNodes: ChapterRuntimeUserNode[],
+  fixedEvents: ChapterRuntimeOutline["fixedEvents"],
+): ChapterRuntimePhase[] {
+  const sections = extractRuntimeSections(input);
+  if (!sections.length) return [];
+  const phaseDrafts: Array<ChapterRuntimePhase & {
+    nextPhaseRefs: string[];
+    defaultNextPhaseRef: string | null;
+  }> = [];
+  let userNodeCursor = 0;
+  let previousPhaseId = "";
+  sections.forEach((section, index) => {
+    const phaseDirectives = parsePhaseDirectiveLines(section.body);
+    const isUserPhase = isUserNodeHeading(section.heading);
+    const userNode = isUserPhase ? userNodes[userNodeCursor] || null : null;
+    if (isUserPhase) {
+      userNodeCursor += 1;
+    }
+    const phaseId = `phase_${index + 1}_${slugifyRuntimeKey(section.heading, String(index + 1))}`;
+    const relatedFixedEventIds = phaseDirectives.relatedFixedEventIds.length
+      ? phaseDirectives.relatedFixedEventIds
+      : collectRelatedFixedEventIds({
+        heading: section.heading,
+        body: phaseDirectives.cleanedBody,
+      }, fixedEvents);
+    phaseDrafts.push({
+      id: phaseId,
+      label: section.heading || `阶段 ${index + 1}`,
+      kind: isUserPhase ? "user" : "scene",
+      targetSummary: normalizeRuntimeSummary(phaseDirectives.cleanedBody, section.heading || `阶段 ${index + 1}`),
+      userNodeId: userNode?.id || null,
+      allowedSpeakers: Array.from(new Set([
+        ...phaseDirectives.allowedSpeakers,
+        ...(isUserPhase ? [userNode?.promptRole || "系统"] : []),
+      ].filter(Boolean))),
+      nextPhaseIds: [],
+      defaultNextPhaseId: null,
+      requiredEventIds: phaseDirectives.requiredEventIds.length
+        ? phaseDirectives.requiredEventIds
+        : (previousPhaseId ? [getPhaseRuntimeMarker(previousPhaseId)] : []),
+      completionEventIds: phaseDirectives.completionEventIds.length
+        ? phaseDirectives.completionEventIds
+        : (isUserPhase
+          ? (userNode?.id ? [getUserNodeRuntimeMarker(userNode.id)] : [])
+          : relatedFixedEventIds),
+      advanceSignals: normalizePhaseSignalList([
+        section.heading,
+        normalizeRuntimeSummary(phaseDirectives.cleanedBody, section.heading || `阶段 ${index + 1}`),
+        ...phaseDirectives.advanceSignals,
+        ...extractDialogueSignalsFromSectionBody(phaseDirectives.cleanedBody),
+      ]),
+      relatedFixedEventIds,
+      nextPhaseRefs: phaseDirectives.nextPhaseRefs,
+      defaultNextPhaseRef: phaseDirectives.defaultNextPhaseRef,
+    });
+    previousPhaseId = phaseId;
+  });
+  return phaseDrafts.map((draft, index) => {
+    const sequentialNextId = phaseDrafts[index + 1]?.id || null;
+    const nextPhaseIds = draft.nextPhaseRefs
+      .map((item) => resolvePhaseReference(item, phaseDrafts))
+      .filter((item): item is string => Boolean(item));
+    const defaultNextPhaseId = resolvePhaseReference(draft.defaultNextPhaseRef, phaseDrafts)
+      || nextPhaseIds[0]
+      || sequentialNextId;
+    return {
+      id: draft.id,
+      label: draft.label,
+      kind: draft.kind,
+      targetSummary: draft.targetSummary,
+      userNodeId: draft.userNodeId,
+      allowedSpeakers: draft.allowedSpeakers,
+      nextPhaseIds: nextPhaseIds.length ? Array.from(new Set(nextPhaseIds)) : (sequentialNextId ? [sequentialNextId] : []),
+      defaultNextPhaseId,
+      requiredEventIds: draft.requiredEventIds,
+      completionEventIds: draft.completionEventIds,
+      advanceSignals: draft.advanceSignals,
+      relatedFixedEventIds: draft.relatedFixedEventIds,
+    };
+  });
+}
+
+function buildFixedEventsFromCompletionCondition(input: unknown): ChapterRuntimeOutline["fixedEvents"] {
+  const condition = tryParseCondition(input);
+  if (typeof condition === "string" && condition.trim()) {
+    return [{
+      id: `fixed_event_${slugifyRuntimeKey(condition, "success")}`,
+      label: condition.trim(),
+      requiredBeforeFinish: true,
+    }];
+  }
+  if (isRecord(condition)) {
+    const successCondition = condition.success ?? condition.pass ?? condition.result ?? condition.outcome;
+    if (typeof successCondition === "string" && successCondition.trim()) {
+      return [{
+        id: `fixed_event_${slugifyRuntimeKey(successCondition, "success")}`,
+        label: successCondition.trim(),
+        requiredBeforeFinish: true,
+      }];
+    }
+  }
+  return [];
+}
+
+export function normalizeChapterRuntimeOutline(input: unknown): ChapterRuntimeOutline {
+  const base = parseJsonSafe<JsonRecord>(input, {});
+  const openingMessages = Array.isArray(base.openingMessages)
+    ? base.openingMessages
+      .map((item) => ({
+        role: String((item as any)?.role || "").trim(),
+        roleType: String((item as any)?.roleType || "narrator").trim() || "narrator",
+        content: String((item as any)?.content || "").trim(),
+      }))
+      .filter((item) => item.role && item.content)
+    : [];
+  const phases = Array.isArray(base.phases)
+    ? base.phases.map((item, index) => ({
+      id: String((item as any)?.id || `phase_${index + 1}`).trim() || `phase_${index + 1}`,
+      label: String((item as any)?.label || `阶段 ${index + 1}`).trim() || `阶段 ${index + 1}`,
+      kind: ["opening", "scene", "user", "fixed"].includes(String((item as any)?.kind || "").trim())
+        ? String((item as any)?.kind || "").trim() as ChapterRuntimePhase["kind"]
+        : "scene",
+      targetSummary: String((item as any)?.targetSummary || "").trim(),
+      userNodeId: String((item as any)?.userNodeId || "").trim() || null,
+      allowedSpeakers: Array.isArray((item as any)?.allowedSpeakers)
+        ? (item as any).allowedSpeakers.map((entry: unknown) => String(entry || "").trim()).filter(Boolean)
+        : [],
+      nextPhaseIds: Array.isArray((item as any)?.nextPhaseIds)
+        ? (item as any).nextPhaseIds.map((entry: unknown) => String(entry || "").trim()).filter(Boolean)
+        : [],
+      defaultNextPhaseId: String((item as any)?.defaultNextPhaseId || "").trim() || null,
+      requiredEventIds: Array.isArray((item as any)?.requiredEventIds)
+        ? (item as any).requiredEventIds.map((entry: unknown) => String(entry || "").trim()).filter(Boolean)
+        : [],
+      completionEventIds: Array.isArray((item as any)?.completionEventIds)
+        ? (item as any).completionEventIds.map((entry: unknown) => String(entry || "").trim()).filter(Boolean)
+        : [],
+      advanceSignals: Array.isArray((item as any)?.advanceSignals)
+        ? (item as any).advanceSignals.map((entry: unknown) => String(entry || "").trim()).filter(Boolean)
+        : [],
+      relatedFixedEventIds: Array.isArray((item as any)?.relatedFixedEventIds)
+        ? (item as any).relatedFixedEventIds.map((entry: unknown) => String(entry || "").trim()).filter(Boolean)
+        : [],
+    }))
+    : [];
+  const userNodes = Array.isArray(base.userNodes)
+    ? base.userNodes.map((item, index) => ({
+      id: String((item as any)?.id || `user_node_${index + 1}`).trim() || `user_node_${index + 1}`,
+      label: String((item as any)?.label || "").trim(),
+      triggerHint: String((item as any)?.triggerHint || "").trim(),
+      promptRole: String((item as any)?.promptRole || "系统").trim() || "系统",
+      promptText: String((item as any)?.promptText || "").trim(),
+      suggestions: Array.isArray((item as any)?.suggestions)
+        ? (item as any).suggestions.map((entry: unknown) => String(entry || "").trim()).filter(Boolean)
+        : [],
+    }))
+    : [];
+  const fixedEvents = Array.isArray(base.fixedEvents)
+    ? base.fixedEvents.map((item, index) => ({
+      id: String((item as any)?.id || `fixed_event_${index + 1}`).trim() || `fixed_event_${index + 1}`,
+      label: String((item as any)?.label || "").trim(),
+      requiredBeforeFinish: (item as any)?.requiredBeforeFinish !== false,
+    })).filter((item) => item.label)
+    : [];
+  const endingRulesRaw = isRecord(base.endingRules) ? base.endingRules : {};
+  const success = Array.isArray(endingRulesRaw.success)
+    ? endingRulesRaw.success.map((item) => String(item || "").trim()).filter(Boolean)
+    : [];
+  const failure = Array.isArray(endingRulesRaw.failure)
+    ? endingRulesRaw.failure.map((item) => String(item || "").trim()).filter(Boolean)
+    : [];
+  const nextChapterId = Number(endingRulesRaw.nextChapterId || 0);
+  return {
+    openingMessages,
+    phases,
+    userNodes,
+    fixedEvents,
+    endingRules: {
+      success,
+      failure,
+      nextChapterId: Number.isFinite(nextChapterId) && nextChapterId > 0 ? nextChapterId : null,
+    },
+  };
+}
+
+export function buildChapterRuntimeOutline(input: {
+  openingRole?: unknown;
+  openingText?: unknown;
+  content?: unknown;
+  completionCondition?: unknown;
+  runtimeOutline?: unknown;
+}): ChapterRuntimeOutline {
+  const normalizedExisting = normalizeChapterRuntimeOutline(input.runtimeOutline);
+  const openingMessages = normalizedExisting.openingMessages.length
+    ? normalizedExisting.openingMessages
+    : (() => {
+      const role = normalizeEditorText(input.openingRole) || "旁白";
+      const content = normalizeEditorText(input.openingText);
+      if (!content) return [];
+      return [{
+        role,
+        roleType: role === "旁白" ? "narrator" : "npc",
+        content,
+      }];
+    })();
+  const userNodes = normalizedExisting.userNodes.length
+    ? normalizedExisting.userNodes
+    : extractRuntimeUserNodesFromContent(input.content);
+  const fixedEvents = normalizedExisting.fixedEvents.length
+    ? normalizedExisting.fixedEvents
+    : buildFixedEventsFromCompletionCondition(input.completionCondition);
+  const phases = normalizedExisting.phases.length
+    ? normalizedExisting.phases
+    : extractRuntimePhasesFromContent(input.content, userNodes, fixedEvents);
+  return {
+    openingMessages,
+    phases,
+    userNodes,
+    fixedEvents,
+    endingRules: {
+      success: normalizedExisting.endingRules.success.length
+        ? normalizedExisting.endingRules.success
+        : fixedEvents.filter((item) => item.requiredBeforeFinish).map((item) => item.id),
+      failure: normalizedExisting.endingRules.failure,
+      nextChapterId: normalizedExisting.endingRules.nextChapterId,
+    },
+  };
 }
 
 function normalizeChapterTitle(input: unknown, sort: unknown): string {
@@ -468,6 +975,61 @@ function normalizeRuntimeNpcMap(rawNpcs: unknown, npcRolesRaw: unknown): JsonRec
   return normalized;
 }
 
+const DEFAULT_CHAPTER_PROGRESS_STATE: ChapterProgressState = {
+  phaseId: "",
+  phaseIndex: 0,
+  userNodeId: "",
+  userNodeIndex: -1,
+  userNodeStatus: "idle",
+  completedEvents: [],
+  pendingGoal: "",
+  fixedOutcomeLocked: false,
+  lastEvaluatedMessageId: 0,
+};
+
+function normalizeChapterProgressStatus(input: unknown): ChapterProgressState["userNodeStatus"] {
+  const status = String(input || "").trim().toLowerCase();
+  if (status === "waiting_input") return "waiting_input";
+  if (status === "completed") return "completed";
+  if (status === "skipped") return "skipped";
+  return "idle";
+}
+
+export function normalizeChapterProgressState(raw: unknown): ChapterProgressState {
+  const base = parseJsonSafe<JsonRecord>(raw, {});
+  const completedEvents = Array.isArray(base.completedEvents)
+    ? base.completedEvents.map((item) => String(item || "").trim()).filter(Boolean)
+    : [];
+  return {
+    phaseId: String(base.phaseId || "").trim(),
+    phaseIndex: Number.isFinite(Number(base.phaseIndex)) ? Math.max(0, Number(base.phaseIndex)) : DEFAULT_CHAPTER_PROGRESS_STATE.phaseIndex,
+    userNodeId: String(base.userNodeId || "").trim(),
+    userNodeIndex: Number.isFinite(Number(base.userNodeIndex)) ? Number(base.userNodeIndex) : DEFAULT_CHAPTER_PROGRESS_STATE.userNodeIndex,
+    userNodeStatus: normalizeChapterProgressStatus(base.userNodeStatus),
+    completedEvents: Array.from(new Set(completedEvents)),
+    pendingGoal: String(base.pendingGoal || "").trim(),
+    fixedOutcomeLocked: base.fixedOutcomeLocked === true,
+    lastEvaluatedMessageId: Number.isFinite(Number(base.lastEvaluatedMessageId))
+      ? Math.max(0, Number(base.lastEvaluatedMessageId))
+      : DEFAULT_CHAPTER_PROGRESS_STATE.lastEvaluatedMessageId,
+  };
+}
+
+export function readChapterProgressState(state: unknown): ChapterProgressState {
+  if (!isRecord(state)) return normalizeChapterProgressState(undefined);
+  return normalizeChapterProgressState(state.chapterProgress);
+}
+
+export function setChapterProgressState(state: JsonRecord, patch: Partial<ChapterProgressState>): ChapterProgressState {
+  const current = readChapterProgressState(state);
+  const next = normalizeChapterProgressState({
+    ...current,
+    ...patch,
+  });
+  state.chapterProgress = next;
+  return next;
+}
+
 export function createGameSessionId(): string {
   return `gs_${Date.now()}_${u.uuid().replace(/-/g, "").slice(0, 10)}`;
 }
@@ -487,6 +1049,7 @@ export function normalizeSessionState(
   const player = isRecord(base.player) ? base.player : {};
   const narrator = isRecord(base.narrator) ? base.narrator : {};
   const rawTurnState = isRecord(base.turnState) ? base.turnState : {};
+  const chapterProgress = normalizeChapterProgressState(base.chapterProgress);
   const world = parseJsonSafe<JsonRecord>(worldRaw, {});
   const settings = normalizeWorldSettings(world.settings, {
     coverPath: world.coverPath,
@@ -519,6 +1082,7 @@ export function normalizeSessionState(
     inventory: Array.isArray(base.inventory) ? base.inventory : [],
     unlockedRoles: Array.isArray(base.unlockedRoles) ? base.unlockedRoles : [],
     recentEvents: Array.isArray(base.recentEvents) ? base.recentEvents : [],
+    chapterProgress,
     turnState: {
       canPlayerSpeak: typeof rawTurnState.canPlayerSpeak === "boolean" ? rawTurnState.canPlayerSpeak : true,
       expectedRoleType,
@@ -755,6 +1319,13 @@ export function normalizeChapterOutput(row: any): JsonRecord | null {
     entryCondition: row.entryCondition,
     completionCondition: row.completionCondition,
   });
+  const runtimeOutline = buildChapterRuntimeOutline({
+    openingRole: normalized.openingRole,
+    openingText: normalized.openingText,
+    content: normalized.content,
+    completionCondition: normalized.completionCondition,
+    runtimeOutline: row.runtimeOutline,
+  });
   return {
     ...row,
     title: normalizeChapterTitle(row.title, row.sort),
@@ -764,6 +1335,7 @@ export function normalizeChapterOutput(row: any): JsonRecord | null {
     showCompletionCondition: Boolean(Number(row.showCompletionCondition || 0)),
     entryCondition: normalized.entryCondition,
     completionCondition: normalized.completionCondition,
+    runtimeOutline,
   };
 }
 

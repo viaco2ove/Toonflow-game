@@ -1,4 +1,9 @@
 import { Knex } from "knex";
+import {
+  buildChapterRuntimeOutline,
+  normalizeChapterFields,
+  toJsonText,
+} from "@/lib/gameEngine";
 
 export default async (knex: Knex): Promise<void> => {
   const legacyVolcengineTextModelAliases: Record<string, string> = {
@@ -230,6 +235,51 @@ export default async (knex: Knex): Promise<void> => {
     }
   };
 
+  const backfillStoryChapterRuntimeOutline = async () => {
+    if (!(await knex.schema.hasTable("t_storyChapter"))) return;
+    const rows = await knex("t_storyChapter")
+      .select(
+        "id",
+        "openingRole",
+        "openingText",
+        "content",
+        "entryCondition",
+        "completionCondition",
+        "runtimeOutline",
+      )
+      .orderBy("id", "asc");
+    if (!rows.length) return;
+    let changed = 0;
+    for (const row of rows as Array<Record<string, unknown>>) {
+      const id = Number(row.id || 0);
+      if (id <= 0) continue;
+      const normalized = normalizeChapterFields({
+        content: row.content,
+        openingRole: row.openingRole,
+        openingText: row.openingText,
+        entryCondition: row.entryCondition,
+        completionCondition: row.completionCondition,
+      });
+      const runtimeOutline = buildChapterRuntimeOutline({
+        openingRole: normalized.openingRole,
+        openingText: normalized.openingText,
+        content: normalized.content,
+        completionCondition: normalized.completionCondition,
+        runtimeOutline: row.runtimeOutline,
+      });
+      // 老章节没有 runtimeOutline 时，启动修复阶段回填最小运行模板。
+      const nextOutlineText = toJsonText(runtimeOutline, {});
+      if (String(row.runtimeOutline || "") === nextOutlineText) continue;
+      await knex("t_storyChapter").where({ id }).update({
+        runtimeOutline: nextOutlineText,
+      });
+      changed += 1;
+    }
+    if (changed > 0) {
+      console.log(`[fixDB] backfilled story chapter runtime outlines: ${changed}`);
+    }
+  };
+
   await ensureTable("t_scriptSegment", (table) => {
     table.integer("id").notNullable();
     table.integer("scriptId").notNullable();
@@ -303,6 +353,7 @@ export default async (knex: Knex): Promise<void> => {
   await addColumn("t_storyChapter", "openingText", "text");
   await addColumn("t_storyChapter", "bgmPath", "text");
   await addColumn("t_storyChapter", "showCompletionCondition", "integer");
+  await addColumn("t_storyChapter", "runtimeOutline", "text");
 
   //更正字段
   await alterColumnType("t_config", "modelType", "text");
@@ -693,4 +744,5 @@ export default async (knex: Knex): Promise<void> => {
 
   await cleanupDuplicateStorySessions();
   await cleanupStoryChapterDrafts();
+  await backfillStoryChapterRuntimeOutline();
 };

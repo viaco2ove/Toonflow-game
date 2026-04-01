@@ -148,6 +148,8 @@ export async function buildChapterInitialSnapshotCache(input: {
     recentMessages: messages,
     playerMessage: "",
     maxRetries: 0,
+    allowControlHints: false,
+    allowStateDelta: false,
   });
   const orchestrated = await advanceNarrativeUntilPlayerTurn({
     userId: Number(input.userId || 0),

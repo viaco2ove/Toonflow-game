@@ -15,8 +15,6 @@ import {
   applyOrchestratorResultToState,
   applyPlayerProfileFromMessageToState,
   canPlayerSpeakNow,
-  evaluateDebugChapterOutcome,
-  resolveOpeningMessage,
   setRuntimeTurnState,
   runNarrativeOrchestrator,
   RuntimeMessageInput,
@@ -37,6 +35,10 @@ import {
   readDebugRuntimeKey,
   resolveNextChapter,
   setPendingDebugChapterId,
+  syncDebugChapterRuntime,
+  applyDebugUserMessageProgress,
+  applyDebugNarrativeMessageProgress,
+  evaluateDebugRuntimeOutcome,
 } from "./debugRuntimeShared";
 import u from "@/utils";
 
@@ -124,6 +126,7 @@ export default router.post(
       if (playerContent) {
         applyPlayerProfileFromMessageToState(state, world, playerContent);
       }
+      syncDebugChapterRuntime(chapter, state);
       const debugFreePlotActive = isDebugFreePlotActive(state);
       const effectiveChapter = debugFreePlotActive
         ? {
@@ -159,6 +162,7 @@ export default router.post(
             })));
           }
           state.chapterId = Number(nextChapter.id || 0);
+          syncDebugChapterRuntime(nextChapter, state);
           const nextOpeningRuntimeMessage = buildOpeningRuntimeMessage(world, nextChapter, String(rolePair.narratorRole.name || "旁白"));
           setRuntimeTurnState(state, world, {
             canPlayerSpeak: false,
@@ -179,6 +183,7 @@ export default router.post(
         }
 
         if (!messages.length) {
+          syncDebugChapterRuntime(chapter, state);
           const openingRuntimeMessage = buildOpeningRuntimeMessage(world, chapter, String(rolePair.narratorRole.name || "旁白"));
           setRuntimeTurnState(state, world, {
             canPlayerSpeak: false,
@@ -218,6 +223,8 @@ export default router.post(
           recentMessages,
           playerMessage: "",
           maxRetries: 0,
+          allowControlHints: false,
+          allowStateDelta: false,
         });
         applyOrchestratorResultToState(state, orchestrator);
         const emittedMessage = orchestrator.role && orchestrator.content
@@ -239,8 +246,25 @@ export default router.post(
             recentMessages: emittedMessage ? [...recentMessages, emittedMessage] : recentMessages,
           });
         }
+        const phaseAdvance = emittedMessage
+          ? applyDebugNarrativeMessageProgress({
+            chapter,
+            state,
+            role: emittedMessage.role,
+            roleType: emittedMessage.roleType,
+            content: emittedMessage.content,
+          })
+          : { enteredUserPhase: false };
+        const outcome = evaluateDebugRuntimeOutcome({
+          chapter,
+          state,
+          messageContent: String(emittedMessage?.content || ""),
+          eventType: String(emittedMessage?.eventType || "on_orchestrated_reply"),
+          meta: {},
+          debugFreePlotActive,
+        });
 
-        if (!debugFreePlotActive && orchestrator.chapterOutcome === "failed") {
+        if (outcome.result === "failed") {
           setRuntimeTurnState(state, world, {
             canPlayerSpeak: false,
             expectedRoleType: String(orchestrator.nextRoleType || "narrator"),
@@ -259,8 +283,8 @@ export default router.post(
           })));
         }
 
-        if (!debugFreePlotActive && orchestrator.chapterOutcome === "success") {
-          const nextChapter = await resolveNextChapter(db, worldId, chapter, orchestrator.nextChapterId);
+        if (outcome.result === "success") {
+          const nextChapter = await resolveNextChapter(db, worldId, chapter, outcome.nextChapterId);
           if (!nextChapter) {
             (state as any).debugFreePlot = {
               active: true,
@@ -297,6 +321,7 @@ export default router.post(
             })));
           }
           state.chapterId = Number(nextChapter.id || 0);
+          syncDebugChapterRuntime(nextChapter, state);
           const nextOpeningRuntimeMessage = buildOpeningRuntimeMessage(world, nextChapter, String(rolePair.narratorRole.name || "旁白"));
           setRuntimeTurnState(state, world, {
             canPlayerSpeak: false,
@@ -316,7 +341,9 @@ export default router.post(
           })));
         }
 
-        const shouldYieldToPlayer = orchestrator.awaitUser || String(orchestrator.nextRoleType || "").trim().toLowerCase() === "player";
+        const shouldYieldToPlayer = phaseAdvance.enteredUserPhase
+          || orchestrator.awaitUser
+          || String(orchestrator.nextRoleType || "").trim().toLowerCase() === "player";
         if (shouldYieldToPlayer) {
           allowPlayerTurn(state, world, String(orchestrator.roleType || "narrator"), String(orchestrator.role || rolePair.narratorRole.name || "旁白"));
         } else {
@@ -370,7 +397,21 @@ export default router.post(
         })));
       }
 
-      const outcome = debugFreePlotActive ? { result: "continue" as const, nextChapterId: null } : evaluateDebugChapterOutcome(chapter, playerContent, recentMessages);
+      applyDebugUserMessageProgress({
+        chapter,
+        state,
+        messageContent: playerContent,
+        eventType: "on_message",
+        meta: {},
+      });
+      const outcome = evaluateDebugRuntimeOutcome({
+        chapter,
+        state,
+        messageContent: playerContent,
+        eventType: "on_message",
+        meta: {},
+        debugFreePlotActive,
+      });
       if (outcome.result === "failed") {
         return res.status(200).send(success(buildDebugSuccessPayload({
           userId,
@@ -407,6 +448,7 @@ export default router.post(
           })));
         }
         state.chapterId = Number(nextChapter.id || 0);
+        syncDebugChapterRuntime(nextChapter, state);
         const nextOpeningRuntimeMessage = buildOpeningRuntimeMessage(world, nextChapter, String(rolePair.narratorRole.name || "旁白"));
         setRuntimeTurnState(state, world, {
           canPlayerSpeak: false,
@@ -434,6 +476,8 @@ export default router.post(
         recentMessages,
         playerMessage: playerContent,
         maxRetries: 0,
+        allowControlHints: false,
+        allowStateDelta: false,
       });
       applyOrchestratorResultToState(state, orchestrator);
       const emittedMessage = orchestrator.role && orchestrator.content
@@ -455,8 +499,25 @@ export default router.post(
           recentMessages: emittedMessage ? [...recentMessages, emittedMessage] : recentMessages,
         });
       }
+      const phaseAdvance = emittedMessage
+        ? applyDebugNarrativeMessageProgress({
+          chapter,
+          state,
+          role: emittedMessage.role,
+          roleType: emittedMessage.roleType,
+          content: emittedMessage.content,
+        })
+        : { enteredUserPhase: false };
+      const narratedOutcome = evaluateDebugRuntimeOutcome({
+        chapter,
+        state,
+        messageContent: String(emittedMessage?.content || ""),
+        eventType: String(emittedMessage?.eventType || "on_orchestrated_reply"),
+        meta: {},
+        debugFreePlotActive,
+      });
 
-      if (!debugFreePlotActive && orchestrator.chapterOutcome === "failed") {
+      if (narratedOutcome.result === "failed") {
         return res.status(200).send(success(buildDebugSuccessPayload({
           userId,
           worldId,
@@ -468,8 +529,8 @@ export default router.post(
         })));
       }
 
-      if (!debugFreePlotActive && orchestrator.chapterOutcome === "success") {
-        const nextChapter = await resolveNextChapter(db, worldId, chapter, orchestrator.nextChapterId);
+      if (narratedOutcome.result === "success") {
+        const nextChapter = await resolveNextChapter(db, worldId, chapter, narratedOutcome.nextChapterId);
         if (!nextChapter) {
           (state as any).debugFreePlot = {
             active: true,
@@ -506,6 +567,7 @@ export default router.post(
           })));
         }
         state.chapterId = Number(nextChapter.id || 0);
+        syncDebugChapterRuntime(nextChapter, state);
         const nextOpeningRuntimeMessage = buildOpeningRuntimeMessage(world, nextChapter, String(rolePair.narratorRole.name || "旁白"));
         setRuntimeTurnState(state, world, {
           canPlayerSpeak: false,
@@ -525,7 +587,9 @@ export default router.post(
         })));
       }
 
-      const shouldYieldToPlayer = orchestrator.awaitUser || String(orchestrator.nextRoleType || "").trim().toLowerCase() === "player";
+      const shouldYieldToPlayer = phaseAdvance.enteredUserPhase
+        || orchestrator.awaitUser
+        || String(orchestrator.nextRoleType || "").trim().toLowerCase() === "player";
       if (shouldYieldToPlayer) {
         allowPlayerTurn(state, world, String(orchestrator.roleType || "narrator"), String(orchestrator.role || rolePair.narratorRole.name || "旁白"));
       } else {

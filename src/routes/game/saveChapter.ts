@@ -3,6 +3,7 @@ import { z } from "zod";
 import { validateFields } from "@/middleware/middleware";
 import { error, success } from "@/lib/responseFormat";
 import {
+  buildChapterRuntimeOutline,
   getGameDb,
   normalizeChapterFields,
   normalizeChapterOutput,
@@ -29,6 +30,7 @@ export default router.post(
     content: z.string().optional().nullable(),
     entryCondition: z.any().optional().nullable(),
     completionCondition: z.any().optional().nullable(),
+    runtimeOutline: z.any().optional().nullable(),
     sort: z.number().optional().nullable(),
     status: z.string().optional().nullable(),
   }),
@@ -47,6 +49,7 @@ export default router.post(
         content,
         entryCondition,
         completionCondition,
+        runtimeOutline,
         sort,
         status,
       } = req.body;
@@ -56,6 +59,13 @@ export default router.post(
         openingText,
         entryCondition,
         completionCondition,
+      });
+      const runtimeOutline = buildChapterRuntimeOutline({
+        openingRole: normalizedChapter.openingRole,
+        openingText: normalizedChapter.openingText,
+        content: normalizedChapter.content,
+        completionCondition: normalizedChapter.completionCondition,
+        runtimeOutline,
       });
       const db = getGameDb();
       const now = nowTs();
@@ -88,6 +98,8 @@ export default router.post(
         content: normalizedChapter.content,
         entryCondition: toJsonText(normalizedChapter.entryCondition, null),
         completionCondition: toJsonText(normalizedChapter.completionCondition, null),
+        // 章节保存时就固化最小运行模板，避免游玩时每次临时推断。
+        runtimeOutline: toJsonText(runtimeOutline, {}),
         sort: Number.isFinite(sortNum) ? sortNum : 0,
         status: String(status || "draft").trim() || "draft",
         updateTime: now,

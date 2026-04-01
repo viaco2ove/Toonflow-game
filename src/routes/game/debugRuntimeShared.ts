@@ -8,10 +8,23 @@ import {
   nowTs,
 } from "@/lib/gameEngine";
 import {
+  advanceChapterProgressAfterNarrative,
+  initializeChapterProgressForState,
+  markCurrentUserNodeCompleted,
+  recordChapterProgressSignals,
+  syncChapterProgressWithRuntime,
+} from "@/modules/game-runtime/engines/ChapterProgressEngine";
+import {
   resolveOpeningMessage,
   RuntimeMessageInput,
   setRuntimeTurnState,
 } from "@/modules/game-runtime/engines/NarrativeOrchestrator";
+import { evaluateRuntimeOutcome } from "@/modules/game-runtime/services/ChapterRuntimeService";
+import {
+  AppliedDelta,
+  TaskProgressChange,
+  TriggerHit,
+} from "@/modules/game-runtime/types/runtime";
 
 const router = express.Router();
 const DEBUG_RUNTIME_CACHE_TTL_MS = 1000 * 60 * 60;
@@ -245,6 +258,107 @@ export function buildDebugRecentMessages(
       createTime: nowTs(),
     },
   ];
+}
+
+export function syncDebugChapterRuntime(chapter: any, state: Record<string, any>) {
+  if (!chapter) return;
+  initializeChapterProgressForState(chapter, state);
+  syncChapterProgressWithRuntime(chapter, state);
+}
+
+export function applyDebugUserMessageProgress(params: {
+  chapter: any;
+  state: Record<string, any>;
+  messageContent: string;
+  eventType?: string;
+  meta?: Record<string, any>;
+  messageId?: number | null;
+  triggered?: TriggerHit[];
+  taskProgress?: TaskProgressChange[];
+  deltas?: AppliedDelta[];
+}) {
+  if (!params.chapter) {
+    return;
+  }
+  syncDebugChapterRuntime(params.chapter, params.state);
+  markCurrentUserNodeCompleted(params.chapter, params.state, params.messageId ?? null);
+  recordChapterProgressSignals(params.chapter, params.state, {
+    messageContent: params.messageContent,
+    messageRole: String(params.state.player?.name || "用户"),
+    messageRoleType: "player",
+    triggered: params.triggered,
+    taskProgress: params.taskProgress,
+    deltas: params.deltas,
+  });
+  syncDebugChapterRuntime(params.chapter, params.state);
+}
+
+export function applyDebugNarrativeMessageProgress(params: {
+  chapter: any;
+  state: Record<string, any>;
+  role?: string;
+  roleType?: string;
+  content?: string;
+  triggered?: TriggerHit[];
+  taskProgress?: TaskProgressChange[];
+  deltas?: AppliedDelta[];
+}) {
+  if (!params.chapter) {
+    return { enteredUserPhase: false };
+  }
+  syncDebugChapterRuntime(params.chapter, params.state);
+  const phaseAdvance = advanceChapterProgressAfterNarrative(params.chapter, params.state, {
+    messageContent: params.content,
+    messageRole: params.role,
+    messageRoleType: params.roleType,
+  });
+  recordChapterProgressSignals(params.chapter, params.state, {
+    messageContent: params.content,
+    messageRole: params.role,
+    messageRoleType: params.roleType,
+    triggered: params.triggered,
+    taskProgress: params.taskProgress,
+    deltas: params.deltas,
+  });
+  syncDebugChapterRuntime(params.chapter, params.state);
+  return {
+    enteredUserPhase: phaseAdvance.enteredUserPhase,
+  };
+}
+
+export function evaluateDebugRuntimeOutcome(params: {
+  chapter: any;
+  state: Record<string, any>;
+  messageContent?: string;
+  eventType?: string;
+  meta?: Record<string, any>;
+  debugFreePlotActive?: boolean;
+}) {
+  if (!params.chapter || params.debugFreePlotActive) {
+    return {
+      result: "continue" as const,
+      nextChapterId: null,
+      matchedBy: "none" as const,
+      matchedRule: null,
+      hasRule: false,
+    };
+  }
+  const resolved = evaluateRuntimeOutcome({
+    chapter: params.chapter,
+    state: params.state,
+    messageContent: params.messageContent,
+    eventType: params.eventType,
+    meta: params.meta,
+    applyToState: true,
+  });
+  if (resolved.outcome !== "continue") {
+    syncDebugChapterRuntime(params.chapter, params.state);
+  }
+  return {
+    ...resolved.evaluation,
+    result: resolved.outcome,
+    nextChapterId: resolved.nextChapterId,
+  };
 }
 
 export function normalizeDebugRuntimeState(rawState: unknown, worldId: number, chapterId: number, world: any) {

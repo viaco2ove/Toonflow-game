@@ -1490,6 +1490,7 @@ export default async (knex: Knex, forceInit: boolean = false): Promise<void> => 
         table.text("content");
         table.text("entryCondition");
         table.text("completionCondition");
+        table.text("runtimeOutline");
         table.integer("sort");
         table.text("status");
         table.integer("createTime");
