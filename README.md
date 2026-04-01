@@ -135,7 +135,7 @@ https://www.bilibili.com/video/BV1na6wB6Ea2
 从 GitHub / Gitee 自动拉取源码并构建镜像：
 
 ```shell
-docker-compose -f docker/docker-compose.yml up -d --build
+docker.md-compose -f docker.md/docker.md-compose.yml up -d --build
 ```
 
 **支持的构建参数：**
@@ -152,13 +152,13 @@ docker-compose -f docker/docker-compose.yml up -d --build
 
 ```shell
 # 使用 Gitee 源（国内推荐，速度更快）
-GIT=gitee docker-compose -f docker/docker-compose.yml up -d --build
+GIT=gitee docker.md-compose -f docker.md/docker.md-compose.yml up -d --build
 
 # 指定版本标签
-TAG=v1.0.6 docker-compose -f docker/docker-compose.yml up -d --build
+TAG=v1.0.6 docker.md-compose -f docker.md/docker.md-compose.yml up -d --build
 
 # 指定分支 + Gitee 源
-GIT=gitee BRANCH=dev docker-compose -f docker/docker-compose.yml up -d --build
+GIT=gitee BRANCH=dev docker.md-compose -f docker.md/docker.md-compose.yml up -d --build
 ```
 
 ### 方式二：本地构建
@@ -171,7 +171,7 @@ git clone https://github.com/HBAI-Ltd/Toonflow-app.git
 cd Toonflow-app
 
 # 使用本地源码构建
-docker-compose -f docker/docker-compose.local.yml up -d --build
+docker.md-compose -f docker.md/docker.md-compose.local.yml up -d --build
 ```
 
 ### 服务端口说明
@@ -196,19 +196,19 @@ volumes:
 
 ```shell
 # 查看容器状态
-docker-compose -f docker/docker-compose.yml ps
+docker.md-compose -f docker.md/docker.md-compose.yml ps
 
 # 查看实时日志
-docker-compose -f docker/docker-compose.yml logs -f
+docker.md-compose -f docker.md/docker.md-compose.yml logs -f
 
 # 停止服务
-docker-compose -f docker/docker-compose.yml down
+docker.md-compose -f docker.md/docker.md-compose.yml down
 
 # 重新构建并启动（更新版本时使用）
-docker-compose -f docker/docker-compose.yml up -d --build
+docker.md-compose -f docker.md/docker.md-compose.yml up -d --build
 
 # 进入容器调试
-docker exec -it toonflow sh
+docker.md exec -it toonflow sh
 ```
 
 > ⚠️ **首次登录**  

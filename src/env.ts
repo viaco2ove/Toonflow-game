@@ -32,8 +32,19 @@ function resolveEnvDir(currentEnv: string): string {
   return projectEnvDir;
 }
 
+function resolveDefaultNodeEnv(): string {
+  if (isPackaged) return "prod";
+  const entryFile = String(process.argv[1] || "").trim();
+  if (!entryFile) return "dev";
+  const normalizedEntry = entryFile.replace(/\\/g, "/");
+  if (normalizedEntry.endsWith("/build/app.js") || normalizedEntry.endsWith("/build/main.js")) {
+    return "prod";
+  }
+  return "dev";
+}
+
 //加载环境变量（打包环境默认使用 prod）
-const env = process.env.NODE_ENV ?? (isPackaged ? "prod" : "dev");
+const env = process.env.NODE_ENV ?? resolveDefaultNodeEnv();
 if (!env) {
   console.log("[env] empty NODE_ENV");
   process.exit(1);

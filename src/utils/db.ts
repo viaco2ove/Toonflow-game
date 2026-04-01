@@ -52,14 +52,20 @@ const db = knex({
   useNullAsDefault: true,
 });
 
-void (async () => {
+const isTypeGenerationRuntime = ["dev", "local"].includes((process.env.NODE_ENV || "").toLowerCase())
+  && !__filename.replace(/\\/g, "/").endsWith("/build/app.js")
+  && !__filename.replace(/\\/g, "/").endsWith("/build/main.js");
+
+export const dbBootstrapReady = (async () => {
   await withSqliteBusyRetry("configureSqlite", () => configureSqlite(db));
   await withSqliteBusyRetry("initDB", () => initDB(db));
   await withSqliteBusyRetry("fixDB", () => fixDB(db));
-  if (["dev", "local"].includes((process.env.NODE_ENV || "").toLowerCase())) {
+  if (isTypeGenerationRuntime) {
     await withSqliteBusyRetry("initKnexType", () => initKnexType(db));
   }
-})().catch((err) => {
+})();
+
+void dbBootstrapReady.catch((err) => {
   console.error("[db] bootstrap failed:", err);
 });
 

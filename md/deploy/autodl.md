@@ -40,8 +40,8 @@ TEMP_OSS=
 ## 启动
 
 ```bash
-cp docker/autodl.env.example docker/.env.autodl
-docker compose --env-file docker/.env.autodl -f docker/docker-compose.autodl.yml up -d --build
+cp docker.md/autodl.env.example docker.md/.env.autodl
+docker.md compose --env-file docker.md/.env.autodl -f docker.md/docker.md-compose.autodl.yml up -d --build
 ```
 
 ## 两种访问方式
@@ -119,3 +119,153 @@ compose 默认把数据挂到：
 - 镜像会复制 `res/voice-presets`，保证内置语音种子在容器里可用
 - 镜像安装了 `python3/python3-venv/python3-pip/ffmpeg`，便于运行本地 BiRefNet 和 GIF 转换链路
 - 当前本地 BiRefNet 仍是 CPU 版 `onnxruntime`，不会自动使用 AutoDL GPU
+
+
+## 部署流程（当前项目）
+### 1. 创建基础实例
+
+先创建一个 Linux 基础实例即可，建议：
+
+- 系统镜像：`Miniconda / Python3.10 / ubuntu22.04 / CUDA11.8` 或同类 Ubuntu 镜像
+- 磁盘：至少 `30GB`
+- 对外端口：后续使用 `6006` 或 `6008`
+
+示例：
+
+![img.png](img.png)
+
+### 2. 通过 SSH 进入实例
+
+推荐直接用 AutoDL 提供的 SSH 连接方式进入实例。
+
+进入后建议先准备基础工具：
+
+```bash
+apt-get update
+apt-get install -y git rsync
+apt-get install -y curl ca-certificates
+curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+apt-get install -y nodejs
+npm install -g yarn@1.22.22
+```
+
+### 3. 拉取当前项目仓库
+
+当前项目实际包含两部分：
+
+- 后端与 Docker 部署仓库：`toonflow-game-app`
+- 前端源码仓库：`Toonflow-game-web`
+
+因为 AutoDL 镜像最终复制的是本仓库的 `scripts/web`，所以如果你要部署“当前最新项目”，需要先在前端仓库构建，再把产物同步到本仓库。
+
+```bash
+cd /root
+git clone <你的 toonflow-game-app 仓库地址>
+git clone <你的 Toonflow-game-web 仓库地址>
+```
+
+如果仓库已经在实例里，直接 `git pull` 即可。
+
+### 4. 构建前端并同步到当前项目
+
+先构建前端：
+
+```bash
+cd /root/Toonflow-game-web
+yarn
+yarn build
+```
+
+然后把前端产物同步到当前项目的 `scripts/web`：
+
+```bash
+mkdir -p /root/toonflow-game-app/scripts/web
+rsync -a --delete /root/Toonflow-game-web/dist/ /root/toonflow-game-app/scripts/web/
+```
+
+说明：
+
+- `scripts/web/index.html` 是部署镜像真正使用的静态前端入口
+- 不先同步 `dist`，容器里跑的就不是当前前端代码
+
+### 5. 
+[run.md](run.md)
+
+### 6.nginx
+[run.nginx.md](run.nginx.md)
+
+### 8. 访问项目
+
+#### 方式一：SSH 隧道
+
+在本地建立到实例 `6006` 的隧道后，浏览器打开：
+
+```text
+http://127.0.0.1:6006/
+```
+
+#### 方式二：AutoDL 自定义服务
+
+如果实例已经暴露了 `6006` 的公网服务地址，直接访问该地址即可。
+
+### 9. 更新项目
+
+后续更新代码的最小流程：
+
+```bash
+cd /root/Toonflow-game-web
+git pull
+yarn build
+
+rsync -a --delete /root/Toonflow-game-web/dist/ /root/toonflow-game-app/scripts/web/
+
+cd /root/toonflow-game-app
+git pull
+docker.md compose --env-file docker.md/.env.autodl -f docker.md/docker.md-compose.autodl.yml up -d --build
+```
+
+### 10. 当前项目的关键注意点
+
+- 这套 AutoDL 部署只跑 Web + Node 服务，不包含 Electron GUI
+- 数据会持久化到宿主机 `data/autodl`
+- 前端构建来源是 `Toonflow-game-web`
+- 容器真正使用的是当前仓库里的 `scripts/web`
+- 如果图片、语音资源加载失败，优先检查 `AUTODL_PUBLIC_URL` 是否写对
+
+### 11.保存为镜像
+![img_1.png](img_1.png)
+
+AutoDL 官方现在明确支持把已配置好的实例保存为镜像，前提是：
+
+- 先关机 
+- 在实例的“更多操作”里点“保存镜像” 
+- 保存后到“镜像”菜单里查看
+- 以后新建实例或“更换镜像”时选这个镜像即可恢复原来的系统盘内容 
+来源：AutoDL 镜像文档 (https://www.autodl.com/docs/image/) 、保存镜像说明 (https://www.autodl.com/docs/save_image/) 
+
+但你要注意 3 个关键点： 
+
+1. 保存的是系统盘 
+
+- 你装的环境、代码、Docker、conda、npm 依赖这些，一般都能进镜像
+- 如果你的项目放在 /root/...，通常也会进镜像
+
+2. 数据盘内容不靠镜像 
+
+- AutoDL 的“更换镜像”会清空系统盘，但数据盘不受影响 
+- 所以数据库、上传文件、模型文件，最好放到数据盘或挂载目录，不要只放系统盘
+来源：AutoDL 镜像文档 (https://www.autodl.com/docs/image/) 
+
+3. 公有云不支持外部导入自定义镜像
+
+- 只能把 AutoDL 里现有实例保存成镜像再复用
+- 不能把你本地 Docker 镜像直接导进去 
+来源：AutoDL 镜像文档 (https://www.autodl.com/docs/image/) 
+
+对你这个项目，最稳的做法是：
+
+- 把 toonflow-game-app、Toonflow-game-web、Docker、依赖都先在实例里配好 
+- 跑通一次
+- 再关机保存镜像
+- 以后开新实例直接选这个镜像，省掉重复配置 
+

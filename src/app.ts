@@ -14,6 +14,7 @@ import { runWithRequestContext } from "@/lib/requestContext";
 import { enforceResourceIsolation } from "@/middleware/resourceIsolation";
 import { startSessionMemoryWorker, stopSessionMemoryWorker } from "@/modules/game-runtime/services/SessionMemoryWorker";
 import { syncBundledVoicePresetSeeds } from "@/lib/voicePresetSeeds";
+import { dbBootstrapReady } from "@/utils/db";
 
 function ensureNoProxyForLocalhost() {
   const localHosts = ["127.0.0.1", "localhost", "::1"];
@@ -60,6 +61,8 @@ export default async function startServe(randomPort: Boolean = false) {
     fs.mkdirSync(rootDir, { recursive: true });
   }
   console.log("Upload dir:", rootDir);
+  // 先完成 SQLite 初始化和建表，再启动依赖数据库的后台 worker 与 HTTP 服务。
+  await dbBootstrapReady;
   const syncedVoicePresetSeeds = await syncBundledVoicePresetSeeds();
   if (syncedVoicePresetSeeds > 0) {
     console.log(`[voice] synced bundled preset seeds: ${syncedVoicePresetSeeds}`);
