@@ -43,10 +43,18 @@ export default router.post(
         .first();
       const ownerUserId = Number(world?.ownerUserId || 0);
       if (world) {
-        world = await ensureWorldRolesWithAiParameterCards({
+        // 会话打开优先返回已保存的世界数据，缺卡补齐放后台做，避免继续聊时被慢模型阻塞。
+        void ensureWorldRolesWithAiParameterCards({
           userId: ownerUserId > 0 ? ownerUserId : currentUserId,
           world,
           persist: ownerUserId > 0 && ownerUserId === currentUserId,
+        }).catch((asyncErr) => {
+          console.warn("[getSession] async role parameter card generation failed", {
+            sessionId: sessionIdValue,
+            worldId: Number(world?.id || 0),
+            userId: currentUserId,
+            message: (asyncErr as any)?.message || String(asyncErr),
+          });
         });
       }
       const rolePair = normalizeRolePair(world?.playerRole, world?.narratorRole);

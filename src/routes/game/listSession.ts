@@ -39,20 +39,29 @@ export default router.post(
       if (Number.isFinite(worldId) && worldId > 0) {
         query = query.andWhere("s.worldId", worldId);
       }
-      query = query.whereExists(function filterPlayableHistory() {
-        this.select(db.raw("1"))
-          .from("t_sessionMessage as m")
-          .whereRaw("m.sessionId = s.sessionId")
-          .andWhere("m.roleType", "player")
-          .andWhere("m.eventType", "on_message")
-          .andWhereRaw("trim(coalesce(m.content, '')) <> ''");
-      });
       const rawSessions = await query
         .select("s.*")
         .orderBy("s.updateTime", "desc")
         .orderBy("s.id", "desc");
+      const rawSessionIds = rawSessions.map((item: any) => String(item.sessionId || "")).filter(Boolean);
+      const playableMessageRows = rawSessionIds.length
+        ? await db("t_sessionMessage")
+          .whereIn("sessionId", rawSessionIds)
+          .andWhere("roleType", "player")
+          .andWhere("eventType", "on_message")
+          .select("sessionId", "content")
+        : [];
+      const playableSessionIds = new Set<string>(
+        playableMessageRows
+          .filter((item: any) => String(item.content || "").trim())
+          .map((item: any) => String(item.sessionId || "")),
+      );
       const seenWorldIds = new Set<number>();
       const sessions = rawSessions.filter((item: any) => {
+        const sessionId = String(item.sessionId || "");
+        if (!playableSessionIds.has(sessionId)) {
+          return false;
+        }
         const worldIdValue = Number(item.worldId || 0);
         if (!Number.isFinite(worldIdValue) || worldIdValue <= 0) {
           return false;
@@ -141,6 +150,13 @@ export default router.post(
 
       res.status(200).send(success(list));
     } catch (err) {
+      console.error("[game] listSession failed", {
+        route: "/game/listSession",
+        userId: Number((req as any)?.user?.id || 0),
+        requestBody: req.body || {},
+        message: u.error(err).message,
+        stack: (err as any)?.stack || "",
+      });
       res.status(500).send(error(u.error(err).message));
     }
   },

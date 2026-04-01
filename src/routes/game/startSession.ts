@@ -14,6 +14,10 @@ import {
 } from "@/lib/gameEngine";
 import { ensureWorldRolesWithAiParameterCards } from "@/lib/roleParameterCard";
 import {
+  prewarmChapterInitialSnapshotCache,
+  readChapterInitialSnapshotCache,
+} from "@/lib/sessionInitialSnapshot";
+import {
   applyMemoryResultToState,
   applyNarrativeMemoryHintsToState,
   advanceNarrativeUntilPlayerTurn,
@@ -139,49 +143,69 @@ export default router.post(
       chapter = normalizeChapterOutput(chapter);
 
       const rolePair = normalizeRolePair(world.playerRole, world.narratorRole);
-      const state = normalizeSessionState(initialState, worldId, chapter ? Number(chapter.id) : null, rolePair, world);
+      let state = normalizeSessionState(initialState, worldId, chapter ? Number(chapter.id) : null, rolePair, world);
       const openingMessages: RuntimeMessageInput[] = [];
       let openingPlan: ReturnType<typeof summarizeNarrativePlan> = null;
       if (chapter) {
-        const openingMessage = resolveOpeningMessage(world, chapter);
-        if (openingMessage && String(openingMessage.content || "").trim()) {
-          openingMessages.push({
-            role: String(openingMessage.role || state.narrator?.name || "旁白"),
-            roleType: String(openingMessage.roleType || "narrator"),
-            eventType: String(openingMessage.eventType || "on_enter_chapter"),
-            content: String(openingMessage.content || ""),
-            createTime: now,
+        const cachedSnapshot = readChapterInitialSnapshotCache({ world, chapter });
+        if (cachedSnapshot) {
+          state = normalizeSessionState(cachedSnapshot.stateJson, worldId, Number(chapter.id), rolePair, world);
+          openingPlan = cachedSnapshot.plan || null;
+          openingMessages.push(...((Array.isArray(cachedSnapshot.messages) ? cachedSnapshot.messages : []) as RuntimeMessageInput[]));
+        } else {
+          const openingMessage = resolveOpeningMessage(world, chapter);
+          if (openingMessage && String(openingMessage.content || "").trim()) {
+            openingMessages.push({
+              role: String(openingMessage.role || state.narrator?.name || "旁白"),
+              roleType: String(openingMessage.roleType || "narrator"),
+              eventType: String(openingMessage.eventType || "on_enter_chapter"),
+              content: String(openingMessage.content || ""),
+              createTime: now,
+            });
+          }
+          setRuntimeTurnState(state, world, {
+            canPlayerSpeak: false,
+            expectedRoleType: "narrator",
+            expectedRole: String(state.narrator?.name || "旁白"),
+            lastSpeakerRoleType: String(openingMessages[openingMessages.length - 1]?.roleType || "narrator"),
+            lastSpeaker: String(openingMessages[openingMessages.length - 1]?.role || state.narrator?.name || "旁白"),
+          });
+          const orchestrator = await runNarrativeOrchestrator({
+            userId: currentUserId,
+            world,
+            chapter,
+            state,
+            recentMessages: openingMessages,
+            playerMessage: "",
+            maxRetries: 0,
+          });
+          const orchestrated = await advanceNarrativeUntilPlayerTurn({
+            userId: currentUserId,
+            world,
+            chapter,
+            state,
+            recentMessages: openingMessages,
+            playerMessage: "",
+            initialResult: orchestrator,
+            maxAutoTurns: 1,
+          });
+          openingPlan = summarizeNarrativePlan(orchestrator);
+          openingMessages.push(...orchestrated.messages);
+          applyNarrativeMemoryHintsToState(state, orchestrator.memoryHints);
+          // 首次没有命中缓存时，异步回填章节初始快照，供后续进入直接复用。
+          void prewarmChapterInitialSnapshotCache({
+            userId: currentUserId,
+            world,
+            chapter,
+          }).catch((err) => {
+            console.warn("[startSession] async initial snapshot prewarm failed", {
+              worldId: Number(worldId || 0),
+              chapterId: Number(chapter?.id || 0),
+              userId: currentUserId,
+              message: (err as any)?.message || String(err),
+            });
           });
         }
-        setRuntimeTurnState(state, world, {
-          canPlayerSpeak: false,
-          expectedRoleType: "narrator",
-          expectedRole: String(state.narrator?.name || "旁白"),
-          lastSpeakerRoleType: String(openingMessages[openingMessages.length - 1]?.roleType || "narrator"),
-          lastSpeaker: String(openingMessages[openingMessages.length - 1]?.role || state.narrator?.name || "旁白"),
-        });
-        const orchestrator = await runNarrativeOrchestrator({
-          userId: currentUserId,
-          world,
-          chapter,
-          state,
-          recentMessages: openingMessages,
-          playerMessage: "",
-          maxRetries: 0,
-        });
-        const orchestrated = await advanceNarrativeUntilPlayerTurn({
-          userId: currentUserId,
-          world,
-          chapter,
-          state,
-          recentMessages: openingMessages,
-          playerMessage: "",
-          initialResult: orchestrator,
-          maxAutoTurns: 1,
-        });
-        openingPlan = summarizeNarrativePlan(orchestrator);
-        openingMessages.push(...orchestrated.messages);
-        applyNarrativeMemoryHintsToState(state, orchestrator.memoryHints);
       }
 
       const sessionId = createGameSessionId();

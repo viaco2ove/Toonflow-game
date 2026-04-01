@@ -11,6 +11,9 @@ import {
   toJsonText,
 } from "@/lib/gameEngine";
 import { ensureWorldRolesWithAiParameterCards } from "@/lib/roleParameterCard";
+import { normalizeChapterOutput } from "@/lib/gameEngine";
+import { prewarmChapterInitialSnapshotCache } from "@/lib/sessionInitialSnapshot";
+import { publishWorldSynchronously } from "@/lib/worldPublish";
 import u from "@/utils";
 
 const router = express.Router();
@@ -60,7 +63,9 @@ export default router.post(
       }
 
       const normalizedCoverPath = String(coverPath || "").trim();
-      const normalizedPublishStatus = String(publishStatus || existing?.publishStatus || "draft").trim() || "draft";
+      const requestedPublishStatus = String(publishStatus || existing?.publishStatus || "draft").trim() || "draft";
+      const isPublishRequest = requestedPublishStatus === "published";
+      const normalizedPublishStatus = isPublishRequest ? "publishing" : requestedPublishStatus;
       const normalizedSettings = normalizeWorldSettings(settings, {
         coverPath: normalizedCoverPath,
         publishStatus: normalizedPublishStatus,
@@ -95,6 +100,13 @@ export default router.post(
       }
 
       const row = await db("t_storyWorld").where({ id }).first();
+      if (isPublishRequest) {
+        const publishedWorld = await publishWorldSynchronously({
+          worldId: id,
+          userId: currentUserId,
+        });
+        return res.status(200).send(success(publishedWorld, "故事已发布并完成预生成"));
+      }
       void ensureWorldRolesWithAiParameterCards({
         userId: currentUserId,
         world: {
@@ -109,6 +121,32 @@ export default router.post(
         persist: true,
       }).catch((asyncErr) => {
         console.warn("[saveWorld] async role parameter card generation failed", {
+          worldId: id,
+          userId: currentUserId,
+          message: (asyncErr as any)?.message || String(asyncErr),
+        });
+      });
+      // 保存世界后预热首章快照，供首次开始故事时直接复用，减少首进场等待。
+      void (async () => {
+        const firstChapter = normalizeChapterOutput(
+          await db("t_storyChapter").where({ worldId: id }).orderBy("sort", "asc").orderBy("id", "asc").first(),
+        );
+        if (!firstChapter) return;
+        await prewarmChapterInitialSnapshotCache({
+          userId: currentUserId,
+          world: {
+            ...row,
+            id,
+            name: payload.name,
+            intro: payload.intro,
+            playerRole: rolePair.playerRole,
+            narratorRole: rolePair.narratorRole,
+            settings: normalizedSettings,
+          },
+          chapter: firstChapter,
+        });
+      })().catch((asyncErr) => {
+        console.warn("[saveWorld] async initial snapshot prewarm failed", {
           worldId: id,
           userId: currentUserId,
           message: (asyncErr as any)?.message || String(asyncErr),

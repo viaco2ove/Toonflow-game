@@ -9,6 +9,7 @@ import {
   nowTs,
   toJsonText,
 } from "@/lib/gameEngine";
+import { prewarmChapterInitialSnapshotCache } from "@/lib/sessionInitialSnapshot";
 import u from "@/utils";
 
 const router = express.Router();
@@ -122,6 +123,19 @@ export default router.post(
       }
 
       const row = await db("t_storyChapter").where({ id }).first();
+      // 保存章节后预热该章节的初始快照，减少首次进入或切章时的同步等待。
+      void prewarmChapterInitialSnapshotCache({
+        userId: currentUserId,
+        world: world,
+        chapter: normalizeChapterOutput(row),
+      }).catch((asyncErr) => {
+        console.warn("[saveChapter] async initial snapshot prewarm failed", {
+          worldId: Number(worldId || 0),
+          chapterId: id,
+          userId: currentUserId,
+          message: (asyncErr as any)?.message || String(asyncErr),
+        });
+      });
       res.status(200).send(success(normalizeChapterOutput(row), existed ? "更新章节成功" : "创建章节成功"));
     } catch (err) {
       res.status(500).send(error(u.error(err).message));

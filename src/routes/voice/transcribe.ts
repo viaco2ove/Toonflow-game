@@ -113,7 +113,12 @@ async function runFfmpeg(ffmpegPath: string, args: string[]): Promise<void> {
 }
 
 function parseBase64Audio(input: string): { buffer: Buffer; mime: string; ext: string } {
-  const match = input.match(/^data:([^;]+);base64,(.+)$/);
+  // Some browsers emit audio data URLs such as:
+  // data:audio/webm;codecs=opus;base64,xxxx
+  // The old parser only handled a single ';base64' suffix and would treat the
+  // whole data URL as base64 once extra MIME params existed, producing a
+  // corrupted/empty buffer for ASR.
+  const match = input.match(/^data:([^;,]+)(?:;[^,]*)?;base64,(.+)$/);
   let base64 = input;
   let mime = "audio/wav";
   if (match) {
@@ -283,7 +288,12 @@ function parseTranscribeResult(data: any): { text: string; segments: any[]; conf
     (typeof data?.result?.text === "string" ? data.result.text : "") ||
     (typeof data?.data?.text === "string" ? data.data.text : "") ||
     (typeof data?.output?.text === "string" ? data.output.text : "") ||
+    extractChoiceContentText(data?.output?.choices?.[0]?.message?.content) ||
+    extractChoiceContentText(data?.output?.choices?.[0]?.message?.text) ||
+    extractChoiceContentText(data?.output?.choices?.[0]?.message) ||
     extractChoiceContentText(data?.choices?.[0]?.message?.content) ||
+    extractChoiceContentText(data?.choices?.[0]?.message?.text) ||
+    extractChoiceContentText(data?.choices?.[0]?.message) ||
     "";
 
   const segmentsRaw = data?.segments ?? data?.result?.segments ?? data?.data?.segments ?? data?.output?.segments ?? [];
@@ -377,6 +387,9 @@ export default router.post(
         audio = parseAudioFromPath(filePath, fileBuffer);
       }
       audio = await normalizeAsrAudio(audio);
+      if (!audio.buffer.length) {
+        return res.status(400).send(error("录音内容为空"));
+      }
 
       const compatibleBaseUrl = normalizeAliyunCompatibleBaseUrl(config.baseUrl);
       const endpointCandidates = directAliyun
@@ -400,6 +413,14 @@ export default router.post(
                 model: modelName || "qwen3-asr-flash",
                 input: {
                   messages: [
+                    {
+                      role: "system",
+                      content: [
+                        {
+                          text: "",
+                        },
+                      ],
+                    },
                     {
                       role: "user",
                       content: [
@@ -560,7 +581,24 @@ export default router.post(
 
       const parsed = parseTranscribeResult(rawData);
       if (!parsed.text && parsed.segments.length === 0) {
-        return res.status(500).send(error("转写成功但未返回文本结果"));
+        const detail = {
+          route: "/voice/transcribe",
+          endpoint: usedEndpoint,
+          manufacturer,
+          model: modelName || "",
+          audio: {
+            mime: audio.mime,
+            ext: audio.ext,
+            bytes: audio.buffer.length,
+          },
+          rawData,
+        };
+        console.error("[voice] transcribe empty result", detail);
+        return res.status(500).send(
+          error(
+            `转写成功但未返回文本结果 endpoint=${usedEndpoint} model=${modelName || ""} mime=${audio.mime} bytes=${audio.buffer.length}`,
+          ),
+        );
       }
 
       res.status(200).send(
