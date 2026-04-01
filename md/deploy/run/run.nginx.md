@@ -70,3 +70,6 @@ service nginx restart
                                                                                                                                                                                                                                     
   tail -n 100 /var/log/nginx/error.log                                                                                                                                                                                              
   tail -n 100 /var/log/nginx/access.log   
+  
+
+# 如何保证开机启动

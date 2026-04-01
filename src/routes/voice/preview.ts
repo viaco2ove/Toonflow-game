@@ -161,7 +161,11 @@ function buildProxyAudioUrl(req: express.Request, configId: number | null | unde
   const requestHost = String(req.headers["x-forwarded-host"] || req.get("host") || "127.0.0.1:60002")
     .split(",")[0]
     .trim();
-  const publicBase = configuredBase || `${requestProtocol}://${requestHost}`;
+  const requestBase = requestHost ? `${requestProtocol}://${requestHost}` : "";
+  // OSSURL 在本地开发时常是 127.0.0.1，这对安卓设备不可达；此时优先回落到当前请求来源地址。
+  const publicBase = isPublicHttpUrl(configuredBase)
+    ? configuredBase
+    : (requestBase || configuredBase || "http://127.0.0.1:60002");
   const rawToken = String(req.headers.authorization || req.query.token || "").replace(/^Bearer\s+/i, "").trim();
   const params = new URLSearchParams();
   if (configId) params.set("configId", String(configId));
