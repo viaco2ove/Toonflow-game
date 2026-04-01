@@ -4,6 +4,7 @@ import { validateFields } from "@/middleware/middleware";
 import { error, success } from "@/lib/responseFormat";
 import {
   createGameSessionId,
+  extractFirstChapterDialogueLine,
   getGameDb,
   normalizeChapterOutput,
   parseJsonSafe,
@@ -149,6 +150,8 @@ export default router.post(
           openingMessages.push(...((Array.isArray(cachedSnapshot.messages) ? cachedSnapshot.messages : []) as RuntimeMessageInput[]));
         } else {
           const openingMessage = resolveOpeningMessage(world, chapter);
+          const normalizedContent = String(chapter.content || "").replace(/\r\n/g, "\n");
+          const explicitDialogueCount = (normalizedContent.match(/^@[^:\n：]+\s*[:：]/gm) || []).length;
           if (openingMessage && String(openingMessage.content || "").trim()) {
             openingMessages.push({
               role: String(openingMessage.role || state.narrator?.name || "旁白"),
@@ -158,10 +161,33 @@ export default router.post(
               createTime: now,
             });
           }
+          const firstDialogue = extractFirstChapterDialogueLine(chapter.content);
+          const firstDialogueContent = String(firstDialogue?.line || "").trim();
+          const openingContent = String(openingMessage?.content || "").trim();
+          if (firstDialogue && firstDialogueContent && firstDialogueContent !== openingContent) {
+            const firstDialogueRole = String(firstDialogue.role || "").trim();
+            const narratorName = String(state.narrator?.name || "旁白").trim();
+            const userName = String(state.player?.name || "用户").trim();
+            let roleType = "npc";
+            if (!firstDialogueRole || firstDialogueRole === narratorName || firstDialogueRole === "旁白") {
+              roleType = "narrator";
+            } else if (firstDialogueRole === userName || firstDialogueRole === "用户") {
+              roleType = "player";
+            }
+            // 章节初始快照 miss 时，至少把正文里的第一条显式台词一起落到会话，避免首进只剩一条开场白。
+            openingMessages.push({
+              role: firstDialogueRole || narratorName,
+              roleType,
+              eventType: "on_enter_chapter",
+              content: firstDialogueContent,
+              createTime: now + 1,
+            });
+          }
+          const shouldWaitUserInput = explicitDialogueCount <= 1 && openingMessages.length > 1;
           setRuntimeTurnState(state, world, {
-            canPlayerSpeak: false,
-            expectedRoleType: "narrator",
-            expectedRole: String(state.narrator?.name || "旁白"),
+            canPlayerSpeak: shouldWaitUserInput,
+            expectedRoleType: shouldWaitUserInput ? "player" : "narrator",
+            expectedRole: shouldWaitUserInput ? String(state.player?.name || "用户") : String(state.narrator?.name || "旁白"),
             lastSpeakerRoleType: String(openingMessages[openingMessages.length - 1]?.roleType || "narrator"),
             lastSpeaker: String(openingMessages[openingMessages.length - 1]?.role || state.narrator?.name || "旁白"),
           });

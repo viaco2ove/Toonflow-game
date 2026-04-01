@@ -22,6 +22,11 @@ export interface ChapterOpeningParts {
   body: string;
 }
 
+export interface ChapterDialogueLine {
+  role: string;
+  line: string;
+}
+
 const DEFAULT_PLAYER_ROLE: JsonRecord = {
   id: "player",
   name: "用户",
@@ -68,6 +73,31 @@ export function extractOpeningContentParts(input: unknown): ChapterOpeningParts 
   const body = text.slice(match[0].length).replace(/^\s*[\r\n]+/, "");
   if (!role && !line) return null;
   return { role, line, body };
+}
+
+export function extractFirstChapterDialogueLine(input: unknown): ChapterDialogueLine | null {
+  const text = normalizeEditorText(input);
+  if (!text) return null;
+  const paragraphs = splitParagraphs(text);
+  for (const paragraph of paragraphs) {
+    const lines = String(paragraph || "")
+      .replace(/\r\n/g, "\n")
+      .split("\n")
+      .map((item) => item.trim())
+      .filter(Boolean);
+    for (const line of lines) {
+      const matched = line.match(/^@([^:\n：]+)\s*[:：]\s*(.+)$/);
+      if (!matched) continue;
+      const role = String(matched[1] || "").trim();
+      const content = String(matched[2] || "").trim();
+      if (!role || !content) continue;
+      return {
+        role,
+        line: content,
+      };
+    }
+  }
+  return null;
 }
 
 function splitParagraphs(input: string): string[] {
