@@ -321,7 +321,7 @@ export async function getLocalAvatarMattingStatus(input?: {
   if (state?.status === "installing") {
     return buildStatus(model, "installing", state.message || "本地 BiRefNet 安装中", true);
   }
-  return buildStatus(model, "not_installed", "首次使用需要安装 Python 依赖和 BiRefNet 模型文件", true);
+  return buildStatus(model, "not_installed", "首次使用需要安装 Python 依赖和 BiRefNet 模型文件：pip install torch opencv-python pillow onnxruntime onnx", true);
 }
 
 async function runManagedBiRefNetPython(args: string[], options: RunCommandOptions = {}): Promise<{ stdout: string; stderr: string }> {

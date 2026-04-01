@@ -189,10 +189,10 @@ rsync -a --delete /root/Toonflow-game-web/dist/ /root/toonflow-game-app/scripts/
 - 不先同步 `dist`，容器里跑的就不是当前前端代码
 
 ### 5. 
-[run.md](run.md)
+[run.md](run/run.md)
 
 ### 6.nginx
-[run.nginx.md](run.nginx.md)
+[run.nginx.md](run/run.nginx.md)
 
 ### 8. 访问项目
 
