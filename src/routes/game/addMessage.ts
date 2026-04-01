@@ -32,6 +32,7 @@ export default router.post(
       .optional()
       .nullable(),
     saveSnapshot: z.boolean().optional().nullable(),
+    orchestrate: z.boolean().optional().nullable(),
   }),
   async (req, res) => {
     try {
@@ -44,6 +45,7 @@ export default router.post(
         meta: req.body.meta,
         attrChanges: req.body.attrChanges,
         saveSnapshot: req.body.saveSnapshot,
+        orchestrate: req.body.orchestrate,
       });
       res.status(200).send(success(result));
     } catch (err) {

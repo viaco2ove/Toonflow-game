@@ -17,9 +17,11 @@ import {
   NarrativePlanSummary,
   RuntimeMessageInput,
   allowPlayerTurn,
+  applyOrchestratorResultToState,
   applyPlayerProfileFromMessageToState,
   canPlayerSpeakNow,
   resolveOpeningMessage,
+  runNarrativePlan,
   runNarrativeOrchestrator,
   setRuntimeTurnState,
   summarizeNarrativePlan,
@@ -48,6 +50,7 @@ export interface AddSessionMessageInput {
   meta?: unknown;
   attrChanges?: AttributeChangeInput[] | null;
   saveSnapshot?: boolean | null;
+  orchestrate?: boolean | null;
 }
 
 export interface AddSessionMessageResult {
@@ -69,6 +72,43 @@ export interface AddSessionMessageResult {
 }
 
 export type ContinueSessionNarrativeResult = AddSessionMessageResult;
+
+export interface SessionNarrativePlanResult {
+  role: string;
+  roleType: string;
+  motive: string;
+  awaitUser: boolean;
+  nextRole: string;
+  nextRoleType: string;
+  chapterOutcome: "continue" | "success" | "failed";
+  nextChapterId: number | null;
+  source: "ai" | "fallback";
+  triggerMemoryAgent: boolean;
+  eventType: string;
+  presetContent: string | null;
+}
+
+export interface SessionOrchestrationResult {
+  sessionId: string;
+  status: string;
+  chapterId: number | null;
+  expectedRole: string;
+  expectedRoleType: string;
+  plan: SessionNarrativePlanResult | null;
+}
+
+export interface CommitSessionNarrativeTurnInput {
+  sessionId: string;
+  state?: Record<string, any> | null;
+  chapterId?: number | null;
+  status?: string | null;
+  role?: string | null;
+  roleType?: string | null;
+  eventType?: string | null;
+  content: string;
+  createTime?: number | null;
+  saveSnapshot?: boolean | null;
+}
 
 export class SessionServiceError extends Error {
   status: number;
@@ -143,6 +183,110 @@ function buildSessionRuntimeMeta(state: Record<string, any>, lineIndex: number) 
         : turnState.expectedRoleType || "",
     ).trim(),
   };
+}
+
+function buildSessionExpectedSpeaker(state: Record<string, any>) {
+  const turnState = runtimeTurnStateFromState(state);
+  const canPlayerSpeakNow = turnState.canPlayerSpeak !== false;
+  return {
+    expectedRole: String(
+      canPlayerSpeakNow
+        ? state.player?.name || "用户"
+        : turnState.expectedRole || "",
+    ).trim() || "用户",
+    expectedRoleType: String(
+      canPlayerSpeakNow
+        ? "player"
+        : turnState.expectedRoleType || "",
+    ).trim() || "player",
+  };
+}
+
+function buildSessionPlanResult(plan: ({
+  role?: unknown;
+  roleType?: unknown;
+  motive?: unknown;
+  awaitUser?: unknown;
+  nextRole?: unknown;
+  nextRoleType?: unknown;
+  chapterOutcome?: unknown;
+  nextChapterId?: unknown;
+  source?: unknown;
+  triggerMemoryAgent?: unknown;
+  eventType?: unknown;
+  presetContent?: unknown;
+}) | null | undefined): SessionNarrativePlanResult | null {
+  if (!plan) return null;
+  return {
+    role: String(plan.role || "").trim(),
+    roleType: String(plan.roleType || "").trim() || "narrator",
+    motive: String(plan.motive || "").trim(),
+    awaitUser: Boolean(plan.awaitUser),
+    nextRole: String(plan.nextRole || "").trim(),
+    nextRoleType: String(plan.nextRoleType || "").trim(),
+    chapterOutcome: plan.chapterOutcome === "failed"
+      ? "failed"
+      : plan.chapterOutcome === "success"
+        ? "success"
+        : "continue",
+    nextChapterId: Number.isFinite(Number(plan.nextChapterId)) && Number(plan.nextChapterId) > 0
+      ? Number(plan.nextChapterId)
+      : null,
+    source: plan.source === "fallback" ? "fallback" : "ai",
+    triggerMemoryAgent: Boolean(plan.triggerMemoryAgent),
+    eventType: String(plan.eventType || "on_orchestrated_reply").trim() || "on_orchestrated_reply",
+    presetContent: String(plan.presetContent || "").trim() || null,
+  };
+}
+
+function getPendingSessionChapterId(state: Record<string, any>): number | null {
+  const pendingChapterId = Number(state?.pendingChapterId || 0);
+  return Number.isFinite(pendingChapterId) && pendingChapterId > 0 ? pendingChapterId : null;
+}
+
+function setPendingSessionChapterId(state: Record<string, any>, chapterId: number | null): void {
+  if (chapterId && chapterId > 0) {
+    state.pendingChapterId = chapterId;
+    return;
+  }
+  delete state.pendingChapterId;
+}
+
+function getPendingSessionNarrativePlan(state: Record<string, any>): SessionNarrativePlanResult | null {
+  return buildSessionPlanResult(state?.pendingNarrativePlan);
+}
+
+function setPendingSessionNarrativePlan(state: Record<string, any>, plan: SessionNarrativePlanResult | null): void {
+  if (plan) {
+    state.pendingNarrativePlan = plan;
+    return;
+  }
+  delete state.pendingNarrativePlan;
+}
+
+function applyPlanTurnStateToSessionState(
+  state: Record<string, any>,
+  world: any,
+  plan: {
+    awaitUser?: boolean;
+    nextRole?: string;
+    nextRoleType?: string;
+    role?: string;
+    roleType?: string;
+  },
+) {
+  const shouldYieldToPlayer = Boolean(plan.awaitUser) || String(plan.nextRoleType || "").trim().toLowerCase() === "player";
+  if (shouldYieldToPlayer) {
+    allowPlayerTurn(state, world, String(plan.roleType || "narrator"), String(plan.role || state.narrator?.name || "旁白"));
+    return;
+  }
+  setRuntimeTurnState(state, world, {
+    canPlayerSpeak: false,
+    expectedRoleType: String(plan.nextRoleType || "narrator"),
+    expectedRole: String(plan.nextRole || plan.role || state.narrator?.name || "旁白"),
+    lastSpeakerRoleType: String(plan.roleType || "narrator"),
+    lastSpeaker: String(plan.role || state.narrator?.name || "旁白"),
+  });
 }
 
 async function countSessionMessages(db: any, sessionId: string): Promise<number> {
@@ -298,10 +442,6 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
     applyPlayerProfileFromMessageToState(state, world, messageContent);
   }
   const roleValue = String(input.role || resolveDefaultRoleName(roleTypeValue, state)).trim() || "系统";
-
-  if (roleTypeValue === "player" && eventTypeValue === "on_message" && messageContent.trim() && !canPlayerSpeakNow(state, world)) {
-    throw new SessionServiceError(409, "当前还没轮到用户发言");
-  }
 
   const insertedMessage = await db("t_sessionMessage").insert({
     sessionId,
@@ -475,6 +615,56 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
       createTime: now,
     }));
     await db("t_entityStateDelta").insert(deltaRows);
+  }
+
+  if (input.orchestrate === false) {
+    const stateJson = toJsonText(state, {});
+    await db("t_gameSession").where({ sessionId }).update({
+      stateJson,
+      chapterId: nextChapterId,
+      status: sessionStatus,
+      updateTime: now,
+    });
+    const snapshotResult = await persistSnapshotIfNeeded({
+      db,
+      sessionId,
+      stateJson,
+      round: Number(state.round || 0),
+      now,
+      policy: {
+        saveSnapshot: input.saveSnapshot,
+        nextChapterId,
+        prevChapterId,
+        sessionStatus,
+        prevStatus,
+        round: Number(state.round || 0),
+      },
+    });
+    scheduleSessionRoleParameterCardRefresh({
+      userId: currentUserId,
+      world,
+    });
+    const messageRow = await db("t_sessionMessage").where({ id: messageId }).first();
+    const activeChapter = nextChapterId
+      ? normalizeChapterOutput(await db("t_storyChapter").where({ id: nextChapterId }).first())
+      : null;
+    return {
+      sessionId,
+      status: sessionStatus,
+      chapterId: nextChapterId,
+      chapter: activeChapter,
+      state,
+      message: normalizeMessageOutput(messageRow),
+      chapterSwitchMessage: null,
+      narrativeMessage: null,
+      generatedMessages: [],
+      narrativePlan: null,
+      triggered,
+      taskProgress: taskResult.taskProgressChanges,
+      deltas: appliedDeltas,
+      snapshotSaved: snapshotResult.snapshotSaved,
+      snapshotReason: snapshotResult.snapshotReason,
+    };
   }
 
   let chapterSwitchMessageRow: any = null;
@@ -775,6 +965,294 @@ export async function continueSessionNarrative(sessionIdInput: string): Promise<
     narrativeMessage: generatedMessages[generatedMessages.length - 1] || null,
     generatedMessages,
     narrativePlan,
+    triggered: [],
+    taskProgress: [],
+    deltas: [],
+    snapshotSaved: snapshotResult.snapshotSaved,
+    snapshotReason: snapshotResult.snapshotReason,
+  };
+}
+
+export async function orchestrateSessionTurn(sessionIdInput: string): Promise<SessionOrchestrationResult> {
+  const db = getGameDb();
+  const sessionId = String(sessionIdInput || "").trim();
+  if (!sessionId) {
+    throw new SessionServiceError(400, "sessionId 不能为空");
+  }
+
+  const sessionRow = await db("t_gameSession").where({ sessionId }).first();
+  if (!sessionRow) {
+    throw new SessionServiceError(404, "会话不存在");
+  }
+  const currentUserId = getCurrentUserId(0);
+  if (currentUserId > 0 && Number(sessionRow.userId || 0) !== currentUserId) {
+    throw new SessionServiceError(403, "无权访问该会话");
+  }
+
+  const currentChapterId = Number(sessionRow.chapterId || 0) || null;
+  const sessionStatus = String(sessionRow.status || "active");
+  const world = await loadSessionWorld(db, Number(sessionRow.worldId || 0));
+  const rolePair = normalizeRolePair(world?.playerRole, world?.narratorRole);
+  const state = normalizeSessionState(
+    sessionRow.stateJson,
+    Number(sessionRow.worldId || 0),
+    currentChapterId,
+    rolePair,
+    world,
+  );
+  const rawRecentMessages = await db("t_sessionMessage").where({ sessionId }).orderBy("id", "desc").limit(20);
+  const recentMessages = buildRecentMessages(rawRecentMessages);
+  const finalizeOrchestrationResult = async (result: SessionOrchestrationResult): Promise<SessionOrchestrationResult> => {
+    const expectedSpeaker = buildSessionExpectedSpeaker(state);
+    setPendingSessionNarrativePlan(state, result.plan);
+    await db("t_gameSession").where({ sessionId }).update({
+      stateJson: toJsonText(state, {}),
+      chapterId: result.chapterId,
+      status: result.status,
+      updateTime: nowTs(),
+    });
+    return {
+      ...result,
+      expectedRole: expectedSpeaker.expectedRole,
+      expectedRoleType: expectedSpeaker.expectedRoleType,
+    };
+  };
+
+  const buildChapterStartPlan = async (chapter: any): Promise<SessionOrchestrationResult> => {
+    state.chapterId = Number(chapter.id || 0) || null;
+    const openingMessage = resolveOpeningMessage(world, chapter);
+    setPendingSessionChapterId(state, null);
+    setRuntimeTurnState(state, world, {
+      canPlayerSpeak: false,
+      expectedRoleType: "narrator",
+      expectedRole: String(state.narrator?.name || "旁白"),
+      lastSpeakerRoleType: String(openingMessage?.roleType || "narrator"),
+      lastSpeaker: String(openingMessage?.role || state.narrator?.name || "旁白"),
+    });
+    if (openingMessage && String(openingMessage.content || "").trim()) {
+      return finalizeOrchestrationResult({
+        sessionId,
+        status: sessionStatus,
+        chapterId: Number(chapter.id || 0) || null,
+        expectedRole: "",
+        expectedRoleType: "",
+        plan: buildSessionPlanResult({
+          role: String(openingMessage.role || state.narrator?.name || "旁白"),
+          roleType: String(openingMessage.roleType || "narrator"),
+          motive: "",
+          awaitUser: false,
+          nextRole: String(state.narrator?.name || "旁白"),
+          nextRoleType: "narrator",
+          chapterOutcome: "continue",
+          nextChapterId: null,
+          source: "fallback",
+          triggerMemoryAgent: false,
+          eventType: String(openingMessage.eventType || "on_enter_chapter"),
+          presetContent: String(openingMessage.content || ""),
+        }),
+      });
+    }
+    const plan = await runNarrativePlan({
+      userId: currentUserId,
+      world,
+      chapter,
+      state,
+      recentMessages: [],
+      playerMessage: "",
+      maxRetries: 0,
+    });
+    applyOrchestratorResultToState(state, plan);
+    applyNarrativeMemoryHintsToState(state, plan.memoryHints);
+    applyPlanTurnStateToSessionState(state, world, plan);
+    return finalizeOrchestrationResult({
+      sessionId,
+      status: plan.chapterOutcome === "failed" ? "failed" : sessionStatus,
+      chapterId: Number(chapter.id || 0) || null,
+      expectedRole: "",
+      expectedRoleType: "",
+      plan: buildSessionPlanResult({
+        ...plan,
+        eventType: "on_orchestrated_reply",
+      }),
+    });
+  };
+
+  const pendingChapterId = getPendingSessionChapterId(state);
+  if (pendingChapterId) {
+    const nextChapter = normalizeChapterOutput(await db("t_storyChapter").where({ id: pendingChapterId }).first());
+    if (!nextChapter) {
+      setPendingSessionChapterId(state, null);
+      return finalizeOrchestrationResult({
+        sessionId,
+        status: sessionStatus,
+        chapterId: currentChapterId,
+        expectedRole: "",
+        expectedRoleType: "",
+        plan: null,
+      });
+    }
+    return buildChapterStartPlan(nextChapter);
+  }
+
+  let chapter = currentChapterId
+    ? normalizeChapterOutput(await db("t_storyChapter").where({ id: currentChapterId }).first())
+    : null;
+  if (!chapter) {
+    chapter = await db("t_storyChapter")
+      .where({ worldId: Number(sessionRow.worldId || 0) })
+      .orderBy("sort", "asc")
+      .orderBy("id", "asc")
+      .first();
+    chapter = normalizeChapterOutput(chapter);
+  }
+  if (!chapter) {
+    throw new SessionServiceError(400, "当前章节不存在");
+  }
+
+  if (!recentMessages.length) {
+    return buildChapterStartPlan(chapter);
+  }
+  if (canPlayerSpeakNow(state, world)) {
+    return finalizeOrchestrationResult({
+      sessionId,
+      status: sessionStatus,
+      chapterId: Number(chapter.id || 0) || null,
+      expectedRole: "",
+      expectedRoleType: "",
+      plan: null,
+    });
+  }
+
+  const plan = await runNarrativePlan({
+    userId: currentUserId,
+    world,
+    chapter,
+    state,
+    recentMessages,
+    playerMessage: "",
+    maxRetries: 0,
+  });
+  applyOrchestratorResultToState(state, plan);
+  applyNarrativeMemoryHintsToState(state, plan.memoryHints);
+
+  let nextStatus = plan.chapterOutcome === "failed" ? "failed" : sessionStatus;
+  let nextChapterId = Number(chapter.id || 0) || null;
+  let nextChapter = chapter;
+  if (plan.chapterOutcome === "success") {
+    const resolvedNextChapterId = Number(plan.nextChapterId || 0) || await resolveNextChapterIdByOrder(db, Number(sessionRow.worldId || 0), Number(chapter.id || 0));
+    if (resolvedNextChapterId && resolvedNextChapterId !== Number(chapter.id || 0)) {
+      const resolvedNextChapter = normalizeChapterOutput(await db("t_storyChapter").where({ id: resolvedNextChapterId }).first());
+      if (resolvedNextChapter) {
+        if (String(plan.role || "").trim()) {
+          setPendingSessionChapterId(state, resolvedNextChapterId);
+        } else {
+          nextChapter = resolvedNextChapter;
+          nextChapterId = resolvedNextChapterId;
+          return buildChapterStartPlan(resolvedNextChapter);
+        }
+      }
+    }
+  }
+  applyPlanTurnStateToSessionState(state, world, plan);
+  const result: SessionOrchestrationResult = {
+    sessionId,
+    status: nextStatus,
+    chapterId: nextChapterId,
+    expectedRole: "",
+    expectedRoleType: "",
+    plan: buildSessionPlanResult({
+      ...plan,
+      eventType: "on_orchestrated_reply",
+    }),
+  };
+  return finalizeOrchestrationResult(result);
+}
+
+export async function commitSessionNarrativeTurn(input: CommitSessionNarrativeTurnInput): Promise<AddSessionMessageResult> {
+  const db = getGameDb();
+  const now = nowTs();
+  const sessionId = String(input.sessionId || "").trim();
+  if (!sessionId) {
+    throw new SessionServiceError(400, "sessionId 不能为空");
+  }
+  const sessionRow = await db("t_gameSession").where({ sessionId }).first();
+  if (!sessionRow) {
+    throw new SessionServiceError(404, "会话不存在");
+  }
+  const currentUserId = getCurrentUserId(0);
+  if (currentUserId > 0 && Number(sessionRow.userId || 0) !== currentUserId) {
+    throw new SessionServiceError(403, "无权访问该会话");
+  }
+  const world = await loadSessionWorld(db, Number(sessionRow.worldId || 0));
+  const rolePair = normalizeRolePair(world?.playerRole, world?.narratorRole);
+  const prevChapterId = Number(sessionRow.chapterId || 0) || null;
+  const prevStatus = String(sessionRow.status || "active");
+  const state = normalizeSessionState(
+    input.state ?? sessionRow.stateJson,
+    Number(sessionRow.worldId || 0),
+    prevChapterId,
+    rolePair,
+    world,
+  );
+  const pendingPlan = getPendingSessionNarrativePlan(state);
+  const nextChapterId = Number(input.chapterId || prevChapterId || 0) || null;
+  const sessionStatus = String(input.status || prevStatus || "active").trim() || "active";
+  const createTime = Number(input.createTime || now) || now;
+  const insertedRows = await insertSessionNarrativeMessages({
+    db,
+    sessionId,
+    state,
+    messages: [{
+      role: String(input.role || pendingPlan?.role || state.narrator?.name || "旁白"),
+      roleType: String(input.roleType || pendingPlan?.roleType || "narrator"),
+      eventType: String(input.eventType || pendingPlan?.eventType || "on_orchestrated_reply"),
+      content: String(input.content || ""),
+      createTime,
+    }],
+    now: createTime,
+    eventTypeFallback: String(input.eventType || pendingPlan?.eventType || "on_orchestrated_reply"),
+  });
+  setPendingSessionNarrativePlan(state, null);
+  const stateJson = toJsonText(state, {});
+  await db("t_gameSession").where({ sessionId }).update({
+    stateJson,
+    chapterId: nextChapterId,
+    status: sessionStatus,
+    updateTime: now,
+  });
+  const snapshotResult = await persistSnapshotIfNeeded({
+    db,
+    sessionId,
+    stateJson,
+    round: Number(state.round || 0),
+    now,
+    policy: {
+      saveSnapshot: input.saveSnapshot,
+      nextChapterId,
+      prevChapterId,
+      sessionStatus,
+      prevStatus,
+      round: Number(state.round || 0),
+    },
+  });
+  const chapter = nextChapterId
+    ? normalizeChapterOutput(await db("t_storyChapter").where({ id: nextChapterId }).first())
+    : null;
+  scheduleSessionRoleParameterCardRefresh({
+    userId: currentUserId,
+    world,
+  });
+  return {
+    sessionId,
+    status: sessionStatus,
+    chapterId: nextChapterId,
+    chapter,
+    state,
+    message: null,
+    chapterSwitchMessage: null,
+    narrativeMessage: insertedRows[insertedRows.length - 1] || null,
+    generatedMessages: insertedRows,
+    narrativePlan: null,
     triggered: [],
     taskProgress: [],
     deltas: [],

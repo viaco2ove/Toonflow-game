@@ -23,6 +23,10 @@ import {
 } from "@/modules/game-runtime/engines/NarrativeOrchestrator";
 import { handleMiniGameTurn } from "@/modules/game-runtime/engines/MiniGameController";
 import {
+  orchestrateSessionTurn,
+  isSessionServiceError,
+} from "@/modules/game-runtime/services/SessionService";
+import {
   asDebugMessage,
   buildDebugFreePlotMessage,
   buildDebugRecentMessages,
@@ -130,7 +134,8 @@ function buildPresetPlan(message: {
 export default router.post(
   "/",
   validateFields({
-    worldId: z.number(),
+    sessionId: z.string().optional().nullable(),
+    worldId: z.number().optional().nullable(),
     chapterId: z.number().optional().nullable(),
     playerContent: z.string().optional().nullable(),
     state: z.any().optional().nullable(),
@@ -138,6 +143,12 @@ export default router.post(
   }),
   async (req, res) => {
     try {
+      const sessionId = String(req.body.sessionId || "").trim();
+      if (sessionId) {
+        const result = await orchestrateSessionTurn(sessionId);
+        return res.status(200).send(success(result));
+      }
+
       const db = getGameDb();
       const userId = Number((req as any)?.user?.id || 0);
       if (!Number.isFinite(userId) || userId <= 0) {
@@ -145,6 +156,9 @@ export default router.post(
       }
 
       const worldId = Number(req.body.worldId || 0);
+      if (!worldId) {
+        return res.status(400).send(error("worldId 不能为空"));
+      }
       const chapterId = Number(req.body.chapterId || 0);
       const playerContent = String(req.body.playerContent || "").trim();
       const inputMessages = (Array.isArray(req.body.messages) ? req.body.messages : []) as RuntimeMessageInput[];
@@ -646,6 +660,9 @@ export default router.post(
         plan: buildPlanResult({ ...plan, eventType: "on_orchestrated_reply" }),
       })));
     } catch (err) {
+      if (isSessionServiceError(err)) {
+        return res.status(err.status).send(error(err.message));
+      }
       res.status(500).send(error(u.error(err).message));
     }
   },

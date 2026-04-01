@@ -14,15 +14,13 @@ import {
 } from "@/lib/gameEngine";
 import { ensureWorldRolesWithAiParameterCards } from "@/lib/roleParameterCard";
 import {
+  buildChapterInitialSnapshotVersion,
   prewarmChapterInitialSnapshotCache,
   readChapterInitialSnapshotCache,
 } from "@/lib/sessionInitialSnapshot";
 import {
   applyMemoryResultToState,
-  applyNarrativeMemoryHintsToState,
-  advanceNarrativeUntilPlayerTurn,
   resolveOpeningMessage,
-  runNarrativeOrchestrator,
   RuntimeMessageInput,
   setRuntimeTurnState,
   summarizeNarrativePlan,
@@ -49,15 +47,12 @@ function normalizeSessionRow(row: any) {
 }
 
 function buildContentVersion(world: any, chapter: any, now: number): string {
-  const worldVersion = Number(world?.updateTime || world?.createTime || now);
-  const chapterVersion = Number(chapter?.updateTime || chapter?.createTime || 0);
-  const worldId = Number(world?.id || 0);
-  const chapterId = Number(chapter?.id || 0);
-
-  if (chapterId > 0 && chapterVersion > 0) {
-    return `w:${worldId}@${worldVersion};c:${chapterId}@${chapterVersion}`;
+  const snapshotVersion = buildChapterInitialSnapshotVersion(world, chapter);
+  if (snapshotVersion) {
+    return snapshotVersion;
   }
-  return `w:${worldId}@${worldVersion}`;
+  const worldVersion = Number(world?.updateTime || world?.createTime || now);
+  return `w:${Number(world?.id || 0)}@${worldVersion}`;
 }
 
 function scheduleOpeningMemoryRefresh(params: {
@@ -170,28 +165,6 @@ export default router.post(
             lastSpeakerRoleType: String(openingMessages[openingMessages.length - 1]?.roleType || "narrator"),
             lastSpeaker: String(openingMessages[openingMessages.length - 1]?.role || state.narrator?.name || "旁白"),
           });
-          const orchestrator = await runNarrativeOrchestrator({
-            userId: currentUserId,
-            world,
-            chapter,
-            state,
-            recentMessages: openingMessages,
-            playerMessage: "",
-            maxRetries: 0,
-          });
-          const orchestrated = await advanceNarrativeUntilPlayerTurn({
-            userId: currentUserId,
-            world,
-            chapter,
-            state,
-            recentMessages: openingMessages,
-            playerMessage: "",
-            initialResult: orchestrator,
-            maxAutoTurns: 1,
-          });
-          openingPlan = summarizeNarrativePlan(orchestrator);
-          openingMessages.push(...orchestrated.messages);
-          applyNarrativeMemoryHintsToState(state, orchestrator.memoryHints);
           // 首次没有命中缓存时，异步回填章节初始快照，供后续进入直接复用。
           void prewarmChapterInitialSnapshotCache({
             userId: currentUserId,

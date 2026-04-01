@@ -154,18 +154,20 @@ function setDirectAliyunCustomVoiceCache(cacheKey: string, voiceId: string) {
 function buildProxyAudioUrl(req: express.Request, configId: number | null | undefined, source: string): string {
   const rawSource = String(source || "").trim();
   if (!rawSource) return "";
-  const protocol = String(req.headers["x-forwarded-proto"] || req.protocol || "http")
+  const configuredBase = String(process.env.OSSURL || "").trim().replace(/\/+$/, "");
+  const requestProtocol = String(req.headers["x-forwarded-proto"] || req.protocol || "http")
     .split(",")[0]
     .trim();
-  const host = String(req.headers["x-forwarded-host"] || req.get("host") || "127.0.0.1:60002")
+  const requestHost = String(req.headers["x-forwarded-host"] || req.get("host") || "127.0.0.1:60002")
     .split(",")[0]
     .trim();
+  const publicBase = configuredBase || `${requestProtocol}://${requestHost}`;
   const rawToken = String(req.headers.authorization || req.query.token || "").replace(/^Bearer\s+/i, "").trim();
   const params = new URLSearchParams();
   if (configId) params.set("configId", String(configId));
   params.set("source", rawSource);
   if (rawToken) params.set("token", rawToken);
-  return `${protocol}://${host}/voice/audioProxy?${params.toString()}`;
+  return `${publicBase}/voice/audioProxy?${params.toString()}`;
 }
 
 function normalizeBase64(input?: string | null): string {

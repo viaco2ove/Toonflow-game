@@ -19,6 +19,7 @@ import {
 } from "@/modules/game-runtime/engines/NarrativeOrchestrator";
 
 const CHAPTER_INITIAL_SNAPSHOT_KEY = "chapterInitialSnapshots";
+const PUBLISH_FAILURE_REASON_KEY = "publishFailureReason";
 
 export interface ChapterInitialSnapshotCache {
   chapterId: number;
@@ -34,16 +35,44 @@ function asRecord(input: unknown): JsonRecord {
   return input && typeof input === "object" && !Array.isArray(input) ? input as JsonRecord : {};
 }
 
-function buildContentVersion(world: any, chapter: any, now: number): string {
-  const worldVersion = Number(world?.updateTime || world?.createTime || now);
-  const chapterVersion = Number(chapter?.updateTime || chapter?.createTime || 0);
-  const worldId = Number(world?.id || 0);
-  const chapterId = Number(chapter?.id || 0);
-
-  if (chapterId > 0 && chapterVersion > 0) {
-    return `w:${worldId}@${worldVersion};c:${chapterId}@${chapterVersion}`;
+function hashVersionText(input: string): string {
+  let hash = 2166136261;
+  for (let index = 0; index < input.length; index += 1) {
+    hash ^= input.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
   }
-  return `w:${worldId}@${worldVersion}`;
+  return (hash >>> 0).toString(36);
+}
+
+function snapshotRelevantWorldSettings(input: unknown): JsonRecord {
+  const settings = parseJsonSafe<JsonRecord>(input, {});
+  const next = { ...settings };
+  delete next[CHAPTER_INITIAL_SNAPSHOT_KEY];
+  delete next.publishStatus;
+  delete next[PUBLISH_FAILURE_REASON_KEY];
+  return next;
+}
+
+export function buildChapterInitialSnapshotVersion(world: unknown, chapter: unknown): string {
+  const worldRecord = asRecord(world);
+  const chapterRecord = asRecord(chapter);
+  const payload = {
+    worldId: Number(worldRecord.id || 0),
+    playerRole: parseJsonSafe(worldRecord.playerRole, worldRecord.playerRole || {}),
+    narratorRole: parseJsonSafe(worldRecord.narratorRole, worldRecord.narratorRole || {}),
+    worldSettings: snapshotRelevantWorldSettings(worldRecord.settings),
+    chapterId: Number(chapterRecord.id || 0),
+    title: String(chapterRecord.title || ""),
+    content: String(chapterRecord.content || ""),
+    openingRole: String(chapterRecord.openingRole || ""),
+    openingText: String(chapterRecord.openingText || ""),
+    backgroundPath: String(chapterRecord.backgroundPath || ""),
+    bgmPath: String(chapterRecord.bgmPath || ""),
+    showCompletionCondition: Boolean(chapterRecord.showCompletionCondition),
+    completionCondition: chapterRecord.completionCondition || null,
+    entryCondition: chapterRecord.entryCondition || null,
+  };
+  return `snapshot_v2_${hashVersionText(toJsonText(payload, {}))}`;
 }
 
 function parseWorldSettings(input: unknown): JsonRecord {
@@ -66,7 +95,7 @@ export function readChapterInitialSnapshotCache(input: {
   const settings = parseWorldSettings(world.settings);
   const snapshot = getSnapshotMap(settings)[String(chapterId)];
   if (!snapshot) return null;
-  const contentVersion = buildContentVersion(world, chapter, nowTs());
+  const contentVersion = buildChapterInitialSnapshotVersion(world, chapter);
   if (String(snapshot.contentVersion || "") !== contentVersion) return null;
   return snapshot;
 }
@@ -139,7 +168,7 @@ export async function buildChapterInitialSnapshotCache(input: {
     snapshot: {
       chapterId: Number(chapter.id || 0),
       chapterTitle: String(chapter.title || ""),
-      contentVersion: buildContentVersion(world, chapter, createTime),
+      contentVersion: buildChapterInitialSnapshotVersion(world, chapter),
       stateJson: toJsonText(state, {}),
       messages,
       plan,

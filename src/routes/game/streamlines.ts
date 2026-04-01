@@ -6,6 +6,7 @@ import {
   normalizeChapterOutput,
   normalizeRolePair,
   normalizeSessionState,
+  parseJsonSafe,
 } from "@/lib/gameEngine";
 import {
   applyPlayerProfileFromMessageToState,
@@ -64,7 +65,8 @@ function collectSentenceEvents(buffer: string, chunk: string) {
 export default router.post(
   "/",
   validateFields({
-    worldId: z.number(),
+    sessionId: z.string().optional().nullable(),
+    worldId: z.number().optional().nullable(),
     chapterId: z.number().optional().nullable(),
     playerContent: z.string().optional().nullable(),
     state: z.any().optional().nullable(),
@@ -75,7 +77,7 @@ export default router.post(
       motive: z.string().optional().nullable(),
       eventType: z.string().optional().nullable(),
       presetContent: z.string().optional().nullable(),
-    }).passthrough(),
+    }).passthrough().optional().nullable(),
   }),
   async (req, res) => {
     res.setHeader("Content-Type", "application/x-ndjson; charset=utf-8");
@@ -92,32 +94,81 @@ export default router.post(
         return;
       }
 
+      const sessionId = String(req.body.sessionId || "").trim();
       const worldId = Number(req.body.worldId || 0);
       const chapterId = Number(req.body.chapterId || 0);
       const playerContent = String(req.body.playerContent || "").trim();
       const plan = (req.body.plan || {}) as Record<string, unknown>;
       const inputMessages = (Array.isArray(req.body.messages) ? req.body.messages : []) as RuntimeMessageInput[];
 
-      const world = await db("t_storyWorld as w")
-        .leftJoin("t_project as p", "w.projectId", "p.id")
-        .where("w.id", worldId)
-        .where("p.userId", userId)
-        .select("w.*")
-        .first();
+      let world: any = null;
+      let chapter: any = null;
+      let messages: RuntimeMessageInput[] = [];
+      let state: Record<string, any> = {};
+      if (sessionId) {
+        const sessionRow = await db("t_gameSession").where({ sessionId }).first();
+        if (!sessionRow) {
+          res.status(404);
+          writeStreamLine(res, { type: "error", data: { message: "会话不存在" } });
+          return;
+        }
+        if (userId > 0 && Number(sessionRow.userId || 0) !== userId) {
+          res.status(403);
+          writeStreamLine(res, { type: "error", data: { message: "无权访问该会话" } });
+          return;
+        }
+        world = await db("t_storyWorld as w")
+          .leftJoin("t_project as p", "w.projectId", "p.id")
+          .where("w.id", Number(sessionRow.worldId || 0))
+          .select("w.*")
+          .first();
+        chapter = await db("t_storyChapter").where({ id: Number(sessionRow.chapterId || 0) }).first();
+        chapter = normalizeChapterOutput(chapter);
+        const rolePair = normalizeRolePair(world?.playerRole, world?.narratorRole);
+        state = normalizeSessionState(
+          sessionRow.stateJson,
+          Number(sessionRow.worldId || 0),
+          Number(chapter?.id || sessionRow.chapterId || 0) || null,
+          rolePair,
+          world,
+        );
+        const pendingPlan = parseJsonSafe<Record<string, unknown>>(state?.pendingNarrativePlan, {});
+        if (!Object.keys(plan).length && Object.keys(pendingPlan).length) {
+          Object.assign(plan, pendingPlan);
+        }
+        const rawRecentMessages = await db("t_sessionMessage").where({ sessionId }).orderBy("id", "desc").limit(20);
+        messages = rawRecentMessages
+          .reverse()
+          .map((item: any) => ({
+            role: String(item.role || ""),
+            roleType: String(item.roleType || ""),
+            eventType: String(item.eventType || ""),
+            content: String(item.content || ""),
+            createTime: Number(item.createTime || 0),
+          }));
+      } else {
+        world = await db("t_storyWorld as w")
+          .leftJoin("t_project as p", "w.projectId", "p.id")
+          .where("w.id", worldId)
+          .where("p.userId", userId)
+          .select("w.*")
+          .first();
+      }
       if (!world) {
         res.status(404);
         writeStreamLine(res, { type: "error", data: { message: "未找到故事" } });
         return;
       }
 
-      let chapter: any = null;
-      if (chapterId > 0) {
-        chapter = await db("t_storyChapter").where({ id: chapterId, worldId }).first();
+      if (!sessionId) {
+        if (chapterId > 0) {
+          chapter = await db("t_storyChapter").where({ id: chapterId, worldId }).first();
+        }
+        if (!chapter) {
+          chapter = await db("t_storyChapter").where({ worldId }).orderBy("sort", "asc").orderBy("id", "asc").first();
+        }
+        chapter = normalizeChapterOutput(chapter);
       }
-      if (!chapter) {
-        chapter = await db("t_storyChapter").where({ worldId }).orderBy("sort", "asc").orderBy("id", "asc").first();
-      }
-      chapter = normalizeChapterOutput(chapter);
       if (!chapter) {
         res.status(404);
         writeStreamLine(res, { type: "error", data: { message: "当前没有章节可调试" } });
@@ -125,24 +176,26 @@ export default router.post(
       }
 
       const rolePair = normalizeRolePair(world.playerRole, world.narratorRole);
-      const cachedRuntimeState = loadCachedDebugRuntimeState(req.body.state, userId, worldId);
-      const state = normalizeSessionState(
-        cachedRuntimeState || req.body.state,
-        worldId,
-        Number(chapter.id || 0),
-        rolePair,
-        world,
-      );
-      if (playerContent) {
-        applyPlayerProfileFromMessageToState(state, world, playerContent);
+      if (!sessionId) {
+        const cachedRuntimeState = loadCachedDebugRuntimeState(req.body.state, userId, worldId);
+        state = normalizeSessionState(
+          cachedRuntimeState || req.body.state,
+          worldId,
+          Number(chapter.id || 0),
+          rolePair,
+          world,
+        );
+        if (playerContent) {
+          applyPlayerProfileFromMessageToState(state, world, playerContent);
+        }
+        messages = inputMessages.map((item) => ({
+          role: String(item.role || ""),
+          roleType: String(item.roleType || ""),
+          eventType: String(item.eventType || ""),
+          content: String(item.content || ""),
+          createTime: Number(item.createTime || 0),
+        }));
       }
-      const messages = inputMessages.map((item) => ({
-        role: String(item.role || ""),
-        roleType: String(item.roleType || ""),
-        eventType: String(item.eventType || ""),
-        content: String(item.content || ""),
-        createTime: Number(item.createTime || 0),
-      }));
       const recentMessages = buildDebugRecentMessages(messages, String(state.player?.name || rolePair.playerRole.name || "用户"), playerContent);
       const roleName = String(plan.role || "").trim();
       const roleType = String(plan.roleType || "").trim() || "narrator";
