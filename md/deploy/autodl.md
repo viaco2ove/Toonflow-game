@@ -115,7 +115,7 @@ compose 默认把数据挂到：
 
 ## 说明
 
-- 这套镜像默认启用 `PREFER_PROCESS_ENV=1`，优先使用容器注入环境变量，而不是仓库里的 `env/.env.prod`
+- 这套镜像默认启用 `PREFER_PROCESS_ENV=1`，优先使用容器注入环境变量，而不是仓库里的 `env/.env.local`
 - 镜像会复制 `res/voice-presets`，保证内置语音种子在容器里可用
 - 镜像安装了 `python3/python3-venv/python3-pip/ffmpeg`，便于运行本地 BiRefNet 和 GIF 转换链路
 - 当前本地 BiRefNet 仍是 CPU 版 `onnxruntime`，不会自动使用 AutoDL GPU

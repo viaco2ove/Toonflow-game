@@ -14,7 +14,10 @@ if (!fs.existsSync(envDir)) {
   fs.mkdirSync(envDir, { recursive: true });
 }
 if (!fs.existsSync(envFile)) {
-  const defaultEnv = `NODE_ENV=${process.env.NODE_ENV}\nPORT=60002\nOSSURL=http://127.0.0.1:60002/\n`;
+  const defaultEnv =
+    process.env.NODE_ENV === "prod"
+      ? `NODE_ENV=prod\nPREFER_PROCESS_ENV=1\nPORT=60002\nOSSURL=http://127.0.0.1:60002/\nDB_PATH=\nUPLOAD_DIR=\nLOG_PATH=\n`
+      : `NODE_ENV=${process.env.NODE_ENV}\nPORT=60002\nOSSURL=http://127.0.0.1:60002/\n`;
   fs.writeFileSync(envFile, defaultEnv, "utf8");
   console.log(`📄 已自动创建环境变量文件: ${envFile}`);
 }

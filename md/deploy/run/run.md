@@ -13,11 +13,11 @@ npm install -g pm2
 `                                                                                                                                                                                                           
                                                                                                                                                                                                                                     
   然后不要先用 yarn build，直接用下面这组更稳：                                                                                                                                                                                     
-                                                                                                                                                                                                                                    
+为什么是local 不是prod . 因为prod 会被pull 覆盖。                                                                                                                                                                                                                                    
 `  
 cd ~/Toonflow-game                                                                                                                                                                                                                
-NODE_ENV=prod PREFER_PROCESS_ENV=1 npx tsx scripts/build.ts                                                                                                                                                                      
-NODE_ENV=prod PREFER_PROCESS_ENV=1 pm2 start build/app.js --name toonflow-app --update-env                                                                                                                                                                       
+NODE_ENV=local PREFER_PROCESS_ENV=1 npx tsx scripts/build.ts                                                                                                                                                                      
+NODE_ENV=local PREFER_PROCESS_ENV=1 pm2 start build/app.js --name toonflow-app --update-env                                                                                                                                                                       
 pm2 save
 `                                                                                                                                                                                                                   
                                                                                                                                                                                                                                     
