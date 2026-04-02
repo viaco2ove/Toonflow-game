@@ -1,6 +1,8 @@
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse, RedirectResponse, PlainTextResponse
+from datetime import datetime
 import html
+import shlex
 import subprocess
 
 app = FastAPI()
@@ -14,11 +16,23 @@ START_APP_CMD = (
     "NODE_ENV=local PREFER_PROCESS_ENV=1 "
     f"pm2 start build/app.js --name {APP_NAME} --update-env"
 )
+LAST_ACTION_LOG = "暂无操作记录"
 
 
 def run(cmd: str) -> str:
     p = subprocess.run(cmd, shell=True, text=True, capture_output=True)
     return (p.stdout or "") + (p.stderr or "")
+
+
+def run_in_repo(cmd: str) -> str:
+    return run(f"cd {APP_DIR} && {cmd}")
+
+
+def set_last_action_log(title: str, output: str) -> None:
+    global LAST_ACTION_LOG
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    body = (output or "").strip() or "(无输出)"
+    LAST_ACTION_LOG = f"[{timestamp}] {title}\n{body}"
 
 
 def shell_text(text: str) -> str:
@@ -80,6 +94,22 @@ def status_card(title: str, summary: str, status_label: str, kind: str) -> str:
     """
 
 
+def git_info():
+    current_branch = run_in_repo("git rev-parse --abbrev-ref HEAD 2>&1 || true").strip()
+    current_commit = run_in_repo("git rev-parse --short HEAD 2>&1 || true").strip()
+    branch_list = run_in_repo("git branch --list --no-color 2>&1 || true")
+    status_short = run_in_repo("git status --short 2>&1 || true")
+    status_full = run_in_repo("git status -sb 2>&1 || true")
+    return {
+        "current_branch": current_branch or "(未知分支)",
+        "current_commit": current_commit or "(未知提交)",
+        "branch_list": branch_list,
+        "status_short": status_short,
+        "status_full": status_full,
+        "dirty": bool((status_short or "").strip()),
+    }
+
+
 def service_status():
     pm2_list = run("pm2 jlist")
     nginx_status = run("service nginx status 2>&1 || systemctl status nginx --no-pager 2>&1 || true")
@@ -106,6 +136,7 @@ def service_status():
 @app.get("/", response_class=HTMLResponse)
 def home():
     status = service_status()
+    git = git_info()
     pm2_kind_map = {
         "online": ("运行中", "success"),
         "stopped": ("已停止", "warn"),
@@ -121,6 +152,8 @@ def home():
     web_label = "正常" if status["web_listening"] and status["web_http_ok"] else "异常"
     web_kind = "success" if status["web_listening"] and status["web_http_ok"] else "danger"
     app_hint = summarize_app_hint(status)
+    git_label = "有改动" if git["dirty"] else "干净"
+    git_kind = "warn" if git["dirty"] else "success"
     return f"""
     <html>
     <head>
@@ -286,6 +319,66 @@ def home():
           font-size: 13px;
           line-height: 1.6;
         }}
+        .info-grid {{
+          display: grid;
+          grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+          gap: 12px;
+        }}
+        .info-item {{
+          padding: 14px;
+          border-radius: 14px;
+          background: #f8fbff;
+          border: 1px solid var(--border);
+        }}
+        .info-label {{
+          font-size: 12px;
+          color: var(--muted);
+          margin-bottom: 6px;
+        }}
+        .info-value {{
+          font-size: 15px;
+          font-weight: 700;
+          word-break: break-all;
+        }}
+        .form-row {{
+          display: flex;
+          flex-wrap: wrap;
+          gap: 10px;
+          align-items: center;
+        }}
+        .field {{
+          flex: 1 1 260px;
+          min-width: 240px;
+          min-height: 42px;
+          padding: 0 14px;
+          border-radius: 12px;
+          border: 1px solid var(--border);
+          background: #fff;
+          color: var(--text);
+          font-size: 14px;
+        }}
+        .btn-form {{
+          display: inline-flex;
+          gap: 10px;
+          flex-wrap: wrap;
+          align-items: center;
+        }}
+        .btn-form button {{
+          min-height: 42px;
+          padding: 0 16px;
+          border: 1px solid var(--border);
+          border-radius: 12px;
+          background: #fff;
+          color: var(--text);
+          cursor: pointer;
+          font-size: 14px;
+          font-weight: 600;
+        }}
+        .btn-form button.primary {{
+          background: var(--primary);
+          color: #fff;
+          border-color: var(--primary);
+        }}
         @media (max-width: 720px) {{
           .page {{ padding: 18px 14px 32px; }}
           .hero {{ padding: 22px 18px 18px; border-radius: 18px; }}
@@ -305,6 +398,7 @@ def home():
           {status_card("nginx", f"反向代理端口: {WEB_PORT}", nginx_label, nginx_kind)}
           {status_card("app 服务", f"监听地址: 127.0.0.1:{APP_PORT}", app_label, app_kind)}
           {status_card("web 入口", f"本机访问: http://127.0.0.1:{WEB_PORT}/", web_label, web_kind)}
+          {status_card("Git 工作区", f"当前分支: {git['current_branch']}", git_label, git_kind)}
         </div>
 
         <div class="panel btns">
@@ -324,6 +418,39 @@ def home():
             <a href="/">刷新状态</a>
             <a href="http://127.0.0.1:{WEB_PORT}/" target="_blank">本机测试 {WEB_PORT}</a>
           </div>
+        </div>
+
+        <div class="panel">
+          <h2>代码管理</h2>
+          <div class="info-grid">
+            <div class="info-item">
+              <div class="info-label">当前分支</div>
+              <div class="info-value">{html.escape(git["current_branch"])}</div>
+            </div>
+            <div class="info-item">
+              <div class="info-label">当前提交</div>
+              <div class="info-value">{html.escape(git["current_commit"])}</div>
+            </div>
+          </div>
+          <div class="panel" style="margin-top:14px;">
+            <h2 style="font-size:18px;">Git 操作</h2>
+            <div class="btn-form">
+            <form action="/git_fetch" method="get"><button type="submit">拉取远端信息</button></form>
+              <form action="/git_pull" method="get"><button class="primary" type="submit">拉取当前分支</button></form>
+            </div>
+            <div style="height:12px;"></div>
+            <form action="/git_checkout" method="get" class="form-row">
+              <input class="field" type="text" name="branch" placeholder="输入要切换的分支名，例如 dev / main / feature/xxx" />
+              <div class="btn-form">
+                <button type="submit">切换分支并尝试拉取</button>
+              </div>
+            </form>
+            <p class="muted" style="margin-top:12px;">切换分支会依次执行：`git fetch --all --prune`、`git checkout 分支`、`git pull --ff-only`。若工作区有未提交改动，Git 可能拒绝切换。</p>
+          </div>
+          <h2 style="margin-top:18px;">Git 状态</h2>
+          <pre>{shell_text(git["status_full"])}</pre>
+          <h2 style="margin-top:18px;">本地分支</h2>
+          <pre>{shell_text(git["branch_list"])}</pre>
         </div>
 
         <div class="panel">
@@ -354,6 +481,11 @@ def home():
         <div class="panel">
           <h2>nginx 状态</h2>
           <pre>{shell_text(status["nginx_status"])}</pre>
+        </div>
+
+        <div class="panel">
+          <h2>最近操作结果</h2>
+          <pre>{shell_text(LAST_ACTION_LOG)}</pre>
         </div>
       </div>
     </body>
@@ -432,6 +564,35 @@ def restart_all():
 def stop_all():
     run(f"pm2 stop {APP_NAME} || true")
     run("service nginx stop || true")
+    return RedirectResponse("/", status_code=302)
+
+
+@app.get("/git_fetch")
+def git_fetch():
+    output = run_in_repo("git fetch --all --prune 2>&1 || true")
+    set_last_action_log("git fetch --all --prune", output)
+    return RedirectResponse("/", status_code=302)
+
+
+@app.get("/git_pull")
+def git_pull():
+    output = run_in_repo("git pull --ff-only 2>&1 || true")
+    set_last_action_log("git pull --ff-only", output)
+    return RedirectResponse("/", status_code=302)
+
+
+@app.get("/git_checkout")
+def git_checkout(branch: str = ""):
+    safe_branch = shlex.quote((branch or "").strip())
+    if not safe_branch or safe_branch == "''":
+        set_last_action_log("git checkout", "分支名不能为空")
+        return RedirectResponse("/", status_code=302)
+    output = run_in_repo(
+        f"git fetch --all --prune 2>&1 && "
+        f"git checkout {safe_branch} 2>&1 && "
+        f"git pull --ff-only 2>&1 || true"
+    )
+    set_last_action_log(f"切换分支 {branch.strip()}", output)
     return RedirectResponse("/", status_code=302)
 
 
