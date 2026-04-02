@@ -1,75 +1,68 @@
-# nginx???
-sudo apt update
-sudo apt install nginx
-sudo systemctl status nginx
+# nginx 运行与发布目录
 
-# 使用 service 命令（最常用）
-bash
-运行
-## 启动 Nginx
-sudo service nginx start
+当前推荐方案只有一套：
 
-## 停止 Nginx
-sudo service nginx stop
+- `nginx` 监听 `6006`
+- 反向代理后端到 `127.0.0.1:60002`
+- 静态前端统一发布到 `/var/www/toonflow`
 
-## 重启 Nginx
-sudo service nginx restart
+不要再让 `nginx` 直接读 `/root/Toonflow-game/scripts/web`，否则很容易再次踩到 `/root` 权限问题。
 
-## 查看状态
-sudo service nginx status
+## 1. 安装 nginx
 
-# 配置防火墙（可选但推荐）
-## 查看可用的应用配置
-sudo ufw app list
+```bash
+apt-get update
+apt-get install -y nginx
+service nginx status
+```
 
-## 允许 HTTP 和 HTTPS 流量
-sudo ufw allow 'Nginx Full'
+## 2. 写入配置
 
-## 检查防火墙状态
-sudo ufw status
+把下面这个文件保存成：
 
-# 配 nginx 
+`/etc/nginx/sites-available/toonflow`
 
-cat > /etc/nginx/sites-available/toonflow <<'EOF' 
-server {
-listen 6006;
-server_name _;
+[toonflow](nginx_config/toonflow)
 
-root /root/Toonflow-game/scripts/web; 
-index index.html; 
+启用配置：
 
-client_max_body_size 200m;
-
-location ~ ^/(assets|game|index|novel|other|outline|project|prompt|script|setting|storyboard|task|user|video|voice|system|[0-9]+)(/|$) {
-proxy_pass http://127.0.0.1:60002;
-proxy_http_version 1.1; 
-proxy_set_header Host $host;
-proxy_set_header X-Real-IP $remote_addr;
-proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-proxy_set_header X-Forwarded-Proto $scheme; 
-proxy_read_timeout 3600s; 
-proxy_send_timeout 3600s; 
-proxy_buffering off;
-} 
-
-location / {
-try_files $uri $uri/ /index.html; 
-} 
-} 
-EOF 
-
+```bash
 rm -f /etc/nginx/sites-enabled/default
 ln -sf /etc/nginx/sites-available/toonflow /etc/nginx/sites-enabled/toonflow
 nginx -t
 service nginx restart
+```
 
+## 3. 发布静态前端到真正线上目录
 
-# 看 nginx 日志最快。
-                                                                                                                                                                                                                                    
-  Ubuntu 上通常在这两个文件：                                                                                                                                                                                                       
-                                                                                                                                                                                                                                    
-  tail -n 100 /var/log/nginx/error.log                                                                                                                                                                                              
-  tail -n 100 /var/log/nginx/access.log   
-  
+说明：
 
-# 如何保证开机启动
+- 开发源目录：`/root/Toonflow-game/scripts/web`
+- 真正线上目录：`/var/www/toonflow`
+- 页面没变化时，优先检查是不是忘了同步到 `/var/www/toonflow`
+
+同步命令：
+
+```bash
+mkdir -p /var/www/toonflow
+rsync -a --delete /root/Toonflow-game/scripts/web/ /var/www/toonflow/
+chown -R www-data:www-data /var/www/toonflow
+chmod -R 755 /var/www/toonflow
+nginx -t && service nginx reload
+```
+
+## 4. 检查 nginx
+
+```bash
+curl -I http://127.0.0.1:6006/
+tail -n 100 /var/log/nginx/error.log
+tail -n 100 /var/log/nginx/access.log
+```
+
+如果页面显示还是旧的，优先检查：
+
+```bash
+head -n 5 /var/www/toonflow/index.html
+```
+
+而不是先怀疑缓存。

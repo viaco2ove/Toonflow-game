@@ -11,6 +11,8 @@ APP_NAME = "toonflow-app"
 APP_DIR = "/root/Toonflow-game"
 APP_PORT = 60002
 WEB_PORT = 6006
+WEB_SOURCE_DIR = f"{APP_DIR}/scripts/web"
+WEB_PUBLISH_DIR = "/var/www/toonflow"
 START_APP_CMD = (
     f"cd {APP_DIR} && "
     "NODE_ENV=local PREFER_PROCESS_ENV=1 "
@@ -26,6 +28,17 @@ def run(cmd: str) -> str:
 
 def run_in_repo(cmd: str) -> str:
     return run(f"cd {APP_DIR} && {cmd}")
+
+
+def sync_web_publish_dir() -> str:
+    # 线上静态页统一从 /var/www/toonflow 提供；拉代码后顺手同步，避免“代码已更新但页面没变”。
+    return run(
+        f"mkdir -p {WEB_PUBLISH_DIR} && "
+        f"rsync -a --delete {WEB_SOURCE_DIR}/ {WEB_PUBLISH_DIR}/ && "
+        f"chown -R www-data:www-data {WEB_PUBLISH_DIR} && "
+        f"chmod -R 755 {WEB_PUBLISH_DIR} && "
+        "nginx -t >/dev/null 2>&1 && service nginx reload >/dev/null 2>&1 || true"
+    )
 
 
 def set_last_action_log(title: str, output: str) -> None:
@@ -119,6 +132,18 @@ def git_info():
         "status_full": status_full,
         "dirty": bool((status_short or "").strip()),
     }
+
+
+def force_sync_current_branch() -> str:
+    branch = run_in_repo("git rev-parse --abbrev-ref HEAD 2>&1 || true").strip()
+    safe_branch = shlex.quote(branch)
+    if not branch or branch == "HEAD":
+        return "无法识别当前分支，已取消强制同步。"
+    return run_in_repo(
+        "git fetch origin --prune 2>&1 && "
+        f"git reset --hard origin/{safe_branch} 2>&1 && "
+        "git clean -fd 2>&1 || true"
+    )
 
 
 def service_status():
@@ -486,16 +511,16 @@ def home():
             <h2 style="font-size:18px;">Git 操作</h2>
             <div class="btn-form">
             <form action="/git_fetch" method="get"><button type="submit">拉取远端信息</button></form>
-              <form action="/git_pull" method="get"><button class="primary" type="submit">拉取当前分支</button></form>
+              <form action="/git_pull" method="get"><button class="primary" type="submit">强制同步当前分支</button></form>
             </div>
             <div style="height:12px;"></div>
             <form action="/git_checkout" method="get" class="form-row">
               <input class="field" type="text" name="branch" placeholder="输入要切换的分支名，例如 dev / main / feature/xxx" />
               <div class="btn-form">
-                <button type="submit">切换分支并尝试拉取</button>
+                <button type="submit">切换分支并强制同步</button>
               </div>
             </form>
-            <p class="muted" style="margin-top:12px;">切换分支会依次执行：`git fetch --all --prune`、`git checkout 分支`、`git pull --ff-only`。若工作区有未提交改动，Git 可能拒绝切换。</p>
+            <p class="muted" style="margin-top:12px;">这里使用激进策略：`git fetch origin --prune` + `git reset --hard origin/分支` + `git clean -fd`。会丢弃仓库内未提交改动，并删除未跟踪且非忽略文件。</p>
           </div>
           <h2 style="margin-top:18px;">Git 状态</h2>
           <pre>{shell_text(git["status_full"])}</pre>
@@ -622,8 +647,12 @@ def git_fetch():
 
 @app.get("/git_pull")
 def git_pull():
-    output = run_in_repo("git pull --ff-only 2>&1 || true")
-    set_last_action_log("git pull --ff-only", output)
+    pull_output = force_sync_current_branch()
+    sync_output = sync_web_publish_dir()
+    set_last_action_log(
+        "强制同步当前分支 + 同步 /var/www/toonflow",
+        f"{pull_output.rstrip()}\n\n--- 同步静态页 ---\n{sync_output}".strip(),
+    )
     return RedirectResponse("/", status_code=302)
 
 
@@ -633,12 +662,17 @@ def git_checkout(branch: str = ""):
     if not safe_branch or safe_branch == "''":
         set_last_action_log("git checkout", "分支名不能为空")
         return RedirectResponse("/", status_code=302)
-    output = run_in_repo(
-        f"git fetch --all --prune 2>&1 && "
+    checkout_output = run_in_repo(
+        "git fetch origin --prune 2>&1 && "
         f"git checkout {safe_branch} 2>&1 && "
-        f"git pull --ff-only 2>&1 || true"
+        f"git reset --hard origin/{safe_branch} 2>&1 && "
+        "git clean -fd 2>&1 || true"
     )
-    set_last_action_log(f"切换分支 {branch.strip()}", output)
+    sync_output = sync_web_publish_dir()
+    set_last_action_log(
+        f"切换分支 {branch.strip()} 并强制同步 + 同步 /var/www/toonflow",
+        f"{checkout_output.rstrip()}\n\n--- 同步静态页 ---\n{sync_output}".strip(),
+    )
     return RedirectResponse("/", status_code=302)
 
 
