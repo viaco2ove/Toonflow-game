@@ -636,6 +636,13 @@ ${task}
         tools: this.getSubAgentTools(),
         messages: [{ role: "user", content: context }],
         maxStep: 100,
+        usageType: "大纲Agent",
+        usageRemark: `outlineScript/${agentType}`,
+        usageMeta: {
+          stage: "outlineScriptSubAgent",
+          agentType,
+          projectId: this.projectId,
+        },
       },
       promptConfig,
     );
@@ -710,6 +717,12 @@ ${task}
         tools: this.getAllTools(),
         messages: this.history,
         maxStep: 100,
+        usageType: "大纲Agent",
+        usageRemark: "outlineScript/main",
+        usageMeta: {
+          stage: "outlineScriptMain",
+          projectId: this.projectId,
+        },
       },
       promptConfig,
     );

@@ -59,6 +59,32 @@ export default async (knex: Knex, forceInit: boolean = false): Promise<void> => 
       },
     },
     {
+      name: "t_aiTokenUsageLog",
+      builder: (table) => {
+        table.increments("id").primary();
+        table.integer("userId").notNullable();
+        table.integer("createTime").notNullable();
+        table.text("type");
+        table.text("manufacturer");
+        table.text("model");
+        table.text("channel");
+        table.integer("inputTokens").defaultTo(0);
+        table.integer("outputTokens").defaultTo(0);
+        table.integer("reasoningTokens").defaultTo(0);
+        table.integer("cacheReadTokens").defaultTo(0);
+        table.integer("totalTokens").defaultTo(0);
+        table.float("inputPricePer1M").defaultTo(0);
+        table.float("outputPricePer1M").defaultTo(0);
+        table.float("cacheReadPricePer1M").defaultTo(0);
+        table.float("amount").defaultTo(0);
+        table.text("currency").defaultTo("CNY");
+        table.text("remark");
+        table.text("meta");
+        table.index(["userId", "createTime"], "idx_aiTokenUsageLog_user_time");
+        table.index(["type"], "idx_aiTokenUsageLog_type");
+      },
+    },
+    {
       name: "t_novel",
       builder: (table) => {
         table.integer("id").notNullable();
@@ -243,6 +269,10 @@ export default async (knex: Knex, forceInit: boolean = false): Promise<void> => 
         table.text("apiKey");
         table.text("baseUrl");
         table.text("manufacturer");
+        table.float("inputPricePer1M");
+        table.float("outputPricePer1M");
+        table.float("cacheReadPricePer1M");
+        table.text("currency");
         table.integer("createTime");
         table.integer("index");
         table.integer("userId");

@@ -1430,6 +1430,14 @@ export async function runStorySpeakerContent(input: {
     const result = await u.ai.text.invoke(
       {
         plainTextOutput: true,
+        usageType: "角色发言",
+        usageRemark: `${normalizeScalarText(input.world?.name)} / ${normalizeScalarText(input.chapter?.title)} / ${normalizeScalarText(input.currentRole.name)}`,
+        usageMeta: {
+          stage: "storySpeakerModel",
+          worldId: Number(input.world?.id || 0),
+          chapterId: Number(input.chapter?.id || 0),
+          role: normalizeScalarText(input.currentRole.name),
+        },
         messages: [
           {
             role: "system",
@@ -1579,6 +1587,13 @@ async function doRunNarrativePlan(input: OrchestratorInput): Promise<NarrativePl
     const result = await u.ai.text.invoke(
       {
         plainTextOutput: true,
+        usageType: "编排师",
+        usageRemark: `${currentChapter.title || "未知章节"} / ${normalizeScalarText(input.world?.name)}`,
+        usageMeta: {
+          stage: "storyOrchestratorModel",
+          worldId: Number(input.world?.id || 0),
+          chapterId: currentChapter.id || 0,
+        },
         messages: [
           {
             role: "system",
@@ -1815,6 +1830,13 @@ export async function runStoryMemoryManager(input: {
     const result = await u.ai.text.invoke(
       {
         plainTextOutput: true,
+        usageType: "记忆管理",
+        usageRemark: `${normalizeScalarText(input.world?.name)} / ${normalizeScalarText(input.chapter?.title)}`,
+        usageMeta: {
+          stage: "storyMemoryModel",
+          worldId: Number(input.world?.id || 0),
+          chapterId: Number(input.chapter?.id || 0),
+        },
         messages: [
           {
             role: "system",

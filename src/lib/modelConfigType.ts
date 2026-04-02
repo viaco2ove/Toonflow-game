@@ -7,6 +7,12 @@ function trimText(input: unknown): string {
   return String(input || "").trim();
 }
 
+function normalizeNonNegativeNumber(input: unknown): number {
+  const value = Number(input);
+  if (!Number.isFinite(value) || value < 0) return 0;
+  return Math.round(value * 1_000_000) / 1_000_000;
+}
+
 export function isVoiceDesignModelConfig(input: {
   type?: unknown;
   modelType?: unknown;
@@ -33,12 +39,20 @@ export function isVoiceDesignModelConfig(input: {
 export function toExternalModelConfigRow<T extends Record<string, any>>(row: T): T & {
   type: ExternalModelConfigType;
   modelType: string;
+  currency: string;
+  inputPricePer1M: number;
+  outputPricePer1M: number;
+  cacheReadPricePer1M: number;
 } {
   if (isVoiceDesignModelConfig(row)) {
     return {
       ...row,
       type: "voice_design",
       modelType: "voice_design",
+      currency: trimText(row.currency).toUpperCase() || "CNY",
+      inputPricePer1M: normalizeNonNegativeNumber(row.inputPricePer1M),
+      outputPricePer1M: normalizeNonNegativeNumber(row.outputPricePer1M),
+      cacheReadPricePer1M: normalizeNonNegativeNumber(row.cacheReadPricePer1M),
     };
   }
   const resolvedType = trimText(row.type).toLowerCase();
@@ -46,6 +60,10 @@ export function toExternalModelConfigRow<T extends Record<string, any>>(row: T):
     ...row,
     type: (resolvedType || "text") as ExternalModelConfigType,
     modelType: trimText(row.modelType),
+    currency: trimText(row.currency).toUpperCase() || "CNY",
+    inputPricePer1M: normalizeNonNegativeNumber(row.inputPricePer1M),
+    outputPricePer1M: normalizeNonNegativeNumber(row.outputPricePer1M),
+    cacheReadPricePer1M: normalizeNonNegativeNumber(row.cacheReadPricePer1M),
   };
 }
 
@@ -56,6 +74,10 @@ export function normalizeExternalModelConfig(input: {
   apiKey?: unknown;
   manufacturer?: unknown;
   modelType?: unknown;
+  inputPricePer1M?: unknown;
+  outputPricePer1M?: unknown;
+  cacheReadPricePer1M?: unknown;
+  currency?: unknown;
 }): {
   persistedType: PersistedModelConfigType;
   externalType: ExternalModelConfigType;
@@ -64,6 +86,10 @@ export function normalizeExternalModelConfig(input: {
   apiKey: string;
   manufacturer: string;
   modelType: string;
+  inputPricePer1M: number;
+  outputPricePer1M: number;
+  cacheReadPricePer1M: number;
+  currency: string;
 } {
   const requestedType = trimText(input.type).toLowerCase();
   const manufacturer = trimText(input.manufacturer);
@@ -71,6 +97,10 @@ export function normalizeExternalModelConfig(input: {
   const model = trimText(input.model);
   const baseUrl = trimText(input.baseUrl);
   const modelType = trimText(input.modelType);
+  const inputPricePer1M = normalizeNonNegativeNumber(input.inputPricePer1M);
+  const outputPricePer1M = normalizeNonNegativeNumber(input.outputPricePer1M);
+  const cacheReadPricePer1M = normalizeNonNegativeNumber(input.cacheReadPricePer1M);
+  const currency = trimText(input.currency).toUpperCase() || "CNY";
 
   if (requestedType === "voice_design") {
     return {
@@ -81,6 +111,10 @@ export function normalizeExternalModelConfig(input: {
       apiKey,
       manufacturer,
       modelType: "voice_design",
+      inputPricePer1M,
+      outputPricePer1M,
+      cacheReadPricePer1M,
+      currency,
     };
   }
 
@@ -99,6 +133,10 @@ export function normalizeExternalModelConfig(input: {
       apiKey,
       manufacturer,
       modelType,
+      inputPricePer1M,
+      outputPricePer1M,
+      cacheReadPricePer1M,
+      currency,
     };
   }
 
@@ -111,5 +149,9 @@ export function normalizeExternalModelConfig(input: {
     apiKey,
     manufacturer,
     modelType,
+    inputPricePer1M,
+    outputPricePer1M,
+    cacheReadPricePer1M,
+    currency,
   };
 }

@@ -49,7 +49,7 @@ export default router.post(
         content,
         entryCondition,
         completionCondition,
-        runtimeOutline,
+        runtimeOutline: runtimeOutlineInput,
         sort,
         status,
       } = req.body;
@@ -65,7 +65,7 @@ export default router.post(
         openingText: normalizedChapter.openingText,
         content: normalizedChapter.content,
         completionCondition: normalizedChapter.completionCondition,
-        runtimeOutline,
+        runtimeOutline: runtimeOutlineInput,
       });
       const db = getGameDb();
       const now = nowTs();

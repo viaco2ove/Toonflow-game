@@ -204,6 +204,12 @@ async function generateRoleParameterCardWithAi(input: {
     const result = await u.ai.text.invoke(
       {
         plainTextOutput: true,
+        usageType: "角色参数卡",
+        usageRemark: `${input.worldName || "未知世界"} / ${roleName || "未命名角色"}`,
+        usageMeta: {
+          stage: "roleParameterCard",
+          roleType,
+        },
         messages: [
           { role: "system", content: systemPrompt },
           { role: "user", content: userPrompt },

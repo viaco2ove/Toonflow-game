@@ -199,6 +199,15 @@ export default router.post(
               content: userPrompt,
             },
           ],
+          usageType: "资产提示词润色",
+          usageRemark: `${type || "assets"} / ${name || ""}`,
+          usageMeta: {
+            stage: "assetsPolishPrompt",
+            type,
+            name,
+            projectId,
+            assetsId,
+          },
           output: {
             prompt: zod.string().describe("提示词"),
           },

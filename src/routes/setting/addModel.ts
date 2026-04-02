@@ -15,11 +15,26 @@ export default router.post(
     apiKey: z.string(),
     modelType: z.string(),
     manufacturer: z.string(),
+    inputPricePer1M: z.union([z.number(), z.string()]).optional(),
+    outputPricePer1M: z.union([z.number(), z.string()]).optional(),
+    cacheReadPricePer1M: z.union([z.number(), z.string()]).optional(),
+    currency: z.string().optional(),
   }),
   async (req, res) => {
-    const { type, model, baseUrl, apiKey, manufacturer, modelType } = req.body;
+    const { type, model, baseUrl, apiKey, manufacturer, modelType, inputPricePer1M, outputPricePer1M, cacheReadPricePer1M, currency } = req.body;
     const userId = Number((req as any)?.user?.id || 0);
-    const normalized = normalizeExternalModelConfig({ type, model, baseUrl, apiKey, manufacturer, modelType });
+    const normalized = normalizeExternalModelConfig({
+      type,
+      model,
+      baseUrl,
+      apiKey,
+      manufacturer,
+      modelType,
+      inputPricePer1M,
+      outputPricePer1M,
+      cacheReadPricePer1M,
+      currency,
+    });
 
     await u.db("t_config").insert({
       type: normalized.persistedType,
@@ -28,6 +43,10 @@ export default router.post(
       apiKey: normalized.apiKey,
       manufacturer: normalized.manufacturer,
       modelType: normalized.modelType,
+      inputPricePer1M: normalized.inputPricePer1M,
+      outputPricePer1M: normalized.outputPricePer1M,
+      cacheReadPricePer1M: normalized.cacheReadPricePer1M,
+      currency: normalized.currency,
       createTime: Date.now(),
       userId,
     });

@@ -210,6 +210,11 @@ export default async function polishVoicePromptAgent(input: PolishVoicePromptInp
   try {
     const result = await u.ai.text.invoke(
       {
+        usageType: "语音提示词优化",
+        usageRemark: rawText || rawStyle || "语音提示词优化",
+        usageMeta: {
+          stage: "voicePromptPolish",
+        },
         messages: [
           { role: "system", content: SYSTEM_PROMPT },
           { role: "user", content: buildUserPrompt(input, signalGroups, detectedKeywords) },

@@ -1,4 +1,4 @@
-// @db-hash f7978a1cd651da887ec7eab8b8670f9e
+// @db-hash 17f350a731897441619794a845853c31
 //该文件由脚本自动生成，请勿手动修改
 
 export interface t_aiModelMap {
@@ -6,6 +6,27 @@ export interface t_aiModelMap {
   'id'?: number;
   'key'?: string | null;
   'name'?: string | null;
+}
+export interface t_aiTokenUsageLog {
+  'amount'?: number | null;
+  'cacheReadPricePer1M'?: number | null;
+  'cacheReadTokens'?: number | null;
+  'channel'?: string | null;
+  'createTime': number;
+  'currency'?: string | null;
+  'id'?: number;
+  'inputPricePer1M'?: number | null;
+  'inputTokens'?: number | null;
+  'manufacturer'?: string | null;
+  'meta'?: string | null;
+  'model'?: string | null;
+  'outputPricePer1M'?: number | null;
+  'outputTokens'?: number | null;
+  'reasoningTokens'?: number | null;
+  'remark'?: string | null;
+  'totalTokens'?: number | null;
+  'type'?: string | null;
+  'userId': number;
 }
 export interface t_assets {
   'duration'?: string | null;
@@ -62,11 +83,15 @@ export interface t_chatHistory {
 export interface t_config {
   'apiKey'?: string | null;
   'baseUrl'?: string | null;
+  'cacheReadPricePer1M'?: number | null;
   'createTime'?: number | null;
+  'currency'?: string | null;
   'id'?: number;
+  'inputPricePer1M'?: number | null;
   'manufacturer'?: string | null;
   'model'?: string | null;
   'modelType'?: string | null;
+  'outputPricePer1M'?: number | null;
   'type'?: string | null;
   'userId'?: number | null;
 }
@@ -220,6 +245,7 @@ export interface t_storyChapter {
   'id'?: number;
   'openingRole'?: string | null;
   'openingText'?: string | null;
+  'runtimeOutline'?: string | null;
   'showCompletionCondition'?: number | null;
   'sort'?: number | null;
   'status'?: string | null;
@@ -334,6 +360,7 @@ export interface t_voiceModel {
 
 export interface DB {
   "t_aiModelMap": t_aiModelMap;
+  "t_aiTokenUsageLog": t_aiTokenUsageLog;
   "t_assets": t_assets;
   "t_chapterTask": t_chapterTask;
   "t_chapterTrigger": t_chapterTrigger;

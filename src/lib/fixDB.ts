@@ -63,6 +63,30 @@ export default async (knex: Knex): Promise<void> => {
     }
   };
 
+  await ensureTable("t_aiTokenUsageLog", (table) => {
+    table.increments("id").primary();
+    table.integer("userId").notNullable();
+    table.integer("createTime").notNullable();
+    table.text("type");
+    table.text("manufacturer");
+    table.text("model");
+    table.text("channel");
+    table.integer("inputTokens").defaultTo(0);
+    table.integer("outputTokens").defaultTo(0);
+    table.integer("reasoningTokens").defaultTo(0);
+    table.integer("cacheReadTokens").defaultTo(0);
+    table.integer("totalTokens").defaultTo(0);
+    table.float("inputPricePer1M").defaultTo(0);
+    table.float("outputPricePer1M").defaultTo(0);
+    table.float("cacheReadPricePer1M").defaultTo(0);
+    table.float("amount").defaultTo(0);
+    table.text("currency").defaultTo("CNY");
+    table.text("remark");
+    table.text("meta");
+    table.index(["userId", "createTime"], "idx_aiTokenUsageLog_user_time");
+    table.index(["type"], "idx_aiTokenUsageLog_type");
+  });
+
   const upsertVideoModels = async (
     models: Array<{
       manufacturer: string;
@@ -324,6 +348,15 @@ export default async (knex: Knex): Promise<void> => {
   await addColumn("t_video", "time", "integer");
   await addColumn("t_video", "aiConfigId", "integer");
   await addColumn("t_config", "modelType", "text");
+  await addColumn("t_config", "inputPricePer1M", "float");
+  await addColumn("t_config", "outputPricePer1M", "float");
+  await addColumn("t_config", "cacheReadPricePer1M", "float");
+  await addColumn("t_config", "currency", "text");
+  await addColumn("t_aiTokenUsageLog", "inputPricePer1M", "float");
+  await addColumn("t_aiTokenUsageLog", "outputPricePer1M", "float");
+  await addColumn("t_aiTokenUsageLog", "cacheReadPricePer1M", "float");
+  await addColumn("t_aiTokenUsageLog", "amount", "float");
+  await addColumn("t_aiTokenUsageLog", "currency", "text");
   await addColumn("t_videoConfig", "audioEnabled", "integer");
   await addColumn("t_video", "errorReason", "text");
   await addColumn("t_video", "providerTaskId", "text");
@@ -589,6 +622,10 @@ export default async (knex: Knex): Promise<void> => {
   }
 
   if (await knex.schema.hasTable("t_config")) {
+    await knex("t_config")
+      .whereNull("currency")
+      .orWhereRaw("trim(coalesce(currency, '')) = ''")
+      .update({ currency: "CNY" });
     for (const [legacyModel, canonicalModel] of Object.entries(legacyVolcengineTextModelAliases)) {
       await knex("t_config")
         .where({ type: "text", model: legacyModel })
@@ -618,6 +655,13 @@ export default async (knex: Knex): Promise<void> => {
         model: "qwen3-asr-flash",
         baseUrl: "https://dashscope.aliyuncs.com/compatible-mode",
       });
+  }
+
+  if (await knex.schema.hasTable("t_aiTokenUsageLog")) {
+    await knex("t_aiTokenUsageLog")
+      .whereNull("currency")
+      .orWhereRaw("trim(coalesce(currency, '')) = ''")
+      .update({ currency: "CNY" });
   }
 
   const aiModels = [

@@ -91,9 +91,23 @@ export default router.post(
           manufacturerKey === "t8star"
             ? {
                 prompt: testPrompt,
+                usageType: "模型测试",
+                usageRemark: `${manufacturer || ""}/${modelName || ""}`,
+                usageMeta: {
+                  stage: "testAI",
+                  manufacturer,
+                  modelName,
+                },
               }
             : {
                 prompt: testPrompt,
+                usageType: "模型测试",
+                usageRemark: `${manufacturer || ""}/${modelName || ""}`,
+                usageMeta: {
+                  stage: "testAI",
+                  manufacturer,
+                  modelName,
+                },
                 output: {
                   reply: z.string().describe("回复内容"),
                 },
