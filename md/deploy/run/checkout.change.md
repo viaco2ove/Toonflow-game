@@ -12,5 +12,5 @@ git pull
 # 强行跟远端某个分支完全一致，也可以：
 
 git fetch origin
-git checkout 分支名
+git checkout dev
 git reset --hard origin/dev
