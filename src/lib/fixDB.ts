@@ -674,6 +674,7 @@ export default async (knex: Knex): Promise<void> => {
     { name: "视频提示词生成", key: "videoPrompt" },
     { name: "图片编辑", key: "editImage" },
     { name: "AI故事-编排师", key: "storyOrchestratorModel" },
+    { name: "AI故事-快速角色发言", key: "storyFastSpeakerModel" },
     { name: "AI故事-角色发言", key: "storySpeakerModel" },
     { name: "AI故事-记忆管理", key: "storyMemoryModel" },
     { name: "AI故事-AI生图", key: "storyImageModel" },

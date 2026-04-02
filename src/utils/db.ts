@@ -71,6 +71,8 @@ void dbBootstrapReady.catch((err) => {
 
 const dbClient = Object.assign(<TName extends TableName>(table: TName) => db<RowType<TName>, RowType<TName>[]>(table), db) as typeof db & (<TName extends TableName>(table: TName) => ReturnType<typeof db>);
 dbClient.schema = db.schema;
+// 默认导出是包装后的可调用对象，需要显式补上 knex 实例方法。
+dbClient.raw = db.raw.bind(db);
 dbClient.transaction = db.transaction.bind(db);
 export default dbClient;
 

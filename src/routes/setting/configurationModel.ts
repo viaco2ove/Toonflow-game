@@ -15,6 +15,7 @@ const SLOT_CONFIG_RULES: Record<string, { type: "text" | "image" | "voice" | "vo
   generateScript: { type: "text" },
   videoPrompt: { type: "text" },
   storyOrchestratorModel: { type: "text" },
+  storyFastSpeakerModel: { type: "text" },
   storySpeakerModel: { type: "text" },
   storyMemoryModel: { type: "text" },
   storyboardImage: { type: "image" },

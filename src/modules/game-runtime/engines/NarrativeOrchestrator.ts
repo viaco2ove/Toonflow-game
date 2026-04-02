@@ -9,6 +9,11 @@ import {
   readChapterProgressState,
 } from "@/lib/gameEngine";
 import { advanceChapterProgressAfterNarrative } from "@/modules/game-runtime/engines/ChapterProgressEngine";
+import { resolveRuleNarrativePlan } from "@/modules/game-runtime/engines/RuleOrchestrator";
+import {
+  buildTemplateSpeakerContent,
+  resolveSpeakerModeDecision,
+} from "@/modules/game-runtime/engines/SpeakerRouteEngine";
 
 export interface RuntimeMessageInput {
   role?: string | null;
@@ -51,7 +56,9 @@ export interface NarrativePlanResult {
   nextRoleType: string;
   chapterOutcome: "continue" | "success" | "failed";
   nextChapterId: number | null;
-  source: "ai" | "fallback";
+  source: "ai" | "fallback" | "rule";
+  speakerMode?: "template" | "fast" | "premium";
+  speakerRouteReason?: string;
 }
 
 export interface OrchestratorResult extends NarrativePlanResult {
@@ -67,7 +74,9 @@ export interface NarrativePlanSummary {
   nextRoleType: string;
   memoryHints: string[];
   triggerMemoryAgent: boolean;
-  source: "ai" | "fallback";
+  source: "ai" | "fallback" | "rule";
+  speakerMode?: "template" | "fast" | "premium";
+  speakerRouteReason?: string;
 }
 
 export interface MemoryManagerResult {
@@ -401,6 +410,23 @@ function describeRole(role: RuntimeStoryRole | null | undefined, compactMode = f
     summarizeJsonValue(role.parameterCardJson, 5) ? `参数:${shortText(summarizeJsonValue(role.parameterCardJson, 5), 160)}` : "",
   ].filter(Boolean);
   return parts.join("\n");
+}
+
+// 给 fast speaker 使用的极简角色资料，只保留这一轮真正需要的口吻和核心设定。
+function describeRoleLite(role: RuntimeStoryRole | null | undefined): string {
+  if (!role) return "";
+  const card = asRecord(role.parameterCardJson);
+  const summary = shortText(
+    normalizeScalarText(card.raw_setting || card.rawSetting || role.description),
+    24,
+  );
+  const personality = shortText(normalizeScalarText(card.personality), 12);
+  const speechStyle = shortText(normalizeScalarText(card.voice || role.sample), 16);
+  return [
+    summary ? `设定:${summary}` : "",
+    personality ? `性格:${personality}` : "",
+    speechStyle ? `口吻:${speechStyle}` : "",
+  ].filter(Boolean).join("|");
 }
 
 function readCurrentChapterPhase(chapter: any, state: JsonRecord): ChapterRuntimePhase | null {
@@ -773,6 +799,39 @@ function buildSpeakerUserPrompt(payload: {
     "",
     "[其他可见角色]",
     payload.otherRoles.length ? payload.otherRoles.join("、") : "无",
+    "",
+    "[输出要求]",
+    "直接输出本轮真正展示给用户的一段正文，不要 JSON，不要字段名，不要代码块。",
+  ].filter(Boolean).join("\n");
+}
+
+// fast speaker 只吃极简上下文，优先用更低 token 写出一句自然台词。
+function buildFastSpeakerUserPrompt(payload: {
+  speakerName: string;
+  speakerRoleType: string;
+  speakerProfileLite: string;
+  currentPhaseLabel: string;
+  motive: string;
+  recentDialogue: string;
+  latestPlayerMessage: string;
+}): string {
+  return [
+    "[当前说话人]",
+    `name: ${payload.speakerName}`,
+    `role_type: ${payload.speakerRoleType}`,
+    payload.speakerProfileLite || "",
+    "",
+    "[当前阶段]",
+    `label: ${payload.currentPhaseLabel || "未命名阶段"}`,
+    "",
+    "[本轮动机]",
+    payload.motive,
+    "",
+    "[最近对话]",
+    payload.recentDialogue || "无",
+    "",
+    "[用户最近输入]",
+    payload.latestPlayerMessage || "无",
     "",
     "[输出要求]",
     "直接输出本轮真正展示给用户的一段正文，不要 JSON，不要字段名，不要代码块。",
@@ -1314,10 +1373,9 @@ function buildOrchestratorSystemPrompt(
 }
 
 // 组装角色发言器的系统提示词。
-function buildSpeakerSystemPrompt(mainPrompt: string, speakerPrompt: string, compactMode = false): string {
+function buildSpeakerSystemPrompt(speakerPrompt: string, compactMode = false): string {
   if (compactMode) {
     return [
-      mainPrompt,
       speakerPrompt,
       "本阶段禁止 JSON、禁止代码块、禁止字段名。",
       "你只把既定 speaker 和 motive 写成这一轮真正展示给用户的台词或旁白。",
@@ -1328,7 +1386,6 @@ function buildSpeakerSystemPrompt(mainPrompt: string, speakerPrompt: string, com
     ].join("\n");
   }
   return [
-    mainPrompt,
     speakerPrompt,
     "硬性规则：",
     "1. 你不是编排师，你只负责把已经确定好的 speaker 和 motive 写成当前这一轮真正给用户看到的台词或旁白。",
@@ -1364,6 +1421,7 @@ async function loadStoryPrompts() {
 // 给不同阶段的模型配置生成中文标签。
 function stageModelLabel(key: string): string {
   if (key === "storyOrchestratorModel") return "编排师";
+  if (key === "storyFastSpeakerModel") return "快速角色发言";
   if (key === "storySpeakerModel") return "角色发言";
   if (key === "storyMemoryModel") return "记忆管理";
   return key;
@@ -1395,14 +1453,35 @@ export async function runStorySpeakerContent(input: {
   currentRole: RuntimeStoryRole;
   motive: string;
 }): Promise<string> {
-  const prompts = await loadStoryPrompts();
-  const promptAiConfig = await resolveTextStageModel(input.userId, "storySpeakerModel");
-  const compactMode = shouldUseCompactOrchestratorPayload(promptAiConfig);
   const currentPhase = readCurrentChapterPhase(input.chapter, input.state);
   const roles = filterRolesForPhase(runtimeStoryRoles(input.world, input.state), currentPhase);
   if (!isRoleAllowedInPhase(input.currentRole, currentPhase)) {
     throw createRuntimeModelError("speaker", "当前阶段不允许该角色发言");
   }
+  const speakerMode = resolveSpeakerModeDecision({
+    role: input.currentRole,
+    motive: input.motive,
+    latestUserMessage: normalizeScalarText(input.playerMessage),
+  });
+  console.log("[speaker:route] mode", {
+    role: normalizeScalarText(input.currentRole.name),
+    roleType: sanitizeRoleType(input.currentRole.roleType),
+    mode: speakerMode.mode,
+    reason: speakerMode.reason,
+  });
+  if (speakerMode.mode === "template") {
+    return buildTemplateSpeakerContent({
+      role: input.currentRole,
+      motive: input.motive,
+      latestUserMessage: normalizeScalarText(input.playerMessage),
+    });
+  }
+
+  const prompts = await loadStoryPrompts();
+  const useFastSpeakerPrompt = speakerMode.mode === "fast";
+  const speakerModelKey = useFastSpeakerPrompt ? "storyFastSpeakerModel" : "storySpeakerModel";
+  const promptAiConfig = await resolveTextStageModel(input.userId, speakerModelKey, useFastSpeakerPrompt ? "storySpeakerModel" : undefined);
+  const compactMode = shouldUseCompactOrchestratorPayload(promptAiConfig);
   const currentChapter = {
     title: normalizeScalarText(input.chapter?.title),
     directive: chapterDirectiveText(input.chapter),
@@ -1410,20 +1489,26 @@ export async function runStorySpeakerContent(input: {
   };
   const payload = {
     worldName: normalizeScalarText(input.world?.name),
-    worldIntro: shortText(input.world?.intro, 120),
+    worldIntro: useFastSpeakerPrompt ? "" : shortText(input.world?.intro, compactMode ? 48 : 72),
     chapterTitle: currentChapter.title,
     currentPhaseLabel: normalizeScalarText(currentPhase?.label),
     speakerName: normalizeScalarText(input.currentRole.name),
     speakerRoleType: sanitizeRoleType(input.currentRole.roleType),
-    speakerProfile: describeRole(input.currentRole),
-    motive: shortText(input.motive, compactMode ? 80 : 120),
-    storyState: summarizeStoryState(input.state),
+    speakerProfile: useFastSpeakerPrompt ? describeRoleLite(input.currentRole) : describeRole(input.currentRole, true),
+    motive: shortText(input.motive, useFastSpeakerPrompt ? 64 : compactMode ? 80 : 120),
+    storyState: useFastSpeakerPrompt ? "" : shortText(summarizeStoryState(input.state), compactMode ? 160 : 260),
     latestPlayerMessage: normalizeScalarText(input.playerMessage),
-    recentDialogue: compactMode ? recentDialogueText(input.recentMessages, 4, 420) : recentDialogueText(input.recentMessages, 8, 1200),
-    otherRoles: roles
-      .filter((item) => item.name !== input.currentRole.name)
-      .map((item) => `${item.name}(${sanitizeRoleType(item.roleType)})`)
-      .slice(0, compactMode ? 4 : 6),
+    recentDialogue: useFastSpeakerPrompt
+      ? recentDialogueText(input.recentMessages, 2, 180)
+      : compactMode
+        ? recentDialogueText(input.recentMessages, 3, 240)
+        : recentDialogueText(input.recentMessages, 5, 520),
+    otherRoles: useFastSpeakerPrompt
+      ? []
+      : roles
+        .filter((item) => item.name !== input.currentRole.name)
+        .map((item) => `${item.name}(${sanitizeRoleType(item.roleType)})`)
+        .slice(0, compactMode ? 3 : 4),
   };
 
   try {
@@ -1431,21 +1516,33 @@ export async function runStorySpeakerContent(input: {
       {
         plainTextOutput: true,
         usageType: "角色发言",
-        usageRemark: `${normalizeScalarText(input.world?.name)} / ${normalizeScalarText(input.chapter?.title)} / ${normalizeScalarText(input.currentRole.name)}`,
+        usageRemark: `${normalizeScalarText(input.world?.name)} / ${normalizeScalarText(input.chapter?.title)} / ${normalizeScalarText(input.currentRole.name)} / ${speakerMode.mode}`,
         usageMeta: {
-          stage: "storySpeakerModel",
+          stage: speakerModelKey,
           worldId: Number(input.world?.id || 0),
           chapterId: Number(input.chapter?.id || 0),
           role: normalizeScalarText(input.currentRole.name),
+          speakerMode: speakerMode.mode,
+          speakerRouteReason: speakerMode.reason,
         },
         messages: [
           {
             role: "system",
-            content: buildSpeakerSystemPrompt(prompts.storyMain, prompts.storySpeaker || prompts.storyOrchestrator, compactMode),
+            content: buildSpeakerSystemPrompt(prompts.storySpeaker || prompts.storyOrchestrator, useFastSpeakerPrompt || compactMode),
           },
           {
             role: "user",
-            content: buildSpeakerUserPrompt(payload),
+            content: useFastSpeakerPrompt
+              ? buildFastSpeakerUserPrompt({
+                speakerName: payload.speakerName,
+                speakerRoleType: payload.speakerRoleType,
+                speakerProfileLite: payload.speakerProfile,
+                currentPhaseLabel: payload.currentPhaseLabel,
+                motive: payload.motive,
+                recentDialogue: payload.recentDialogue,
+                latestPlayerMessage: payload.latestPlayerMessage,
+              })
+              : buildSpeakerUserPrompt(payload),
           },
         ],
         maxRetries: 0,
@@ -1574,6 +1671,31 @@ async function doRunNarrativePlan(input: OrchestratorInput): Promise<NarrativePl
   };
   const hasPlayerInput = payload.latestPlayerMessage.length > 0;
   const isSkip = payload.latestPlayerMessage === ".";
+  const ruleDecision = resolveRuleNarrativePlan({
+    phase: currentPhase,
+    state: input.state,
+    roles: roles.map((item) => ({
+      id: item.id,
+      roleType: item.roleType,
+      name: item.name,
+    })),
+    turnState,
+    latestUserMessage: payload.latestPlayerMessage,
+    userDisplayName: normalizeScalarText(input.state?.player?.name || input.world?.playerRole?.name || "用户"),
+    chapterUserTurns: payload.chapterUserTurns,
+    recentDialogue: payload.recentDialogue,
+  });
+  if (ruleDecision.resolved && ruleDecision.plan) {
+    console.log("[rule:orchestrator] hit", {
+      reason: ruleDecision.reason,
+      role: ruleDecision.plan.role,
+      roleType: ruleDecision.plan.roleType,
+      awaitUser: ruleDecision.plan.awaitUser,
+      nextRole: ruleDecision.plan.nextRole,
+      nextRoleType: ruleDecision.plan.nextRoleType,
+    });
+    return ruleDecision.plan;
+  }
 
   try {
     const userPrompt = buildOrchestratorUserPrompt(payload, compactMode);
@@ -1784,6 +1906,11 @@ export async function runNarrativeOrchestrator(input: OrchestratorInput): Promis
   if (!matchedRole) {
     throw createRuntimeModelError("speaker", "未找到当前应发言角色");
   }
+  const speakerDecision = resolveSpeakerModeDecision({
+    role: matchedRole,
+    motive: plan.motive,
+    latestUserMessage: normalizeScalarText(input.playerMessage),
+  });
   const content = await runStorySpeakerContent({
     userId: input.userId,
     world: input.world,
@@ -1796,7 +1923,12 @@ export async function runNarrativeOrchestrator(input: OrchestratorInput): Promis
   });
   return {
     ...plan,
+    triggerMemoryAgent: speakerDecision.memoryMode === "skip" && !(plan.memoryHints || []).length
+      ? false
+      : plan.triggerMemoryAgent,
     content,
+    speakerMode: speakerDecision.mode,
+    speakerRouteReason: speakerDecision.reason,
   };
 }
 
@@ -1913,7 +2045,13 @@ export function summarizeNarrativePlan(result: OrchestratorResult | null | undef
       ? result.memoryHints.map((item) => normalizeScalarText(item)).filter(Boolean)
       : [],
     triggerMemoryAgent: Boolean(result.triggerMemoryAgent),
-    source: result.source === "fallback" ? "fallback" : "ai",
+    source: result.source === "fallback"
+      ? "fallback"
+      : result.source === "rule"
+        ? "rule"
+        : "ai",
+    speakerMode: result.speakerMode,
+    speakerRouteReason: normalizeScalarText(result.speakerRouteReason),
   };
 }
 

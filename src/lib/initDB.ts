@@ -705,6 +705,7 @@ export default async (knex: Knex, forceInit: boolean = false): Promise<void> => 
           { id: 7, configId: 5, name: "分镜图片生成", key: "storyboardImage" },
           { id: 8, configId: 5, name: "图片编辑", key: "editImage" },
           { id: 9, configId: null, name: "AI故事-编排师", key: "storyOrchestratorModel" },
+          { id: 17, configId: null, name: "AI故事-快速角色发言", key: "storyFastSpeakerModel" },
           { id: 10, configId: null, name: "AI故事-角色发言", key: "storySpeakerModel" },
           { id: 11, configId: null, name: "AI故事-记忆管理", key: "storyMemoryModel" },
           { id: 12, configId: null, name: "AI故事-AI生图", key: "storyImageModel" },

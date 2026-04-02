@@ -1,4 +1,4 @@
-import u from "@/utils";
+import { db } from "@/utils/db";
 import { getCurrentUserId } from "@/lib/requestContext";
 
 export type AiTokenUsageLogPayload = {
@@ -132,7 +132,7 @@ export async function writeAiTokenUsageLog(payload: AiTokenUsageLogPayload): Pro
         cacheReadPricePer1M,
       }),
   );
-  await u.db("t_aiTokenUsageLog").insert({
+  await db("t_aiTokenUsageLog").insert({
     userId,
     createTime: Date.now(),
     type: normalizeText(payload.type) || "通用文本",
@@ -160,8 +160,7 @@ export async function getAiTokenUsageLogList(query: AiTokenUsageLogQuery) {
   const endTime = parseTimeFilterValue(query.endTime);
   const type = normalizeText(query.type);
   const limit = Math.min(Math.max(normalizePositiveNumber(query.limit || 200), 1), 1000);
-  const builder = u
-    .db("t_aiTokenUsageLog")
+  const builder = db("t_aiTokenUsageLog")
     .where("userId", userId)
     .modify((qb: any) => {
       if (startTime) qb.where("createTime", ">=", startTime);
@@ -218,8 +217,7 @@ export async function getAiTokenUsageStatsList(query: AiTokenUsageStatsQuery) {
   const type = normalizeText(query.type);
   const granularity = ["hour", "month"].includes(normalizeText(query.granularity)) ? normalizeText(query.granularity) : "day";
   const bucketExpr = resolveBucketExpression(granularity);
-  const rows = await u
-    .db("t_aiTokenUsageLog")
+  const rows = await db("t_aiTokenUsageLog")
     .where("userId", userId)
     .modify((qb: any) => {
       if (startTime) qb.where("createTime", ">=", startTime);
@@ -227,19 +225,19 @@ export async function getAiTokenUsageStatsList(query: AiTokenUsageStatsQuery) {
       if (type) qb.where("type", type);
     })
     .select(
-      u.db.raw(`${bucketExpr} as bucketTime`),
+      db.raw(`${bucketExpr} as bucketTime`),
       "type",
       "manufacturer",
       "model",
       "channel",
       "currency",
-      u.db.raw("sum(inputTokens) as inputTokens"),
-      u.db.raw("sum(outputTokens) as outputTokens"),
-      u.db.raw("sum(reasoningTokens) as reasoningTokens"),
-      u.db.raw("sum(cacheReadTokens) as cacheReadTokens"),
-      u.db.raw("sum(totalTokens) as totalTokens"),
-      u.db.raw("sum(amount) as amount"),
-      u.db.raw("count(1) as callCount"),
+      db.raw("sum(inputTokens) as inputTokens"),
+      db.raw("sum(outputTokens) as outputTokens"),
+      db.raw("sum(reasoningTokens) as reasoningTokens"),
+      db.raw("sum(cacheReadTokens) as cacheReadTokens"),
+      db.raw("sum(totalTokens) as totalTokens"),
+      db.raw("sum(amount) as amount"),
+      db.raw("count(1) as callCount"),
     )
     .groupByRaw(`${bucketExpr}, type, manufacturer, model, channel, currency`)
     .orderBy("bucketTime", "desc")

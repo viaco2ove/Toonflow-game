@@ -53,12 +53,14 @@ function buildPlanResult(plan: ({
   awaitUser: boolean;
   nextRole: string;
   nextRoleType: string;
-  source: "ai" | "fallback";
+  source: "ai" | "fallback" | "rule";
   memoryHints?: string[];
   triggerMemoryAgent?: boolean;
   stateDelta?: Record<string, unknown>;
   eventType?: string;
   presetContent?: string;
+  speakerMode?: "template" | "fast" | "premium";
+  speakerRouteReason?: string;
 }) | null) {
   if (!plan) return null;
   return {
@@ -68,10 +70,22 @@ function buildPlanResult(plan: ({
     awaitUser: Boolean(plan.awaitUser),
     nextRole: String(plan.nextRole || "").trim(),
     nextRoleType: String(plan.nextRoleType || "").trim(),
-    source: plan.source || "ai",
+    source: plan.source === "fallback"
+      ? "fallback"
+      : plan.source === "rule"
+        ? "rule"
+        : "ai",
     triggerMemoryAgent: Boolean(plan.triggerMemoryAgent),
     eventType: String(plan.eventType || "on_orchestrated_reply").trim() || "on_orchestrated_reply",
     presetContent: String(plan.presetContent || "").trim() || null,
+    speakerMode: plan.speakerMode === "template"
+      ? "template"
+      : plan.speakerMode === "fast"
+        ? "fast"
+        : plan.speakerMode === "premium"
+          ? "premium"
+          : undefined,
+    speakerRouteReason: String(plan.speakerRouteReason || "").trim(),
   };
 }
 

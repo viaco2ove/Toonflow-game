@@ -132,6 +132,7 @@ export default router.post(
   validateFields({
     projectId: z.number().optional().nullable(),
     fileName: z.string().optional().nullable(),
+    preferGif: z.boolean().optional().nullable(),
     base64Data: z.string(),
   }),
   async (req, res) => {
@@ -140,9 +141,10 @@ export default router.post(
       return res.status(401).send(error("用户未登录"));
     }
 
-    const { projectId, fileName, base64Data } = req.body as {
+    const { projectId, fileName, preferGif, base64Data } = req.body as {
       projectId?: number | null;
       fileName?: string | null;
+      preferGif?: boolean | null;
       base64Data: string;
     };
 
@@ -169,14 +171,51 @@ export default router.post(
         const backgroundPath = path.join(tempDir, "background.png");
         await fs.writeFile(inputPath, extractBase64(base64Data));
 
-        // GIF 本身只有有限色彩，先做高质量缩放并显式转成 RGB，再生成调色板，能明显减少偏色和色块。
-        const cropGif = `fps=${GIF_FPS},scale=${AVATAR_GIF_SIDE}:${AVATAR_GIF_SIDE}:force_original_aspect_ratio=increase:flags=lanczos,crop=${AVATAR_GIF_SIDE}:${AVATAR_GIF_SIDE},format=rgb24`;
+        // 生成角色前景时，把当前视频素材里常见的纯黑底键成透明，至少保证安卓端不会再看到整块黑幕。
+        // 安卓端同时强制请求 GIF，避免低版本设备对 animated WebP 的兼容性波动。
         const cropBg = `scale=${AVATAR_BG_SIDE}:${AVATAR_BG_SIDE}:force_original_aspect_ratio=increase:flags=lanczos,crop=${AVATAR_BG_SIDE}:${AVATAR_BG_SIDE}`;
-        const cropWebp = `fps=${GIF_FPS},scale=${AVATAR_GIF_SIDE}:${AVATAR_GIF_SIDE}:force_original_aspect_ratio=increase:flags=lanczos,crop=${AVATAR_GIF_SIDE}:${AVATAR_GIF_SIDE},format=rgba`;
+        const cropAnimatedBase = `fps=${GIF_FPS},scale=${AVATAR_GIF_SIDE}:${AVATAR_GIF_SIDE}:force_original_aspect_ratio=increase:flags=lanczos,crop=${AVATAR_GIF_SIDE}:${AVATAR_GIF_SIDE}`;
+        const transparentAnimated = `${cropAnimatedBase},colorkey=0x000000:0.08:0.05,format=rgba`;
+        const preferGifOutput = Boolean(preferGif);
 
         let animatedPath = "";
         let animatedExt = "";
-        try {
+        if (!preferGifOutput) {
+          try {
+            await runFfmpeg(ffmpegPath, [
+              "-y",
+              "-ss",
+              "0",
+              "-t",
+              String(MAX_GIF_DURATION_SECONDS),
+              "-i",
+              inputPath,
+              "-vf",
+              transparentAnimated,
+              "-c:v",
+              "libwebp",
+              "-lossless",
+              "0",
+              "-q:v",
+              "80",
+              "-compression_level",
+              "6",
+              "-preset",
+              "picture",
+              "-loop",
+              "0",
+              "-an",
+              webpPath,
+            ]);
+            animatedPath = webpPath;
+            animatedExt = "webp";
+          } catch (webpErr) {
+            console.warn("[convertAvatarVideoToGif] webp encode failed, fallback to gif", {
+              message: (webpErr as any)?.message || String(webpErr),
+            });
+          }
+        }
+        if (!animatedPath) {
           await runFfmpeg(ffmpegPath, [
             "-y",
             "-ss",
@@ -186,38 +225,7 @@ export default router.post(
             "-i",
             inputPath,
             "-vf",
-            cropWebp,
-            "-c:v",
-            "libwebp",
-            "-lossless",
-            "0",
-            "-q:v",
-            "80",
-            "-compression_level",
-            "6",
-            "-preset",
-            "picture",
-            "-loop",
-            "0",
-            "-an",
-            webpPath,
-          ]);
-          animatedPath = webpPath;
-          animatedExt = "webp";
-        } catch (webpErr) {
-          console.warn("[convertAvatarVideoToGif] webp encode failed, fallback to gif", {
-            message: (webpErr as any)?.message || String(webpErr),
-          });
-          await runFfmpeg(ffmpegPath, [
-            "-y",
-            "-ss",
-            "0",
-            "-t",
-            String(MAX_GIF_DURATION_SECONDS),
-            "-i",
-            inputPath,
-            "-vf",
-            `${cropGif},palettegen=max_colors=256:stats_mode=full`,
+            `${transparentAnimated},palettegen=max_colors=255:reserve_transparent=1:stats_mode=full`,
             palettePath,
           ]);
 
@@ -232,7 +240,7 @@ export default router.post(
             "-i",
             palettePath,
             "-lavfi",
-            `${cropGif}[x];[x][1:v]paletteuse=dither=sierra2_4a:diff_mode=rectangle`,
+            `${transparentAnimated}[x];[x][1:v]paletteuse=dither=sierra2_4a:diff_mode=rectangle:alpha_threshold=96`,
             "-loop",
             "0",
             gifPath,

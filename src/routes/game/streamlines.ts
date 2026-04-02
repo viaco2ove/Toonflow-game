@@ -24,8 +24,19 @@ import u from "@/utils";
 
 const router = express.Router();
 
+function flushStreamResponse(res: express.Response) {
+  if (typeof res.flushHeaders === "function") {
+    res.flushHeaders();
+  }
+  const anyRes = res as express.Response & { flush?: () => void };
+  if (typeof anyRes.flush === "function") {
+    anyRes.flush();
+  }
+}
+
 function writeStreamLine(res: express.Response, payload: Record<string, unknown>) {
   res.write(`${JSON.stringify(payload)}\n`);
+  flushStreamResponse(res);
 }
 
 function splitTextIntoChunks(text: string): string[] {
@@ -220,16 +231,36 @@ export default router.post(
         if (!currentRole) {
           throw new Error("当前流式发言角色不存在");
         }
-        content = await runStorySpeakerContent({
-          userId,
-          world,
-          chapter,
-          state,
-          recentMessages,
-          playerMessage: playerContent,
-          currentRole,
-          motive: String(plan.motive || "").trim(),
-        });
+        let heartbeatTimer: NodeJS.Timeout | null = null;
+        try {
+          heartbeatTimer = setInterval(() => {
+            try {
+              writeStreamLine(res, {
+                type: "heartbeat",
+                data: {
+                  stage: "speaker_generating",
+                  timestamp: Date.now(),
+                },
+              });
+            } catch {
+              // 响应已关闭时忽略心跳异常，避免影响主流程。
+            }
+          }, 5000);
+          content = await runStorySpeakerContent({
+            userId,
+            world,
+            chapter,
+            state,
+            recentMessages,
+            playerMessage: playerContent,
+            currentRole,
+            motive: String(plan.motive || "").trim(),
+          });
+        } finally {
+          if (heartbeatTimer) {
+            clearInterval(heartbeatTimer);
+          }
+        }
       }
 
       const chunks = splitTextIntoChunks(content);

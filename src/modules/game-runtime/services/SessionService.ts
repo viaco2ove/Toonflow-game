@@ -87,10 +87,12 @@ export interface SessionNarrativePlanResult {
   awaitUser: boolean;
   nextRole: string;
   nextRoleType: string;
-  source: "ai" | "fallback";
+  source: "ai" | "fallback" | "rule";
   triggerMemoryAgent: boolean;
   eventType: string;
   presetContent: string | null;
+  speakerMode?: "template" | "fast" | "premium";
+  speakerRouteReason?: string;
 }
 
 export interface SessionOrchestrationResult {
@@ -218,6 +220,8 @@ function buildSessionPlanResult(plan: ({
   triggerMemoryAgent?: unknown;
   eventType?: unknown;
   presetContent?: unknown;
+  speakerMode?: unknown;
+  speakerRouteReason?: unknown;
 }) | null | undefined): SessionNarrativePlanResult | null {
   if (!plan) return null;
   return {
@@ -227,10 +231,22 @@ function buildSessionPlanResult(plan: ({
     awaitUser: Boolean(plan.awaitUser),
     nextRole: String(plan.nextRole || "").trim(),
     nextRoleType: String(plan.nextRoleType || "").trim(),
-    source: plan.source === "fallback" ? "fallback" : "ai",
+    source: plan.source === "fallback"
+      ? "fallback"
+      : plan.source === "rule"
+        ? "rule"
+        : "ai",
     triggerMemoryAgent: Boolean(plan.triggerMemoryAgent),
     eventType: String(plan.eventType || "on_orchestrated_reply").trim() || "on_orchestrated_reply",
     presetContent: String(plan.presetContent || "").trim() || null,
+    speakerMode: plan.speakerMode === "template"
+      ? "template"
+      : plan.speakerMode === "fast"
+        ? "fast"
+        : plan.speakerMode === "premium"
+          ? "premium"
+          : undefined,
+    speakerRouteReason: String(plan.speakerRouteReason || "").trim(),
   };
 }
 
