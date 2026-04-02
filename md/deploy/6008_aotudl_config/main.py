@@ -82,6 +82,17 @@ def badge(label: str, kind: str) -> str:
     return f'<span class="badge badge-{kind}">{html.escape(label)}</span>'
 
 
+def detect_action_kind(text: str) -> str:
+    lowered = (text or "").lower()
+    if any(token in lowered for token in ["fatal:", "error:", "conflict", "failed", "aborting", "not found", "分支名不能为空"]):
+        return "danger"
+    if "already up to date" in lowered or "已经是最新" in lowered or "up to date" in lowered:
+        return "success"
+    if any(token in lowered for token in ["files changed", "changed", "updating", "fast-forward", "switched to branch", "切换到分支"]):
+        return "success"
+    return "muted"
+
+
 def status_card(title: str, summary: str, status_label: str, kind: str) -> str:
     return f"""
     <div class="status-card">
@@ -154,6 +165,7 @@ def home():
     app_hint = summarize_app_hint(status)
     git_label = "有改动" if git["dirty"] else "干净"
     git_kind = "warn" if git["dirty"] else "success"
+    action_kind = detect_action_kind(LAST_ACTION_LOG)
     return f"""
     <html>
     <head>
@@ -379,6 +391,39 @@ def home():
           color: #fff;
           border-color: var(--primary);
         }}
+        .action-banner {{
+          margin-top: 18px;
+          padding: 16px 18px;
+          border-radius: 16px;
+          border: 1px solid var(--border);
+          box-shadow: var(--shadow);
+        }}
+        .action-banner-success {{
+          background: var(--success-soft);
+          border-color: #9fe3b3;
+          color: #116932;
+        }}
+        .action-banner-danger {{
+          background: var(--danger-soft);
+          border-color: #f6b2b2;
+          color: #9f1f1f;
+        }}
+        .action-banner-muted {{
+          background: #eef4ff;
+          border-color: #cad8f3;
+          color: #28406e;
+        }}
+        .action-banner__title {{
+          font-size: 15px;
+          font-weight: 800;
+          margin-bottom: 8px;
+        }}
+        .action-banner__body {{
+          font-size: 13px;
+          line-height: 1.7;
+          white-space: pre-wrap;
+          word-break: break-word;
+        }}
         @media (max-width: 720px) {{
           .page {{ padding: 18px 14px 32px; }}
           .hero {{ padding: 22px 18px 18px; border-radius: 18px; }}
@@ -391,6 +436,11 @@ def home():
         <div class="hero">
           <h1>Toonflow 健康管理</h1>
           <p>统一管理 pm2、nginx 和 Toonflow 后端服务。健康检查会同时查看端口监听和 HTTP 响应，避免只看一条 curl 造成误判。</p>
+        </div>
+
+        <div id="action-result" class="action-banner action-banner-{action_kind}">
+          <div class="action-banner__title">最近操作结果</div>
+          <div class="action-banner__body">{html.escape(LAST_ACTION_LOG)}</div>
         </div>
 
         <div class="status-grid">
@@ -483,10 +533,6 @@ def home():
           <pre>{shell_text(status["nginx_status"])}</pre>
         </div>
 
-        <div class="panel">
-          <h2>最近操作结果</h2>
-          <pre>{shell_text(LAST_ACTION_LOG)}</pre>
-        </div>
       </div>
     </body>
     </html>
