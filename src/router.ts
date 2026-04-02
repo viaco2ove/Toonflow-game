@@ -39,6 +39,7 @@ import route35 from "./routes/game/startSession";
 import route36 from "./routes/game/streamlines";
 import route37 from "./routes/game/streamvoice";
 import route38 from "./routes/game/uploadImage";
+import route132 from "./routes/game/previewRuntimeOutline";
 import route39 from "./routes/index/index";
 import route40 from "./routes/novel/addNovel";
 import route41 from "./routes/novel/delNovel";
@@ -172,6 +173,7 @@ export default async (app: Express) => {
   app.use("/game/streamlines", route36);
   app.use("/game/streamvoice", route37);
   app.use("/game/uploadImage", route38);
+  app.use("/game/previewRuntimeOutline", route132);
   app.use("/index", route39);
   app.use("/novel/addNovel", route40);
   app.use("/novel/delNovel", route41);
