@@ -4,7 +4,9 @@ import {
   JsonRecord,
   normalizeChapterRuntimeOutline,
   readChapterProgressState,
+  RuntimeDynamicEventState,
   setChapterProgressState,
+  setRuntimeDynamicEventList,
 } from "@/lib/gameEngine";
 import {
   AppliedDelta,
@@ -236,15 +238,94 @@ function updatePhaseState(
   userNodeStatus: "idle" | "waiting_input" | "completed" | "skipped",
   extraPatch: Partial<JsonRecord> = {},
 ) {
+  const eventIndex = phaseIndex >= 0 ? phaseIndex + 1 : 1;
+  const eventKind = (phase?.kind || "scene") as "opening" | "scene" | "user" | "fixed";
+  const eventSummary = String(phase?.targetSummary || phase?.label || "").trim();
+  const eventStatus: "idle" | "active" | "waiting_input" | "completed" = userNodeStatus === "waiting_input"
+    ? "waiting_input"
+    : phase
+      ? "active"
+      : "idle";
   setChapterProgressState(state, {
     phaseId: String(phase?.id || "").trim(),
     phaseIndex,
+    eventIndex,
+    eventKind,
+    eventSummary,
+    eventStatus,
     userNodeId: userNodeId || "",
     userNodeIndex,
     userNodeStatus,
     pendingGoal: resolvePendingGoal(phase, outline, userNodeId),
     ...extraPatch,
   });
+  syncRuntimeDynamicEvents(state, outline);
+}
+
+function resolveRuntimeDynamicEventStatus(input: {
+  phase: ChapterRuntimePhase;
+  phaseIndex: number;
+  current: ReturnType<typeof readChapterProgressState>;
+  completedEvents: string[];
+}): RuntimeDynamicEventState["status"] {
+  if (isPhaseCompleted(input.completedEvents, input.phase.id)) {
+    return "completed";
+  }
+  if (input.current.phaseId === input.phase.id) {
+    if (input.current.eventStatus === "completed") return "completed";
+    if (input.current.eventStatus === "waiting_input") return "waiting_input";
+    if (input.current.eventStatus === "active") return "active";
+  }
+  if (input.current.phaseIndex > input.phaseIndex) {
+    return "completed";
+  }
+  return "idle";
+}
+
+function buildRuntimeDynamicEvents(
+  outline: ChapterRuntimeOutline,
+  current: ReturnType<typeof readChapterProgressState>,
+  existingDynamicEvents: RuntimeDynamicEventState[],
+): RuntimeDynamicEventState[] {
+  const completedEvents = normalizeCompletedEvents(Array.isArray(current.completedEvents) ? current.completedEvents : []);
+  return (Array.isArray(outline.phases) ? outline.phases : []).map((phase, index) => {
+    const existing = existingDynamicEvents.find((item) => item.phaseId === String(phase.id || "").trim())
+      || existingDynamicEvents.find((item) => item.eventIndex === index + 1)
+      || null;
+    return {
+      eventIndex: index + 1,
+      phaseId: String(phase.id || "").trim(),
+      kind: phase.kind || "scene",
+      summary: String(existing?.summary || phase.targetSummary || phase.label || "").trim(),
+      runtimeFacts: Array.isArray(existing?.runtimeFacts) ? existing.runtimeFacts : [],
+      summarySource: existing?.summarySource === "ai"
+        ? "ai"
+        : existing?.summarySource === "memory"
+          ? "memory"
+          : existing?.summarySource === "system"
+            ? "system"
+            : "phase",
+      memorySummary: String(existing?.memorySummary || "").trim(),
+      memoryFacts: Array.isArray(existing?.memoryFacts) ? existing.memoryFacts : [],
+      updateTime: Number.isFinite(Number(existing?.updateTime)) ? Math.max(0, Number(existing?.updateTime)) : 0,
+      status: resolveRuntimeDynamicEventStatus({
+        phase,
+        phaseIndex: index,
+        current,
+        completedEvents,
+      }),
+      allowedRoles: Array.isArray(phase.allowedSpeakers)
+        ? phase.allowedSpeakers.map((item) => String(item || "").trim()).filter(Boolean)
+        : [],
+      userNodeId: String(phase.userNodeId || "").trim(),
+    };
+  });
+}
+
+function syncRuntimeDynamicEvents(state: JsonRecord, outline: ChapterRuntimeOutline): RuntimeDynamicEventState[] {
+  const current = readChapterProgressState(state);
+  const existingDynamicEvents = Array.isArray(state.dynamicEvents) ? state.dynamicEvents as RuntimeDynamicEventState[] : [];
+  return setRuntimeDynamicEventList(state, buildRuntimeDynamicEvents(outline, current, existingDynamicEvents));
 }
 
 function markPhaseCompleted(completedEvents: string[], phaseId: string | null | undefined): string[] {
@@ -398,6 +479,7 @@ export function markCurrentUserNodeCompleted(chapter: any, state: JsonRecord, me
     nextUserNode ? "idle" : "completed",
     {
       completedEvents,
+      eventStatus: nextUserNode ? "active" : "completed",
       lastEvaluatedMessageId: Number.isFinite(Number(messageId)) ? Number(messageId) : current.lastEvaluatedMessageId,
     },
   );
@@ -453,7 +535,10 @@ export function advanceChapterProgressAfterNarrative(chapter: any, state: JsonRe
   const nextPhaseInfo = resolveNextPhaseFromGraph(outline, currentPhase.id, completedEvents, currentPhaseIndex);
   const nextPhase = nextPhaseInfo.phase;
   if (!nextPhase) {
-    setChapterProgressState(state, { completedEvents });
+    setChapterProgressState(state, {
+      completedEvents,
+      eventStatus: "completed",
+    });
     return { phaseChanged: false, enteredUserPhase: false, matchedPhaseSignal: true };
   }
   const nextUserNodeId = nextPhase.kind === "user"
@@ -471,7 +556,10 @@ export function advanceChapterProgressAfterNarrative(chapter: any, state: JsonRe
     nextUserNodeId,
     nextUserNodeIndex,
     enteredUserPhase ? "waiting_input" : "idle",
-    { completedEvents },
+    {
+      completedEvents,
+      eventStatus: enteredUserPhase ? "waiting_input" : "active",
+    },
   );
   return {
     phaseChanged: true,
@@ -524,7 +612,10 @@ export function recordChapterProgressSignals(chapter: any, state: JsonRecord, in
   }
   completedEvents = normalizeCompletedEvents(completedEvents);
   if (completedEvents.join("|") !== current.completedEvents.join("|")) {
-    setChapterProgressState(state, { completedEvents });
+    setChapterProgressState(state, {
+      completedEvents,
+      eventStatus: markedPhaseCompleted ? "completed" : current.eventStatus,
+    });
   }
   return {
     matchedFixedEvents,

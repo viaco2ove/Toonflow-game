@@ -2,7 +2,7 @@ import express from "express";
 import { z } from "zod";
 import { validateFields } from "@/middleware/middleware";
 import { error, success } from "@/lib/responseFormat";
-import { getGameDb, parseJsonSafe } from "@/lib/gameEngine";
+import { getGameDb, parseJsonSafe, readRuntimeCurrentEventDigestState, readRuntimeEventDigestWindowState } from "@/lib/gameEngine";
 import u from "@/utils";
 
 const router = express.Router();
@@ -134,7 +134,9 @@ export default router.post(
           status: String(item.status || ""),
           contentVersion: String(item.contentVersion || ""),
           updateTime: Number(item.updateTime || item.createTime || 0),
-          state: parseJsonSafe(item.stateJson, {}),
+          state: runtimeState,
+          currentEventDigest: readRuntimeCurrentEventDigestState(runtimeState),
+          eventDigestWindow: readRuntimeEventDigestWindowState(runtimeState, 3),
           latestMessage: latest
             ? {
                 id: Number(latest.id || 0),

@@ -204,29 +204,6 @@ function resolveWildcardRoleFromPhase(roles: RuleOrchestratorRole[], phase: Chap
   return wildcardRoles.length === 1 ? wildcardRoles[0] : null;
 }
 
-function shouldForceAwaitUserByContext(input: {
-  phase: ChapterRuntimePhase | null;
-  latestUserMessage: string;
-  chapterUserTurns?: string;
-  recentDialogue?: string;
-}): boolean {
-  if (normalizeScalarText(input.latestUserMessage)) return false;
-  const phaseText = phaseSignalTexts(input.phase).join("\n");
-  const chapterUserTurns = normalizeScalarText(input.chapterUserTurns);
-  const recentDialogue = normalizeScalarText(input.recentDialogue);
-  const hardSignals = [
-    phaseText,
-    chapterUserTurns,
-    recentDialogue,
-  ].join("\n");
-  if (/你可以行动了|请(?:发言|选择|行动|输入)|轮到你(?:了)?|该你(?:发言|行动|回应|选择)|等待你表态|等你的反应|你怎么看|你打算|你说说|说句话|如何应对/.test(hardSignals)) {
-    return true;
-  }
-  const directQuestionToUser = /你说说|你怎么看|你要不要|你打算|说句话|表个态|该你了|轮到你了|如何应对/.test(recentDialogue);
-  const bridgeToUser = /等待你表态|等你的反应|目光.*你|看向你|投向入口处的你|都在等你的反应|摆明了要拉你/.test(recentDialogue);
-  return directQuestionToUser && bridgeToUser;
-}
-
 // 在规则足够明确时，直接给出本轮发言计划，避免再走完整 AI 编排。
 export function resolveRuleNarrativePlan(input: {
   phase: ChapterRuntimePhase | null;
@@ -235,8 +212,6 @@ export function resolveRuleNarrativePlan(input: {
   turnState: RuleOrchestratorTurnState;
   latestUserMessage: string;
   userDisplayName?: string;
-  chapterUserTurns?: string;
-  recentDialogue?: string;
 }): RuleNarrativeDecision {
   const latestUserMessage = normalizeScalarText(input.latestUserMessage);
   const progress = readChapterProgressState(input.state);
@@ -252,70 +227,6 @@ export function resolveRuleNarrativePlan(input: {
       reason: "await_user_phase",
       plan: buildAwaitUserPlan(userDisplayName),
     };
-  }
-
-  if (shouldForceAwaitUserByContext({
-    phase: input.phase,
-    latestUserMessage,
-    chapterUserTurns: input.chapterUserTurns,
-    recentDialogue: input.recentDialogue,
-  })) {
-    return {
-      resolved: true,
-      reason: "context_forces_user_turn",
-      plan: buildAwaitUserPlan(userDisplayName),
-    };
-  }
-
-  if (!latestUserMessage) {
-    const expectedRole = findRoleByTurnState(nonPlayerRoles, input.turnState);
-    const allowSameRoleContinuation = Boolean(
-      (input.phase?.kind === "scene" && sanitizeRoleType(input.turnState.expectedRoleType) !== "player")
-      || allowedSpeakers.length === 1
-      || sanitizeRoleType(expectedRole?.roleType) === "narrator"
-    );
-    if (
-      expectedRole
-      && (
-        normalizeScalarText(expectedRole.name) !== normalizeScalarText(input.turnState.lastSpeaker)
-        || allowSameRoleContinuation
-      )
-    ) {
-      return {
-        resolved: true,
-        reason: "expected_role",
-        plan: buildRulePlan(expectedRole, nonPlayerRoles, input.phase, "expected_role"),
-      };
-    }
-
-    const namedRole = resolveNamedRoleFromPhase(nonPlayerRoles, input.phase);
-    if (namedRole) {
-      return {
-        resolved: true,
-        reason: "phase_named_role",
-        plan: buildRulePlan(namedRole, nonPlayerRoles, input.phase, "phase_named_role"),
-      };
-    }
-
-    const wildcardRole = resolveWildcardRoleFromPhase(nonPlayerRoles, input.phase);
-    if (wildcardRole) {
-      return {
-        resolved: true,
-        reason: "phase_wildcard_role",
-        plan: buildRulePlan(wildcardRole, nonPlayerRoles, input.phase, "phase_named_role"),
-      };
-    }
-
-    if (shouldUseNarratorBridge(input.phase, nonPlayerRoles)) {
-      const narrator = findFirstRoleByType(nonPlayerRoles, "narrator");
-      if (narrator) {
-        return {
-          resolved: true,
-          reason: "narrator_bridge",
-          plan: buildRulePlan(narrator, nonPlayerRoles, input.phase, "narrator_bridge"),
-        };
-      }
-    }
   }
 
   if (allowedSpeakers.length) {

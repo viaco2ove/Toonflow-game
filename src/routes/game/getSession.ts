@@ -5,6 +5,8 @@ import { error, success } from "@/lib/responseFormat";
 import {
   getGameDb,
   normalizeChapterOutput,
+  readRuntimeCurrentEventDigestState,
+  readRuntimeEventDigestWindowState,
   normalizeRolePair,
   normalizeSessionState,
   normalizeMessageOutput,
@@ -80,6 +82,8 @@ export default router.post(
           ...row,
           chapterId: activeChapterId,
           state,
+          currentEventDigest: readRuntimeCurrentEventDigestState(state),
+          eventDigestWindow: readRuntimeEventDigestWindowState(state, 3),
           world: normalizeWorldOutput(world),
           chapter: normalizeChapterOutput(chapter),
           latestSnapshot: snapshot

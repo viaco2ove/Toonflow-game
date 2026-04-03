@@ -72,7 +72,7 @@ function isFastNpcMotive(motive: string): boolean {
 }
 
 function isHighRiskPremiumMotive(motive: string): boolean {
-  return /告白|表白|诀别|大战|生死|重伤|死亡|背叛|立誓|突破|晋级|收徒|退婚|三年之约|关系变化|身份揭露|真相|关键选择|任务完成|战斗结算/.test(motive);
+  return /告白|表白|诀别|大战|生死|重伤|死亡|背叛|立誓|突破|晋级|收徒|退婚|三年之约|关系变化|身份揭露|真相|关键选择|任务完成|战斗结算|站队|表态|施压|逼迫|抉择|冲突升级|回怼|羞辱|威胁/.test(motive);
 }
 
 function isNarratorFastFriendly(motive: string): boolean {
@@ -98,6 +98,34 @@ export function resolveSpeakerModeDecision(input: {
   const roleType = sanitizeRoleType(input.role.roleType);
   const wildcard = roleActsAsWildcard(input.role);
   const keyRole = isClearlyKeyRole(input.role);
+  const hasLatestUserInput = latestUserMessage.length > 0;
+
+  if (keyRole) {
+    return {
+      mode: "premium",
+      voiceMode: "async",
+      memoryMode: "async",
+      reason: "key_role_premium",
+    };
+  }
+
+  if (hasLatestUserInput && (roleType === "npc" || roleType === "narrator")) {
+    return {
+      mode: "premium",
+      voiceMode: "async",
+      memoryMode: "async",
+      reason: roleType === "narrator" ? "narrator_after_user_input" : "npc_after_user_input",
+    };
+  }
+
+  if (isHighRiskPremiumMotive(motive)) {
+    return {
+      mode: "premium",
+      voiceMode: "async",
+      memoryMode: "async",
+      reason: "high_risk_premium",
+    };
+  }
 
   if (isTemplateNarrator(roleType, latestUserMessage, motive)) {
     return {
@@ -136,20 +164,19 @@ export function resolveSpeakerModeDecision(input: {
   }
 
   if (!latestUserMessage && roleType === "npc" && !wildcard && !keyRole && (isFastNpcMotive(motive) || shortMotive(motive))) {
+    if (isHighRiskPremiumMotive(motive)) {
+      return {
+        mode: "premium",
+        voiceMode: "async",
+        memoryMode: "async",
+        reason: "normal_npc_high_risk_premium",
+      };
+    }
     return {
       mode: "fast",
       voiceMode: "async",
       memoryMode: "skip",
       reason: "normal_npc_fast",
-    };
-  }
-
-  if (!latestUserMessage && roleType === "npc" && keyRole && !isHighRiskPremiumMotive(motive) && (isFastNpcMotive(motive) || shortMotive(motive))) {
-    return {
-      mode: "fast",
-      voiceMode: "async",
-      memoryMode: "skip",
-      reason: "key_npc_fast_simple_turn",
     };
   }
 

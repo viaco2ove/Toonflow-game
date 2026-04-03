@@ -6,7 +6,10 @@ import {
   normalizeSessionState,
   nowTs,
   parseJsonSafe,
+  readRuntimeCurrentEventDigestState,
+  readRuntimeEventDigestWindowState,
   toJsonText,
+  upsertRuntimeEventDigestState,
 } from "@/lib/gameEngine";
 import { ensureWorldRolesWithAiParameterCards } from "@/lib/roleParameterCard";
 import { getCurrentUserId } from "@/lib/requestContext";
@@ -66,6 +69,8 @@ export interface AddSessionMessageResult {
   chapterId: number | null;
   chapter: Record<string, any> | null;
   state: Record<string, any>;
+  currentEventDigest: Record<string, any>;
+  eventDigestWindow: Record<string, any>[];
   message: Record<string, any> | null;
   chapterSwitchMessage: Record<string, any> | null;
   narrativeMessage: Record<string, any> | null;
@@ -91,6 +96,12 @@ export interface SessionNarrativePlanResult {
   triggerMemoryAgent: boolean;
   eventType: string;
   presetContent: string | null;
+  eventAdjustMode?: "keep" | "update" | "waiting_input" | "completed";
+  eventIndex?: number;
+  eventKind?: "opening" | "scene" | "user" | "fixed";
+  eventSummary?: string;
+  eventFacts?: string[];
+  eventStatus?: "idle" | "active" | "waiting_input" | "completed";
   speakerMode?: "template" | "fast" | "premium";
   speakerRouteReason?: string;
 }
@@ -101,6 +112,8 @@ export interface SessionOrchestrationResult {
   chapterId: number | null;
   expectedRole: string;
   expectedRoleType: string;
+  currentEventDigest: Record<string, any>;
+  eventDigestWindow: Record<string, any>[];
   plan: SessionNarrativePlanResult | null;
 }
 
@@ -150,12 +163,114 @@ function buildRecentMessages(rows: any[]): RuntimeMessageInput[] {
   return rows
     .reverse()
     .map((item: any) => ({
+      messageId: Number(item.id || 0),
       role: String(item.role || ""),
       roleType: String(item.roleType || ""),
       eventType: String(item.eventType || ""),
       content: String(item.content || ""),
       createTime: Number(item.createTime || 0),
     }));
+}
+
+function readMemoryCursorMessageId(state: Record<string, any>): number {
+  const cursor = parseJsonMaybe(state?.memoryCursor);
+  const id = Number(cursor.lastMessageId || 0);
+  return Number.isFinite(id) && id > 0 ? id : 0;
+}
+
+function readMemoryCursor(state: Record<string, any>): Record<string, any> {
+  return parseJsonMaybe(state?.memoryCursor);
+}
+
+function hasMemoryEventDelta(state: Record<string, any>): boolean {
+  const cursor = readMemoryCursor(state);
+  const currentEventDigest = readRuntimeCurrentEventDigestState(state);
+  const cursorFacts = Array.isArray(cursor.lastEventFacts)
+    ? cursor.lastEventFacts.map((item) => String(item || "").trim()).filter(Boolean)
+    : [];
+  const currentFacts = Array.isArray(currentEventDigest.eventFacts)
+    ? currentEventDigest.eventFacts.map((item) => String(item || "").trim()).filter(Boolean)
+    : [];
+  return Number(cursor.lastEventIndex || 0) !== Number(currentEventDigest.eventIndex || 0)
+    || String(cursor.lastEventKind || "").trim() !== String(currentEventDigest.eventKind || "").trim()
+    || String(cursor.lastEventSummary || "").trim() !== String(currentEventDigest.eventSummary || "").trim()
+    || cursorFacts.join("｜") !== currentFacts.join("｜");
+}
+
+function setMemoryCursor(state: Record<string, any>, lastMessageId: number, updateTime: number): void {
+  const cursor = readMemoryCursor(state);
+  const stableLastMessageId = Number.isFinite(lastMessageId) && lastMessageId > 0
+    ? lastMessageId
+    : Number.isFinite(Number(cursor.lastMessageId || 0)) && Number(cursor.lastMessageId || 0) > 0
+      ? Number(cursor.lastMessageId || 0)
+      : 0;
+  const currentEventDigest = readRuntimeCurrentEventDigestState(state);
+  state.memoryCursor = {
+    lastMessageId: stableLastMessageId,
+    lastEventIndex: currentEventDigest.eventIndex,
+    lastEventKind: currentEventDigest.eventKind,
+    lastEventSummary: String(currentEventDigest.eventSummary || "").trim(),
+    lastEventFacts: Array.isArray(currentEventDigest.eventFacts)
+      ? currentEventDigest.eventFacts.map((item) => String(item || "").trim()).filter(Boolean).slice(0, 6)
+      : [],
+    updateTime: Number.isFinite(updateTime) && updateTime > 0 ? updateTime : nowTs(),
+  };
+}
+
+function buildMemoryEventDeltaInput(state: Record<string, any>): RuntimeMessageInput | null {
+  const currentEventDigest = readRuntimeCurrentEventDigestState(state);
+  const eventFacts = Array.isArray(currentEventDigest.eventFacts)
+    ? currentEventDigest.eventFacts.map((item) => String(item || "").trim()).filter(Boolean).slice(0, 6)
+    : [];
+  const memoryFacts = Array.isArray(currentEventDigest.memoryFacts)
+    ? currentEventDigest.memoryFacts.map((item) => String(item || "").trim()).filter(Boolean).slice(0, 6)
+    : [];
+  return {
+    messageId: null,
+    role: "系统",
+    roleType: "system",
+    eventType: "on_event_memory_delta",
+    content: [
+      `事件#${Number(currentEventDigest.eventIndex || 1)} ${String(currentEventDigest.eventKind || "scene")}`,
+      String(currentEventDigest.eventSummary || "").trim(),
+      eventFacts.length ? `事件事实：${eventFacts.join("；")}` : "",
+    ].filter(Boolean).join("\n"),
+    createTime: nowTs(),
+    memoryDelta: {
+      eventIndex: Number(currentEventDigest.eventIndex || 1),
+      eventKind: String(currentEventDigest.eventKind || "scene"),
+      eventSummary: String(currentEventDigest.eventSummary || "").trim(),
+      eventFacts,
+      memorySummary: String(currentEventDigest.memorySummary || "").trim(),
+      memoryFacts,
+    },
+  };
+}
+
+async function loadIncrementalMessagesForMemory(db: any, sessionId: string, state: Record<string, any>): Promise<RuntimeMessageInput[]> {
+  const lastMessageId = readMemoryCursorMessageId(state);
+  const rows = lastMessageId > 0
+    ? await db("t_sessionMessage")
+      .where({ sessionId })
+      .andWhere("id", ">", lastMessageId)
+      .orderBy("id", "asc")
+      .limit(20)
+    : await db("t_sessionMessage")
+      .where({ sessionId })
+      .orderBy("id", "desc")
+      .limit(20);
+  const recentMessages = buildRecentMessages(rows);
+  if (!hasMemoryEventDelta(state)) {
+    return recentMessages;
+  }
+  const eventDeltaInput = buildMemoryEventDeltaInput(state);
+  if (!eventDeltaInput) {
+    return recentMessages;
+  }
+  return [
+    ...recentMessages,
+    eventDeltaInput,
+  ];
 }
 
 function resolveDefaultRoleName(roleType: string, state: Record<string, any>): string {
@@ -220,6 +335,12 @@ function buildSessionPlanResult(plan: ({
   triggerMemoryAgent?: unknown;
   eventType?: unknown;
   presetContent?: unknown;
+  eventAdjustMode?: unknown;
+  eventIndex?: unknown;
+  eventKind?: unknown;
+  eventSummary?: unknown;
+  eventFacts?: unknown;
+  eventStatus?: unknown;
   speakerMode?: unknown;
   speakerRouteReason?: unknown;
 }) | null | undefined): SessionNarrativePlanResult | null {
@@ -239,6 +360,38 @@ function buildSessionPlanResult(plan: ({
     triggerMemoryAgent: Boolean(plan.triggerMemoryAgent),
     eventType: String(plan.eventType || "on_orchestrated_reply").trim() || "on_orchestrated_reply",
     presetContent: String(plan.presetContent || "").trim() || null,
+    eventAdjustMode: plan.eventAdjustMode === "update"
+      ? "update"
+      : plan.eventAdjustMode === "waiting_input"
+        ? "waiting_input"
+        : plan.eventAdjustMode === "completed"
+          ? "completed"
+          : plan.eventAdjustMode === "keep"
+            ? "keep"
+            : undefined,
+    eventIndex: Number.isFinite(Number(plan.eventIndex)) ? Math.max(1, Number(plan.eventIndex)) : undefined,
+    eventKind: plan.eventKind === "opening"
+      ? "opening"
+      : plan.eventKind === "user"
+        ? "user"
+        : plan.eventKind === "fixed"
+          ? "fixed"
+          : plan.eventKind === "scene"
+            ? "scene"
+            : undefined,
+    eventSummary: String(plan.eventSummary || "").trim(),
+    eventFacts: Array.isArray(plan.eventFacts)
+      ? plan.eventFacts.map((item) => String(item || "").trim()).filter(Boolean)
+      : [],
+    eventStatus: plan.eventStatus === "active"
+      ? "active"
+      : plan.eventStatus === "waiting_input"
+        ? "waiting_input"
+        : plan.eventStatus === "completed"
+          ? "completed"
+          : plan.eventStatus === "idle"
+            ? "idle"
+            : undefined,
     speakerMode: plan.speakerMode === "template"
       ? "template"
       : plan.speakerMode === "fast"
@@ -248,6 +401,14 @@ function buildSessionPlanResult(plan: ({
           : undefined,
     speakerRouteReason: String(plan.speakerRouteReason || "").trim(),
   };
+}
+
+function buildCurrentEventDigest(state: Record<string, any>): Record<string, any> {
+  return readRuntimeCurrentEventDigestState(state);
+}
+
+function buildEventDigestWindow(state: Record<string, any>): Record<string, any>[] {
+  return readRuntimeEventDigestWindowState(state, 3);
 }
 
 function getPendingSessionChapterId(state: Record<string, any>): number | null {
@@ -362,6 +523,7 @@ function scheduleSessionMemoryRefresh(params: {
   chapter: any;
   state: Record<string, any>;
   recentMessages: RuntimeMessageInput[];
+  lastMessageId: number;
 }) {
   triggerStoryMemoryRefreshInBackground({
     userId: params.userId,
@@ -374,6 +536,19 @@ function scheduleSessionMemoryRefresh(params: {
       if (!row) return;
       const latestState = parseJsonSafe<Record<string, any>>(row.stateJson, {});
       applyMemoryResultToState(latestState, memory);
+      const currentEventDigest = readRuntimeCurrentEventDigestState(latestState);
+      upsertRuntimeEventDigestState(latestState, {
+        eventIndex: currentEventDigest.eventIndex,
+        memorySummary: String(memory.summary || "").trim(),
+        memoryFacts: Array.isArray(memory.facts)
+          ? memory.facts.map((item) => String(item || "").trim()).filter(Boolean).slice(0, 8)
+          : [],
+        updateTime: nowTs(),
+        summarySource: currentEventDigest.summarySource === "ai"
+          ? "ai"
+          : "memory",
+      });
+      setMemoryCursor(latestState, params.lastMessageId, nowTs());
       await getGameDb()("t_gameSession").where({ sessionId: params.sessionId }).update({
         stateJson: toJsonText(latestState, {}),
         updateTime: nowTs(),
@@ -713,6 +888,8 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
       chapterId: nextChapterId,
       chapter: activeChapter,
       state,
+      currentEventDigest: buildCurrentEventDigest(state),
+      eventDigestWindow: buildEventDigestWindow(state),
       message: normalizeMessageOutput(messageRow),
       chapterSwitchMessage: null,
       narrativeMessage: null,
@@ -861,15 +1038,22 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
   });
 
   if (asyncMemoryRefreshRequested && asyncMemoryRefreshChapter) {
-    const rawRecentMessagesForMemory = await db("t_sessionMessage").where({ sessionId }).orderBy("id", "desc").limit(20);
+    const recentMessagesForMemory = await loadIncrementalMessagesForMemory(db, sessionId, state);
+    const lastMemoryMessageId = recentMessagesForMemory.reduce((max, item) => {
+      const currentId = Number(item?.messageId || 0);
+      return Number.isFinite(currentId) && currentId > max ? currentId : max;
+    }, 0);
+    if (recentMessagesForMemory.length) {
     scheduleSessionMemoryRefresh({
       sessionId,
       userId: currentUserId,
       world,
       chapter: asyncMemoryRefreshChapter,
       state,
-      recentMessages: buildRecentMessages(rawRecentMessagesForMemory),
+      recentMessages: recentMessagesForMemory,
+      lastMessageId: lastMemoryMessageId,
     });
+    }
   }
   scheduleSessionRoleParameterCardRefresh({
     userId: currentUserId,
@@ -886,6 +1070,8 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
     chapterId: nextChapterId,
     chapter: activeChapter,
     state,
+    currentEventDigest: buildCurrentEventDigest(state),
+    eventDigestWindow: buildEventDigestWindow(state),
     message: normalizeMessageOutput(messageRow),
     chapterSwitchMessage: chapterSwitchMessageRow,
     narrativeMessage: narrativeMessageRow,
@@ -1019,24 +1205,22 @@ export async function continueSessionNarrative(sessionIdInput: string): Promise<
   });
 
   if (orchestrator.triggerMemoryAgent) {
-    const recentMessagesForMemory = [
-      ...recentMessages,
-      ...generatedMessages.map((item) => ({
-        role: String(item.role || ""),
-        roleType: String(item.roleType || ""),
-        eventType: String(item.eventType || ""),
-        content: String(item.content || ""),
-        createTime: Number(item.createTime || now),
-      })),
-    ];
-    scheduleSessionMemoryRefresh({
-      sessionId,
-      userId: currentUserId,
-      world,
-      chapter,
-      state,
-      recentMessages: recentMessagesForMemory.slice(-20),
-    });
+    const recentMessagesForMemory = await loadIncrementalMessagesForMemory(db, sessionId, state);
+    const lastMemoryMessageId = recentMessagesForMemory.reduce((max, item) => {
+      const currentId = Number(item?.messageId || 0);
+      return Number.isFinite(currentId) && currentId > max ? currentId : max;
+    }, 0);
+    if (recentMessagesForMemory.length) {
+      scheduleSessionMemoryRefresh({
+        sessionId,
+        userId: currentUserId,
+        world,
+        chapter,
+        state,
+        recentMessages: recentMessagesForMemory,
+        lastMessageId: lastMemoryMessageId,
+      });
+    }
   }
   scheduleSessionRoleParameterCardRefresh({
     userId: currentUserId,
@@ -1049,6 +1233,7 @@ export async function continueSessionNarrative(sessionIdInput: string): Promise<
     chapterId: nextChapterId,
     chapter: nextChapterId ? normalizeChapterOutput(await db("t_storyChapter").where({ id: nextChapterId }).first()) : null,
     state,
+    currentEventDigest: buildCurrentEventDigest(state),
     message: null,
     chapterSwitchMessage: null,
     narrativeMessage: generatedMessages[generatedMessages.length - 1] || null,
@@ -1111,6 +1296,8 @@ export async function orchestrateSessionTurn(sessionIdInput: string): Promise<Se
       ...result,
       expectedRole: expectedSpeaker.expectedRole,
       expectedRoleType: expectedSpeaker.expectedRoleType,
+      currentEventDigest: buildCurrentEventDigest(state),
+      eventDigestWindow: buildEventDigestWindow(state),
     };
   };
 
@@ -1184,6 +1371,8 @@ export async function orchestrateSessionTurn(sessionIdInput: string): Promise<Se
         chapterId: currentChapterId,
         expectedRole: "",
         expectedRoleType: "",
+        currentEventDigest: buildCurrentEventDigest(state),
+        eventDigestWindow: buildEventDigestWindow(state),
         plan: null,
       });
     }
@@ -1209,14 +1398,16 @@ export async function orchestrateSessionTurn(sessionIdInput: string): Promise<Se
     return buildChapterStartPlan(chapter);
   }
   if (canPlayerSpeakNow(state, world)) {
-    return finalizeOrchestrationResult({
-      sessionId,
-      status: sessionStatus,
-      chapterId: Number(chapter.id || 0) || null,
-      expectedRole: "",
-      expectedRoleType: "",
-      plan: null,
-    });
+      return finalizeOrchestrationResult({
+        sessionId,
+        status: sessionStatus,
+        chapterId: Number(chapter.id || 0) || null,
+        expectedRole: "",
+        expectedRoleType: "",
+        currentEventDigest: buildCurrentEventDigest(state),
+        eventDigestWindow: buildEventDigestWindow(state),
+        plan: null,
+      });
   }
 
   const plan = await runNarrativePlan({
@@ -1270,6 +1461,7 @@ export async function orchestrateSessionTurn(sessionIdInput: string): Promise<Se
     chapterId: nextChapterId,
     expectedRole: "",
     expectedRoleType: "",
+    currentEventDigest: buildCurrentEventDigest(state),
     plan: buildSessionPlanResult({
       ...plan,
       eventType: "on_orchestrated_reply",
@@ -1385,6 +1577,8 @@ export async function commitSessionNarrativeTurn(input: CommitSessionNarrativeTu
     chapterId: nextChapterId,
     chapter: activeChapter,
     state,
+    currentEventDigest: buildCurrentEventDigest(state),
+    eventDigestWindow: buildEventDigestWindow(state),
     message: null,
     chapterSwitchMessage: null,
     narrativeMessage: insertedRows[insertedRows.length - 1] || null,

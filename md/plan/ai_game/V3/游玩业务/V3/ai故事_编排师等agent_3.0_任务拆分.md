@@ -31,7 +31,6 @@
 - `任务 2` 已完成一阶段：speaker 上下文已做第二轮压缩，当前已减少世界简介、最近对话和可见角色数量
 - `任务 4` 已完成基础版：新增 `RuleOrchestrator.ts`，当前已能在“用户节点交还用户”“turnState 已明确下一位角色”“当前 phase 仅允许单一角色”三类场景下直接规则出 plan
 - `任务 4` 已完成第二刀：规则命中面已继续扩大，当前章节 outline 若已明确点名单一角色，或阶段明显属于旁白过场/万能角色拱火，也会优先规则直出
-- `任务 4` 已完成第三刀：当最近对话或章节交互提示已经明确在逼用户表态、等待用户反应时，`RuleOrchestrator` 会直接把回合交还给用户，避免 NPC 继续抢回合
 - `任务 5` 已完成基础版：编排顺序已明确收成“`rule -> ai -> fallback`”；`source=rule` 已贯通到 `NarrativeOrchestrator / SessionService / orchestration`
 - `任务 6` 已完成基础版：新增 `SpeakerRouteEngine.ts`，当前已能把部分旁白环境补句和万能角色起哄句路由到 `template` 档，直接跳过 speaker 模型
 - `任务 6` 已完成第二刀：`speakerMode / speakerRouteReason` 已写入 narrativePlan 摘要；低风险 `template/fast` 轮次会进一步压低异步记忆刷新

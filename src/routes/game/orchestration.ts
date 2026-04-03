@@ -59,6 +59,12 @@ function buildPlanResult(plan: ({
   stateDelta?: Record<string, unknown>;
   eventType?: string;
   presetContent?: string;
+  eventAdjustMode?: "keep" | "update" | "waiting_input" | "completed";
+  eventIndex?: number;
+  eventKind?: "opening" | "scene" | "user" | "fixed";
+  eventSummary?: string;
+  eventFacts?: string[];
+  eventStatus?: "idle" | "active" | "waiting_input" | "completed";
   speakerMode?: "template" | "fast" | "premium";
   speakerRouteReason?: string;
 }) | null) {
@@ -78,6 +84,38 @@ function buildPlanResult(plan: ({
     triggerMemoryAgent: Boolean(plan.triggerMemoryAgent),
     eventType: String(plan.eventType || "on_orchestrated_reply").trim() || "on_orchestrated_reply",
     presetContent: String(plan.presetContent || "").trim() || null,
+    eventAdjustMode: plan.eventAdjustMode === "update"
+      ? "update"
+      : plan.eventAdjustMode === "waiting_input"
+        ? "waiting_input"
+        : plan.eventAdjustMode === "completed"
+          ? "completed"
+          : plan.eventAdjustMode === "keep"
+            ? "keep"
+            : undefined,
+    eventIndex: Number.isFinite(Number(plan.eventIndex)) ? Math.max(1, Number(plan.eventIndex)) : undefined,
+    eventKind: plan.eventKind === "opening"
+      ? "opening"
+      : plan.eventKind === "user"
+        ? "user"
+        : plan.eventKind === "fixed"
+          ? "fixed"
+          : plan.eventKind === "scene"
+            ? "scene"
+            : undefined,
+    eventSummary: String(plan.eventSummary || "").trim(),
+    eventFacts: Array.isArray(plan.eventFacts)
+      ? plan.eventFacts.map((item) => String(item || "").trim()).filter(Boolean)
+      : [],
+    eventStatus: plan.eventStatus === "active"
+      ? "active"
+      : plan.eventStatus === "waiting_input"
+        ? "waiting_input"
+        : plan.eventStatus === "completed"
+          ? "completed"
+          : plan.eventStatus === "idle"
+            ? "idle"
+            : undefined,
     speakerMode: plan.speakerMode === "template"
       ? "template"
       : plan.speakerMode === "fast"

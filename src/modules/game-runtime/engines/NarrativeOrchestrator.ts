@@ -2,11 +2,18 @@ import u from "@/utils";
 import {
   ChapterRuntimePhase,
   JsonRecord,
+  RuntimeCurrentEventState,
   normalizeChapterRuntimeOutline,
+  readRuntimeCurrentEventDigestState,
+  readRuntimeEventDigestWindowTextState,
+  upsertRuntimeEventDigestState,
   normalizeRolePair,
   nowTs,
   parseJsonSafe,
   readChapterProgressState,
+  readRuntimeCurrentEventState,
+  setChapterProgressState,
+  syncRuntimeCurrentEventFromChapterProgress,
 } from "@/lib/gameEngine";
 import { advanceChapterProgressAfterNarrative } from "@/modules/game-runtime/engines/ChapterProgressEngine";
 import { resolveRuleNarrativePlan } from "@/modules/game-runtime/engines/RuleOrchestrator";
@@ -16,11 +23,20 @@ import {
 } from "@/modules/game-runtime/engines/SpeakerRouteEngine";
 
 export interface RuntimeMessageInput {
+  messageId?: number | null;
   role?: string | null;
   roleType?: string | null;
   eventType?: string | null;
   content?: string | null;
   createTime?: number | null;
+  memoryDelta?: {
+    eventIndex?: number | null;
+    eventKind?: string | null;
+    eventSummary?: string | null;
+    eventFacts?: string[] | null;
+    memorySummary?: string | null;
+    memoryFacts?: string[] | null;
+  } | null;
 }
 
 export interface RuntimeStoryRole {
@@ -57,6 +73,12 @@ export interface NarrativePlanResult {
   chapterOutcome: "continue" | "success" | "failed";
   nextChapterId: number | null;
   source: "ai" | "fallback" | "rule";
+  eventAdjustMode: "keep" | "update" | "waiting_input" | "completed";
+  eventIndex: number;
+  eventKind: RuntimeCurrentEventState["kind"];
+  eventSummary: string;
+  eventFacts: string[];
+  eventStatus: RuntimeCurrentEventState["status"];
   speakerMode?: "template" | "fast" | "premium";
   speakerRouteReason?: string;
 }
@@ -75,6 +97,12 @@ export interface NarrativePlanSummary {
   memoryHints: string[];
   triggerMemoryAgent: boolean;
   source: "ai" | "fallback" | "rule";
+  eventAdjustMode: "keep" | "update" | "waiting_input" | "completed";
+  eventIndex: number;
+  eventKind: RuntimeCurrentEventState["kind"];
+  eventSummary: string;
+  eventFacts: string[];
+  eventStatus: RuntimeCurrentEventState["status"];
   speakerMode?: "template" | "fast" | "premium";
   speakerRouteReason?: string;
 }
@@ -506,6 +534,71 @@ function summarizeStoryState(state: JsonRecord): string {
   return parts.join("\n");
 }
 
+function readCurrentRuntimeEventContext(chapter: any, state: JsonRecord): {
+  eventIndex: number;
+  eventKind: RuntimeCurrentEventState["kind"];
+  eventSummary: string;
+  eventFacts: string[];
+  eventMemorySummary: string;
+  eventMemoryFacts: string[];
+  eventStatus: RuntimeCurrentEventState["status"];
+} {
+  const runtimeEventDigest = readRuntimeCurrentEventDigestState(state);
+  if (runtimeEventDigest.eventSummary) {
+    return {
+      eventIndex: runtimeEventDigest.eventIndex,
+      eventKind: runtimeEventDigest.eventKind,
+      eventSummary: runtimeEventDigest.eventSummary,
+      eventFacts: Array.isArray(runtimeEventDigest.eventFacts) ? runtimeEventDigest.eventFacts : [],
+      eventMemorySummary: normalizeScalarText(runtimeEventDigest.memorySummary),
+      eventMemoryFacts: Array.isArray(runtimeEventDigest.memoryFacts) ? runtimeEventDigest.memoryFacts : [],
+      eventStatus: runtimeEventDigest.eventStatus,
+    };
+  }
+  const runtimeEvent = readRuntimeCurrentEventState(state);
+  const outline = normalizeChapterRuntimeOutline(chapter?.runtimeOutline);
+  const progress = readChapterProgressState(state);
+  const phases = Array.isArray(outline.phases) ? outline.phases : [];
+  const currentPhase = progress.phaseId
+    ? phases.find((item) => item.id === progress.phaseId) || null
+    : phases[0] || null;
+  if (!currentPhase) {
+    return {
+      eventIndex: 1,
+      eventKind: "scene",
+      eventSummary: shortText(chapterDirectiveText(chapter), 120) || "当前事件未命名",
+      eventFacts: [],
+      eventMemorySummary: "",
+      eventMemoryFacts: [],
+      eventStatus: runtimeEvent.status || "idle",
+    };
+  }
+  const phaseIndex = phases.findIndex((item) => item.id === currentPhase.id);
+  const userNode = currentPhase.userNodeId
+    ? (outline.userNodes || []).find((item) => item.id === currentPhase.userNodeId) || null
+    : null;
+  const fixedEvent = (outline.fixedEvents || []).find((item) => {
+    return currentPhase.relatedFixedEventIds.includes(item.id)
+      || currentPhase.completionEventIds.includes(item.id);
+  }) || null;
+  const eventSummary = shortText(
+    currentPhase.targetSummary
+      || userNode?.promptText
+      || fixedEvent?.label
+      || currentPhase.label,
+    120,
+  ) || "当前事件未命名";
+  return {
+    eventIndex: phaseIndex >= 0 ? phaseIndex + 1 : Math.max(1, Number(progress.phaseIndex || 0) + 1),
+    eventKind: currentPhase.kind || "scene",
+    eventSummary,
+    eventFacts: Array.isArray(runtimeEvent.facts) ? runtimeEvent.facts : [],
+    eventMemorySummary: "",
+    eventMemoryFacts: [],
+    eventStatus: progress.eventStatus,
+  };
+}
+
 // 清洗模型返回的普通文本行，去掉多余引号和超长内容。
 function normalizeGeneratedLine(input: unknown, limit = 220): string {
   const text = normalizeScalarText(input)
@@ -644,6 +737,13 @@ function buildOrchestratorUserPrompt(payload: {
   turnState: RuntimeTurnState;
   currentPhaseLabel: string;
   currentPhaseGoal: string;
+  currentEventIndex: number;
+  currentEventKind: string;
+  currentEventSummary: string;
+  currentEventFacts: string[];
+  currentEventMemorySummary: string;
+  currentEventMemoryFacts: string[];
+  currentEventWindow: string;
   phaseAllowedSpeakers: string[];
   recentDialogue: string;
   latestPlayerMessage: string;
@@ -676,6 +776,15 @@ function buildOrchestratorUserPrompt(payload: {
       payload.currentPhaseGoal ? `goal:${payload.currentPhaseGoal}` : "",
       `allowed:${payload.phaseAllowedSpeakers.length ? payload.phaseAllowedSpeakers.join("、") : "全部当前角色"}`,
       "",
+      "[当前事件]",
+      `index:${payload.currentEventIndex || 1}`,
+      `kind:${payload.currentEventKind || "scene"}`,
+      `summary:${payload.currentEventSummary || "当前事件未命名"}`,
+      payload.currentEventFacts.length ? `facts:${payload.currentEventFacts.join("｜")}` : "",
+      payload.currentEventMemorySummary ? `memory:${payload.currentEventMemorySummary}` : "",
+      payload.currentEventMemoryFacts.length ? `memory_facts:${payload.currentEventMemoryFacts.join("｜")}` : "",
+      payload.currentEventWindow ? `window:\n${payload.currentEventWindow}` : "",
+      "",
       "[回合]",
       `player:${payload.turnState.canPlayerSpeak ? "true" : "false"} | expected:${sanitizeRoleType(payload.turnState.expectedRoleType)}/${payload.turnState.expectedRole || "无"} | last:${sanitizeRoleType(payload.turnState.lastSpeakerRoleType)}/${payload.turnState.lastSpeaker || "无"}`,
       "",
@@ -696,6 +805,7 @@ function buildOrchestratorUserPrompt(payload: {
       "next_chapter_id:",
       "memory_hints:",
       "trigger_memory_agent:",
+      "event_facts:",
       "state_delta:",
     ].filter(Boolean).join("\n");
   }
@@ -726,6 +836,15 @@ function buildOrchestratorUserPrompt(payload: {
     payload.currentPhaseGoal ? `goal: ${payload.currentPhaseGoal}` : "",
     `allowed_speakers: ${payload.phaseAllowedSpeakers.length ? payload.phaseAllowedSpeakers.join("、") : "全部当前角色"}`,
     "",
+    "[当前事件]",
+    `index: ${payload.currentEventIndex || 1}`,
+    `kind: ${payload.currentEventKind || "scene"}`,
+    `summary: ${payload.currentEventSummary || "当前事件未命名"}`,
+    payload.currentEventFacts.length ? `facts: ${payload.currentEventFacts.join("；")}` : "",
+    payload.currentEventMemorySummary ? `memory_summary: ${payload.currentEventMemorySummary}` : "",
+    payload.currentEventMemoryFacts.length ? `memory_facts: ${payload.currentEventMemoryFacts.join("；")}` : "",
+    payload.currentEventWindow ? `事件窗口:\n${payload.currentEventWindow}` : "",
+    "",
     "[回合状态]",
     `can_player_speak: ${payload.turnState.canPlayerSpeak ? "true" : "false"}`,
     `expected_role_type: ${sanitizeRoleType(payload.turnState.expectedRoleType)}`,
@@ -750,6 +869,7 @@ function buildOrchestratorUserPrompt(payload: {
     "next_chapter_id:",
     "memory_hints:",
     "trigger_memory_agent:",
+    "event_facts:",
     "state_delta:",
   ].filter(Boolean).join("\n");
 }
@@ -760,6 +880,12 @@ function buildSpeakerUserPrompt(payload: {
   worldIntro: string;
   chapterTitle: string;
   currentPhaseLabel: string;
+  currentEventIndex: number;
+  currentEventKind: string;
+  currentEventSummary: string;
+  currentEventFacts: string[];
+  currentEventMemorySummary: string;
+  currentEventMemoryFacts: string[];
   speakerName: string;
   speakerRoleType: string;
   speakerProfile: string;
@@ -779,6 +905,14 @@ function buildSpeakerUserPrompt(payload: {
     "",
     "[当前阶段]",
     `label: ${payload.currentPhaseLabel || "未命名阶段"}`,
+    "",
+    "[当前事件]",
+    `index: ${payload.currentEventIndex || 1}`,
+    `kind: ${payload.currentEventKind || "scene"}`,
+    `summary: ${payload.currentEventSummary || "当前事件未命名"}`,
+    payload.currentEventFacts.length ? `facts: ${payload.currentEventFacts.join("；")}` : "",
+    payload.currentEventMemorySummary ? `memory_summary: ${payload.currentEventMemorySummary}` : "",
+    payload.currentEventMemoryFacts.length ? `memory_facts: ${payload.currentEventMemoryFacts.join("；")}` : "",
     "",
     "[当前说话人]",
     `name: ${payload.speakerName}`,
@@ -811,6 +945,12 @@ function buildFastSpeakerUserPrompt(payload: {
   speakerRoleType: string;
   speakerProfileLite: string;
   currentPhaseLabel: string;
+  currentEventIndex: number;
+  currentEventKind: string;
+  currentEventSummary: string;
+  currentEventFacts: string[];
+  currentEventMemorySummary: string;
+  currentEventMemoryFacts: string[];
   motive: string;
   recentDialogue: string;
   latestPlayerMessage: string;
@@ -823,6 +963,14 @@ function buildFastSpeakerUserPrompt(payload: {
     "",
     "[当前阶段]",
     `label: ${payload.currentPhaseLabel || "未命名阶段"}`,
+    "",
+    "[当前事件]",
+    `index: ${payload.currentEventIndex || 1}`,
+    `kind: ${payload.currentEventKind || "scene"}`,
+    `summary: ${payload.currentEventSummary || "当前事件未命名"}`,
+    payload.currentEventFacts.length ? `facts: ${payload.currentEventFacts.join("；")}` : "",
+    payload.currentEventMemorySummary ? `memory_summary: ${payload.currentEventMemorySummary}` : "",
+    payload.currentEventMemoryFacts.length ? `memory_facts: ${payload.currentEventMemoryFacts.join("；")}` : "",
     "",
     "[本轮动机]",
     payload.motive,
@@ -842,6 +990,13 @@ function buildFastSpeakerUserPrompt(payload: {
 function buildMemoryUserPrompt(payload: {
   worldName: string;
   chapterTitle: string;
+  currentEventIndex: number;
+  currentEventKind: string;
+  currentEventSummary: string;
+  currentEventFacts: string;
+  currentEventMemorySummary: string;
+  currentEventMemoryFacts: string;
+  eventDeltaText: string;
   currentFacts: string;
   currentTags: string;
   recentDialogue: string;
@@ -854,6 +1009,17 @@ function buildMemoryUserPrompt(payload: {
       "",
       "[当前事实]",
       payload.currentFacts || "无",
+      "",
+      "[当前事件]",
+      `index:${payload.currentEventIndex || 1}`,
+      `kind:${payload.currentEventKind || "scene"}`,
+      `summary:${payload.currentEventSummary || "当前事件未命名"}`,
+      payload.currentEventFacts ? `facts:${payload.currentEventFacts}` : "",
+      payload.currentEventMemorySummary ? `memory_summary:${payload.currentEventMemorySummary}` : "",
+      payload.currentEventMemoryFacts ? `memory_facts:${payload.currentEventMemoryFacts}` : "",
+      "",
+      "[事件增量]",
+      payload.eventDeltaText || "无",
       "",
       "[当前标签]",
       payload.currentTags || "无",
@@ -877,6 +1043,17 @@ function buildMemoryUserPrompt(payload: {
     "",
     "[章节]",
     `标题: ${payload.chapterTitle || "未命名章节"}`,
+    "",
+    "[当前事件]",
+    `index: ${payload.currentEventIndex || 1}`,
+    `kind: ${payload.currentEventKind || "scene"}`,
+    `summary: ${payload.currentEventSummary || "当前事件未命名"}`,
+    payload.currentEventFacts ? `facts: ${payload.currentEventFacts}` : "",
+    payload.currentEventMemorySummary ? `memory_summary: ${payload.currentEventMemorySummary}` : "",
+    payload.currentEventMemoryFacts ? `memory_facts: ${payload.currentEventMemoryFacts}` : "",
+    "",
+    "[事件增量]",
+    payload.eventDeltaText || "无",
     "",
     "[最近对话]",
     payload.recentDialogue || "无",
@@ -1242,6 +1419,13 @@ function buildFallbackNarrativePlan(input: {
   turnState: RuntimeTurnState;
   latestPlayerMessage: string;
   currentPhase: ChapterRuntimePhase | null;
+  currentEvent: {
+    eventIndex: number;
+    eventKind: RuntimeCurrentEventState["kind"];
+    eventSummary: string;
+    eventFacts: string[];
+    eventStatus: RuntimeCurrentEventState["status"];
+  };
   hasPlayerInput: boolean;
   world: any;
   fallbackReason: unknown;
@@ -1273,6 +1457,12 @@ function buildFallbackNarrativePlan(input: {
     chapterOutcome: "continue",
     nextChapterId: null,
     source: "fallback",
+    eventAdjustMode: shouldYieldToUser ? "waiting_input" : "keep",
+    eventIndex: input.currentEvent.eventIndex,
+    eventKind: input.currentEvent.eventKind,
+    eventSummary: input.currentEvent.eventSummary,
+    eventFacts: input.currentEvent.eventFacts,
+    eventStatus: shouldYieldToUser ? "waiting_input" : input.currentEvent.eventStatus,
   };
 }
 
@@ -1292,6 +1482,7 @@ function buildOrchestratorOutputFields(options: {
     fields.push("chapter_outcome", "next_chapter_id");
   }
   fields.push("memory_hints", "trigger_memory_agent");
+  fields.push("event_adjust_mode", "event_status", "event_summary", "event_facts");
   if (options.allowStateDelta) {
     fields.push("state_delta");
   }
@@ -1311,6 +1502,63 @@ function recentDialogueText(messages: RuntimeMessageInput[], maxCount = 12, maxC
     .filter(Boolean)
     .join("\n")
     .slice(maxChars > 0 ? -maxChars : undefined);
+}
+
+function readMemoryDeltaInput(message: RuntimeMessageInput): {
+  eventIndex: number;
+  eventKind: string;
+  eventSummary: string;
+  eventFacts: string[];
+  memorySummary: string;
+  memoryFacts: string[];
+} | null {
+  const raw = asRecord((message as Record<string, unknown>)?.memoryDelta);
+  if (!Object.keys(raw).length) return null;
+  return {
+    eventIndex: Number.isFinite(Number(raw.eventIndex)) ? Math.max(1, Number(raw.eventIndex)) : 1,
+    eventKind: normalizeScalarText(raw.eventKind) || "scene",
+    eventSummary: normalizeScalarText(raw.eventSummary),
+    eventFacts: uniqueTextList(Array.isArray(raw.eventFacts) ? raw.eventFacts : [], 6),
+    memorySummary: normalizeScalarText(raw.memorySummary),
+    memoryFacts: uniqueTextList(Array.isArray(raw.memoryFacts) ? raw.memoryFacts : [], 6),
+  };
+}
+
+function splitMemoryRefreshInputs(messages: RuntimeMessageInput[]): {
+  dialogueMessages: RuntimeMessageInput[];
+  eventDeltaMessages: RuntimeMessageInput[];
+} {
+  const dialogueMessages: RuntimeMessageInput[] = [];
+  const eventDeltaMessages: RuntimeMessageInput[] = [];
+  for (const item of messages) {
+    const isEventDelta = normalizeScalarText(item.eventType) === "on_event_memory_delta" || !!readMemoryDeltaInput(item);
+    if (isEventDelta) {
+      eventDeltaMessages.push(item);
+      continue;
+    }
+    dialogueMessages.push(item);
+  }
+  return { dialogueMessages, eventDeltaMessages };
+}
+
+function buildMemoryEventDeltaText(messages: RuntimeMessageInput[], compactMode = false): string {
+  const chunks = uniqueTextList(
+    messages.map((item) => {
+      const delta = readMemoryDeltaInput(item);
+      if (delta) {
+        return [
+          `#${delta.eventIndex} ${delta.eventKind}`,
+          delta.eventSummary ? `事件摘要：${delta.eventSummary}` : "",
+          delta.eventFacts.length ? `事件事实：${delta.eventFacts.join("；")}` : "",
+          delta.memorySummary ? `已有事件记忆：${delta.memorySummary}` : "",
+          delta.memoryFacts.length ? `已有事件记忆事实：${delta.memoryFacts.join("；")}` : "",
+        ].filter(Boolean).join("\n");
+      }
+      return normalizeScalarText(item.content);
+    }),
+    compactMode ? 2 : 3,
+  );
+  return chunks.join(compactMode ? "\n" : "\n\n");
 }
 
 // 组装编排师的系统提示词。
@@ -1339,6 +1587,7 @@ function buildOrchestratorSystemPrompt(
       "motive 控制在 12~40 字，只描述这一小步要做什么。",
       "每轮只推进一小步，不要回顾整章或世界观。",
       "若本轮出现新的关键事实、人物资料变化、任务/道具/状态变化或阶段切换，trigger_memory_agent=true，否则 false。",
+      "event_adjust_mode 只能是 keep / update / waiting_input / completed；event_status 只能是 active / waiting_input / completed；event_summary 只用一句话概括当前事件焦点，不要复述整章；event_facts 只列 1~4 条本轮之后仍有用的事件事实。",
       `严格按字段逐行输出：${outputFields}。`,
     ].join("\n");
   }
@@ -1367,8 +1616,9 @@ function buildOrchestratorSystemPrompt(
     "17. 当用户尚未输入、只是刚进入章节时，必须先推进至少一轮非用户对话，不能空着内容直接把回合交给用户。",
     "18. 若 [用户交互节点] 已明确要求用户观察、选择、发言或行动，一旦剧情推进到该节点，必须设置 awaitUser=true 且 next_role_type=player；不要继续让 NPC 抢走用户回合。",
     "19. 若本轮出现新的关键事实、人物资料更新、关系/任务/状态变化、关键道具变化或章节阶段切换，trigger_memory_agent=true；普通闲聊或无新增信息时为 false。",
+    "20. event_adjust_mode 只能填写 keep / update / waiting_input / completed；event_status 只能填写 active / waiting_input / completed；event_summary 只概括当前事件焦点，不得复述章节原文或整章内容；event_facts 只列 1~4 条本轮之后仍有用的事件事实。",
     compactMode ? "补充：当前模型较弱，每轮只推进一小步，默认控制在 120 字以内；不要长篇回顾世界观或整章提纲。" : "",
-    `20. 最终输出严格使用以下字段名逐行输出：${outputFields}。`,
+    `21. 最终输出严格使用以下字段名逐行输出：${outputFields}。`,
   ].filter(Boolean).join("\n\n");
 }
 
@@ -1454,6 +1704,7 @@ export async function runStorySpeakerContent(input: {
   motive: string;
 }): Promise<string> {
   const currentPhase = readCurrentChapterPhase(input.chapter, input.state);
+  const currentEvent = readCurrentRuntimeEventContext(input.chapter, input.state);
   const roles = filterRolesForPhase(runtimeStoryRoles(input.world, input.state), currentPhase);
   if (!isRoleAllowedInPhase(input.currentRole, currentPhase)) {
     throw createRuntimeModelError("speaker", "当前阶段不允许该角色发言");
@@ -1492,6 +1743,19 @@ export async function runStorySpeakerContent(input: {
     worldIntro: useFastSpeakerPrompt ? "" : shortText(input.world?.intro, compactMode ? 48 : 72),
     chapterTitle: currentChapter.title,
     currentPhaseLabel: normalizeScalarText(currentPhase?.label),
+    currentEventIndex: currentEvent.eventIndex,
+    currentEventKind: currentEvent.eventKind,
+    currentEventSummary: currentEvent.eventSummary,
+    currentEventFacts: currentEvent.eventFacts,
+    currentEventMemorySummary: currentEvent.eventMemorySummary,
+    currentEventMemoryFacts: currentEvent.eventMemoryFacts,
+    currentEventWindow: readRuntimeEventDigestWindowTextState(input.state, {
+      windowSize: 3,
+      includeMemory: true,
+      summaryLimit: 60,
+      factLimit: 2,
+      memoryFactLimit: 2,
+    }),
     speakerName: normalizeScalarText(input.currentRole.name),
     speakerRoleType: sanitizeRoleType(input.currentRole.roleType),
     speakerProfile: useFastSpeakerPrompt ? describeRoleLite(input.currentRole) : describeRole(input.currentRole, true),
@@ -1538,6 +1802,12 @@ export async function runStorySpeakerContent(input: {
                 speakerRoleType: payload.speakerRoleType,
                 speakerProfileLite: payload.speakerProfile,
                 currentPhaseLabel: payload.currentPhaseLabel,
+                currentEventIndex: payload.currentEventIndex,
+                currentEventKind: payload.currentEventKind,
+                currentEventSummary: payload.currentEventSummary,
+                currentEventFacts: payload.currentEventFacts,
+                currentEventMemorySummary: payload.currentEventMemorySummary,
+                currentEventMemoryFacts: payload.currentEventMemoryFacts,
                 motive: payload.motive,
                 recentDialogue: payload.recentDialogue,
                 latestPlayerMessage: payload.latestPlayerMessage,
@@ -1639,6 +1909,7 @@ async function doRunNarrativePlan(input: OrchestratorInput): Promise<NarrativePl
   const allowStateDelta = input.allowStateDelta !== false;
   const turnState = readRuntimeTurnState(input.state, input.world);
   const currentPhase = readCurrentChapterPhase(input.chapter, input.state);
+  const currentEvent = readCurrentRuntimeEventContext(input.chapter, input.state);
   const roles = filterRolesForPhase(allRoles, currentPhase);
   const currentChapter = {
     id: Number(input.chapter?.id || 0),
@@ -1665,6 +1936,12 @@ async function doRunNarrativePlan(input: OrchestratorInput): Promise<NarrativePl
     turnState,
     currentPhaseLabel: normalizeScalarText(currentPhase?.label),
     currentPhaseGoal: normalizeScalarText(currentPhase?.targetSummary),
+    currentEventIndex: currentEvent.eventIndex,
+    currentEventKind: currentEvent.eventKind,
+    currentEventSummary: currentEvent.eventSummary,
+    currentEventFacts: currentEvent.eventFacts,
+    currentEventMemorySummary: currentEvent.eventMemorySummary,
+    currentEventMemoryFacts: currentEvent.eventMemoryFacts,
     phaseAllowedSpeakers: Array.isArray(currentPhase?.allowedSpeakers) ? currentPhase.allowedSpeakers : [],
     recentDialogue: compactMode ? recentDialogueText(input.recentMessages, 4, 500) : recentDialogueText(input.recentMessages),
     latestPlayerMessage: normalizeScalarText(input.playerMessage),
@@ -1682,8 +1959,6 @@ async function doRunNarrativePlan(input: OrchestratorInput): Promise<NarrativePl
     turnState,
     latestUserMessage: payload.latestPlayerMessage,
     userDisplayName: normalizeScalarText(input.state?.player?.name || input.world?.playerRole?.name || "用户"),
-    chapterUserTurns: payload.chapterUserTurns,
-    recentDialogue: payload.recentDialogue,
   });
   if (ruleDecision.resolved && ruleDecision.plan) {
     console.log("[rule:orchestrator] hit", {
@@ -1694,7 +1969,15 @@ async function doRunNarrativePlan(input: OrchestratorInput): Promise<NarrativePl
       nextRole: ruleDecision.plan.nextRole,
       nextRoleType: ruleDecision.plan.nextRoleType,
     });
-    return ruleDecision.plan;
+    return {
+      ...ruleDecision.plan,
+      eventAdjustMode: ruleDecision.plan.awaitUser ? "waiting_input" : "keep",
+      eventIndex: currentEvent.eventIndex,
+      eventKind: currentEvent.eventKind,
+      eventSummary: currentEvent.eventSummary,
+      eventFacts: currentEvent.eventFacts,
+      eventStatus: ruleDecision.plan.awaitUser ? "waiting_input" : currentEvent.eventStatus,
+    };
   }
 
   try {
@@ -1715,6 +1998,8 @@ async function doRunNarrativePlan(input: OrchestratorInput): Promise<NarrativePl
           stage: "storyOrchestratorModel",
           worldId: Number(input.world?.id || 0),
           chapterId: currentChapter.id || 0,
+          eventIndex: currentEvent.eventIndex,
+          eventKind: currentEvent.eventKind,
         },
         messages: [
           {
@@ -1798,6 +2083,48 @@ async function doRunNarrativePlan(input: OrchestratorInput): Promise<NarrativePl
       (objectLike && Object.keys(objectLike).length ? objectLike.triggerMemoryAgent : undefined)
       || getPlainField(fieldMap, "trigger_memory_agent", "triggermemoryagent"),
     ) || memoryHints.length > 0;
+    const rawEventAdjustMode = normalizeScalarText(
+      (objectLike && Object.keys(objectLike).length ? objectLike.eventAdjustMode : undefined)
+      || getPlainField(fieldMap, "event_adjust_mode", "eventadjustmode"),
+    ).toLowerCase();
+    const rawEventStatus = normalizeScalarText(
+      (objectLike && Object.keys(objectLike).length ? objectLike.eventStatus : undefined)
+      || getPlainField(fieldMap, "event_status", "eventstatus"),
+    );
+    const eventStatus: RuntimeCurrentEventState["status"] = rawEventStatus === "completed"
+      ? "completed"
+      : rawEventStatus === "waiting_input"
+        ? "waiting_input"
+        : rawEventStatus === "active"
+          ? "active"
+          : (awaitUser ? "waiting_input" : currentEvent.eventStatus);
+    const eventSummary = normalizeGeneratedLine(
+      (objectLike && Object.keys(objectLike).length ? objectLike.eventSummary : undefined)
+      || getPlainField(fieldMap, "event_summary", "eventsummary")
+      || currentEvent.eventSummary,
+      compactMode ? 80 : 120,
+    ) || currentEvent.eventSummary;
+    const eventFacts = uniqueTextList(
+      Array.isArray(objectLike?.eventFacts)
+        ? (objectLike as any).eventFacts
+        : parsePlainList(getPlainField(fieldMap, "event_facts", "eventfacts")),
+      4,
+    );
+    const eventAdjustMode: NarrativePlanResult["eventAdjustMode"] = rawEventAdjustMode === "completed"
+      ? "completed"
+      : rawEventAdjustMode === "waiting_input"
+        ? "waiting_input"
+        : rawEventAdjustMode === "update"
+          ? "update"
+          : rawEventAdjustMode === "keep"
+            ? "keep"
+            : eventStatus === "completed"
+              ? "completed"
+              : eventStatus === "waiting_input"
+                ? "waiting_input"
+                : eventSummary !== currentEvent.eventSummary
+                  ? "update"
+                  : "keep";
     const rawStateDelta = (objectLike && objectLike.stateDelta && typeof objectLike.stateDelta === "object" && !Array.isArray(objectLike.stateDelta))
       ? asRecord(objectLike.stateDelta)
       : parsePlainStateDelta(getPlainField(fieldMap, "state_delta", "statedelta"));
@@ -1834,6 +2161,12 @@ async function doRunNarrativePlan(input: OrchestratorInput): Promise<NarrativePl
           chapterOutcome: normalizedOutcome,
           nextChapterId: normalizedNextChapterId,
           source: "ai",
+          eventAdjustMode,
+          eventIndex: currentEvent.eventIndex,
+          eventKind: currentEvent.eventKind,
+          eventSummary,
+          eventFacts: eventFacts.length ? eventFacts : currentEvent.eventFacts,
+          eventStatus,
         };
       }
       return {
@@ -1849,6 +2182,12 @@ async function doRunNarrativePlan(input: OrchestratorInput): Promise<NarrativePl
         chapterOutcome: normalizedOutcome,
         nextChapterId: normalizedNextChapterId,
         source: "ai",
+        eventAdjustMode,
+        eventIndex: currentEvent.eventIndex,
+        eventKind: currentEvent.eventKind,
+        eventSummary,
+        eventFacts: eventFacts.length ? eventFacts : currentEvent.eventFacts,
+        eventStatus,
       };
     }
     if (canYieldDirectly) {
@@ -1865,6 +2204,12 @@ async function doRunNarrativePlan(input: OrchestratorInput): Promise<NarrativePl
         chapterOutcome: normalizedOutcome,
         nextChapterId: normalizedNextChapterId,
         source: "ai",
+        eventAdjustMode,
+        eventIndex: currentEvent.eventIndex,
+        eventKind: currentEvent.eventKind,
+        eventSummary,
+        eventFacts: eventFacts.length ? eventFacts : currentEvent.eventFacts,
+        eventStatus,
       };
     }
     throw createRuntimeModelError("orchestrator", "模型返回结构无效或缺少可执行的角色编排");
@@ -1881,6 +2226,7 @@ async function doRunNarrativePlan(input: OrchestratorInput): Promise<NarrativePl
       turnState,
       latestPlayerMessage: payload.latestPlayerMessage,
       currentPhase,
+      currentEvent,
       hasPlayerInput,
       world: input.world,
       fallbackReason: err,
@@ -1911,6 +2257,14 @@ export async function runNarrativeOrchestrator(input: OrchestratorInput): Promis
     motive: plan.motive,
     latestUserMessage: normalizeScalarText(input.playerMessage),
   });
+  const shouldForceMemoryRefresh = Boolean(
+    normalizeScalarText(input.playerMessage)
+    || speakerDecision.mode === "premium"
+    || plan.eventAdjustMode === "update"
+    || plan.eventAdjustMode === "completed"
+    || (Array.isArray(plan.eventFacts) && plan.eventFacts.length > 0)
+    || /关系|立场|表态|选择|冲突|威胁|羞辱|站队|记住|记下来|转折/.test(normalizeScalarText(plan.motive)),
+  );
   const content = await runStorySpeakerContent({
     userId: input.userId,
     world: input.world,
@@ -1923,9 +2277,11 @@ export async function runNarrativeOrchestrator(input: OrchestratorInput): Promis
   });
   return {
     ...plan,
-    triggerMemoryAgent: speakerDecision.memoryMode === "skip" && !(plan.memoryHints || []).length
-      ? false
-      : plan.triggerMemoryAgent,
+    triggerMemoryAgent: shouldForceMemoryRefresh
+      ? true
+      : speakerDecision.memoryMode === "skip" && !(plan.memoryHints || []).length
+        ? false
+        : plan.triggerMemoryAgent,
     content,
     speakerMode: speakerDecision.mode,
     speakerRouteReason: speakerDecision.reason,
@@ -1943,12 +2299,21 @@ export async function runStoryMemoryManager(input: {
   const prompts = await loadStoryPrompts();
   const promptAiConfig = await resolveTextStageModel(input.userId, "storyMemoryModel");
   const compactMode = shouldUseCompactMemoryPayload(promptAiConfig);
+  const currentEvent = readCurrentRuntimeEventContext(input.chapter, input.state);
+  const memoryInputs = splitMemoryRefreshInputs(input.recentMessages);
   const payload = {
     worldName: normalizeScalarText(input.world?.name),
     chapterTitle: normalizeScalarText(input.chapter?.title),
+    currentEventIndex: currentEvent.eventIndex,
+    currentEventKind: currentEvent.eventKind,
+    currentEventSummary: currentEvent.eventSummary,
+    currentEventFacts: uniqueTextList(currentEvent.eventFacts || [], compactMode ? 3 : 5).join("；"),
+    currentEventMemorySummary: shortText(currentEvent.eventMemorySummary || "", compactMode ? 100 : 180),
+    currentEventMemoryFacts: uniqueTextList(currentEvent.eventMemoryFacts || [], compactMode ? 3 : 5).join("；"),
+    eventDeltaText: buildMemoryEventDeltaText(memoryInputs.eventDeltaMessages, compactMode),
     recentDialogue: compactMode
-      ? recentDialogueText(input.recentMessages, 4, 420)
-      : recentDialogueText(input.recentMessages, 10, 1600),
+      ? recentDialogueText(memoryInputs.dialogueMessages, 4, 420)
+      : recentDialogueText(memoryInputs.dialogueMessages, 10, 1600),
     currentMemory: shortText(input.state.memorySummary ?? "", compactMode ? 160 : 320),
     currentFacts: compactMode
       ? uniqueTextList(Array.isArray(input.state.memoryFacts) ? input.state.memoryFacts : [], 5).join("；")
@@ -2050,6 +2415,14 @@ export function summarizeNarrativePlan(result: OrchestratorResult | null | undef
       : result.source === "rule"
         ? "rule"
         : "ai",
+    eventAdjustMode: result.eventAdjustMode || "keep",
+    eventIndex: Number.isFinite(Number(result.eventIndex)) ? Math.max(1, Number(result.eventIndex)) : 1,
+    eventKind: result.eventKind || "scene",
+    eventSummary: normalizeScalarText(result.eventSummary),
+    eventFacts: Array.isArray(result.eventFacts)
+      ? result.eventFacts.map((item) => normalizeScalarText(item)).filter(Boolean)
+      : [],
+    eventStatus: result.eventStatus || "idle",
     speakerMode: result.speakerMode,
     speakerRouteReason: normalizeScalarText(result.speakerRouteReason),
   };
@@ -2122,6 +2495,7 @@ export function triggerStoryMemoryRefreshInBackground(input: {
     eventType: normalizeScalarText(item.eventType),
     content: normalizeScalarText(item.content),
     createTime: Number(item.createTime || 0),
+    memoryDelta: readMemoryDeltaInput(item),
   }));
   const stateSnapshot = parseJsonSafe<JsonRecord>(JSON.stringify(input.state || {}), {});
   void (async () => {
@@ -2142,6 +2516,47 @@ export function applyOrchestratorResultToState(state: JsonRecord, result: Narrat
   applyStateDelta(state, sanitizeNarrativeStateDelta(result.stateDelta || {}, {
     allowStateDelta: true,
   }));
+  const eventFacts = Array.isArray(result.eventFacts)
+    ? result.eventFacts.map((item) => normalizeScalarText(item)).filter(Boolean)
+    : [];
+  const targetEventIndex = Number.isFinite(Number(result.eventIndex))
+    ? Math.max(1, Number(result.eventIndex))
+    : null;
+  if (targetEventIndex != null) {
+    const currentDigest = upsertRuntimeEventDigestState(state, { eventIndex: targetEventIndex });
+    upsertRuntimeEventDigestState(state, {
+      eventIndex: targetEventIndex,
+      eventSummary: result.eventAdjustMode === "keep"
+        ? currentDigest.eventSummary
+        : normalizeScalarText(result.eventSummary) || currentDigest.eventSummary,
+      eventFacts: eventFacts.length ? eventFacts : currentDigest.eventFacts,
+      summarySource: result.eventAdjustMode === "keep"
+        ? currentDigest.summarySource
+        : "ai",
+      updateTime: nowTs(),
+      eventStatus: result.eventAdjustMode === "completed"
+        ? "completed"
+        : result.eventAdjustMode === "waiting_input"
+          ? "waiting_input"
+          : result.eventStatus || currentDigest.eventStatus,
+    });
+  }
+  const currentProgress = readChapterProgressState(state);
+  const nextEventStatus = result.eventAdjustMode === "completed"
+    ? "completed"
+    : result.eventAdjustMode === "waiting_input"
+      ? "waiting_input"
+      : result.eventStatus || currentProgress.eventStatus;
+  const nextEventSummary = result.eventAdjustMode === "keep"
+    ? currentProgress.eventSummary
+    : normalizeScalarText(result.eventSummary) || currentProgress.eventSummary;
+  setChapterProgressState(state, {
+    eventIndex: Number.isFinite(Number(result.eventIndex)) ? Math.max(1, Number(result.eventIndex)) : currentProgress.eventIndex,
+    eventKind: result.eventKind || currentProgress.eventKind,
+    eventSummary: nextEventSummary,
+    eventStatus: nextEventStatus,
+  });
+  syncRuntimeCurrentEventFromChapterProgress(state);
 }
 
 // 自动连续推进剧情，直到轮到用户发言或章节结束。

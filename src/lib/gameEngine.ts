@@ -30,6 +30,10 @@ export interface ChapterDialogueLine {
 export interface ChapterProgressState {
   phaseId: string;
   phaseIndex: number;
+  eventIndex: number;
+  eventKind: "opening" | "scene" | "user" | "fixed";
+  eventSummary: string;
+  eventStatus: "idle" | "active" | "waiting_input" | "completed";
   userNodeId: string;
   userNodeIndex: number;
   userNodeStatus: "idle" | "waiting_input" | "completed" | "skipped";
@@ -37,6 +41,43 @@ export interface ChapterProgressState {
   pendingGoal: string;
   fixedOutcomeLocked: boolean;
   lastEvaluatedMessageId: number;
+}
+
+export interface RuntimeCurrentEventState {
+  index: number;
+  kind: "opening" | "scene" | "user" | "fixed";
+  summary: string;
+  facts: string[];
+  status: "idle" | "active" | "waiting_input" | "completed";
+}
+
+export interface RuntimeDynamicEventState {
+  eventIndex: number;
+  phaseId: string;
+  kind: "opening" | "scene" | "user" | "fixed";
+  summary: string;
+  runtimeFacts: string[];
+  summarySource: "phase" | "ai" | "memory" | "system";
+  memorySummary: string;
+  memoryFacts: string[];
+  updateTime: number;
+  status: "idle" | "active" | "waiting_input" | "completed";
+  allowedRoles: string[];
+  userNodeId: string;
+}
+
+export interface RuntimeEventDigestState {
+  eventIndex: number;
+  eventKind: RuntimeCurrentEventState["kind"];
+  eventSummary: string;
+  eventFacts: string[];
+  eventStatus: RuntimeCurrentEventState["status"];
+  summarySource: RuntimeDynamicEventState["summarySource"];
+  memorySummary: string;
+  memoryFacts: string[];
+  updateTime: number;
+  allowedRoles: string[];
+  userNodeId: string;
 }
 
 export interface ChapterRuntimeUserNode {
@@ -978,6 +1019,10 @@ function normalizeRuntimeNpcMap(rawNpcs: unknown, npcRolesRaw: unknown): JsonRec
 const DEFAULT_CHAPTER_PROGRESS_STATE: ChapterProgressState = {
   phaseId: "",
   phaseIndex: 0,
+  eventIndex: 1,
+  eventKind: "scene",
+  eventSummary: "",
+  eventStatus: "idle",
   userNodeId: "",
   userNodeIndex: -1,
   userNodeStatus: "idle",
@@ -985,6 +1030,29 @@ const DEFAULT_CHAPTER_PROGRESS_STATE: ChapterProgressState = {
   pendingGoal: "",
   fixedOutcomeLocked: false,
   lastEvaluatedMessageId: 0,
+};
+
+const DEFAULT_RUNTIME_CURRENT_EVENT_STATE: RuntimeCurrentEventState = {
+  index: 1,
+  kind: "scene",
+  summary: "",
+  facts: [],
+  status: "idle",
+};
+
+const DEFAULT_RUNTIME_DYNAMIC_EVENT_STATE: RuntimeDynamicEventState = {
+  eventIndex: 1,
+  phaseId: "",
+  kind: "scene",
+  summary: "",
+  runtimeFacts: [],
+  summarySource: "phase",
+  memorySummary: "",
+  memoryFacts: [],
+  updateTime: 0,
+  status: "idle",
+  allowedRoles: [],
+  userNodeId: "",
 };
 
 function normalizeChapterProgressStatus(input: unknown): ChapterProgressState["userNodeStatus"] {
@@ -995,6 +1063,246 @@ function normalizeChapterProgressStatus(input: unknown): ChapterProgressState["u
   return "idle";
 }
 
+function normalizeChapterEventStatus(input: unknown): ChapterProgressState["eventStatus"] {
+  const status = String(input || "").trim().toLowerCase();
+  if (status === "active") return "active";
+  if (status === "waiting_input") return "waiting_input";
+  if (status === "completed") return "completed";
+  return "idle";
+}
+
+function normalizeRuntimeEventKind(input: unknown): RuntimeCurrentEventState["kind"] {
+  const kind = String(input || "").trim();
+  if (kind === "opening" || kind === "scene" || kind === "user" || kind === "fixed") {
+    return kind;
+  }
+  return DEFAULT_RUNTIME_CURRENT_EVENT_STATE.kind;
+}
+
+export function normalizeRuntimeCurrentEventState(
+  raw: unknown,
+  fallback?: Partial<RuntimeCurrentEventState> | null,
+): RuntimeCurrentEventState {
+  const base = parseJsonSafe<JsonRecord>(raw, {});
+  const merged = {
+    ...(fallback || {}),
+    ...base,
+  } as JsonRecord;
+  return {
+    index: Number.isFinite(Number(merged.index))
+      ? Math.max(1, Number(merged.index))
+      : DEFAULT_RUNTIME_CURRENT_EVENT_STATE.index,
+    kind: normalizeRuntimeEventKind(merged.kind),
+    summary: String(merged.summary || "").trim(),
+    facts: Array.isArray(merged.facts)
+      ? merged.facts.map((item) => String(item || "").trim()).filter(Boolean)
+      : [],
+    status: normalizeChapterEventStatus(merged.status),
+  };
+}
+
+export function normalizeRuntimeDynamicEventState(raw: unknown): RuntimeDynamicEventState {
+  const base = parseJsonSafe<JsonRecord>(raw, {});
+  return {
+    eventIndex: Number.isFinite(Number(base.eventIndex))
+      ? Math.max(1, Number(base.eventIndex))
+      : DEFAULT_RUNTIME_DYNAMIC_EVENT_STATE.eventIndex,
+    phaseId: String(base.phaseId || "").trim(),
+    kind: normalizeRuntimeEventKind(base.kind),
+    summary: String(base.summary || "").trim(),
+    runtimeFacts: Array.isArray(base.runtimeFacts)
+      ? base.runtimeFacts.map((item) => String(item || "").trim()).filter(Boolean)
+      : [],
+    summarySource: base.summarySource === "ai"
+      ? "ai"
+      : base.summarySource === "memory"
+        ? "memory"
+        : base.summarySource === "system"
+          ? "system"
+          : "phase",
+    memorySummary: String(base.memorySummary || "").trim(),
+    memoryFacts: Array.isArray(base.memoryFacts)
+      ? base.memoryFacts.map((item) => String(item || "").trim()).filter(Boolean)
+      : [],
+    updateTime: Number.isFinite(Number(base.updateTime))
+      ? Math.max(0, Number(base.updateTime))
+      : 0,
+    status: normalizeChapterEventStatus(base.status),
+    allowedRoles: Array.isArray(base.allowedRoles)
+      ? base.allowedRoles.map((item) => String(item || "").trim()).filter(Boolean)
+      : [],
+    userNodeId: String(base.userNodeId || "").trim(),
+  };
+}
+
+export function normalizeRuntimeDynamicEventList(raw: unknown): RuntimeDynamicEventState[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((item) => normalizeRuntimeDynamicEventState(item))
+    .filter((item) => item.phaseId || item.summary);
+}
+
+export function readRuntimeDynamicEventByIndex(state: unknown, eventIndex: number): RuntimeDynamicEventState | null {
+  if (!isRecord(state)) return null;
+  const normalizedEventIndex = Number.isFinite(Number(eventIndex)) ? Math.max(1, Number(eventIndex)) : 0;
+  if (!normalizedEventIndex) return null;
+  const dynamicEvents = normalizeRuntimeDynamicEventList(state.dynamicEvents);
+  return dynamicEvents.find((item) => item.eventIndex === normalizedEventIndex) || null;
+}
+
+export function readRuntimeCurrentDynamicEventState(state: unknown): RuntimeDynamicEventState | null {
+  if (!isRecord(state)) return null;
+  const progress = readChapterProgressState(state);
+  return readRuntimeDynamicEventByIndex(state, progress.eventIndex);
+}
+
+function buildRuntimeEventDigestState(input: {
+  eventIndex: number;
+  eventKind: RuntimeCurrentEventState["kind"];
+  eventSummary: string;
+  eventFacts: string[];
+  eventStatus: RuntimeCurrentEventState["status"];
+  summarySource?: RuntimeDynamicEventState["summarySource"] | null;
+  memorySummary?: string | null;
+  memoryFacts?: string[] | null;
+  updateTime?: number | null;
+  allowedRoles?: string[] | null;
+  userNodeId?: string | null;
+}): RuntimeEventDigestState {
+  return {
+    eventIndex: Number.isFinite(Number(input.eventIndex)) ? Math.max(1, Number(input.eventIndex)) : 1,
+    eventKind: input.eventKind,
+    eventSummary: String(input.eventSummary || "").trim(),
+    eventFacts: Array.isArray(input.eventFacts)
+      ? input.eventFacts.map((item) => String(item || "").trim()).filter(Boolean)
+      : [],
+    eventStatus: input.eventStatus,
+    summarySource: input.summarySource || "system",
+    memorySummary: String(input.memorySummary || "").trim(),
+    memoryFacts: Array.isArray(input.memoryFacts)
+      ? input.memoryFacts.map((item) => String(item || "").trim()).filter(Boolean)
+      : [],
+    updateTime: Number.isFinite(Number(input.updateTime)) ? Math.max(0, Number(input.updateTime)) : 0,
+    allowedRoles: Array.isArray(input.allowedRoles)
+      ? input.allowedRoles.map((item) => String(item || "").trim()).filter(Boolean)
+      : [],
+    userNodeId: String(input.userNodeId || "").trim(),
+  };
+}
+
+export function readRuntimeEventDigestByIndexState(state: unknown, eventIndex: number): RuntimeEventDigestState | null {
+  if (!isRecord(state)) return null;
+  const normalizedEventIndex = Number.isFinite(Number(eventIndex)) ? Math.max(1, Number(eventIndex)) : 0;
+  if (!normalizedEventIndex) return null;
+  const dynamicEvent = readRuntimeDynamicEventByIndex(state, normalizedEventIndex);
+  if (dynamicEvent) {
+    return buildRuntimeEventDigestState({
+      eventIndex: dynamicEvent.eventIndex,
+      eventKind: dynamicEvent.kind,
+      eventSummary: dynamicEvent.summary,
+      eventFacts: dynamicEvent.runtimeFacts,
+      eventStatus: dynamicEvent.status,
+      summarySource: dynamicEvent.summarySource,
+      memorySummary: dynamicEvent.memorySummary,
+      memoryFacts: dynamicEvent.memoryFacts,
+      updateTime: dynamicEvent.updateTime,
+      allowedRoles: dynamicEvent.allowedRoles,
+      userNodeId: dynamicEvent.userNodeId,
+    });
+  }
+  const currentEvent = readRuntimeCurrentEventState(state);
+  if (currentEvent.index !== normalizedEventIndex) {
+    return null;
+  }
+  return buildRuntimeEventDigestState({
+    eventIndex: currentEvent.index,
+    eventKind: currentEvent.kind,
+    eventSummary: currentEvent.summary,
+    eventFacts: currentEvent.facts,
+    eventStatus: currentEvent.status,
+  });
+}
+
+export function readRuntimeCurrentEventDigestState(state: unknown): RuntimeEventDigestState {
+  const currentEvent = readRuntimeCurrentEventState(state);
+  return readRuntimeEventDigestByIndexState(state, currentEvent.index)
+    || buildRuntimeEventDigestState({
+      eventIndex: currentEvent.index,
+      eventKind: currentEvent.kind,
+      eventSummary: currentEvent.summary,
+      eventFacts: currentEvent.facts,
+      eventStatus: currentEvent.status,
+    });
+}
+
+export function readRuntimeEventDigestWindowState(state: unknown, windowSize = 3): RuntimeEventDigestState[] {
+  if (!isRecord(state)) return [];
+  const currentEvent = readRuntimeCurrentEventState(state);
+  const dynamicEvents = normalizeRuntimeDynamicEventList(state.dynamicEvents);
+  const normalizedWindowSize = Number.isFinite(Number(windowSize)) ? Math.max(1, Number(windowSize)) : 3;
+  const items = dynamicEvents
+    .filter((item) => item.eventIndex >= currentEvent.index)
+    .slice(0, normalizedWindowSize);
+  if (!items.length) {
+    return [readRuntimeCurrentEventDigestState(state)];
+  }
+  return items
+    .map((item) => readRuntimeEventDigestByIndexState(state, item.eventIndex))
+    .filter((item): item is RuntimeEventDigestState => Boolean(item));
+}
+
+export function readRuntimeEventDigestWindowTextState(state: unknown, options?: {
+  windowSize?: number | null;
+  includeMemory?: boolean | null;
+  summaryLimit?: number | null;
+  factLimit?: number | null;
+  memoryFactLimit?: number | null;
+}): string {
+  const windowSize = Number.isFinite(Number(options?.windowSize)) ? Math.max(1, Number(options?.windowSize)) : 3;
+  const includeMemory = options?.includeMemory !== false;
+  const summaryLimit = Number.isFinite(Number(options?.summaryLimit)) ? Math.max(12, Number(options?.summaryLimit)) : 60;
+  const factLimit = Number.isFinite(Number(options?.factLimit)) ? Math.max(1, Number(options?.factLimit)) : 2;
+  const memoryFactLimit = Number.isFinite(Number(options?.memoryFactLimit)) ? Math.max(1, Number(options?.memoryFactLimit)) : 2;
+  const items = readRuntimeEventDigestWindowState(state, windowSize);
+  if (!items.length) return "";
+  const shortText = (input: unknown, limit: number): string => {
+    const text = String(input || "").trim();
+    if (!text) return "";
+    return text.length <= limit ? text : `${text.slice(0, Math.max(0, limit - 1))}…`;
+  };
+  return items
+    .map((item) => {
+      const status = item.eventStatus === "waiting_input"
+        ? "等待输入"
+        : item.eventStatus === "completed"
+          ? "已完成"
+          : item.eventStatus === "active"
+            ? "进行中"
+            : "未开始";
+      const parts = [`${item.eventIndex}. [${item.eventKind}/${status}] ${shortText(item.eventSummary, summaryLimit)}`];
+      const factsText = Array.isArray(item.eventFacts)
+        ? item.eventFacts.map((fact) => String(fact || "").trim()).filter(Boolean).slice(0, factLimit).join("；")
+        : "";
+      if (factsText) {
+        parts.push(`事实:${factsText}`);
+      }
+      if (includeMemory) {
+        const memorySummary = String(item.memorySummary || "").trim();
+        const memoryFactsText = Array.isArray(item.memoryFacts)
+          ? item.memoryFacts.map((fact) => String(fact || "").trim()).filter(Boolean).slice(0, memoryFactLimit).join("；")
+          : "";
+        if (memorySummary) {
+          parts.push(`记忆:${shortText(memorySummary, 36)}`);
+        }
+        if (memoryFactsText) {
+          parts.push(`记忆事实:${memoryFactsText}`);
+        }
+      }
+      return parts.join(" | ");
+    })
+    .join("\n");
+}
+
 export function normalizeChapterProgressState(raw: unknown): ChapterProgressState {
   const base = parseJsonSafe<JsonRecord>(raw, {});
   const completedEvents = Array.isArray(base.completedEvents)
@@ -1003,6 +1311,12 @@ export function normalizeChapterProgressState(raw: unknown): ChapterProgressStat
   return {
     phaseId: String(base.phaseId || "").trim(),
     phaseIndex: Number.isFinite(Number(base.phaseIndex)) ? Math.max(0, Number(base.phaseIndex)) : DEFAULT_CHAPTER_PROGRESS_STATE.phaseIndex,
+    eventIndex: Number.isFinite(Number(base.eventIndex)) ? Math.max(1, Number(base.eventIndex)) : DEFAULT_CHAPTER_PROGRESS_STATE.eventIndex,
+    eventKind: ["opening", "scene", "user", "fixed"].includes(String(base.eventKind || "").trim())
+      ? String(base.eventKind || "").trim() as ChapterProgressState["eventKind"]
+      : DEFAULT_CHAPTER_PROGRESS_STATE.eventKind,
+    eventSummary: String(base.eventSummary || "").trim(),
+    eventStatus: normalizeChapterEventStatus(base.eventStatus),
     userNodeId: String(base.userNodeId || "").trim(),
     userNodeIndex: Number.isFinite(Number(base.userNodeIndex)) ? Number(base.userNodeIndex) : DEFAULT_CHAPTER_PROGRESS_STATE.userNodeIndex,
     userNodeStatus: normalizeChapterProgressStatus(base.userNodeStatus),
@@ -1020,6 +1334,126 @@ export function readChapterProgressState(state: unknown): ChapterProgressState {
   return normalizeChapterProgressState(state.chapterProgress);
 }
 
+export function readRuntimeCurrentEventState(state: unknown): RuntimeCurrentEventState {
+  if (!isRecord(state)) {
+    return normalizeRuntimeCurrentEventState(undefined);
+  }
+  const progress = readChapterProgressState(state);
+  const dynamicEvents = normalizeRuntimeDynamicEventList(state.dynamicEvents);
+  const matchedDynamicEvent = dynamicEvents.find((item) => item.eventIndex === progress.eventIndex) || null;
+  return normalizeRuntimeCurrentEventState(state.currentEvent, {
+    index: progress.eventIndex,
+    kind: progress.eventKind,
+    summary: matchedDynamicEvent?.summary || progress.eventSummary,
+    facts: matchedDynamicEvent?.runtimeFacts || [],
+    status: progress.eventStatus,
+  });
+}
+
+export function syncRuntimeCurrentEventFromChapterProgress(state: JsonRecord): RuntimeCurrentEventState {
+  const progress = readChapterProgressState(state);
+  const dynamicEvents = normalizeRuntimeDynamicEventList(state.dynamicEvents);
+  const matchedDynamicEvent = dynamicEvents.find((item) => item.eventIndex === progress.eventIndex) || null;
+  const next = normalizeRuntimeCurrentEventState(state.currentEvent, {
+    index: progress.eventIndex,
+    kind: progress.eventKind,
+    summary: matchedDynamicEvent?.summary || progress.eventSummary,
+    facts: matchedDynamicEvent?.runtimeFacts || [],
+    status: progress.eventStatus,
+  });
+  state.currentEvent = next;
+  return next;
+}
+
+export function setRuntimeDynamicEventList(state: JsonRecord, list: RuntimeDynamicEventState[]): RuntimeDynamicEventState[] {
+  const next = normalizeRuntimeDynamicEventList(list);
+  state.dynamicEvents = next;
+  return next;
+}
+
+export function upsertRuntimeDynamicEventState(
+  state: JsonRecord,
+  patch: Partial<RuntimeDynamicEventState> & { eventIndex: number },
+): RuntimeDynamicEventState {
+  const progress = readChapterProgressState(state);
+  const eventIndex = Number.isFinite(Number(patch.eventIndex)) ? Math.max(1, Number(patch.eventIndex)) : progress.eventIndex;
+  const currentEvent = readRuntimeCurrentEventState(state);
+  const dynamicEvents = normalizeRuntimeDynamicEventList(state.dynamicEvents);
+  const matchedIndex = dynamicEvents.findIndex((item) => item.eventIndex === eventIndex);
+  const base = matchedIndex >= 0
+    ? dynamicEvents[matchedIndex]
+    : normalizeRuntimeDynamicEventState({
+      eventIndex,
+      phaseId: eventIndex === progress.eventIndex ? progress.phaseId : "",
+      kind: eventIndex === progress.eventIndex ? progress.eventKind : currentEvent.kind,
+      summary: eventIndex === progress.eventIndex ? progress.eventSummary : currentEvent.summary,
+      runtimeFacts: eventIndex === progress.eventIndex ? currentEvent.facts : [],
+      status: eventIndex === progress.eventIndex ? progress.eventStatus : "idle",
+      allowedRoles: [],
+      userNodeId: eventIndex === progress.eventIndex ? progress.userNodeId : "",
+      summarySource: "system",
+      memorySummary: "",
+      memoryFacts: [],
+      updateTime: 0,
+    });
+  const next = normalizeRuntimeDynamicEventState({
+    ...base,
+    ...patch,
+    eventIndex,
+  });
+  if (matchedIndex >= 0) {
+    dynamicEvents[matchedIndex] = next;
+  } else {
+    dynamicEvents.push(next);
+    dynamicEvents.sort((a, b) => a.eventIndex - b.eventIndex);
+  }
+  setRuntimeDynamicEventList(state, dynamicEvents);
+  if (eventIndex === progress.eventIndex) {
+    syncRuntimeCurrentEventFromChapterProgress(state);
+  }
+  return next;
+}
+
+// 用 digest 级字段统一回写动态事件，避免各处重复手拼 summary/runtimeFacts/memoryFacts。
+export function upsertRuntimeEventDigestState(
+  state: JsonRecord,
+  patch: Partial<RuntimeEventDigestState> & { eventIndex?: number | null },
+): RuntimeEventDigestState {
+  const currentDigest = readRuntimeCurrentEventDigestState(state);
+  const targetEventIndex = Number.isFinite(Number(patch.eventIndex))
+    ? Math.max(1, Number(patch.eventIndex))
+    : currentDigest.eventIndex;
+  const baseDigest = readRuntimeEventDigestByIndexState(state, targetEventIndex) || currentDigest;
+  upsertRuntimeDynamicEventState(state, {
+    eventIndex: targetEventIndex,
+    kind: patch.eventKind || baseDigest.eventKind,
+    summary: patch.eventSummary == null
+      ? baseDigest.eventSummary
+      : String(patch.eventSummary || "").trim(),
+    runtimeFacts: Array.isArray(patch.eventFacts)
+      ? patch.eventFacts.map((item) => String(item || "").trim()).filter(Boolean)
+      : baseDigest.eventFacts,
+    summarySource: patch.summarySource || baseDigest.summarySource,
+    memorySummary: patch.memorySummary == null
+      ? baseDigest.memorySummary
+      : String(patch.memorySummary || "").trim(),
+    memoryFacts: Array.isArray(patch.memoryFacts)
+      ? patch.memoryFacts.map((item) => String(item || "").trim()).filter(Boolean)
+      : baseDigest.memoryFacts,
+    updateTime: Number.isFinite(Number(patch.updateTime))
+      ? Math.max(0, Number(patch.updateTime))
+      : baseDigest.updateTime,
+    status: patch.eventStatus || baseDigest.eventStatus,
+    allowedRoles: Array.isArray(patch.allowedRoles)
+      ? patch.allowedRoles.map((item) => String(item || "").trim()).filter(Boolean)
+      : baseDigest.allowedRoles,
+    userNodeId: patch.userNodeId == null
+      ? baseDigest.userNodeId
+      : String(patch.userNodeId || "").trim(),
+  });
+  return readRuntimeEventDigestByIndexState(state, targetEventIndex) || baseDigest;
+}
+
 export function setChapterProgressState(state: JsonRecord, patch: Partial<ChapterProgressState>): ChapterProgressState {
   const current = readChapterProgressState(state);
   const next = normalizeChapterProgressState({
@@ -1027,6 +1461,12 @@ export function setChapterProgressState(state: JsonRecord, patch: Partial<Chapte
     ...patch,
   });
   state.chapterProgress = next;
+  state.currentEvent = normalizeRuntimeCurrentEventState(state.currentEvent, {
+    index: next.eventIndex,
+    kind: next.eventKind,
+    summary: next.eventSummary,
+    status: next.eventStatus,
+  });
   return next;
 }
 
@@ -1050,6 +1490,13 @@ export function normalizeSessionState(
   const narrator = isRecord(base.narrator) ? base.narrator : {};
   const rawTurnState = isRecord(base.turnState) ? base.turnState : {};
   const chapterProgress = normalizeChapterProgressState(base.chapterProgress);
+  const currentEvent = normalizeRuntimeCurrentEventState(base.currentEvent, {
+    index: chapterProgress.eventIndex,
+    kind: chapterProgress.eventKind,
+    summary: chapterProgress.eventSummary,
+    status: chapterProgress.eventStatus,
+  });
+  const dynamicEvents = normalizeRuntimeDynamicEventList(base.dynamicEvents);
   const world = parseJsonSafe<JsonRecord>(worldRaw, {});
   const settings = normalizeWorldSettings(world.settings, {
     coverPath: world.coverPath,
@@ -1083,6 +1530,8 @@ export function normalizeSessionState(
     unlockedRoles: Array.isArray(base.unlockedRoles) ? base.unlockedRoles : [],
     recentEvents: Array.isArray(base.recentEvents) ? base.recentEvents : [],
     chapterProgress,
+    currentEvent,
+    dynamicEvents,
     turnState: {
       canPlayerSpeak: typeof rawTurnState.canPlayerSpeak === "boolean" ? rawTurnState.canPlayerSpeak : true,
       expectedRoleType,
