@@ -80,6 +80,28 @@ export interface RuntimeEventDigestState {
   userNodeId: string;
 }
 
+export interface RuntimeEventViewState {
+  currentEventDigest: RuntimeEventDigestState;
+  eventDigestWindow: RuntimeEventDigestState[];
+  eventDigestWindowText: string;
+}
+
+export interface RuntimeEventViewOptions {
+  windowSize?: number | null;
+  includeMemory?: boolean | null;
+  summaryLimit?: number | null;
+  factLimit?: number | null;
+  memoryFactLimit?: number | null;
+}
+
+export const DEFAULT_RUNTIME_EVENT_VIEW_OPTIONS: Required<RuntimeEventViewOptions> = {
+  windowSize: 3,
+  includeMemory: true,
+  summaryLimit: 60,
+  factLimit: 2,
+  memoryFactLimit: 2,
+};
+
 export interface ChapterRuntimeUserNode {
   id: string;
   label: string;
@@ -1251,18 +1273,22 @@ export function readRuntimeEventDigestWindowState(state: unknown, windowSize = 3
     .filter((item): item is RuntimeEventDigestState => Boolean(item));
 }
 
-export function readRuntimeEventDigestWindowTextState(state: unknown, options?: {
-  windowSize?: number | null;
-  includeMemory?: boolean | null;
-  summaryLimit?: number | null;
-  factLimit?: number | null;
-  memoryFactLimit?: number | null;
-}): string {
-  const windowSize = Number.isFinite(Number(options?.windowSize)) ? Math.max(1, Number(options?.windowSize)) : 3;
-  const includeMemory = options?.includeMemory !== false;
-  const summaryLimit = Number.isFinite(Number(options?.summaryLimit)) ? Math.max(12, Number(options?.summaryLimit)) : 60;
-  const factLimit = Number.isFinite(Number(options?.factLimit)) ? Math.max(1, Number(options?.factLimit)) : 2;
-  const memoryFactLimit = Number.isFinite(Number(options?.memoryFactLimit)) ? Math.max(1, Number(options?.memoryFactLimit)) : 2;
+export function readRuntimeEventDigestWindowTextState(state: unknown, options?: RuntimeEventViewOptions): string {
+  const windowSize = Number.isFinite(Number(options?.windowSize))
+    ? Math.max(1, Number(options?.windowSize))
+    : DEFAULT_RUNTIME_EVENT_VIEW_OPTIONS.windowSize;
+  const includeMemory = options?.includeMemory == null
+    ? DEFAULT_RUNTIME_EVENT_VIEW_OPTIONS.includeMemory
+    : options.includeMemory !== false;
+  const summaryLimit = Number.isFinite(Number(options?.summaryLimit))
+    ? Math.max(12, Number(options?.summaryLimit))
+    : DEFAULT_RUNTIME_EVENT_VIEW_OPTIONS.summaryLimit;
+  const factLimit = Number.isFinite(Number(options?.factLimit))
+    ? Math.max(1, Number(options?.factLimit))
+    : DEFAULT_RUNTIME_EVENT_VIEW_OPTIONS.factLimit;
+  const memoryFactLimit = Number.isFinite(Number(options?.memoryFactLimit))
+    ? Math.max(1, Number(options?.memoryFactLimit))
+    : DEFAULT_RUNTIME_EVENT_VIEW_OPTIONS.memoryFactLimit;
   const items = readRuntimeEventDigestWindowState(state, windowSize);
   if (!items.length) return "";
   const shortText = (input: unknown, limit: number): string => {
@@ -1301,6 +1327,27 @@ export function readRuntimeEventDigestWindowTextState(state: unknown, options?: 
       return parts.join(" | ");
     })
     .join("\n");
+}
+
+export function readRuntimeEventViewState(state: unknown, options?: RuntimeEventViewOptions): RuntimeEventViewState {
+  return {
+    currentEventDigest: readRuntimeCurrentEventDigestState(state),
+    eventDigestWindow: readRuntimeEventDigestWindowState(
+      state,
+      Number.isFinite(Number(options?.windowSize))
+        ? Math.max(1, Number(options?.windowSize))
+        : DEFAULT_RUNTIME_EVENT_VIEW_OPTIONS.windowSize,
+    ),
+    eventDigestWindowText: readRuntimeEventDigestWindowTextState(state, options),
+  };
+}
+
+export function readDefaultRuntimeEventViewState(state: unknown): RuntimeEventViewState {
+  return readRuntimeEventViewState(state, DEFAULT_RUNTIME_EVENT_VIEW_OPTIONS);
+}
+
+export function readDefaultRuntimeEventDigestWindowTextState(state: unknown): string {
+  return readRuntimeEventDigestWindowTextState(state, DEFAULT_RUNTIME_EVENT_VIEW_OPTIONS);
 }
 
 export function normalizeChapterProgressState(raw: unknown): ChapterProgressState {

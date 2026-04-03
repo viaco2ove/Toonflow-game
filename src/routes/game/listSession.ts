@@ -2,7 +2,7 @@ import express from "express";
 import { z } from "zod";
 import { validateFields } from "@/middleware/middleware";
 import { error, success } from "@/lib/responseFormat";
-import { getGameDb, parseJsonSafe, readRuntimeCurrentEventDigestState, readRuntimeEventDigestWindowState, readRuntimeEventDigestWindowTextState } from "@/lib/gameEngine";
+import { getGameDb, parseJsonSafe, readDefaultRuntimeEventViewState } from "@/lib/gameEngine";
 import u from "@/utils";
 
 const router = express.Router();
@@ -120,6 +120,7 @@ export default router.post(
         const latest = latestMessageMap.get(sessionId);
         const worldRow = worldMap.get(worldIdValue);
         const worldSettings = parseJsonSafe<any>(worldRow?.settings, {});
+        const eventView = readDefaultRuntimeEventViewState(runtimeState);
         return {
           sessionId,
           worldId: worldIdValue,
@@ -135,15 +136,9 @@ export default router.post(
           contentVersion: String(item.contentVersion || ""),
           updateTime: Number(item.updateTime || item.createTime || 0),
           state: runtimeState,
-          currentEventDigest: readRuntimeCurrentEventDigestState(runtimeState),
-          eventDigestWindow: readRuntimeEventDigestWindowState(runtimeState, 3),
-          eventDigestWindowText: readRuntimeEventDigestWindowTextState(runtimeState, {
-            windowSize: 3,
-            includeMemory: true,
-            summaryLimit: 60,
-            factLimit: 2,
-            memoryFactLimit: 2,
-          }),
+          currentEventDigest: eventView.currentEventDigest,
+          eventDigestWindow: eventView.eventDigestWindow,
+          eventDigestWindowText: eventView.eventDigestWindowText,
           latestMessage: latest
             ? {
                 id: Number(latest.id || 0),

@@ -6,9 +6,9 @@ import {
   normalizeSessionState,
   nowTs,
   parseJsonSafe,
+  readDefaultRuntimeEventViewState,
   readRuntimeCurrentEventDigestState,
-  readRuntimeEventDigestWindowState,
-  readRuntimeEventDigestWindowTextState,
+  RuntimeEventViewState,
   toJsonText,
   upsertRuntimeEventDigestState,
 } from "@/lib/gameEngine";
@@ -70,9 +70,9 @@ export interface AddSessionMessageResult {
   chapterId: number | null;
   chapter: Record<string, any> | null;
   state: Record<string, any>;
-  currentEventDigest: Record<string, any>;
-  eventDigestWindow: Record<string, any>[];
-  eventDigestWindowText: string;
+  currentEventDigest: RuntimeEventViewState["currentEventDigest"];
+  eventDigestWindow: RuntimeEventViewState["eventDigestWindow"];
+  eventDigestWindowText: RuntimeEventViewState["eventDigestWindowText"];
   message: Record<string, any> | null;
   chapterSwitchMessage: Record<string, any> | null;
   narrativeMessage: Record<string, any> | null;
@@ -114,9 +114,9 @@ export interface SessionOrchestrationResult {
   chapterId: number | null;
   expectedRole: string;
   expectedRoleType: string;
-  currentEventDigest: Record<string, any>;
-  eventDigestWindow: Record<string, any>[];
-  eventDigestWindowText: string;
+  currentEventDigest: RuntimeEventViewState["currentEventDigest"];
+  eventDigestWindow: RuntimeEventViewState["eventDigestWindow"];
+  eventDigestWindowText: RuntimeEventViewState["eventDigestWindowText"];
   plan: SessionNarrativePlanResult | null;
 }
 
@@ -407,21 +407,19 @@ function buildSessionPlanResult(plan: ({
 }
 
 function buildCurrentEventDigest(state: Record<string, any>): Record<string, any> {
-  return readRuntimeCurrentEventDigestState(state);
+  return buildEventView(state).currentEventDigest;
+}
+
+function buildEventView(state: Record<string, any>) {
+  return readDefaultRuntimeEventViewState(state);
 }
 
 function buildEventDigestWindow(state: Record<string, any>): Record<string, any>[] {
-  return readRuntimeEventDigestWindowState(state, 3);
+  return buildEventView(state).eventDigestWindow;
 }
 
 function buildEventDigestWindowText(state: Record<string, any>): string {
-  return readRuntimeEventDigestWindowTextState(state, {
-    windowSize: 3,
-    includeMemory: true,
-    summaryLimit: 60,
-    factLimit: 2,
-    memoryFactLimit: 2,
-  });
+  return buildEventView(state).eventDigestWindowText;
 }
 
 function getPendingSessionChapterId(state: Record<string, any>): number | null {
@@ -895,15 +893,16 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
     const activeChapter = nextChapterId
       ? normalizeChapterOutput(await db("t_storyChapter").where({ id: nextChapterId }).first())
       : null;
+    const eventView = buildEventView(state);
     return {
       sessionId,
       status: sessionStatus,
       chapterId: nextChapterId,
       chapter: activeChapter,
       state,
-      currentEventDigest: buildCurrentEventDigest(state),
-      eventDigestWindow: buildEventDigestWindow(state),
-      eventDigestWindowText: buildEventDigestWindowText(state),
+      currentEventDigest: eventView.currentEventDigest,
+      eventDigestWindow: eventView.eventDigestWindow,
+      eventDigestWindowText: eventView.eventDigestWindowText,
       message: normalizeMessageOutput(messageRow),
       chapterSwitchMessage: null,
       narrativeMessage: null,
@@ -1078,15 +1077,16 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
   const activeChapter = nextChapterId
     ? normalizeChapterOutput(await db("t_storyChapter").where({ id: nextChapterId }).first())
     : null;
+  const eventView = buildEventView(state);
   return {
     sessionId,
     status: sessionStatus,
     chapterId: nextChapterId,
     chapter: activeChapter,
     state,
-    currentEventDigest: buildCurrentEventDigest(state),
-    eventDigestWindow: buildEventDigestWindow(state),
-    eventDigestWindowText: buildEventDigestWindowText(state),
+    currentEventDigest: eventView.currentEventDigest,
+    eventDigestWindow: eventView.eventDigestWindow,
+    eventDigestWindowText: eventView.eventDigestWindowText,
     message: normalizeMessageOutput(messageRow),
     chapterSwitchMessage: chapterSwitchMessageRow,
     narrativeMessage: narrativeMessageRow,
@@ -1242,15 +1242,16 @@ export async function continueSessionNarrative(sessionIdInput: string): Promise<
     world,
   });
 
+  const eventView = buildEventView(state);
   return {
     sessionId,
     status: sessionStatus,
     chapterId: nextChapterId,
     chapter: nextChapterId ? normalizeChapterOutput(await db("t_storyChapter").where({ id: nextChapterId }).first()) : null,
     state,
-    currentEventDigest: buildCurrentEventDigest(state),
-    eventDigestWindow: buildEventDigestWindow(state),
-    eventDigestWindowText: buildEventDigestWindowText(state),
+    currentEventDigest: eventView.currentEventDigest,
+    eventDigestWindow: eventView.eventDigestWindow,
+    eventDigestWindowText: eventView.eventDigestWindowText,
     message: null,
     chapterSwitchMessage: null,
     narrativeMessage: generatedMessages[generatedMessages.length - 1] || null,
@@ -1309,13 +1310,14 @@ export async function orchestrateSessionTurn(sessionIdInput: string): Promise<Se
       status: result.status,
       updateTime: nowTs(),
     });
+    const eventView = buildEventView(state);
     return {
       ...result,
       expectedRole: expectedSpeaker.expectedRole,
       expectedRoleType: expectedSpeaker.expectedRoleType,
-      currentEventDigest: buildCurrentEventDigest(state),
-      eventDigestWindow: buildEventDigestWindow(state),
-      eventDigestWindowText: buildEventDigestWindowText(state),
+      currentEventDigest: eventView.currentEventDigest,
+      eventDigestWindow: eventView.eventDigestWindow,
+      eventDigestWindowText: eventView.eventDigestWindowText,
     };
   };
 
@@ -1383,15 +1385,16 @@ export async function orchestrateSessionTurn(sessionIdInput: string): Promise<Se
     const nextChapter = normalizeChapterOutput(await db("t_storyChapter").where({ id: pendingChapterId }).first());
     if (!nextChapter) {
       setPendingSessionChapterId(state, null);
+      const eventView = buildEventView(state);
       return finalizeOrchestrationResult({
         sessionId,
         status: sessionStatus,
         chapterId: currentChapterId,
         expectedRole: "",
         expectedRoleType: "",
-        currentEventDigest: buildCurrentEventDigest(state),
-        eventDigestWindow: buildEventDigestWindow(state),
-        eventDigestWindowText: buildEventDigestWindowText(state),
+        currentEventDigest: eventView.currentEventDigest,
+        eventDigestWindow: eventView.eventDigestWindow,
+        eventDigestWindowText: eventView.eventDigestWindowText,
         plan: null,
       });
     }
@@ -1417,17 +1420,18 @@ export async function orchestrateSessionTurn(sessionIdInput: string): Promise<Se
     return buildChapterStartPlan(chapter);
   }
   if (canPlayerSpeakNow(state, world)) {
-      return finalizeOrchestrationResult({
-        sessionId,
-        status: sessionStatus,
-        chapterId: Number(chapter.id || 0) || null,
-        expectedRole: "",
-        expectedRoleType: "",
-        currentEventDigest: buildCurrentEventDigest(state),
-        eventDigestWindow: buildEventDigestWindow(state),
-        eventDigestWindowText: buildEventDigestWindowText(state),
-        plan: null,
-      });
+    const eventView = buildEventView(state);
+    return finalizeOrchestrationResult({
+      sessionId,
+      status: sessionStatus,
+      chapterId: Number(chapter.id || 0) || null,
+      expectedRole: "",
+      expectedRoleType: "",
+      currentEventDigest: eventView.currentEventDigest,
+      eventDigestWindow: eventView.eventDigestWindow,
+      eventDigestWindowText: eventView.eventDigestWindowText,
+      plan: null,
+    });
   }
 
   const plan = await runNarrativePlan({
@@ -1475,15 +1479,16 @@ export async function orchestrateSessionTurn(sessionIdInput: string): Promise<Se
     }
   }
   applyPlanTurnStateToSessionState(state, world, plan);
+  const eventView = buildEventView(state);
   const result: SessionOrchestrationResult = {
     sessionId,
     status: nextStatus,
     chapterId: nextChapterId,
     expectedRole: "",
     expectedRoleType: "",
-    currentEventDigest: buildCurrentEventDigest(state),
-    eventDigestWindow: buildEventDigestWindow(state),
-    eventDigestWindowText: buildEventDigestWindowText(state),
+    currentEventDigest: eventView.currentEventDigest,
+    eventDigestWindow: eventView.eventDigestWindow,
+    eventDigestWindowText: eventView.eventDigestWindowText,
     plan: buildSessionPlanResult({
       ...plan,
       eventType: "on_orchestrated_reply",
@@ -1593,15 +1598,16 @@ export async function commitSessionNarrativeTurn(input: CommitSessionNarrativeTu
   const activeChapter = nextChapterId
     ? normalizeChapterOutput(await db("t_storyChapter").where({ id: nextChapterId }).first())
     : null;
+  const eventView = buildEventView(state);
   return {
     sessionId,
     status: sessionStatus,
     chapterId: nextChapterId,
     chapter: activeChapter,
     state,
-    currentEventDigest: buildCurrentEventDigest(state),
-    eventDigestWindow: buildEventDigestWindow(state),
-    eventDigestWindowText: buildEventDigestWindowText(state),
+    currentEventDigest: eventView.currentEventDigest,
+    eventDigestWindow: eventView.eventDigestWindow,
+    eventDigestWindowText: eventView.eventDigestWindowText,
     message: null,
     chapterSwitchMessage: null,
     narrativeMessage: insertedRows[insertedRows.length - 1] || null,

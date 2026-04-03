@@ -8,9 +8,7 @@ import {
   normalizeRolePair,
   normalizeSessionState,
   nowTs,
-  readRuntimeCurrentEventDigestState,
-  readRuntimeEventDigestWindowState,
-  readRuntimeEventDigestWindowTextState,
+  readDefaultRuntimeEventViewState,
 } from "@/lib/gameEngine";
 import {
   allowPlayerTurn,
@@ -145,19 +143,14 @@ function buildOrchestrationPayload(params: {
     worldId: params.worldId,
     state: params.state,
   });
+  const eventView = readDefaultRuntimeEventViewState(stateSnapshot);
   return {
     chapterId: params.chapterId,
     chapterTitle: params.chapterTitle,
     state: stateSnapshot,
-    currentEventDigest: readRuntimeCurrentEventDigestState(stateSnapshot),
-    eventDigestWindow: readRuntimeEventDigestWindowState(stateSnapshot, 3),
-    eventDigestWindowText: readRuntimeEventDigestWindowTextState(stateSnapshot, {
-      windowSize: 3,
-      includeMemory: true,
-      summaryLimit: 60,
-      factLimit: 2,
-      memoryFactLimit: 2,
-    }),
+    currentEventDigest: eventView.currentEventDigest,
+    eventDigestWindow: eventView.eventDigestWindow,
+    eventDigestWindowText: eventView.eventDigestWindowText,
     endDialog: params.endDialog || null,
     plan: params.plan || null,
   };

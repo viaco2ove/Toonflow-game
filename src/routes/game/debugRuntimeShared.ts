@@ -6,6 +6,7 @@ import {
   normalizeRolePair,
   normalizeSessionState,
   nowTs,
+  readDefaultRuntimeEventViewState,
 } from "@/lib/gameEngine";
 import {
   advanceChapterProgressAfterNarrative,
@@ -118,6 +119,7 @@ function compactTextList(input: unknown, limit = 6): string[] {
 }
 
 export function buildDebugStateSnapshot(state: Record<string, any>, debugRuntimeKey: string) {
+  const eventView = readDefaultRuntimeEventViewState(state);
   const snapshot: Record<string, any> = {
     debugRuntimeKey,
     version: Number(state.version || 1),
@@ -125,6 +127,9 @@ export function buildDebugStateSnapshot(state: Record<string, any>, debugRuntime
     chapterId: Number(state.chapterId || 0) || undefined,
     round: Number(state.round || 0) || 0,
     turnState: cloneDebugRuntimeState(state.turnState || {}),
+    currentEventDigest: cloneDebugRuntimeState(eventView.currentEventDigest),
+    eventDigestWindow: cloneDebugRuntimeState(eventView.eventDigestWindow),
+    eventDigestWindowText: eventView.eventDigestWindowText,
   };
   if (state.player && typeof state.player === "object") {
     snapshot.player = cloneDebugRuntimeState(state.player);

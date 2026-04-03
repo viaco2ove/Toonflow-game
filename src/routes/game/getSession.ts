@@ -5,9 +5,7 @@ import { error, success } from "@/lib/responseFormat";
 import {
   getGameDb,
   normalizeChapterOutput,
-  readRuntimeCurrentEventDigestState,
-  readRuntimeEventDigestWindowState,
-  readRuntimeEventDigestWindowTextState,
+  readDefaultRuntimeEventViewState,
   normalizeRolePair,
   normalizeSessionState,
   normalizeMessageOutput,
@@ -72,6 +70,7 @@ export default router.post(
       const activeChapterId = Number(state.chapterId || provisionalChapterId || 0) || null;
       const messageLimitNum = Number(messageLimit);
       const limit = Number.isFinite(messageLimitNum) && messageLimitNum > 0 ? Math.min(messageLimitNum, 200) : 50;
+      const eventView = readDefaultRuntimeEventViewState(state);
 
       const chapter = activeChapterId ? await db("t_storyChapter").where({ id: activeChapterId }).first() : null;
       const snapshot = await db("t_sessionStateSnapshot").where({ sessionId: sessionIdValue }).orderBy("id", "desc").first();
@@ -83,15 +82,9 @@ export default router.post(
           ...row,
           chapterId: activeChapterId,
           state,
-          currentEventDigest: readRuntimeCurrentEventDigestState(state),
-          eventDigestWindow: readRuntimeEventDigestWindowState(state, 3),
-          eventDigestWindowText: readRuntimeEventDigestWindowTextState(state, {
-            windowSize: 3,
-            includeMemory: true,
-            summaryLimit: 60,
-            factLimit: 2,
-            memoryFactLimit: 2,
-          }),
+          currentEventDigest: eventView.currentEventDigest,
+          eventDigestWindow: eventView.eventDigestWindow,
+          eventDigestWindowText: eventView.eventDigestWindowText,
           world: normalizeWorldOutput(world),
           chapter: normalizeChapterOutput(chapter),
           latestSnapshot: snapshot
