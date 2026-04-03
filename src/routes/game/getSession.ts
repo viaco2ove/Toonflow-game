@@ -7,6 +7,7 @@ import {
   normalizeChapterOutput,
   readRuntimeCurrentEventDigestState,
   readRuntimeEventDigestWindowState,
+  readRuntimeEventDigestWindowTextState,
   normalizeRolePair,
   normalizeSessionState,
   normalizeMessageOutput,
@@ -84,6 +85,13 @@ export default router.post(
           state,
           currentEventDigest: readRuntimeCurrentEventDigestState(state),
           eventDigestWindow: readRuntimeEventDigestWindowState(state, 3),
+          eventDigestWindowText: readRuntimeEventDigestWindowTextState(state, {
+            windowSize: 3,
+            includeMemory: true,
+            summaryLimit: 60,
+            factLimit: 2,
+            memoryFactLimit: 2,
+          }),
           world: normalizeWorldOutput(world),
           chapter: normalizeChapterOutput(chapter),
           latestSnapshot: snapshot

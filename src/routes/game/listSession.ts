@@ -2,7 +2,7 @@ import express from "express";
 import { z } from "zod";
 import { validateFields } from "@/middleware/middleware";
 import { error, success } from "@/lib/responseFormat";
-import { getGameDb, parseJsonSafe, readRuntimeCurrentEventDigestState, readRuntimeEventDigestWindowState } from "@/lib/gameEngine";
+import { getGameDb, parseJsonSafe, readRuntimeCurrentEventDigestState, readRuntimeEventDigestWindowState, readRuntimeEventDigestWindowTextState } from "@/lib/gameEngine";
 import u from "@/utils";
 
 const router = express.Router();
@@ -137,6 +137,13 @@ export default router.post(
           state: runtimeState,
           currentEventDigest: readRuntimeCurrentEventDigestState(runtimeState),
           eventDigestWindow: readRuntimeEventDigestWindowState(runtimeState, 3),
+          eventDigestWindowText: readRuntimeEventDigestWindowTextState(runtimeState, {
+            windowSize: 3,
+            includeMemory: true,
+            summaryLimit: 60,
+            factLimit: 2,
+            memoryFactLimit: 2,
+          }),
           latestMessage: latest
             ? {
                 id: Number(latest.id || 0),

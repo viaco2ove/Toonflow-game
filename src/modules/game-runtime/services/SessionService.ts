@@ -8,6 +8,7 @@ import {
   parseJsonSafe,
   readRuntimeCurrentEventDigestState,
   readRuntimeEventDigestWindowState,
+  readRuntimeEventDigestWindowTextState,
   toJsonText,
   upsertRuntimeEventDigestState,
 } from "@/lib/gameEngine";
@@ -71,6 +72,7 @@ export interface AddSessionMessageResult {
   state: Record<string, any>;
   currentEventDigest: Record<string, any>;
   eventDigestWindow: Record<string, any>[];
+  eventDigestWindowText: string;
   message: Record<string, any> | null;
   chapterSwitchMessage: Record<string, any> | null;
   narrativeMessage: Record<string, any> | null;
@@ -114,6 +116,7 @@ export interface SessionOrchestrationResult {
   expectedRoleType: string;
   currentEventDigest: Record<string, any>;
   eventDigestWindow: Record<string, any>[];
+  eventDigestWindowText: string;
   plan: SessionNarrativePlanResult | null;
 }
 
@@ -409,6 +412,16 @@ function buildCurrentEventDigest(state: Record<string, any>): Record<string, any
 
 function buildEventDigestWindow(state: Record<string, any>): Record<string, any>[] {
   return readRuntimeEventDigestWindowState(state, 3);
+}
+
+function buildEventDigestWindowText(state: Record<string, any>): string {
+  return readRuntimeEventDigestWindowTextState(state, {
+    windowSize: 3,
+    includeMemory: true,
+    summaryLimit: 60,
+    factLimit: 2,
+    memoryFactLimit: 2,
+  });
 }
 
 function getPendingSessionChapterId(state: Record<string, any>): number | null {
@@ -890,6 +903,7 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
       state,
       currentEventDigest: buildCurrentEventDigest(state),
       eventDigestWindow: buildEventDigestWindow(state),
+      eventDigestWindowText: buildEventDigestWindowText(state),
       message: normalizeMessageOutput(messageRow),
       chapterSwitchMessage: null,
       narrativeMessage: null,
@@ -1072,6 +1086,7 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
     state,
     currentEventDigest: buildCurrentEventDigest(state),
     eventDigestWindow: buildEventDigestWindow(state),
+    eventDigestWindowText: buildEventDigestWindowText(state),
     message: normalizeMessageOutput(messageRow),
     chapterSwitchMessage: chapterSwitchMessageRow,
     narrativeMessage: narrativeMessageRow,
@@ -1234,6 +1249,8 @@ export async function continueSessionNarrative(sessionIdInput: string): Promise<
     chapter: nextChapterId ? normalizeChapterOutput(await db("t_storyChapter").where({ id: nextChapterId }).first()) : null,
     state,
     currentEventDigest: buildCurrentEventDigest(state),
+    eventDigestWindow: buildEventDigestWindow(state),
+    eventDigestWindowText: buildEventDigestWindowText(state),
     message: null,
     chapterSwitchMessage: null,
     narrativeMessage: generatedMessages[generatedMessages.length - 1] || null,
@@ -1298,6 +1315,7 @@ export async function orchestrateSessionTurn(sessionIdInput: string): Promise<Se
       expectedRoleType: expectedSpeaker.expectedRoleType,
       currentEventDigest: buildCurrentEventDigest(state),
       eventDigestWindow: buildEventDigestWindow(state),
+      eventDigestWindowText: buildEventDigestWindowText(state),
     };
   };
 
@@ -1373,6 +1391,7 @@ export async function orchestrateSessionTurn(sessionIdInput: string): Promise<Se
         expectedRoleType: "",
         currentEventDigest: buildCurrentEventDigest(state),
         eventDigestWindow: buildEventDigestWindow(state),
+        eventDigestWindowText: buildEventDigestWindowText(state),
         plan: null,
       });
     }
@@ -1406,6 +1425,7 @@ export async function orchestrateSessionTurn(sessionIdInput: string): Promise<Se
         expectedRoleType: "",
         currentEventDigest: buildCurrentEventDigest(state),
         eventDigestWindow: buildEventDigestWindow(state),
+        eventDigestWindowText: buildEventDigestWindowText(state),
         plan: null,
       });
   }
@@ -1462,6 +1482,8 @@ export async function orchestrateSessionTurn(sessionIdInput: string): Promise<Se
     expectedRole: "",
     expectedRoleType: "",
     currentEventDigest: buildCurrentEventDigest(state),
+    eventDigestWindow: buildEventDigestWindow(state),
+    eventDigestWindowText: buildEventDigestWindowText(state),
     plan: buildSessionPlanResult({
       ...plan,
       eventType: "on_orchestrated_reply",
@@ -1579,6 +1601,7 @@ export async function commitSessionNarrativeTurn(input: CommitSessionNarrativeTu
     state,
     currentEventDigest: buildCurrentEventDigest(state),
     eventDigestWindow: buildEventDigestWindow(state),
+    eventDigestWindowText: buildEventDigestWindowText(state),
     message: null,
     chapterSwitchMessage: null,
     narrativeMessage: insertedRows[insertedRows.length - 1] || null,
