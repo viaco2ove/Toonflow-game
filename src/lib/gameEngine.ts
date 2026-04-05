@@ -551,26 +551,127 @@ function extractRuntimePhasesFromContent(
   });
 }
 
-function buildFixedEventsFromCompletionCondition(input: unknown): ChapterRuntimeOutline["fixedEvents"] {
-  const condition = tryParseCondition(input);
-  if (typeof condition === "string" && condition.trim()) {
-    return [{
-      id: `fixed_event_${slugifyRuntimeKey(condition, "success")}`,
-      label: condition.trim(),
-      requiredBeforeFinish: true,
-    }];
+interface CompletionConditionArtifacts {
+  fixedEvents: ChapterRuntimeOutline["fixedEvents"];
+  successEventIds: string[];
+  failureEventIds: string[];
+}
+
+function splitCompletionConditionText(input: string): {
+  successText: string;
+  failureText: string;
+} {
+  const rawText = String(input || "").trim();
+  if (!rawText) {
+    return {
+      successText: "",
+      failureText: "",
+    };
   }
+  const matched = rawText.match(/^(.*?)[（(]\s*([^()（）]+?)\s*[)）]\s*$/);
+  if (!matched) {
+    return {
+      successText: rawText,
+      failureText: "",
+    };
+  }
+  const successText = String(matched[1] || "").trim();
+  const failureText = String(matched[2] || "").trim();
+  if (!successText || !failureText || !/失败|fail|failed|failure/iu.test(failureText)) {
+    return {
+      successText: rawText,
+      failureText: "",
+    };
+  }
+  return {
+    successText,
+    failureText,
+  };
+}
+
+function normalizeCompletionConditionArtifacts(input: unknown): CompletionConditionArtifacts {
+  const condition = tryParseCondition(input);
+  const fixedEvents: ChapterRuntimeOutline["fixedEvents"] = [];
+  const successEventIds: string[] = [];
+  const failureEventIds: string[] = [];
+  const appendFixedEvent = (label: unknown, requiredBeforeFinish: boolean, bucket: string[]) => {
+    const text = String(label || "").trim();
+    if (!text) return;
+    const id = `fixed_event_${slugifyRuntimeKey(text, requiredBeforeFinish ? "success" : "failure")}`;
+    if (!bucket.includes(id)) {
+      bucket.push(id);
+    }
+    if (!fixedEvents.some((item) => item.id === id)) {
+      fixedEvents.push({
+        id,
+        label: text,
+        requiredBeforeFinish,
+      });
+    }
+  };
+
+  if (typeof condition === "string" && condition.trim()) {
+    const branches = splitCompletionConditionText(condition);
+    appendFixedEvent(branches.successText, true, successEventIds);
+    appendFixedEvent(branches.failureText, false, failureEventIds);
+    return {
+      fixedEvents,
+      successEventIds,
+      failureEventIds,
+    };
+  }
+
   if (isRecord(condition)) {
     const successCondition = condition.success ?? condition.pass ?? condition.result ?? condition.outcome;
+    const failureCondition = condition.failure ?? condition.failed ?? condition.fail;
     if (typeof successCondition === "string" && successCondition.trim()) {
-      return [{
-        id: `fixed_event_${slugifyRuntimeKey(successCondition, "success")}`,
-        label: successCondition.trim(),
-        requiredBeforeFinish: true,
-      }];
+      const branches = splitCompletionConditionText(successCondition);
+      appendFixedEvent(branches.successText, true, successEventIds);
+      appendFixedEvent(branches.failureText, false, failureEventIds);
+    }
+    if (typeof failureCondition === "string" && failureCondition.trim()) {
+      appendFixedEvent(failureCondition, false, failureEventIds);
     }
   }
-  return [];
+
+  return {
+    fixedEvents,
+    successEventIds,
+    failureEventIds,
+  };
+}
+
+function buildFixedEventsFromCompletionCondition(input: unknown): ChapterRuntimeOutline["fixedEvents"] {
+  return normalizeCompletionConditionArtifacts(input).fixedEvents;
+}
+
+function mergeRuntimeFixedEvents(
+  existingFixedEvents: ChapterRuntimeOutline["fixedEvents"],
+  generatedFixedEvents: ChapterRuntimeOutline["fixedEvents"],
+): ChapterRuntimeOutline["fixedEvents"] {
+  const merged: ChapterRuntimeOutline["fixedEvents"] = [];
+  const append = (item: ChapterRuntimeOutline["fixedEvents"][number]) => {
+    const label = String(item.label || "").trim();
+    const id = String(item.id || "").trim();
+    if (!label || !id) return;
+    const existingIndex = merged.findIndex((entry) => entry.id === id);
+    if (existingIndex >= 0) {
+      merged[existingIndex] = {
+        ...merged[existingIndex],
+        ...item,
+        requiredBeforeFinish: merged[existingIndex].requiredBeforeFinish || item.requiredBeforeFinish,
+      };
+      return;
+    }
+    merged.push({
+      id,
+      label,
+      requiredBeforeFinish: item.requiredBeforeFinish !== false,
+    });
+  };
+  existingFixedEvents.forEach(append);
+  generatedFixedEvents.forEach(append);
+  return merged;
 }
 
 export function normalizeChapterRuntimeOutline(input: unknown): ChapterRuntimeOutline {
@@ -679,6 +780,7 @@ export function buildChapterRuntimeOutline(input: {
   runtimeOutline?: unknown;
 }): ChapterRuntimeOutline {
   const normalizedExisting = normalizeChapterRuntimeOutline(input.runtimeOutline);
+  const completionArtifacts = normalizeCompletionConditionArtifacts(input.completionCondition);
   const openingMessages = normalizedExisting.openingMessages.length
     ? normalizedExisting.openingMessages
     : (() => {
@@ -694,22 +796,30 @@ export function buildChapterRuntimeOutline(input: {
   const userNodes = normalizedExisting.userNodes.length
     ? normalizedExisting.userNodes
     : extractRuntimeUserNodesFromContent(input.content);
-  const fixedEvents = normalizedExisting.fixedEvents.length
-    ? normalizedExisting.fixedEvents
-    : buildFixedEventsFromCompletionCondition(input.completionCondition);
+  const fixedEvents = mergeRuntimeFixedEvents(
+    normalizedExisting.fixedEvents,
+    completionArtifacts.fixedEvents,
+  );
   const phases = normalizedExisting.phases.length
     ? normalizedExisting.phases
     : extractRuntimePhasesFromContent(input.content, userNodes, fixedEvents);
+  const normalizedSuccessIds = Array.from(new Set([
+    ...normalizedExisting.endingRules.success,
+    ...completionArtifacts.successEventIds,
+    ...fixedEvents.filter((item) => item.requiredBeforeFinish).map((item) => item.id),
+  ].filter(Boolean)));
+  const normalizedFailureIds = Array.from(new Set([
+    ...normalizedExisting.endingRules.failure,
+    ...completionArtifacts.failureEventIds,
+  ].filter(Boolean)));
   return {
     openingMessages,
     phases,
     userNodes,
     fixedEvents,
     endingRules: {
-      success: normalizedExisting.endingRules.success.length
-        ? normalizedExisting.endingRules.success
-        : fixedEvents.filter((item) => item.requiredBeforeFinish).map((item) => item.id),
-      failure: normalizedExisting.endingRules.failure,
+      success: normalizedSuccessIds,
+      failure: normalizedFailureIds,
       nextChapterId: normalizedExisting.endingRules.nextChapterId,
     },
   };
@@ -1750,6 +1860,47 @@ function hasBoundPlayerIdentity(state: JsonRecord): boolean {
   return !!name && !isGenericPlayerName(name) && !!gender && age != null;
 }
 
+function collectStateConditionTexts(state: JsonRecord): string[] {
+  const currentEvent = isRecord(state.currentEvent) ? state.currentEvent : {};
+  const currentEventDigest = isRecord(state.currentEventDigest) ? state.currentEventDigest : {};
+  const chapterProgress = isRecord(state.chapterProgress) ? state.chapterProgress : {};
+  const dynamicEvents = Array.isArray(state.dynamicEvents) ? state.dynamicEvents : [];
+  const values: string[] = [
+    String(state.memorySummary || ""),
+    ...(Array.isArray(state.memoryFacts) ? state.memoryFacts.map((item) => String(item || "")) : []),
+    ...(Array.isArray(state.memoryTags) ? state.memoryTags.map((item) => String(item || "")) : []),
+    String(currentEvent.summary || ""),
+    ...(Array.isArray(currentEvent.facts) ? currentEvent.facts.map((item) => String(item || "")) : []),
+    String(currentEventDigest.eventSummary || ""),
+    ...(Array.isArray(currentEventDigest.eventFacts) ? currentEventDigest.eventFacts.map((item) => String(item || "")) : []),
+    String(chapterProgress.eventSummary || ""),
+    String(chapterProgress.pendingGoal || ""),
+    ...dynamicEvents.flatMap((item) => {
+      if (!isRecord(item)) return [];
+      return [
+        String(item.summary || ""),
+        ...(Array.isArray(item.runtimeFacts) ? item.runtimeFacts.map((entry) => String(entry || "")) : []),
+        String(item.memorySummary || ""),
+        ...(Array.isArray(item.memoryFacts) ? item.memoryFacts.map((entry) => String(entry || "")) : []),
+      ];
+    }),
+  ];
+  return values
+    .map((item) => normalizeConditionText(item))
+    .filter(Boolean);
+}
+
+function hasRecordedIdentityCreationFailure(state: JsonRecord): boolean {
+  if (getValueByPath(state, "flags.chapterFailed") === true) return true;
+  const textPool = collectStateConditionTexts(state);
+  return textPool.some((item) => {
+    const mentionsIdentity = item.includes("名称") || item.includes("姓名") || item.includes("性别") || item.includes("年龄") || item.includes("角色创建");
+    const mentionsFailure = item.includes("失败") || item.includes("错误");
+    const mentionsFiveTimes = item.includes("五次") || item.includes("5次") || item.includes("累计五次");
+    return mentionsIdentity && mentionsFailure && mentionsFiveTimes;
+  });
+}
+
 function evaluateNaturalLanguageCondition(text: string, ctx: ConditionContext): boolean | null {
   const normalized = normalizeConditionText(text);
   if (!normalized) return true;
@@ -1765,6 +1916,13 @@ function evaluateNaturalLanguageCondition(text: string, ctx: ConditionContext): 
 
   if (asksIdentity || mentionsIdentityBound) {
     return hasBoundPlayerIdentity(ctx.state);
+  }
+  const asksIdentityFailure =
+    (normalized.includes("失败") || normalized.includes("错误"))
+    && (normalized.includes("五次") || normalized.includes("5次") || normalized.includes("累计五次"))
+    && (normalized.includes("姓名") || normalized.includes("名称") || normalized.includes("性别") || normalized.includes("年龄") || normalized.includes("角色创建"));
+  if (asksIdentityFailure) {
+    return hasRecordedIdentityCreationFailure(ctx.state);
   }
   return null;
 }
