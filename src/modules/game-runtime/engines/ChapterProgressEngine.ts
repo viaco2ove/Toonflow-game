@@ -1,6 +1,8 @@
 import {
   ChapterRuntimePhase,
   ChapterRuntimeOutline,
+  ConditionContext,
+  evaluateCondition,
   isFreeChapterRuntimeMode,
   JsonRecord,
   parseJsonSafe,
@@ -536,6 +538,39 @@ function collectSignalTexts(input: {
   return Array.from(new Set(texts.map((item) => normalizeSignalText(item)).filter(Boolean)));
 }
 
+function collectStrictSignalTexts(input: {
+  messageContent?: string;
+  triggered?: TriggerHit[];
+  taskProgress?: TaskProgressChange[];
+  deltas?: AppliedDelta[];
+}): string[] {
+  const texts = [
+    String(input.messageContent || ""),
+    ...(Array.isArray(input.triggered) ? input.triggered.flatMap((item) => [item.name, item.eventType]) : []),
+    ...(Array.isArray(input.taskProgress) ? input.taskProgress.flatMap((item) => [item.title, item.nextStatus]) : []),
+    ...(Array.isArray(input.deltas) ? input.deltas.flatMap((item) => [item.field, item.source, item.entityId]) : []),
+  ];
+  return Array.from(new Set(texts.map((item) => normalizeSignalText(item)).filter(Boolean)));
+}
+
+function fixedEventMatches(input: {
+  label: string;
+  id: string;
+  strictSignalTexts: string[];
+  ctx: ConditionContext;
+}): boolean {
+  const normalizedId = normalizeSignalText(input.id);
+  if (normalizedId && input.strictSignalTexts.some((item) => item.includes(normalizedId) || normalizedId.includes(item))) {
+    return true;
+  }
+  if (evaluateCondition(input.label, input.ctx)) {
+    return true;
+  }
+  const normalizedLabel = normalizeSignalText(input.label);
+  if (!normalizedLabel) return false;
+  return input.strictSignalTexts.some((item) => item.includes(normalizedLabel) || normalizedLabel.includes(item));
+}
+
 export function initializeChapterProgressForState(chapter: any, state: JsonRecord): void {
   const outline = readRuntimeOutline(chapter);
   const current = readChapterProgressState(state);
@@ -864,9 +899,20 @@ export function recordChapterProgressSignals(chapter: any, state: JsonRecord, in
   if (!signalTexts.length) {
     return { matchedFixedEvents: [], markedPhaseCompleted: false };
   }
+  const strictSignalTexts = collectStrictSignalTexts(input);
   let completedEvents = normalizeCompletedEvents(Array.isArray(current.completedEvents) ? current.completedEvents : []);
   const matchedFixedEvents = outline.fixedEvents
-    .filter((item) => signalMatches(item.label, signalTexts) || signalMatches(item.id, signalTexts))
+    .filter((item) => fixedEventMatches({
+      label: String(item.label || "").trim(),
+      id: String(item.id || "").trim(),
+      strictSignalTexts,
+      ctx: {
+        state,
+        messageContent: String(input.messageContent || ""),
+        eventType: "",
+        meta: {},
+      },
+    }))
     .map((item) => item.id);
   for (const fixedEventId of matchedFixedEvents) {
     if (!completedEvents.includes(fixedEventId)) {

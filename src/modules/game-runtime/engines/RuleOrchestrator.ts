@@ -125,15 +125,31 @@ export function resolveRuleNarrativePlan(input: {
   roles: RuleOrchestratorRole[];
   turnState: RuleOrchestratorTurnState;
   userDisplayName?: string;
+  latestPlayerMessage?: string;
+  currentEventKind?: string;
+  currentEventFlowType?: string;
+  currentEventStatus?: string;
 }): RuleNarrativeDecision {
   const progress = readChapterProgressState(input.state);
   const userDisplayName = normalizeScalarText(input.userDisplayName) || "用户";
+  const latestPlayerMessage = normalizeScalarText(input.latestPlayerMessage);
   const nonPlayerRoles = input.roles.filter((item) => sanitizeRoleType(item.roleType) !== "player");
   const allowedSpeakers = Array.isArray(input.phase?.allowedSpeakers)
     ? input.phase.allowedSpeakers.map((item) => normalizeScalarText(item).toLowerCase()).filter(Boolean)
     : [];
+  const shouldLetAiHandleLatestUserInput = Boolean(latestPlayerMessage)
+    && (
+      progress.userNodeStatus === "waiting_input"
+      || normalizeScalarText(input.currentEventStatus) === "waiting_input"
+      || normalizeScalarText(input.currentEventKind) === "ending"
+      || normalizeScalarText(input.currentEventFlowType) === "chapter_ending_check"
+    );
 
-  if (input.turnState.canPlayerSpeak || input.phase?.kind === "user" || progress.userNodeStatus === "waiting_input") {
+  if (!shouldLetAiHandleLatestUserInput && (
+    input.turnState.canPlayerSpeak
+    || input.phase?.kind === "user"
+    || progress.userNodeStatus === "waiting_input"
+  )) {
     return {
       resolved: true,
       reason: "await_user_phase",

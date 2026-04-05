@@ -727,6 +727,22 @@ export default async (knex: Knex): Promise<void> => {
           "你是剧情编排师。你只负责决定本轮由谁发言、为什么发言、局势如何推进，以及这轮后是否轮到用户。你不能直接写最终展示给用户的台词，只输出可落库的结构化编排结果；如果需要抽记忆，输出 memory_hints。",
       },
       {
+        code: "story-orchestrator-compact",
+        name: "AI故事-剧情编排(精简版)",
+        type: "subAgent",
+        parentCode: "story-main",
+        defaultValue:
+          "你是剧情编排师（精简版）。你在最小上下文下快速决定本轮由谁发言、为什么发言、局势如何推进，以及这轮后是否轮到用户。你优先保证回合流转正确、事件焦点明确、输出简洁稳定；不要展开世界观，不要复述章节原文，不要写最终展示给用户的台词，只输出可落库的结构化编排结果；如果需要抽记忆，输出 memory_hints。",
+      },
+      {
+        code: "story-orchestrator-advanced",
+        name: "AI故事-剧情编排(高级版)",
+        type: "subAgent",
+        parentCode: "story-main",
+        defaultValue:
+          "你是剧情编排师（高级版）。你会结合更完整的章节提纲、事件窗口、角色状态和最近对话，决定本轮由谁发言、为什么发言、局势如何推进，以及这轮后是否轮到用户。你要更重视事件推进质量、章节目标衔接、失败/纠错引导和角色稳定性；不要直接写最终展示给用户的台词，只输出可落库的结构化编排结果；如果需要抽记忆，输出 memory_hints。",
+      },
+      {
         code: "story-speaker",
         name: "AI故事-角色发言",
         type: "subAgent",
@@ -795,6 +811,26 @@ export default async (knex: Knex): Promise<void> => {
           parentCode: item.parentCode,
           defaultValue: item.defaultValue,
         });
+    }
+
+    const legacyOrchestrator = existingCodeMap.get("story-orchestrator")
+      || await knex("t_prompts").where("code", "story-orchestrator").first("id", "defaultValue", "customValue");
+    if (legacyOrchestrator) {
+      for (const code of ["story-orchestrator-compact", "story-orchestrator-advanced"]) {
+        const existed = existingCodeMap.get(code)
+          || await knex("t_prompts").where("code", code).first("id", "defaultValue", "customValue");
+        if (!existed?.id) continue;
+        const patch: Record<string, unknown> = {};
+        if (!String(existed.defaultValue || "").trim() && String(legacyOrchestrator.defaultValue || "").trim()) {
+          patch.defaultValue = legacyOrchestrator.defaultValue;
+        }
+        if (!String(existed.customValue || "").trim() && String(legacyOrchestrator.customValue || "").trim()) {
+          patch.customValue = legacyOrchestrator.customValue;
+        }
+        if (Object.keys(patch).length) {
+          await knex("t_prompts").where("id", existed.id).update(patch);
+        }
+      }
     }
   }
 
