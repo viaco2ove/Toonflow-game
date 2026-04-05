@@ -1,4 +1,4 @@
-// @db-hash 17f350a731897441619794a845853c31
+// @db-hash 28e0cff19964d2a5dd5332f14ab4d572
 //该文件由脚本自动生成，请勿手动修改
 
 export interface t_aiModelMap {
@@ -92,6 +92,7 @@ export interface t_config {
   'model'?: string | null;
   'modelType'?: string | null;
   'outputPricePer1M'?: number | null;
+  'reasoningEffort'?: string | null;
   'type'?: string | null;
   'userId'?: number | null;
 }
@@ -214,6 +215,7 @@ export interface t_sessionMessage {
   'eventType'?: string | null;
   'id'?: number;
   'meta'?: string | null;
+  'revisitData'?: string | null;
   'role'?: string | null;
   'roleType'?: string | null;
   'sessionId'?: string | null;

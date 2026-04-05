@@ -1,12 +1,18 @@
 import {
   ChapterRuntimePhase,
   ChapterRuntimeOutline,
+  isFreeChapterRuntimeMode,
   JsonRecord,
+  parseJsonSafe,
+  normalizeRuntimeDynamicEventState,
   normalizeChapterRuntimeOutline,
   readChapterProgressState,
+  readRuntimeCurrentEventState,
   RuntimeDynamicEventState,
   setChapterProgressState,
   setRuntimeDynamicEventList,
+  syncRuntimeCurrentEventFromChapterProgress,
+  upsertRuntimeDynamicEventState,
 } from "@/lib/gameEngine";
 import {
   AppliedDelta,
@@ -167,6 +173,162 @@ function resolveFinalPhase(outline: ChapterRuntimeOutline): { phase: ChapterRunt
   };
 }
 
+function hasEffectiveEndingRule(input: unknown): boolean {
+  if (input == null) return false;
+  if (typeof input === "string") return String(input).trim().length > 0;
+  if (Array.isArray(input)) return input.length > 0;
+  if (typeof input === "object") return Object.keys(input as Record<string, unknown>).length > 0;
+  return true;
+}
+
+function readCompletionCondition(chapter: any): unknown {
+  return parseJsonSafe((chapter as any)?.completionCondition, (chapter as any)?.completionCondition);
+}
+
+function hasChapterEndingEvent(chapter: any, outline: ChapterRuntimeOutline): boolean {
+  return outline.endingRules.success.length > 0
+    || outline.endingRules.failure.length > 0
+    || hasEffectiveEndingRule(readCompletionCondition(chapter));
+}
+
+function shortEndingText(input: unknown, fallback: string): string {
+  const text = String(input || "").replace(/\r\n/g, "\n").trim();
+  if (!text) return fallback;
+  return text.length > 72 ? `${text.slice(0, 72)}...` : text;
+}
+
+function buildEndingEventSummary(chapter: any, outline: ChapterRuntimeOutline): string {
+  const condition = readCompletionCondition(chapter);
+  if (typeof condition === "string" && condition.trim()) {
+    return `结束条件：${shortEndingText(condition, "结束条件判定")}`;
+  }
+  if (condition && typeof condition === "object" && !Array.isArray(condition)) {
+    const record = condition as Record<string, unknown>;
+    const hinted = String(
+      record.summary
+      || record.label
+      || record.description
+      || record.prompt
+      || record.goal
+      || "",
+    ).trim();
+    if (hinted) {
+      return `结束条件：${shortEndingText(hinted, "结束条件判定")}`;
+    }
+  }
+  const successLabels = outline.fixedEvents
+    .filter((item) => outline.endingRules.success.includes(item.id))
+    .map((item) => String(item.label || "").trim())
+    .filter(Boolean);
+  const failureLabels = outline.fixedEvents
+    .filter((item) => outline.endingRules.failure.includes(item.id))
+    .map((item) => String(item.label || "").trim())
+    .filter(Boolean);
+  if (successLabels.length || failureLabels.length) {
+    const successText = successLabels.slice(0, 2).join(" / ");
+    const failureText = failureLabels.slice(0, 2).join(" / ");
+    if (successText && failureText) {
+      return `结束条件：成功满足 ${shortEndingText(successText, "成功条件")}；失败命中 ${shortEndingText(failureText, "失败条件")}`;
+    }
+    if (successText) {
+      return `结束条件：${shortEndingText(successText, "成功条件")}`;
+    }
+    return `结束条件：${shortEndingText(failureText, "失败条件")}`;
+  }
+  return "结束条件判定";
+}
+
+function updateEndingState(
+  chapter: any,
+  outline: ChapterRuntimeOutline,
+  state: JsonRecord,
+  extraPatch: Partial<JsonRecord> = {},
+) {
+  const current = readChapterProgressState(state);
+  const endingEventIndex = Math.max(1, outline.phases.length + 1);
+  const endingSummary = buildEndingEventSummary(chapter, outline);
+  const rawStatus = String(extraPatch.eventStatus || current.eventStatus || "active").trim().toLowerCase();
+  const endingStatus: "idle" | "active" | "waiting_input" | "completed" = rawStatus === "completed"
+    ? "completed"
+    : rawStatus === "waiting_input"
+      ? "waiting_input"
+      : rawStatus === "idle"
+        ? "idle"
+        : "active";
+  setChapterProgressState(state, {
+    phaseId: "",
+    phaseIndex: outline.phases.length,
+    eventIndex: endingEventIndex,
+    eventKind: "ending",
+    eventSummary: endingSummary,
+    eventStatus: endingStatus,
+    userNodeId: "",
+    userNodeIndex: -1,
+    userNodeStatus: "idle",
+    pendingGoal: endingSummary,
+    ...extraPatch,
+  });
+  upsertRuntimeDynamicEventState(state, {
+    eventIndex: endingEventIndex,
+    phaseId: "",
+    kind: "ending",
+    summary: endingSummary,
+    runtimeFacts: [],
+    summarySource: "system",
+    memorySummary: "",
+    memoryFacts: [],
+    status: endingStatus,
+    allowedRoles: [],
+    userNodeId: "",
+    updateTime: 0,
+  });
+  syncRuntimeCurrentEventFromChapterProgress(state);
+}
+
+function ensureFreeChapterDynamicEventState(
+  chapter: any,
+  state: JsonRecord,
+  requestedEventIndex?: number | null,
+  extraPatch: Partial<JsonRecord> = {},
+) {
+  if (!isFreeChapterRuntimeMode(chapter)) return;
+  const current = readChapterProgressState(state);
+  const runtimeEvent = readRuntimeCurrentEventState(state);
+  const outline = readRuntimeOutline(chapter);
+  const minimumEventIndex = outline.phases.length > 0 ? outline.phases.length + 1 : 1;
+  const normalizedEventIndex = Number.isFinite(Number(requestedEventIndex))
+    ? Math.max(minimumEventIndex, Number(requestedEventIndex))
+    : Math.max(minimumEventIndex, Number(runtimeEvent.index || current.eventIndex || 1));
+  setChapterProgressState(state, {
+    phaseId: "",
+    phaseIndex: -1,
+    eventIndex: normalizedEventIndex,
+    eventKind: "scene",
+    eventSummary: "",
+    eventStatus: "active",
+    userNodeId: "",
+    userNodeIndex: -1,
+    userNodeStatus: "idle",
+    pendingGoal: "",
+    ...extraPatch,
+  });
+  upsertRuntimeDynamicEventState(state, {
+    eventIndex: normalizedEventIndex,
+    phaseId: "",
+    kind: "scene",
+    summary: "",
+    runtimeFacts: [],
+    summarySource: "system",
+    memorySummary: "",
+    memoryFacts: [],
+    status: "active",
+    allowedRoles: [],
+    userNodeId: "",
+    updateTime: 0,
+  });
+  syncRuntimeCurrentEventFromChapterProgress(state);
+}
+
 function resolvePendingGoal(phase: ChapterRuntimePhase | null, outline: ChapterRuntimeOutline, userNodeId: string | null): string {
   if (phase?.targetSummary) return phase.targetSummary;
   if (!userNodeId) return "";
@@ -239,7 +401,7 @@ function updatePhaseState(
   extraPatch: Partial<JsonRecord> = {},
 ) {
   const eventIndex = phaseIndex >= 0 ? phaseIndex + 1 : 1;
-  const eventKind = (phase?.kind || "scene") as "opening" | "scene" | "user" | "fixed";
+  const eventKind = (phase?.kind || "scene") as "opening" | "scene" | "user" | "fixed" | "ending";
   const eventSummary = String(phase?.targetSummary || phase?.label || "").trim();
   const eventStatus: "idle" | "active" | "waiting_input" | "completed" = userNodeStatus === "waiting_input"
     ? "waiting_input"
@@ -288,23 +450,25 @@ function buildRuntimeDynamicEvents(
   existingDynamicEvents: RuntimeDynamicEventState[],
 ): RuntimeDynamicEventState[] {
   const completedEvents = normalizeCompletedEvents(Array.isArray(current.completedEvents) ? current.completedEvents : []);
-  return (Array.isArray(outline.phases) ? outline.phases : []).map((phase, index) => {
+  const phaseEvents: RuntimeDynamicEventState[] = (Array.isArray(outline.phases) ? outline.phases : []).map((phase, index) => {
     const existing = existingDynamicEvents.find((item) => item.phaseId === String(phase.id || "").trim())
       || existingDynamicEvents.find((item) => item.eventIndex === index + 1)
       || null;
+    const summarySource: RuntimeDynamicEventState["summarySource"] = existing?.summarySource === "ai"
+      ? "ai"
+      : existing?.summarySource === "memory"
+        ? "memory"
+        : existing?.summarySource === "system"
+          ? "system"
+          : "phase";
     return {
       eventIndex: index + 1,
       phaseId: String(phase.id || "").trim(),
       kind: phase.kind || "scene",
+      flowType: "chapter_content",
       summary: String(existing?.summary || phase.targetSummary || phase.label || "").trim(),
       runtimeFacts: Array.isArray(existing?.runtimeFacts) ? existing.runtimeFacts : [],
-      summarySource: existing?.summarySource === "ai"
-        ? "ai"
-        : existing?.summarySource === "memory"
-          ? "memory"
-          : existing?.summarySource === "system"
-            ? "system"
-            : "phase",
+      summarySource,
       memorySummary: String(existing?.memorySummary || "").trim(),
       memoryFacts: Array.isArray(existing?.memoryFacts) ? existing.memoryFacts : [],
       updateTime: Number.isFinite(Number(existing?.updateTime)) ? Math.max(0, Number(existing?.updateTime)) : 0,
@@ -320,6 +484,15 @@ function buildRuntimeDynamicEvents(
       userNodeId: String(phase.userNodeId || "").trim(),
     };
   });
+  const staticEventLimit = phaseEvents.length;
+  const extraEvents: RuntimeDynamicEventState[] = existingDynamicEvents
+    .filter((item) => Number(item?.eventIndex || 0) > staticEventLimit)
+    .map((item) => normalizeRuntimeDynamicEventState({
+      ...item,
+      phaseId: "",
+      userNodeId: String(item.userNodeId || "").trim(),
+    }));
+  return [...phaseEvents, ...extraEvents].sort((a, b) => a.eventIndex - b.eventIndex);
 }
 
 function syncRuntimeDynamicEvents(state: JsonRecord, outline: ChapterRuntimeOutline): RuntimeDynamicEventState[] {
@@ -366,10 +539,36 @@ function collectSignalTexts(input: {
 export function initializeChapterProgressForState(chapter: any, state: JsonRecord): void {
   const outline = readRuntimeOutline(chapter);
   const current = readChapterProgressState(state);
+  if (isFreeChapterRuntimeMode(chapter)) {
+    if (!outline.phases.length) {
+      ensureFreeChapterDynamicEventState(chapter, state, current.eventIndex || 1, {
+        completedEvents: normalizeCompletedEvents(current.completedEvents),
+      });
+      return;
+    }
+    if (current.eventIndex > outline.phases.length) {
+      ensureFreeChapterDynamicEventState(chapter, state, current.eventIndex, {
+        completedEvents: normalizeCompletedEvents(current.completedEvents),
+      });
+      return;
+    }
+  }
   const completedEvents = normalizeCompletedEvents(current.completedEvents);
   const nextUserNode = findNextPendingUserNode(outline, completedEvents);
   const activePhaseInfo = resolveCurrentOrInitialPhase(outline, current.phaseId, completedEvents);
   if (!activePhaseInfo.phase && !nextUserNode) {
+    if (isFreeChapterRuntimeMode(chapter)) {
+      ensureFreeChapterDynamicEventState(chapter, state, Math.max(outline.phases.length + 1, current.eventIndex || 1), {
+        completedEvents,
+      });
+      return;
+    }
+    if (hasChapterEndingEvent(chapter, outline)) {
+      updateEndingState(chapter, outline, state, {
+        completedEvents,
+      });
+      return;
+    }
     const finalPhase = resolveFinalPhase(outline);
     updatePhaseState(outline, state, finalPhase.phase, finalPhase.phaseIndex, null, -1, "idle");
     return;
@@ -396,6 +595,30 @@ export function initializeChapterProgressForState(chapter: any, state: JsonRecor
 export function syncChapterProgressWithRuntime(chapter: any, state: JsonRecord): void {
   const outline = readRuntimeOutline(chapter);
   const current = readChapterProgressState(state);
+  if (isFreeChapterRuntimeMode(chapter)) {
+    if (!outline.phases.length) {
+      ensureFreeChapterDynamicEventState(
+        chapter,
+        state,
+        current.eventStatus === "completed" ? current.eventIndex + 1 : current.eventIndex || 1,
+        {
+          completedEvents: normalizeCompletedEvents(Array.isArray(current.completedEvents) ? current.completedEvents : []),
+        },
+      );
+      return;
+    }
+    if (current.eventIndex > outline.phases.length) {
+      ensureFreeChapterDynamicEventState(
+        chapter,
+        state,
+        current.eventStatus === "completed" ? current.eventIndex + 1 : current.eventIndex,
+        {
+          completedEvents: normalizeCompletedEvents(Array.isArray(current.completedEvents) ? current.completedEvents : []),
+        },
+      );
+      return;
+    }
+  }
   const completedEvents = normalizeCompletedEvents(Array.isArray(current.completedEvents) ? current.completedEvents : []);
   const nextUserNode = findNextPendingUserNode(outline, completedEvents);
   let activePhaseInfo = resolveCurrentOrInitialPhase(outline, current.phaseId, completedEvents);
@@ -411,6 +634,26 @@ export function syncChapterProgressWithRuntime(chapter: any, state: JsonRecord):
     }
   }
   if (!activePhaseInfo.phase && !nextUserNode) {
+    if (isFreeChapterRuntimeMode(chapter)) {
+      ensureFreeChapterDynamicEventState(
+        chapter,
+        state,
+        current.eventStatus === "completed"
+          ? Math.max(outline.phases.length + 1, current.eventIndex + 1)
+          : Math.max(outline.phases.length + 1, current.eventIndex || 1),
+        {
+          completedEvents,
+        },
+      );
+      return;
+    }
+    if (hasChapterEndingEvent(chapter, outline)) {
+      updateEndingState(chapter, outline, state, {
+        completedEvents,
+        eventStatus: current.fixedOutcomeLocked ? "completed" : "active",
+      });
+      return;
+    }
     const finalPhase = resolveFinalPhase(outline);
     updatePhaseState(outline, state, finalPhase.phase, finalPhase.phaseIndex, null, -1, "idle");
     return;
@@ -463,6 +706,21 @@ export function markCurrentUserNodeCompleted(chapter: any, state: JsonRecord, me
     : nextUserNode
       ? resolvePhaseForUserNode(outline, nextUserNode.id, outline.userNodes.findIndex((item) => item.id === nextUserNode.id))
       : resolveFinalPhase(outline);
+  if (!advancedPhase && !nextUserNode && isFreeChapterRuntimeMode(chapter)) {
+    ensureFreeChapterDynamicEventState(chapter, state, Math.max(outline.phases.length + 1, current.eventIndex + 1), {
+      completedEvents,
+      lastEvaluatedMessageId: Number.isFinite(Number(messageId)) ? Number(messageId) : current.lastEvaluatedMessageId,
+    });
+    return;
+  }
+  if (!advancedPhase && !nextUserNode && hasChapterEndingEvent(chapter, outline)) {
+    updateEndingState(chapter, outline, state, {
+      completedEvents,
+      lastEvaluatedMessageId: Number.isFinite(Number(messageId)) ? Number(messageId) : current.lastEvaluatedMessageId,
+      eventStatus: "active",
+    });
+    return;
+  }
   const nextUserNodeId = phaseInfo.phase?.kind === "user"
     ? (phaseInfo.phase.userNodeId || nextUserNode?.id || null)
     : (nextUserNode?.id || null);
@@ -535,6 +793,27 @@ export function advanceChapterProgressAfterNarrative(chapter: any, state: JsonRe
   const nextPhaseInfo = resolveNextPhaseFromGraph(outline, currentPhase.id, completedEvents, currentPhaseIndex);
   const nextPhase = nextPhaseInfo.phase;
   if (!nextPhase) {
+    if (isFreeChapterRuntimeMode(chapter)) {
+      ensureFreeChapterDynamicEventState(chapter, state, Math.max(outline.phases.length + 1, current.eventIndex + 1), {
+        completedEvents,
+      });
+      return {
+        phaseChanged: true,
+        enteredUserPhase: false,
+        matchedPhaseSignal,
+      };
+    }
+    if (hasChapterEndingEvent(chapter, outline)) {
+      updateEndingState(chapter, outline, state, {
+        completedEvents,
+        eventStatus: "active",
+      });
+      return {
+        phaseChanged: true,
+        enteredUserPhase: false,
+        matchedPhaseSignal: true,
+      };
+    }
     setChapterProgressState(state, {
       completedEvents,
       eventStatus: "completed",

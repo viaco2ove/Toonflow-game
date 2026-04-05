@@ -27,6 +27,7 @@ import {
   summarizeNarrativePlan,
   triggerStoryMemoryRefreshInBackground,
 } from "@/modules/game-runtime/engines/NarrativeOrchestrator";
+import { persistSessionMessageRevisitData } from "@/modules/game-runtime/services/SessionService";
 import {
   initializeChapterProgressForState,
   syncChapterProgressWithRuntime,
@@ -264,6 +265,18 @@ export default router.post(
             createTime: Number(message.createTime || now),
           })),
         );
+        const openingRows = await db("t_sessionMessage")
+          .where({ sessionId })
+          .orderBy("id", "desc")
+          .limit(openingMessages.length);
+        await persistSessionMessageRevisitData({
+          db,
+          rows: openingRows,
+          state,
+          chapterId: currentChapterId,
+          status: "active",
+          capturedAt: now,
+        });
       }
 
       if (chapter && openingPlan?.triggerMemoryAgent) {

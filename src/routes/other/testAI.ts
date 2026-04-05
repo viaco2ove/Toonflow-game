@@ -68,12 +68,14 @@ export default router.post(
     apiKey: z.string(),
     baseURL: z.string().optional(),
     manufacturer: z.string(),
+    reasoningEffort: z.enum(["minimal", "low", "medium", "high"]).optional(),
   }),
   async (req, res) => {
-    const { modelName, apiKey, baseURL, manufacturer } = req.body;
+    const { modelName, apiKey, baseURL, manufacturer, reasoningEffort } = req.body;
     const startedAt = Date.now();
     debugLog("request", {
       manufacturer,
+      reasoningEffort: String(reasoningEffort || "minimal"),
       modelName,
       baseURL: baseURL || "",
       apiKey: maskKey(apiKey),
@@ -117,6 +119,7 @@ export default router.post(
             apiKey,
             baseURL,
             manufacturer,
+            reasoningEffort,
           },
         ),
         TEST_TIMEOUT_MS,
@@ -138,6 +141,7 @@ export default router.post(
         manufacturer,
         modelName,
         manufacturerKey,
+        reasoningEffort: String(reasoningEffort || "minimal"),
         costMs: Date.now() - startedAt,
         replyPreview: trimPreview(reply),
       });

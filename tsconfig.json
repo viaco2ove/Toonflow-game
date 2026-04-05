@@ -17,5 +17,12 @@
     "incremental": true,
     "typeRoots": ["./node_modules/@types", "./types"],
     "resolveJsonModule": true
-  }
+  },
+  "exclude": [
+    "build",
+    "backup",
+    "node_modules_wsl",
+    ".wsl_mirror",
+    "test/playwright/playwright-demo"
+  ]
 }

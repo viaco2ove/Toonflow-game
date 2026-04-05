@@ -8,7 +8,6 @@ import {
   normalizeRolePair,
   normalizeSessionState,
   nowTs,
-  readDefaultRuntimeEventViewState,
 } from "@/lib/gameEngine";
 import {
   allowPlayerTurn,
@@ -40,7 +39,9 @@ import {
   setPendingDebugChapterId,
   syncDebugChapterRuntime,
   applyDebugUserMessageProgress,
+  buildEffectiveDebugChapter,
   evaluateDebugRuntimeOutcome,
+  buildDebugEndDialogDetail,
 } from "./debugRuntimeShared";
 import u from "@/utils";
 
@@ -62,12 +63,21 @@ function buildPlanResult(plan: ({
   presetContent?: string;
   eventAdjustMode?: "keep" | "update" | "waiting_input" | "completed";
   eventIndex?: number;
-  eventKind?: "opening" | "scene" | "user" | "fixed";
+  eventKind?: "opening" | "scene" | "user" | "fixed" | "ending";
   eventSummary?: string;
   eventFacts?: string[];
   eventStatus?: "idle" | "active" | "waiting_input" | "completed";
   speakerMode?: "template" | "fast" | "premium";
   speakerRouteReason?: string;
+  planSource?: string;
+  orchestratorRuntime?: {
+    modelKey?: unknown;
+    manufacturer?: unknown;
+    model?: unknown;
+    reasoningEffort?: unknown;
+    payloadMode?: unknown;
+    payloadModeSource?: unknown;
+  };
 }) | null) {
   if (!plan) return null;
   return {
@@ -101,6 +111,8 @@ function buildPlanResult(plan: ({
         ? "user"
         : plan.eventKind === "fixed"
           ? "fixed"
+          : plan.eventKind === "ending"
+            ? "ending"
           : plan.eventKind === "scene"
             ? "scene"
             : undefined,
@@ -125,6 +137,31 @@ function buildPlanResult(plan: ({
           ? "premium"
           : undefined,
     speakerRouteReason: String(plan.speakerRouteReason || "").trim(),
+    planSource: (() => {
+      const explicit = String(plan.planSource || "").trim();
+      if (explicit) return explicit;
+      if (String(plan.eventType || "").trim() === "on_opening" && String(plan.presetContent || "").trim()) {
+        return "opening_preset";
+      }
+      return plan.source === "rule"
+        ? "rule_orchestrator"
+        : plan.source === "fallback"
+          ? "fallback_orchestrator"
+          : "ai_orchestrator";
+    })(),
+    orchestratorRuntime: plan.orchestratorRuntime
+      ? {
+        modelKey: String(plan.orchestratorRuntime.modelKey || "").trim(),
+        manufacturer: String(plan.orchestratorRuntime.manufacturer || "").trim(),
+        model: String(plan.orchestratorRuntime.model || "").trim(),
+        reasoningEffort: (() => {
+          const value = String(plan.orchestratorRuntime?.reasoningEffort || "").trim().toLowerCase();
+          return value === "minimal" || value === "low" || value === "medium" || value === "high" ? value : "";
+        })(),
+        payloadMode: String(plan.orchestratorRuntime.payloadMode || "").trim().toLowerCase() === "advanced" ? "advanced" : "compact",
+        payloadModeSource: String(plan.orchestratorRuntime.payloadModeSource || "").trim().toLowerCase() === "explicit" ? "explicit" : "inferred",
+      }
+      : undefined,
   };
 }
 
@@ -136,6 +173,7 @@ function buildOrchestrationPayload(params: {
   chapterId: number;
   chapterTitle: string;
   endDialog?: string | null;
+  endDialogDetail?: string | null;
   plan?: ReturnType<typeof buildPlanResult>;
 }) {
   const stateSnapshot = cacheAndBuildDebugStateSnapshot({
@@ -143,15 +181,31 @@ function buildOrchestrationPayload(params: {
     worldId: params.worldId,
     state: params.state,
   });
-  const eventView = readDefaultRuntimeEventViewState(stateSnapshot);
+  if (String(process.env.LOG_LEVEL || "").trim().toUpperCase() === "DEBUG") {
+    const planSource = String(params.plan?.planSource || "").trim();
+    const tag = planSource === "opening_preset"
+      ? "story:introduction:plan"
+      : "story:orchestrator:plan";
+    console.log(`[${tag}]`, JSON.stringify({
+      planSource,
+      awaitUser: Boolean(params.plan?.awaitUser),
+      nextRoleType: String(params.plan?.nextRoleType || "").trim(),
+      roleType: String(params.plan?.roleType || "").trim(),
+      nextRole: String(params.plan?.nextRole || "").trim(),
+      role: String(params.plan?.role || "").trim(),
+    }));
+  }
   return {
     chapterId: params.chapterId,
     chapterTitle: params.chapterTitle,
     state: stateSnapshot,
-    currentEventDigest: eventView.currentEventDigest,
-    eventDigestWindow: eventView.eventDigestWindow,
-    eventDigestWindowText: eventView.eventDigestWindowText,
+    // 调试快照本身已经携带裁剪后的事件视图，不能再按缺失 chapterProgress 的精简快照重新计算，
+    // 否则顶层会退回默认的 scene/idle，并把真正的当前事件覆盖掉。
+    currentEventDigest: stateSnapshot.currentEventDigest || null,
+    eventDigestWindow: Array.isArray(stateSnapshot.eventDigestWindow) ? stateSnapshot.eventDigestWindow : [],
+    eventDigestWindowText: String(stateSnapshot.eventDigestWindowText || ""),
     endDialog: params.endDialog || null,
+    endDialogDetail: String(params.endDialogDetail || "").trim() || null,
     plan: params.plan || null,
   };
 }
@@ -175,6 +229,7 @@ function buildPresetPlan(message: {
     nextRole: String(next.nextRole || ""),
     nextRoleType: String(next.nextRoleType || ""),
     source: "fallback",
+    planSource: String(message?.eventType || "").trim() === "on_opening" ? "opening_preset" : "preset",
     memoryHints: [],
     triggerMemoryAgent: false,
     stateDelta: {},
@@ -249,16 +304,9 @@ export default router.post(
       if (playerContent) {
         applyPlayerProfileFromMessageToState(state, world, playerContent);
       }
-      syncDebugChapterRuntime(chapter, state);
       const debugFreePlotActive = isDebugFreePlotActive(state);
-      let effectiveChapter = debugFreePlotActive
-        ? {
-          ...chapter,
-          content: "",
-          openingText: "",
-          completionCondition: null,
-        }
-        : chapter;
+      let effectiveChapter = buildEffectiveDebugChapter(chapter, debugFreePlotActive);
+      syncDebugChapterRuntime(effectiveChapter, state);
       const messages = inputMessages.map((item) => ({
         role: String(item.role || ""),
         roleType: String(item.roleType || ""),
@@ -292,7 +340,8 @@ export default router.post(
 
       async function buildChapterStartPlan(targetChapter: any) {
         state.chapterId = Number(targetChapter.id || 0);
-        syncDebugChapterRuntime(targetChapter, state);
+        const targetEffectiveChapter = buildEffectiveDebugChapter(targetChapter, debugFreePlotActive);
+        syncDebugChapterRuntime(targetEffectiveChapter, state);
         const openingMessage = buildOpeningRuntimeMessage(world, targetChapter, String(rolePair.narratorRole.name || "旁白"));
         setRuntimeTurnState(state, world, {
           canPlayerSpeak: false,
@@ -303,24 +352,16 @@ export default router.post(
         });
         // 有显式章节开场词时，先把这一句完整返回给前端；没有时再直接跑一次编排器。
         if (String(openingMessage.content || "").trim()) {
-          return {
-            chapterId: Number(targetChapter.id || 0),
-            chapterTitle: String(targetChapter.title || ""),
-            plan: buildPresetPlan(openingMessage, {
+        return {
+          chapterId: Number(targetChapter.id || 0),
+          chapterTitle: String(targetChapter.title || ""),
+          plan: buildPresetPlan(openingMessage, {
               awaitUser: false,
               nextRole: String(rolePair.narratorRole.name || "旁白"),
               nextRoleType: "narrator",
             }),
           };
         }
-        const targetEffectiveChapter = debugFreePlotActive
-          ? {
-            ...targetChapter,
-            content: "",
-            openingText: "",
-            completionCondition: null,
-          }
-          : targetChapter;
         effectiveChapter = targetEffectiveChapter;
         // 调用大模型进行编排
         const start = Date.now();
@@ -354,7 +395,7 @@ export default router.post(
         return {
           chapterId: Number(targetChapter.id || 0),
           chapterTitle: String(targetChapter.title || ""),
-          plan: buildPlanResult({ ...targetPlan, eventType: "on_orchestrated_reply" }),
+          plan: buildPlanResult({ ...targetPlan, eventType: "on_orchestrated_reply", planSource: "ai_orchestrator" }),
         };
       }
 
@@ -445,7 +486,7 @@ export default router.post(
           chapterTitle: String(chapter.title || ""),
           state,
           endDialog: null,
-          plan: buildPlanResult({ ...plan, eventType: "on_orchestrated_reply" }),
+          plan: buildPlanResult({ ...plan, eventType: "on_orchestrated_reply", planSource: "ai_orchestrator" }),
         })));
       }
 
@@ -523,6 +564,12 @@ export default router.post(
             nextRole: "",
             nextRoleType: "",
           }),
+          endDialogDetail: buildDebugEndDialogDetail({
+            endDialog: "已失败",
+            chapterTitle: String(chapter.title || ""),
+            matchedBy: outcome.matchedBy,
+            matchedRule: outcome.matchedRule,
+          }),
         })));
       }
 
@@ -595,7 +642,7 @@ export default router.post(
         chapterTitle: String(chapter.title || ""),
         state,
         endDialog: null,
-        plan: buildPlanResult({ ...plan, eventType: "on_orchestrated_reply" }),
+        plan: buildPlanResult({ ...plan, eventType: "on_orchestrated_reply", planSource: "ai_orchestrator" }),
       })));
     } catch (err) {
       if (isSessionServiceError(err)) {

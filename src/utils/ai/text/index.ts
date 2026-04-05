@@ -31,6 +31,7 @@ interface AIConfig {
   outputPricePer1M?: number;
   cacheReadPricePer1M?: number;
   currency?: string;
+  reasoningEffort?: "minimal" | "low" | "medium" | "high";
 }
 
 const LOG_LEVEL = (process.env.LOG_LEVEL || "").trim().toUpperCase();
@@ -61,25 +62,90 @@ function debugLog(step: string, payload?: Record<string, unknown>) {
   }
 }
 
-async function logTokenUsageByUsage(input: AIInput<any>, config: AIConfig, usage: LanguageModelUsage | null | undefined) {
+function normalizeMessageContentSnapshot(input: unknown): string {
+  if (typeof input === "string") return input;
+  if (input == null) return "";
+  try {
+    return JSON.stringify(input);
+  } catch {
+    return String(input);
+  }
+}
+
+function buildUsageAuditMeta(
+  input: AIInput<any>,
+  config: AIConfig,
+  usage: LanguageModelUsage | null | undefined,
+  extra?: Record<string, unknown> | null,
+) {
+  const baseMeta = input.usageMeta && typeof input.usageMeta === "object" ? { ...input.usageMeta } : {};
+  const usageBreakdown = {
+    inputTokens: Number(usage?.inputTokens || 0),
+    outputTokens: Number(usage?.outputTokens || 0),
+    reasoningTokens: Number(usage?.outputTokenDetails?.reasoningTokens || usage?.reasoningTokens || 0),
+    cacheReadTokens: Number(usage?.inputTokenDetails?.cacheReadTokens || usage?.cachedInputTokens || 0),
+    totalTokens: Number(usage?.totalTokens || 0),
+  };
+  return {
+    ...baseMeta,
+    reasoningEffort: String(config?.reasoningEffort || "").trim() || "未指定",
+    request: input.prompt
+      ? { prompt: String(input.prompt || "") }
+      : {
+        system: String(input.system || ""),
+        messages: Array.isArray(input.messages)
+          ? input.messages.map((msg) => ({
+            role: String(msg.role || ""),
+            content: normalizeMessageContentSnapshot((msg as any).content),
+          }))
+          : [],
+      },
+    usage: usageBreakdown,
+    ...(extra || {}),
+  };
+}
+
+async function logTokenUsageByUsage(
+  input: AIInput<any>,
+  config: AIConfig,
+  usage: LanguageModelUsage | null | undefined,
+  extraMeta?: Record<string, unknown> | null,
+) {
   try {
     if (!usage) return;
-    await writeAiTokenUsageLog({
+    const auditMeta = buildUsageAuditMeta(input, config, usage, extraMeta);
+    const usagePayload = {
       type: input.usageType || "通用文本",
-      manufacturer: config?.manufacturer,
-      model: config?.model,
-      channel: input.usageChannel || config?.manufacturer,
+      manufacturer: config?.manufacturer || "",
+      model: config?.model || "",
+      channel: input.usageChannel || config?.manufacturer || "",
       inputTokens: Number(usage?.inputTokens || 0),
       outputTokens: Number(usage?.outputTokens || 0),
       reasoningTokens: Number(usage?.outputTokenDetails?.reasoningTokens || usage?.reasoningTokens || 0),
       cacheReadTokens: Number(usage?.inputTokenDetails?.cacheReadTokens || usage?.cachedInputTokens || 0),
       totalTokens: Number(usage?.totalTokens || 0),
+      reasoningEffort: String(config?.reasoningEffort || "").trim() || "未指定",
+      remark: input.usageRemark || "",
+    };
+    if (TEXT_DEBUG) {
+      console.log("[ai:text:usage]", usagePayload);
+    }
+    await writeAiTokenUsageLog({
+      type: usagePayload.type,
+      manufacturer: usagePayload.manufacturer,
+      model: usagePayload.model,
+      channel: usagePayload.channel,
+      inputTokens: usagePayload.inputTokens,
+      outputTokens: usagePayload.outputTokens,
+      reasoningTokens: usagePayload.reasoningTokens,
+      cacheReadTokens: usagePayload.cacheReadTokens,
+      totalTokens: usagePayload.totalTokens,
       inputPricePer1M: Number(config?.inputPricePer1M || 0),
       outputPricePer1M: Number(config?.outputPricePer1M || 0),
       cacheReadPricePer1M: Number(config?.cacheReadPricePer1M || 0),
       currency: String(config?.currency || "").trim() || "CNY",
-      remark: input.usageRemark || "",
-      meta: input.usageMeta || null,
+      remark: usagePayload.remark,
+      meta: auditMeta,
     });
   } catch (err) {
     console.warn("[ai:text] token usage log failed", {
@@ -91,7 +157,13 @@ async function logTokenUsageByUsage(input: AIInput<any>, config: AIConfig, usage
 }
 
 async function logTokenUsage(input: AIInput<any>, config: AIConfig, result: GenerateTextResult<Record<string, Tool>, any>) {
-  await logTokenUsageByUsage(input, config, (result as any)?.usage);
+  await logTokenUsageByUsage(input, config, (result as any)?.usage, {
+    response: {
+      text: String((result as any)?.text || ""),
+      finishReason: String((result as any)?.finishReason || (result as any)?.finish_reason || ""),
+      warningsCount: Array.isArray((result as any)?.warnings) ? (result as any).warnings.length : 0,
+    },
+  });
 }
 
 function headersToObject(headers?: HeadersInit): Record<string, string> {
@@ -254,6 +326,7 @@ const buildOptions = async (input: AIInput<any>, config: AIConfig = {}) => {
     maxStep: maxStep ?? 0,
     outputKeys,
     plainTextOutput: Boolean(input.plainTextOutput),
+    reasoningEffort: config?.reasoningEffort || "",
     messageCount,
     promptPreview: trimPreview(input.prompt || ""),
   });
@@ -274,6 +347,11 @@ const buildOptions = async (input: AIInput<any>, config: AIConfig = {}) => {
       ...(maxStep && { stopWhen: stepCountIs(maxStep) }),
       ...(input.maxRetries !== undefined && { maxRetries: input.maxRetries }),
       ...(output && { output }),
+      ...(
+        config?.reasoningEffort && openAICompatible
+          ? { providerOptions: { openaiCompatible: { reasoningEffort: config.reasoningEffort } } }
+          : {}
+      ),
     },
     responseFormat: owned.responseFormat,
   };

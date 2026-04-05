@@ -2,6 +2,7 @@ import { normalizePersistedVoiceConfig } from "@/lib/voiceGateway";
 
 export type ExternalModelConfigType = "text" | "image" | "voice" | "voice_design" | "video";
 export type PersistedModelConfigType = "text" | "image" | "voice" | "video";
+export type ModelReasoningEffort = "minimal" | "low" | "medium" | "high";
 
 function trimText(input: unknown): string {
   return String(input || "").trim();
@@ -11,6 +12,14 @@ function normalizeNonNegativeNumber(input: unknown): number {
   const value = Number(input);
   if (!Number.isFinite(value) || value < 0) return 0;
   return Math.round(value * 1_000_000) / 1_000_000;
+}
+
+function normalizeReasoningEffort(input: unknown): ModelReasoningEffort {
+  const value = trimText(input).toLowerCase();
+  if (value === "low" || value === "medium" || value === "high") {
+    return value;
+  }
+  return "minimal";
 }
 
 export function isVoiceDesignModelConfig(input: {
@@ -43,6 +52,7 @@ export function toExternalModelConfigRow<T extends Record<string, any>>(row: T):
   inputPricePer1M: number;
   outputPricePer1M: number;
   cacheReadPricePer1M: number;
+  reasoningEffort: ModelReasoningEffort | "";
 } {
   if (isVoiceDesignModelConfig(row)) {
     return {
@@ -53,17 +63,20 @@ export function toExternalModelConfigRow<T extends Record<string, any>>(row: T):
       inputPricePer1M: normalizeNonNegativeNumber(row.inputPricePer1M),
       outputPricePer1M: normalizeNonNegativeNumber(row.outputPricePer1M),
       cacheReadPricePer1M: normalizeNonNegativeNumber(row.cacheReadPricePer1M),
+      reasoningEffort: "",
     };
   }
   const resolvedType = trimText(row.type).toLowerCase();
+  const externalType = (resolvedType || "text") as ExternalModelConfigType;
   return {
     ...row,
-    type: (resolvedType || "text") as ExternalModelConfigType,
+    type: externalType,
     modelType: trimText(row.modelType),
     currency: trimText(row.currency).toUpperCase() || "CNY",
     inputPricePer1M: normalizeNonNegativeNumber(row.inputPricePer1M),
     outputPricePer1M: normalizeNonNegativeNumber(row.outputPricePer1M),
     cacheReadPricePer1M: normalizeNonNegativeNumber(row.cacheReadPricePer1M),
+    reasoningEffort: externalType === "text" ? normalizeReasoningEffort(row.reasoningEffort) : "",
   };
 }
 
@@ -78,6 +91,7 @@ export function normalizeExternalModelConfig(input: {
   outputPricePer1M?: unknown;
   cacheReadPricePer1M?: unknown;
   currency?: unknown;
+  reasoningEffort?: unknown;
 }): {
   persistedType: PersistedModelConfigType;
   externalType: ExternalModelConfigType;
@@ -90,6 +104,7 @@ export function normalizeExternalModelConfig(input: {
   outputPricePer1M: number;
   cacheReadPricePer1M: number;
   currency: string;
+  reasoningEffort: ModelReasoningEffort;
 } {
   const requestedType = trimText(input.type).toLowerCase();
   const manufacturer = trimText(input.manufacturer);
@@ -101,6 +116,7 @@ export function normalizeExternalModelConfig(input: {
   const outputPricePer1M = normalizeNonNegativeNumber(input.outputPricePer1M);
   const cacheReadPricePer1M = normalizeNonNegativeNumber(input.cacheReadPricePer1M);
   const currency = trimText(input.currency).toUpperCase() || "CNY";
+  const reasoningEffort = normalizeReasoningEffort(input.reasoningEffort);
 
   if (requestedType === "voice_design") {
     return {
@@ -115,6 +131,7 @@ export function normalizeExternalModelConfig(input: {
       outputPricePer1M,
       cacheReadPricePer1M,
       currency,
+      reasoningEffort,
     };
   }
 
@@ -137,6 +154,7 @@ export function normalizeExternalModelConfig(input: {
       outputPricePer1M,
       cacheReadPricePer1M,
       currency,
+      reasoningEffort,
     };
   }
 
@@ -153,5 +171,6 @@ export function normalizeExternalModelConfig(input: {
     outputPricePer1M,
     cacheReadPricePer1M,
     currency,
+    reasoningEffort,
   };
 }

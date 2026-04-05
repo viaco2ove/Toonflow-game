@@ -3,10 +3,13 @@ import {
   ConditionContext,
   JsonRecord,
   evaluateCondition,
+  nowTs,
   parseJsonSafe,
   readChapterProgressState,
   setChapterProgressState,
   setValueByPath,
+  syncRuntimeCurrentEventFromChapterProgress,
+  upsertRuntimeDynamicEventState,
 } from "@/lib/gameEngine";
 
 export interface ChapterOutcomeResult {
@@ -69,11 +72,12 @@ function evaluateStructuredCondition(
   }
   if (isRecord(condition)) {
     const failureNode = condition.failure ?? condition.failed ?? condition.fail;
-    if (failureNode !== undefined && evaluateCondition(failureNode, ctx)) {
+    // null 代表“未配置该分支”，不能继续送进条件引擎，否则会误判为命中。
+    if (failureNode != null && evaluateCondition(failureNode, ctx)) {
       return { result: "failed", matchedRule: "completion.failure" };
     }
     const successNode = condition.success ?? condition.pass;
-    if (successNode !== undefined && evaluateCondition(successNode, ctx)) {
+    if (successNode != null && evaluateCondition(successNode, ctx)) {
       return { result: "success", matchedRule: "completion.success" };
     }
   }
@@ -176,10 +180,33 @@ export function applyChapterOutcomeToState(
     setValueByPath(state, "flags.chapterFailed", true);
   }
 
+  const endingEventIndex = Math.max(1, outline.phases.length + 1);
+  const endingSummary = outcome.result === "success"
+    ? "结束条件已达成"
+    : "结束条件失败";
+  upsertRuntimeDynamicEventState(state, {
+    eventIndex: endingEventIndex,
+    phaseId: "",
+    kind: "ending",
+    summary: endingSummary,
+    summarySource: "system",
+    status: "completed",
+    allowedRoles: [],
+    userNodeId: "",
+    updateTime: nowTs(),
+  });
+
   setChapterProgressState(state, {
+    phaseId: "",
+    phaseIndex: outline.phases.length,
+    eventIndex: endingEventIndex,
+    eventKind: "ending",
+    eventSummary: endingSummary,
+    eventStatus: "completed",
     completedEvents,
     fixedOutcomeLocked: true,
     pendingGoal: "",
     userNodeStatus: outcome.result === "success" ? "completed" : progress.userNodeStatus,
   });
+  syncRuntimeCurrentEventFromChapterProgress(state);
 }

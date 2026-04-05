@@ -87,6 +87,17 @@ export default async (knex: Knex): Promise<void> => {
     table.index(["type"], "idx_aiTokenUsageLog_type");
   });
 
+  await addColumn("t_sessionMessage", "revisitData", "text");
+  await addColumn("t_config", "reasoningEffort", "text");
+  if (await knex.schema.hasTable("t_config")) {
+    await knex("t_config")
+      .where("type", "text")
+      .where((builder) => {
+        builder.whereNull("reasoningEffort").orWhere("reasoningEffort", "");
+      })
+      .update({ reasoningEffort: "minimal" });
+  }
+
   const upsertVideoModels = async (
     models: Array<{
       manufacturer: string;

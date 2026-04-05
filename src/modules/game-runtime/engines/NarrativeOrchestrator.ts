@@ -1,11 +1,13 @@
 import u from "@/utils";
 import {
   ChapterRuntimePhase,
+  isFreeChapterRuntimeMode,
   JsonRecord,
   RuntimeCurrentEventState,
+  readDefaultRuntimeEventDigestWindowTextState,
+  readRuntimeEventDigestWindowTextState,
   normalizeChapterRuntimeOutline,
   readRuntimeCurrentEventDigestState,
-  readRuntimeEventDigestWindowTextState,
   upsertRuntimeEventDigestState,
   normalizeRolePair,
   nowTs,
@@ -15,7 +17,10 @@ import {
   setChapterProgressState,
   syncRuntimeCurrentEventFromChapterProgress,
 } from "@/lib/gameEngine";
-import { advanceChapterProgressAfterNarrative } from "@/modules/game-runtime/engines/ChapterProgressEngine";
+import {
+  advanceChapterProgressAfterNarrative,
+  syncChapterProgressWithRuntime,
+} from "@/modules/game-runtime/engines/ChapterProgressEngine";
 import { resolveRuleNarrativePlan } from "@/modules/game-runtime/engines/RuleOrchestrator";
 import {
   buildTemplateSpeakerContent,
@@ -81,6 +86,7 @@ export interface NarrativePlanResult {
   eventStatus: RuntimeCurrentEventState["status"];
   speakerMode?: "template" | "fast" | "premium";
   speakerRouteReason?: string;
+  orchestratorRuntime?: NarrativeRuntimeMeta;
 }
 
 export interface OrchestratorResult extends NarrativePlanResult {
@@ -105,6 +111,16 @@ export interface NarrativePlanSummary {
   eventStatus: RuntimeCurrentEventState["status"];
   speakerMode?: "template" | "fast" | "premium";
   speakerRouteReason?: string;
+  orchestratorRuntime?: NarrativeRuntimeMeta;
+}
+
+export interface NarrativeRuntimeMeta {
+  modelKey: string;
+  manufacturer: string;
+  model: string;
+  reasoningEffort: "minimal" | "low" | "medium" | "high" | "";
+  payloadMode: "compact" | "advanced";
+  payloadModeSource: "explicit" | "inferred";
 }
 
 export interface MemoryManagerResult {
@@ -114,11 +130,58 @@ export interface MemoryManagerResult {
   source: "ai" | "fallback";
 }
 
+type OrchestratorPromptPayload = {
+  worldName: string;
+  worldIntro: string;
+  chapterTitle: string;
+  chapterDirective: string;
+  chapterUserTurns: string;
+  chapterOpening: string;
+  roles: RuntimeStoryRole[];
+  wildcardRoles: RuntimeStoryRole[];
+  narratorActsAsWildcardFallback: boolean;
+  storyState: string;
+  turnState: RuntimeTurnState;
+  currentPhaseLabel: string;
+  currentPhaseGoal: string;
+  currentEventIndex: number;
+  currentEventKind: string;
+  currentEventSummary: string;
+  currentEventFacts: string[];
+  currentEventMemorySummary: string;
+  currentEventMemoryFacts: string[];
+  currentEventWindow: string;
+  phaseAllowedSpeakers: string[];
+  recentDialogue: string;
+  latestPlayerMessage: string;
+};
+
+type PromptStatRow = {
+  block: string;
+  content: string;
+  chars: number;
+  estimatedTokens: number;
+};
+
 // 截断错误信息，避免日志和报错文本过长。
 function truncateErrorMessage(input: unknown, limit = 180): string {
   const text = normalizeScalarText(input);
   if (!text) return "";
   return text.length > limit ? `${text.slice(0, limit)}...` : text;
+}
+
+function isDebugLogEnabled(): boolean {
+  return normalizeScalarText(process.env.LOG_LEVEL).toUpperCase() === "DEBUG";
+}
+
+function estimatePromptTokens(text: string): number {
+  const chars = String(text || "").length;
+  if (!chars) return 0;
+  return Math.max(1, Math.ceil(chars / 4));
+}
+
+function normalizePromptStatContent(content: string): string {
+  return normalizeScalarText(content).replace(/\n/g, " ↩ ");
 }
 
 // 按阶段包装模型异常，统一成前后端可读的错误信息。
@@ -424,18 +487,35 @@ function summarizeParameterCardText(input: unknown): string {
   ].filter(Boolean);
   return parts.join("|");
 }
+
+function summarizeParameterCardKeyText(input: unknown): string {
+  const card = asRecord(input);
+  if (!Object.keys(card).length) return "";
+  const levelValue = card.level != null && normalizeScalarText(card.level) ? normalizeScalarText(card.level) : "";
+  const levelLabel = normalizeScalarText(card.level_desc || card.levelDesc);
+  const level = [levelValue, levelLabel].filter(Boolean).join("/");
+  const parts = [
+    normalizeScalarText(card.name) ? `角色名:${normalizeScalarText(card.name)}` : "",
+    normalizeScalarText(card.gender) ? `性别:${normalizeScalarText(card.gender)}` : "",
+    card.age != null && normalizeScalarText(card.age) ? `年龄:${normalizeScalarText(card.age)}` : "",
+    normalizeScalarText(card.personality) ? `性格:${shortText(card.personality, 20)}` : "",
+    level ? `等级:${level}` : "",
+  ].filter(Boolean);
+  return parts.join("|");
+}
+
 // 将角色的基础信息、口吻和参数卡压成编排模型可读的短摘要，避免把整份设定直接塞给模型。
 function describeRole(role: RuntimeStoryRole | null | undefined, compactMode = false): string {
   if (!role) return "";
   if (compactMode) {
-    return summarizeParameterCardText(role.parameterCardJson) || `角色名:${normalizeScalarText(role.name)}`;
+    return summarizeParameterCardKeyText(role.parameterCardJson) || `角色名:${normalizeScalarText(role.name)}`;
   }
   const parts = [
     `姓名:${normalizeScalarText(role.name)}`,
     `身份:${sanitizeRoleType(role.roleType)}`,
-    shortText(role.description, 120) ? `设定:${shortText(role.description, 120)}` : "",
-    shortText(role.sample, 80) ? `口吻:${shortText(role.sample, 80)}` : "",
-    summarizeJsonValue(role.parameterCardJson, 5) ? `参数:${shortText(summarizeJsonValue(role.parameterCardJson, 5), 160)}` : "",
+    summarizeParameterCardKeyText(role.parameterCardJson) ? `参数:${summarizeParameterCardKeyText(role.parameterCardJson)}` : "",
+    shortText(role.sample, 48) ? `口吻:${shortText(role.sample, 48)}` : "",
+    shortText(role.description, 60) ? `设定:${shortText(role.description, 60)}` : "",
   ].filter(Boolean);
   return parts.join("\n");
 }
@@ -460,10 +540,14 @@ function describeRoleLite(role: RuntimeStoryRole | null | undefined): string {
 function readCurrentChapterPhase(chapter: any, state: JsonRecord): ChapterRuntimePhase | null {
   const outline = normalizeChapterRuntimeOutline(chapter?.runtimeOutline);
   const progress = readChapterProgressState(state);
+  const runtimeEvent = readRuntimeCurrentEventState(state);
   if (!outline.phases.length) return null;
   if (progress.phaseId) {
     const matched = outline.phases.find((item) => item.id === progress.phaseId) || null;
     if (matched) return matched;
+  }
+  if (isFreeChapterRuntimeMode(chapter) && runtimeEvent.index > outline.phases.length) {
+    return null;
   }
   return outline.phases[0] || null;
 }
@@ -562,15 +646,30 @@ function readCurrentRuntimeEventContext(chapter: any, state: JsonRecord): {
   const currentPhase = progress.phaseId
     ? phases.find((item) => item.id === progress.phaseId) || null
     : phases[0] || null;
+  if (isFreeChapterRuntimeMode(chapter)) {
+    return {
+      eventIndex: runtimeEvent.index,
+      eventKind: runtimeEvent.kind,
+      eventSummary: normalizeScalarText(runtimeEventDigest.eventSummary || runtimeEvent.summary),
+      eventFacts: Array.isArray(runtimeEventDigest.eventFacts) && runtimeEventDigest.eventFacts.length
+        ? runtimeEventDigest.eventFacts
+        : runtimeEvent.facts,
+      eventMemorySummary: normalizeScalarText(runtimeEventDigest.memorySummary),
+      eventMemoryFacts: Array.isArray(runtimeEventDigest.memoryFacts) ? runtimeEventDigest.memoryFacts : [],
+      eventStatus: runtimeEventDigest.eventStatus || runtimeEvent.status || "active",
+    };
+  }
   if (!currentPhase) {
     return {
-      eventIndex: 1,
-      eventKind: "scene",
-      eventSummary: shortText(chapterDirectiveText(chapter), 120) || "当前事件未命名",
+      eventIndex: Number.isFinite(Number(progress.eventIndex)) ? Math.max(1, Number(progress.eventIndex)) : 1,
+      eventKind: progress.eventKind || runtimeEvent.kind || "scene",
+      eventSummary: normalizeScalarText(progress.eventSummary)
+        || shortText(chapterDirectiveText(chapter), 120)
+        || "当前事件未命名",
       eventFacts: [],
       eventMemorySummary: "",
       eventMemoryFacts: [],
-      eventStatus: runtimeEvent.status || "idle",
+      eventStatus: progress.eventStatus || runtimeEvent.status || "idle",
     };
   }
   const phaseIndex = phases.findIndex((item) => item.id === currentPhase.id);
@@ -596,6 +695,42 @@ function readCurrentRuntimeEventContext(chapter: any, state: JsonRecord): {
     eventMemorySummary: "",
     eventMemoryFacts: [],
     eventStatus: progress.eventStatus,
+  };
+}
+
+function buildPromptEventContextPayload(currentEvent: {
+  eventIndex: number;
+  eventKind: RuntimeCurrentEventState["kind"];
+  eventSummary: string;
+  eventFacts: string[];
+  eventMemorySummary: string;
+  eventMemoryFacts: string[];
+}) {
+  return {
+    currentEventIndex: currentEvent.eventIndex,
+    currentEventKind: currentEvent.eventKind,
+    currentEventSummary: currentEvent.eventSummary,
+    currentEventFacts: currentEvent.eventFacts,
+    currentEventMemorySummary: currentEvent.eventMemorySummary,
+    currentEventMemoryFacts: currentEvent.eventMemoryFacts,
+  };
+}
+
+function buildPromptEventContextTextPayload(currentEvent: {
+  eventIndex: number;
+  eventKind: RuntimeCurrentEventState["kind"];
+  eventSummary: string;
+  eventFacts: string[];
+  eventMemorySummary: string;
+  eventMemoryFacts: string[];
+}, compactMode: boolean) {
+  return {
+    currentEventIndex: currentEvent.eventIndex,
+    currentEventKind: currentEvent.eventKind,
+    currentEventSummary: currentEvent.eventSummary,
+    currentEventFacts: uniqueTextList(currentEvent.eventFacts || [], compactMode ? 3 : 5).join("；"),
+    currentEventMemorySummary: shortText(currentEvent.eventMemorySummary || "", compactMode ? 100 : 180),
+    currentEventMemoryFacts: uniqueTextList(currentEvent.eventMemoryFacts || [], compactMode ? 3 : 5).join("；"),
   };
 }
 
@@ -723,76 +858,115 @@ function parsePlainStateDelta(input: unknown): JsonRecord {
 }
 
 // 把世界、章节、角色、状态拼成编排师可直接消费的用户提示词。
-function buildOrchestratorUserPrompt(payload: {
-  worldName: string;
-  worldIntro: string;
-  chapterTitle: string;
-  chapterDirective: string;
-  chapterUserTurns: string;
-  chapterOpening: string;
-  roles: RuntimeStoryRole[];
-  wildcardRoles: RuntimeStoryRole[];
-  narratorActsAsWildcardFallback: boolean;
-  storyState: string;
-  turnState: RuntimeTurnState;
-  currentPhaseLabel: string;
-  currentPhaseGoal: string;
-  currentEventIndex: number;
-  currentEventKind: string;
-  currentEventSummary: string;
-  currentEventFacts: string[];
-  currentEventMemorySummary: string;
-  currentEventMemoryFacts: string[];
-  currentEventWindow: string;
-  phaseAllowedSpeakers: string[];
-  recentDialogue: string;
-  latestPlayerMessage: string;
-},compactMode = false): string {
+function buildCompactOrchestratorSections(payload: OrchestratorPromptPayload): Array<{ title: string; content: string }> {
+  const rolesText = payload.roles
+    .map((role) => `- ${sanitizeRoleType(role.roleType)}|${normalizeScalarText(role.name)}|${describeRole(role, true)}`)
+    .join("\n");
+  const currentEventLines = [
+    `index:${payload.currentEventIndex || 1}`,
+    `kind:${payload.currentEventKind || "scene"}`,
+    `summary:${payload.currentEventSummary || "当前事件未命名"}`,
+    payload.currentEventFacts.length ? `facts:${payload.currentEventFacts.join("｜")}` : "",
+    payload.currentEventMemorySummary ? `memory:${payload.currentEventMemorySummary}` : "",
+    payload.currentEventMemoryFacts.length ? `memory_facts:${payload.currentEventMemoryFacts.join("｜")}` : "",
+  ].filter(Boolean).join("\n");
+  const eventSeed = shortText(
+    [
+      payload.chapterDirective,
+      payload.chapterUserTurns,
+      payload.chapterOpening,
+    ].filter(Boolean).join("\n"),
+    160,
+  );
+  const recentLines = [
+    payload.recentDialogue || "",
+    payload.latestPlayerMessage ? `用户待处理:${payload.latestPlayerMessage}` : "",
+  ].filter(Boolean).join("\n");
+  return [
+    { title: "角色", content: rolesText || "无" },
+    { title: "当前事件", content: currentEventLines || "index:1\nkind:scene\nsummary:当前事件未命名" },
+    ...((!payload.currentEventSummary && !payload.currentEventFacts.length && eventSeed)
+      ? [{ title: "事件种子", content: eventSeed }]
+      : []),
+    { title: "最近对话", content: recentLines || "无" },
+  ];
+}
+
+function buildOrchestratorPromptStats(payload: OrchestratorPromptPayload, compactMode: boolean): PromptStatRow[] {
+  const sections = compactMode
+    ? buildCompactOrchestratorSections(payload)
+    : [
+      { title: "世界", content: [payload.worldName ? `名称:${payload.worldName}` : "", payload.worldIntro ? `简介:${payload.worldIntro}` : ""].filter(Boolean).join("\n") || "无" },
+      { title: "章节内部提纲", content: [payload.chapterTitle ? `标题:${payload.chapterTitle}` : "", payload.chapterDirective ? `提纲摘录:${payload.chapterDirective}` : "", payload.chapterUserTurns ? `用户交互节点:${payload.chapterUserTurns}` : "", payload.chapterOpening ? `开场白:${payload.chapterOpening}` : ""].filter(Boolean).join("\n") || "无" },
+      { title: "角色列表", content: payload.roles.map((role) => `- ${sanitizeRoleType(role.roleType)} | ${normalizeScalarText(role.name)} | ${describeRole(role)}`).join("\n") || "无" },
+      { title: "剧情摘要", content: payload.storyState || "无" },
+      { title: "当前阶段", content: [`label:${payload.currentPhaseLabel || "未命名阶段"}`, payload.currentPhaseGoal ? `goal:${payload.currentPhaseGoal}` : "", `allowed_speakers:${payload.phaseAllowedSpeakers.length ? payload.phaseAllowedSpeakers.join("、") : "全部当前角色"}`].filter(Boolean).join("\n") },
+      { title: "当前事件", content: [`index:${payload.currentEventIndex || 1}`, `kind:${payload.currentEventKind || "scene"}`, `summary:${payload.currentEventSummary || "当前事件未命名"}`, payload.currentEventFacts.length ? `facts:${payload.currentEventFacts.join("；")}` : "", payload.currentEventMemorySummary ? `memory_summary:${payload.currentEventMemorySummary}` : "", payload.currentEventMemoryFacts.length ? `memory_facts:${payload.currentEventMemoryFacts.join("；")}` : "", payload.currentEventWindow ? `事件窗口:${payload.currentEventWindow}` : ""].filter(Boolean).join("\n") },
+      { title: "回合状态", content: [`can_player_speak:${payload.turnState.canPlayerSpeak ? "true" : "false"}`, `expected_role_type:${sanitizeRoleType(payload.turnState.expectedRoleType)}`, `expected_role:${payload.turnState.expectedRole || "无"}`, `last_speaker_role_type:${sanitizeRoleType(payload.turnState.lastSpeakerRoleType)}`, `last_speaker:${payload.turnState.lastSpeaker || "无"}`].join("\n") },
+      { title: "最近对话", content: payload.recentDialogue || "无" },
+      { title: "用户本轮输入", content: payload.latestPlayerMessage || "无" },
+    ];
+  return sections.map((section) => {
+    const content = section.content || "无";
+    return {
+      block: section.title,
+      content,
+      chars: content.length,
+      estimatedTokens: estimatePromptTokens(content),
+    };
+  });
+}
+
+function logOrchestratorPromptStats(
+  payload: OrchestratorPromptPayload,
+  compactMode: boolean,
+  runtime: NarrativeRuntimeMeta,
+  systemPrompt: string,
+  userPrompt: string,
+  runtimeError: unknown,
+) {
+  if (!isDebugLogEnabled()) return;
+  const rows: PromptStatRow[] = [
+    {
+      block: "系统提示词",
+      content: systemPrompt || "无",
+      chars: systemPrompt.length,
+      estimatedTokens: estimatePromptTokens(systemPrompt),
+    },
+    ...buildOrchestratorPromptStats(payload, compactMode),
+    {
+      block: "用户提示词",
+      content: userPrompt || "无",
+      chars: userPrompt.length,
+      estimatedTokens: estimatePromptTokens(userPrompt),
+    },
+  ];
+  const totalPromptChars = systemPrompt.length + userPrompt.length;
+  const totalPromptTokens = estimatePromptTokens(`${systemPrompt}\n${userPrompt}`.trim());
+  console.log("[story:orchestrator:runtime]", JSON.stringify(runtime));
+  console.log(`[story:orchestrator:stats] request_chars=${totalPromptChars} estimated_tokens=${totalPromptTokens} system_chars=${systemPrompt.length} user_chars=${userPrompt.length}`);
+  if (runtimeError) {
+    console.log(`[story:orchestrator:stats] request_status=fallback reason=${normalizePromptStatContent((runtimeError as any)?.message || String(runtimeError))}`);
+  } else {
+    console.log("[story:orchestrator:stats] request_status=success");
+  }
+  console.log("[story:orchestrator:stats] 以下为 prompt 体积估算，不等于模型真实 usage。");
+  console.log("[story:orchestrator:stats] | 区块 | 实际内容 | 字符数 | 估算 Prompt Tokens |");
+  console.log("[story:orchestrator:stats] |---|---|---:|---:|");
+  rows.forEach((row) => {
+    console.log(`[story:orchestrator:stats] | ${row.block} | ${normalizePromptStatContent(row.content)} | ${row.chars} | ${row.estimatedTokens} |`);
+  });
+}
+
+function buildOrchestratorUserPrompt(payload: OrchestratorPromptPayload, compactMode = false): string {
   if (compactMode) {
+    const compactSections = buildCompactOrchestratorSections(payload);
     return [
-      "[世界]",
-      `名称:${payload.worldName || "未命名世界"}`,
-      payload.worldIntro ? `简介:${payload.worldIntro}` : "",
-      "",
-      "[章节]",
-      `标题:${payload.chapterTitle || "未命名章节"}`,
-      payload.chapterDirective ? `提纲:${payload.chapterDirective}` : "",
-      payload.chapterUserTurns ? `用户节点:${payload.chapterUserTurns}` : "",
-      payload.chapterOpening ? `开场:${payload.chapterOpening}` : "",
-      "",
-      "[角色]",
-      ...payload.roles.map((role) => `- ${sanitizeRoleType(role.roleType)}|${normalizeScalarText(role.name)}|${describeRole(role, true)}`),
-      "",
-      "[万能]",
-      payload.wildcardRoles.length
-        ? payload.wildcardRoles.map((item) => `${item.name}(${sanitizeRoleType(item.roleType)})`).join("、")
-        : (payload.narratorActsAsWildcardFallback ? "旁白兜底" : "无"),
-      "",
-      "[摘要]",
-      payload.storyState || "无",
-      "",
-      "[阶段]",
-      `label:${payload.currentPhaseLabel || "未命名阶段"}`,
-      payload.currentPhaseGoal ? `goal:${payload.currentPhaseGoal}` : "",
-      `allowed:${payload.phaseAllowedSpeakers.length ? payload.phaseAllowedSpeakers.join("、") : "全部当前角色"}`,
-      "",
-      "[当前事件]",
-      `index:${payload.currentEventIndex || 1}`,
-      `kind:${payload.currentEventKind || "scene"}`,
-      `summary:${payload.currentEventSummary || "当前事件未命名"}`,
-      payload.currentEventFacts.length ? `facts:${payload.currentEventFacts.join("｜")}` : "",
-      payload.currentEventMemorySummary ? `memory:${payload.currentEventMemorySummary}` : "",
-      payload.currentEventMemoryFacts.length ? `memory_facts:${payload.currentEventMemoryFacts.join("｜")}` : "",
-      payload.currentEventWindow ? `window:\n${payload.currentEventWindow}` : "",
-      "",
-      "[回合]",
-      `player:${payload.turnState.canPlayerSpeak ? "true" : "false"} | expected:${sanitizeRoleType(payload.turnState.expectedRoleType)}/${payload.turnState.expectedRole || "无"} | last:${sanitizeRoleType(payload.turnState.lastSpeakerRoleType)}/${payload.turnState.lastSpeaker || "无"}`,
-      "",
-      "[最近]",
-      payload.recentDialogue || "无",
-      "",
-      "[用户]",
-      payload.latestPlayerMessage || "无",
+      ...compactSections.flatMap((section) => [
+        `[${section.title}]`,
+        section.content,
+        "",
+      ]),
       "",
       "[输出]",
       "role_type:",
@@ -1083,11 +1257,36 @@ function shouldUseCompactMemoryPayload(config: unknown): boolean {
 
 // 判断当前模型是否需要走精简版提示词。
 function shouldUseCompactOrchestratorPayload(config: unknown): boolean {
+  const configuredMode = normalizeScalarText((config as Record<string, unknown> | null)?.payloadMode).toLowerCase();
+  if (configuredMode === "advanced") return false;
+  if (configuredMode === "compact") return true;
   const manufacturer = normalizeScalarText((config as Record<string, unknown> | null)?.manufacturer).toLowerCase();
   const model = normalizeScalarText((config as Record<string, unknown> | null)?.model).toLowerCase();
-  if (!manufacturer || !model) return false;
-  if (manufacturer !== "volcengine" && manufacturer !== "doubao") return false;
-  return /(lite|mini|flash)/.test(model);
+  if (!manufacturer || !model) return true;
+  if (manufacturer === "lmstudio" || manufacturer === "autodl_chat") return true;
+  if (manufacturer === "volcengine" || manufacturer === "doubao") return /(lite|mini|flash)/.test(model);
+  return /(lite|mini|flash|r1|minimax|deepseek)/.test(model);
+}
+
+// 归一化当前阶段实际生效的模型运行信息，便于回归时直接观察。
+function resolveNarrativeRuntimeMeta(
+  stageKey: string,
+  config: unknown,
+  compactMode: boolean,
+): NarrativeRuntimeMeta {
+  const raw = (config as Record<string, unknown> | null) || null;
+  const configuredMode = normalizeScalarText(raw?.payloadMode).toLowerCase();
+  const reasoningEffort = normalizeScalarText(raw?.reasoningEffort).toLowerCase();
+  return {
+    modelKey: stageKey,
+    manufacturer: normalizeScalarText(raw?.manufacturer),
+    model: normalizeScalarText(raw?.model),
+    reasoningEffort: reasoningEffort === "minimal" || reasoningEffort === "low" || reasoningEffort === "medium" || reasoningEffort === "high"
+      ? reasoningEffort
+      : "",
+    payloadMode: compactMode ? "compact" : "advanced",
+    payloadModeSource: configuredMode === "compact" || configuredMode === "advanced" ? "explicit" : "inferred",
+  };
 }
 
 // 生成便于做相似度比较的归一化文本。
@@ -1414,6 +1613,43 @@ function buildFallbackContent(role: RuntimeStoryRole, latestPlayerMessage: strin
   return "你的回应让场上的气氛发生了变化，剧情继续向前推进。";
 }
 
+function normalizeFallbackCueText(input: unknown): string {
+  return String(input || "")
+    .replace(/[\s，。、“”"'‘’：:；;（）()【】\[\]\-—_·•・⋯…,.!?！？]/g, "")
+    .trim()
+    .toLowerCase();
+}
+
+function textRequestsUserIdentity(input: unknown): boolean {
+  const normalized = normalizeFallbackCueText(input);
+  if (!normalized) return false;
+  const asksIdentityAction = ["输入", "填写", "提供", "告知", "绑定", "创建"].some((item) => normalized.includes(item));
+  const mentionsName = normalized.includes("姓名") || normalized.includes("名称") || normalized.includes("名字") || normalized.includes("角色名");
+  return asksIdentityAction && mentionsName && normalized.includes("性别") && normalized.includes("年龄");
+}
+
+function phaseRequestsUserIdentity(phase: ChapterRuntimePhase | null): boolean {
+  if (!phase) return false;
+  if (textRequestsUserIdentity(phase.targetSummary)) return true;
+  return Array.isArray(phase.advanceSignals) && phase.advanceSignals.some((item) => textRequestsUserIdentity(item));
+}
+
+function isProviderBalanceOrQuotaError(input: unknown): boolean {
+  const text = String((input as any)?.message || input || "").toLowerCase();
+  return text.includes("insufficient account balance")
+    || text.includes("insufficient_balance")
+    || text.includes("insufficient_user_quota")
+    || text.includes("quota")
+    || text.includes("quota exceeded")
+    || text.includes("余额不足")
+    || text.includes("额度不足")
+    || text.includes("配额不足")
+    || text.includes("剩余额度")
+    || text.includes("欠费")
+    || text.includes("信用点不足")
+    || text.includes("令牌不足");
+}
+
 function buildFallbackNarrativePlan(input: {
   roles: RuntimeStoryRole[];
   turnState: RuntimeTurnState;
@@ -1429,9 +1665,13 @@ function buildFallbackNarrativePlan(input: {
   hasPlayerInput: boolean;
   world: any;
   fallbackReason: unknown;
+  orchestratorRuntime?: NarrativeRuntimeMeta;
 }): NarrativePlanResult {
   const currentRole = resolveFallbackRole(input.roles, input.turnState, input.latestPlayerMessage);
-  const shouldYieldToUser = input.currentPhase?.kind === "user";
+  const shouldYieldToUser = input.currentPhase?.kind === "user"
+    || input.currentEvent.eventStatus === "waiting_input"
+    || phaseRequestsUserIdentity(input.currentPhase)
+    || (isProviderBalanceOrQuotaError(input.fallbackReason) && phaseRequestsUserIdentity(input.currentPhase));
   const nextRole = resolvePhaseAwareNextRole({
     requestedNextRole: "",
     requestedNextRoleType: "",
@@ -1441,8 +1681,8 @@ function buildFallbackNarrativePlan(input: {
     world: input.world,
   });
   return {
-    role: normalizeScalarText(currentRole.name),
-    roleType: sanitizeRoleType(currentRole.roleType),
+    role: shouldYieldToUser ? "" : normalizeScalarText(currentRole.name),
+    roleType: shouldYieldToUser ? "player" : sanitizeRoleType(currentRole.roleType),
     motive: shouldYieldToUser
       ? "按当前章节节点把回合稳定交还给用户。"
       : (input.hasPlayerInput
@@ -1452,8 +1692,8 @@ function buildFallbackNarrativePlan(input: {
     triggerMemoryAgent: false,
     stateDelta: {},
     awaitUser: shouldYieldToUser,
-    nextRole: nextRole.nextRole,
-    nextRoleType: nextRole.nextRoleType,
+    nextRole: shouldYieldToUser ? normalizeScalarText(rolePairForWorld(input.world).playerRole.name) || "用户" : nextRole.nextRole,
+    nextRoleType: shouldYieldToUser ? "player" : nextRole.nextRoleType,
     chapterOutcome: "continue",
     nextChapterId: null,
     source: "fallback",
@@ -1463,6 +1703,7 @@ function buildFallbackNarrativePlan(input: {
     eventSummary: input.currentEvent.eventSummary,
     eventFacts: input.currentEvent.eventFacts,
     eventStatus: shouldYieldToUser ? "waiting_input" : input.currentEvent.eventStatus,
+    orchestratorRuntime: input.orchestratorRuntime,
   };
 }
 
@@ -1584,6 +1825,7 @@ function buildOrchestratorSystemPrompt(
         : "你只决定 speaker、motive、await_user、next_role_type、next_speaker，不负责章节成败与切章。",
       "不要写最终展示台词，不要复述章节原文，不要输出内部规则或思考过程。",
       "speaker 只能来自当前角色列表，并且必须满足当前阶段的 allowed_speakers；用户没发言时，先推进至少一轮非用户内容。",
+      "若当前事件摘要为空，说明当前轮需要先创建一个新的当前事件焦点；此时请填写 event_summary 和 event_facts，再安排 speaker 与 motive。",
       "motive 控制在 12~40 字，只描述这一小步要做什么。",
       "每轮只推进一小步，不要回顾整章或世界观。",
       "若本轮出现新的关键事实、人物资料变化、任务/道具/状态变化或阶段切换，trigger_memory_agent=true，否则 false。",
@@ -1617,8 +1859,9 @@ function buildOrchestratorSystemPrompt(
     "18. 若 [用户交互节点] 已明确要求用户观察、选择、发言或行动，一旦剧情推进到该节点，必须设置 awaitUser=true 且 next_role_type=player；不要继续让 NPC 抢走用户回合。",
     "19. 若本轮出现新的关键事实、人物资料更新、关系/任务/状态变化、关键道具变化或章节阶段切换，trigger_memory_agent=true；普通闲聊或无新增信息时为 false。",
     "20. event_adjust_mode 只能填写 keep / update / waiting_input / completed；event_status 只能填写 active / waiting_input / completed；event_summary 只概括当前事件焦点，不得复述章节原文或整章内容；event_facts 只列 1~4 条本轮之后仍有用的事件事实。",
+    "21. 若当前事件摘要为空，说明当前轮需要先创建一个新的当前事件焦点；此时必须填写 event_summary 和 event_facts，再安排谁说话。",
     compactMode ? "补充：当前模型较弱，每轮只推进一小步，默认控制在 120 字以内；不要长篇回顾世界观或整章提纲。" : "",
-    `21. 最终输出严格使用以下字段名逐行输出：${outputFields}。`,
+    `22. 最终输出严格使用以下字段名逐行输出：${outputFields}。`,
   ].filter(Boolean).join("\n\n");
 }
 
@@ -1743,19 +1986,8 @@ export async function runStorySpeakerContent(input: {
     worldIntro: useFastSpeakerPrompt ? "" : shortText(input.world?.intro, compactMode ? 48 : 72),
     chapterTitle: currentChapter.title,
     currentPhaseLabel: normalizeScalarText(currentPhase?.label),
-    currentEventIndex: currentEvent.eventIndex,
-    currentEventKind: currentEvent.eventKind,
-    currentEventSummary: currentEvent.eventSummary,
-    currentEventFacts: currentEvent.eventFacts,
-    currentEventMemorySummary: currentEvent.eventMemorySummary,
-    currentEventMemoryFacts: currentEvent.eventMemoryFacts,
-    currentEventWindow: readRuntimeEventDigestWindowTextState(input.state, {
-      windowSize: 3,
-      includeMemory: true,
-      summaryLimit: 60,
-      factLimit: 2,
-      memoryFactLimit: 2,
-    }),
+    ...buildPromptEventContextPayload(currentEvent),
+    currentEventWindow: readDefaultRuntimeEventDigestWindowTextState(input.state),
     speakerName: normalizeScalarText(input.currentRole.name),
     speakerRoleType: sanitizeRoleType(input.currentRole.roleType),
     speakerProfile: useFastSpeakerPrompt ? describeRoleLite(input.currentRole) : describeRole(input.currentRole, true),
@@ -1843,6 +2075,9 @@ export async function runStorySpeakerContent(input: {
       role: normalizeScalarText(input.currentRole.name),
       message: (err as any)?.message || String(err),
     });
+    if (isProviderBalanceOrQuotaError(err)) {
+      throw createRuntimeModelError("speaker", "当前角色发言模型余额不足，请充值或切换模型后重试");
+    }
     return buildFallbackContent(
       input.currentRole,
       normalizeScalarText(input.playerMessage),
@@ -1905,6 +2140,7 @@ async function doRunNarrativePlan(input: OrchestratorInput): Promise<NarrativePl
   const allRoles = runtimeStoryRoles(input.world, input.state);
   const promptAiConfig = await resolveTextStageModel(input.userId, "storyOrchestratorModel");
   const compactMode = shouldUseCompactOrchestratorPayload(promptAiConfig);
+  const orchestratorRuntime = resolveNarrativeRuntimeMeta("storyOrchestratorModel", promptAiConfig, compactMode);
   const allowControlHints = input.allowControlHints !== false;
   const allowStateDelta = input.allowStateDelta !== false;
   const turnState = readRuntimeTurnState(input.state, input.world);
@@ -1922,28 +2158,26 @@ async function doRunNarrativePlan(input: OrchestratorInput): Promise<NarrativePl
   };
   const payload = {
     worldName: normalizeScalarText(input.world?.name),
-    worldIntro: shortText(input.world?.intro, compactMode ? 160 : 240),
+    worldIntro: shortText(input.world?.intro, compactMode ? 120 : 240),
     chapterTitle: currentChapter.title,
-    chapterDirective: compactMode ? directiveExcerpt(currentChapter.directive) : shortText(currentChapter.directive, 360),
-    chapterUserTurns: shortText(extractChapterUserInteractionText(currentChapter.directive), compactMode ? 360 : 880),
-    chapterOpening: compactMode ? normalizeScalarText(currentChapter.openingText).slice(0, 120) : shortText(currentChapter.openingText, 180),
+    chapterDirective: compactMode ? directiveExcerpt(shortText(currentChapter.directive, 220)) : shortText(currentChapter.directive, 360),
+    chapterUserTurns: shortText(extractChapterUserInteractionText(currentChapter.directive), compactMode ? 180 : 880),
+    chapterOpening: compactMode ? normalizeScalarText(currentChapter.openingText).slice(0, 80) : shortText(currentChapter.openingText, 180),
     roles,
     wildcardRoles: roles
       .filter((item) => roleActsAsWildcard(item))
       .map((item) => item),
     narratorActsAsWildcardFallback: roles.every((item) => !roleActsAsWildcard(item)),
-    storyState: summarizeStoryState(input.state),
+    storyState: compactMode ? shortText(summarizeStoryState(input.state), 180) : summarizeStoryState(input.state),
     turnState,
     currentPhaseLabel: normalizeScalarText(currentPhase?.label),
     currentPhaseGoal: normalizeScalarText(currentPhase?.targetSummary),
-    currentEventIndex: currentEvent.eventIndex,
-    currentEventKind: currentEvent.eventKind,
-    currentEventSummary: currentEvent.eventSummary,
-    currentEventFacts: currentEvent.eventFacts,
-    currentEventMemorySummary: currentEvent.eventMemorySummary,
-    currentEventMemoryFacts: currentEvent.eventMemoryFacts,
+    ...buildPromptEventContextPayload(currentEvent),
+    currentEventWindow: compactMode
+      ? readRuntimeEventDigestWindowTextState(input.state, { windowSize: 3, includeMemory: false, summaryLimit: 40, factLimit: 1 })
+      : readDefaultRuntimeEventDigestWindowTextState(input.state),
     phaseAllowedSpeakers: Array.isArray(currentPhase?.allowedSpeakers) ? currentPhase.allowedSpeakers : [],
-    recentDialogue: compactMode ? recentDialogueText(input.recentMessages, 4, 500) : recentDialogueText(input.recentMessages),
+    recentDialogue: compactMode ? recentDialogueText(input.recentMessages, 10, 900) : recentDialogueText(input.recentMessages),
     latestPlayerMessage: normalizeScalarText(input.playerMessage),
   };
   const hasPlayerInput = payload.latestPlayerMessage.length > 0;
@@ -1956,8 +2190,9 @@ async function doRunNarrativePlan(input: OrchestratorInput): Promise<NarrativePl
       roleType: item.roleType,
       name: item.name,
     })),
-    turnState,
-    latestUserMessage: payload.latestPlayerMessage,
+    turnState: {
+      canPlayerSpeak: turnState.canPlayerSpeak,
+    },
     userDisplayName: normalizeScalarText(input.state?.player?.name || input.world?.playerRole?.name || "用户"),
   });
   if (ruleDecision.resolved && ruleDecision.plan) {
@@ -1977,17 +2212,17 @@ async function doRunNarrativePlan(input: OrchestratorInput): Promise<NarrativePl
       eventSummary: currentEvent.eventSummary,
       eventFacts: currentEvent.eventFacts,
       eventStatus: ruleDecision.plan.awaitUser ? "waiting_input" : currentEvent.eventStatus,
+      orchestratorRuntime,
     };
   }
 
+  const systemPrompt = buildOrchestratorSystemPrompt(prompts.storyMain, prompts.storyOrchestrator, compactMode, {
+    allowControlHints,
+    allowStateDelta,
+  });
+  const userPrompt = buildOrchestratorUserPrompt(payload, compactMode);
+  let orchestratorRuntimeError: unknown = null;
   try {
-    const userPrompt = buildOrchestratorUserPrompt(payload, compactMode);
-    console.log("[orchestrator] userPrompt.length=", userPrompt.length);
-    console.log("[orchestrator] roles=", payload.roles.length);
-    console.log("[orchestrator] recentDialogue.length=", payload.recentDialogue.length);
-    console.log("[orchestrator] chapterDirective.length=", payload.chapterDirective.length);
-    console.log("[orchestrator] chapterUserTurns.length=", payload.chapterUserTurns.length);
-    console.log("[orchestrator] storyState.length=", payload.storyState.length);
     // 发送请求 进行编排
     const result = await u.ai.text.invoke(
       {
@@ -2004,10 +2239,7 @@ async function doRunNarrativePlan(input: OrchestratorInput): Promise<NarrativePl
         messages: [
           {
             role: "system",
-            content: buildOrchestratorSystemPrompt(prompts.storyMain, prompts.storyOrchestrator, compactMode, {
-              allowControlHints,
-              allowStateDelta,
-            }),
+            content: systemPrompt,
           },
           {
             role: "user",
@@ -2148,9 +2380,9 @@ async function doRunNarrativePlan(input: OrchestratorInput): Promise<NarrativePl
         throw createRuntimeModelError("orchestrator", "模型返回结构无效或缺少发言动机");
       }
       if (isSkip) {
-        return {
-          role: matchedRole.name,
-          roleType: sanitizeRoleType(matchedRole.roleType || "narrator"),
+      return {
+        role: matchedRole.name,
+        roleType: sanitizeRoleType(matchedRole.roleType || "narrator"),
           motive,
           memoryHints,
           triggerMemoryAgent,
@@ -2164,12 +2396,13 @@ async function doRunNarrativePlan(input: OrchestratorInput): Promise<NarrativePl
           eventAdjustMode,
           eventIndex: currentEvent.eventIndex,
           eventKind: currentEvent.eventKind,
-          eventSummary,
-          eventFacts: eventFacts.length ? eventFacts : currentEvent.eventFacts,
-          eventStatus,
-        };
-      }
-      return {
+        eventSummary,
+        eventFacts: eventFacts.length ? eventFacts : currentEvent.eventFacts,
+        eventStatus,
+        orchestratorRuntime,
+      };
+    }
+    return {
         role: matchedRole.name,
         roleType: matchedRole.roleType,
         motive,
@@ -2185,12 +2418,13 @@ async function doRunNarrativePlan(input: OrchestratorInput): Promise<NarrativePl
         eventAdjustMode,
         eventIndex: currentEvent.eventIndex,
         eventKind: currentEvent.eventKind,
-        eventSummary,
-        eventFacts: eventFacts.length ? eventFacts : currentEvent.eventFacts,
-        eventStatus,
-      };
-    }
-    if (canYieldDirectly) {
+      eventSummary,
+      eventFacts: eventFacts.length ? eventFacts : currentEvent.eventFacts,
+      eventStatus,
+      orchestratorRuntime,
+    };
+  }
+  if (canYieldDirectly) {
       return {
         role: "",
         roleType: "player",
@@ -2207,13 +2441,15 @@ async function doRunNarrativePlan(input: OrchestratorInput): Promise<NarrativePl
         eventAdjustMode,
         eventIndex: currentEvent.eventIndex,
         eventKind: currentEvent.eventKind,
-        eventSummary,
-        eventFacts: eventFacts.length ? eventFacts : currentEvent.eventFacts,
-        eventStatus,
-      };
-    }
+      eventSummary,
+      eventFacts: eventFacts.length ? eventFacts : currentEvent.eventFacts,
+      eventStatus,
+      orchestratorRuntime,
+    };
+  }
     throw createRuntimeModelError("orchestrator", "模型返回结构无效或缺少可执行的角色编排");
   } catch (err) {
+    orchestratorRuntimeError = err;
     console.warn("[story:orchestrator] error", {
       manufacturer: (promptAiConfig as any)?.manufacturer || "",
       model: (promptAiConfig as any)?.model || "",
@@ -2221,6 +2457,9 @@ async function doRunNarrativePlan(input: OrchestratorInput): Promise<NarrativePl
       expectedRole: turnState.expectedRole,
       message: (err as any)?.message || String(err),
     });
+    if (isProviderBalanceOrQuotaError(err)) {
+      throw createRuntimeModelError("orchestrator", "当前故事编排模型余额不足，请充值或切换模型后重试");
+    }
     return buildFallbackNarrativePlan({
       roles,
       turnState,
@@ -2230,7 +2469,15 @@ async function doRunNarrativePlan(input: OrchestratorInput): Promise<NarrativePl
       hasPlayerInput,
       world: input.world,
       fallbackReason: err,
+      orchestratorRuntime,
     });
+  } finally {
+    console.log("[orchestrator] request_chars=", systemPrompt.length + userPrompt.length);
+    console.log("[orchestrator] systemPrompt.length=", systemPrompt.length);
+    console.log("[orchestrator] userPrompt.length=", userPrompt.length);
+    console.log("[orchestrator] roles=", payload.roles.length);
+    console.log("[orchestrator] payloadMode=", orchestratorRuntime.payloadMode, "reasoningEffort=", orchestratorRuntime.reasoningEffort || "未指定");
+    logOrchestratorPromptStats(payload, compactMode, orchestratorRuntime, systemPrompt, userPrompt, orchestratorRuntimeError);
   }
 }
 
@@ -2304,12 +2551,7 @@ export async function runStoryMemoryManager(input: {
   const payload = {
     worldName: normalizeScalarText(input.world?.name),
     chapterTitle: normalizeScalarText(input.chapter?.title),
-    currentEventIndex: currentEvent.eventIndex,
-    currentEventKind: currentEvent.eventKind,
-    currentEventSummary: currentEvent.eventSummary,
-    currentEventFacts: uniqueTextList(currentEvent.eventFacts || [], compactMode ? 3 : 5).join("；"),
-    currentEventMemorySummary: shortText(currentEvent.eventMemorySummary || "", compactMode ? 100 : 180),
-    currentEventMemoryFacts: uniqueTextList(currentEvent.eventMemoryFacts || [], compactMode ? 3 : 5).join("；"),
+    ...buildPromptEventContextTextPayload(currentEvent, compactMode),
     eventDeltaText: buildMemoryEventDeltaText(memoryInputs.eventDeltaMessages, compactMode),
     recentDialogue: compactMode
       ? recentDialogueText(memoryInputs.dialogueMessages, 4, 420)
@@ -2425,6 +2667,19 @@ export function summarizeNarrativePlan(result: OrchestratorResult | null | undef
     eventStatus: result.eventStatus || "idle",
     speakerMode: result.speakerMode,
     speakerRouteReason: normalizeScalarText(result.speakerRouteReason),
+    orchestratorRuntime: result.orchestratorRuntime
+      ? {
+        modelKey: normalizeScalarText(result.orchestratorRuntime.modelKey),
+        manufacturer: normalizeScalarText(result.orchestratorRuntime.manufacturer),
+        model: normalizeScalarText(result.orchestratorRuntime.model),
+        reasoningEffort: (() => {
+          const value = normalizeScalarText(result.orchestratorRuntime.reasoningEffort).toLowerCase();
+          return value === "minimal" || value === "low" || value === "medium" || value === "high" ? value : "";
+        })(),
+        payloadMode: result.orchestratorRuntime.payloadMode === "advanced" ? "advanced" : "compact",
+        payloadModeSource: result.orchestratorRuntime.payloadModeSource === "explicit" ? "explicit" : "inferred",
+      }
+      : undefined,
   };
 }
 
@@ -2575,6 +2830,7 @@ export async function advanceNarrativeUntilPlayerTurn(input: OrchestratorInput &
 
   for (let step = 0; step < maxAutoTurns; step += 1) {
     applyOrchestratorResultToState(input.state, current);
+    syncChapterProgressWithRuntime(input.chapter, input.state);
 
     if (current.role && current.content) {
       const message: RuntimeMessageInput = {
@@ -2779,11 +3035,11 @@ export function evaluateDebugChapterOutcome(
   if (condition && typeof condition === "object" && !Array.isArray(condition)) {
     const node = condition as Record<string, unknown>;
     const failureNode = node.failure ?? node.failed ?? node.fail;
-    if (failureNode !== undefined && evaluateDebugConditionNode(failureNode, ctx)) {
+    if (failureNode != null && evaluateDebugConditionNode(failureNode, ctx)) {
       return { result: "failed", nextChapterId: extractDebugNextChapterId(node) };
     }
     const successNode = node.success ?? node.pass;
-    if (successNode !== undefined && evaluateDebugConditionNode(successNode, ctx)) {
+    if (successNode != null && evaluateDebugConditionNode(successNode, ctx)) {
       return { result: "success", nextChapterId: extractDebugNextChapterId(node) };
     }
   }

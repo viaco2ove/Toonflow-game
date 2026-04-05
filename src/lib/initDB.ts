@@ -273,6 +273,7 @@ export default async (knex: Knex, forceInit: boolean = false): Promise<void> => 
         table.float("outputPricePer1M");
         table.float("cacheReadPricePer1M");
         table.text("currency");
+        table.text("reasoningEffort");
         table.integer("createTime");
         table.integer("index");
         table.integer("userId");
@@ -1597,6 +1598,7 @@ export default async (knex: Knex, forceInit: boolean = false): Promise<void> => 
         table.text("content");
         table.text("eventType");
         table.text("meta");
+        table.text("revisitData");
         table.integer("createTime");
         table.primary(["id"]);
         table.unique(["id"]);

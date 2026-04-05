@@ -31,9 +31,30 @@ interface ResultItem {
   name: string;
   chapterRange: number[];
 }
+
 function findItemByName(items: ResultItem[], name: string, type?: ItemType): ResultItem | undefined {
   return items.find((item) => (!type || item.type === type) && item.name === name);
 }
+
+function normalizeChapterRange(input: unknown): number[] {
+  if (!Array.isArray(input)) {
+    return [];
+  }
+  return input
+    .map((item) => Number(item))
+    .filter((item) => Number.isFinite(item))
+    .map((item) => Math.trunc(item));
+}
+
+async function loadNovelDataByChapterRange(chapterRange: number[]): Promise<NovelChapter[]> {
+  if (!chapterRange.length) {
+    return [];
+  }
+  // 这里的 t_novel 属于旧表结构，Knex 泛型没法稳定推断 chapterIndex，统一走窄范围 any 包装。
+  const novelQuery = u.db("t_novel") as any;
+  return (await novelQuery.whereIn("chapterIndex", chapterRange).select("*")) as NovelChapter[];
+}
+
 function mergeNovelText(novelData: NovelChapter[]): string {
   if (!Array.isArray(novelData)) return "";
   return novelData
@@ -100,8 +121,8 @@ export default router.post(
     let userPrompt = "";
     if (type == "role") {
       const data = findItemByName(result, name, "characters");
-      const chapterRange = Array.isArray(data?.chapterRange) ? data.chapterRange : [data?.chapterRange];
-      const novelData = (await u.db("t_novel").whereIn("chapterIndex", chapterRange).select("*")) as NovelChapter[];
+      const chapterRange = normalizeChapterRange(data?.chapterRange);
+      const novelData = await loadNovelDataByChapterRange(chapterRange);
       const results: string = mergeNovelText(novelData);
       systemPrompt = role;
       userPrompt = `
@@ -124,8 +145,8 @@ export default router.post(
     if (type == "scene") {
       const data = findItemByName(result, name, "scenes");
 
-      const chapterRange = Array.isArray(data?.chapterRange) ? data.chapterRange : [data?.chapterRange];
-      const novelData = (await u.db("t_novel").whereIn("chapterIndex", chapterRange).select("*")) as NovelChapter[];
+      const chapterRange = normalizeChapterRange(data?.chapterRange);
+      const novelData = await loadNovelDataByChapterRange(chapterRange);
       const results: string = mergeNovelText(novelData);
       systemPrompt = scene;
       userPrompt = `
@@ -147,8 +168,8 @@ export default router.post(
     }
     if (type == "props") {
       const data = findItemByName(result, name, "props");
-      const chapterRange = Array.isArray(data?.chapterRange) ? data.chapterRange : [data?.chapterRange];
-      const novelData = (await u.db("t_novel").whereIn("chapterIndex", chapterRange).select("*")) as NovelChapter[];
+      const chapterRange = normalizeChapterRange(data?.chapterRange);
+      const novelData = await loadNovelDataByChapterRange(chapterRange);
       const results: string = mergeNovelText(novelData);
       systemPrompt = tool;
       userPrompt = `

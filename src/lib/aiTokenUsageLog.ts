@@ -185,6 +185,7 @@ export async function getAiTokenUsageLogList(query: AiTokenUsageLogQuery) {
       "amount",
       "currency",
       "remark",
+      "meta",
     )
     .orderBy("createTime", "desc")
     .limit(limit);
@@ -207,6 +208,13 @@ export async function getAiTokenUsageLogList(query: AiTokenUsageLogQuery) {
     amount: normalizeNonNegativeFloat(row.amount),
     currency: normalizeCurrency(row.currency),
     remark: normalizeText(row.remark),
+    meta: (() => {
+      try {
+        return normalizeText(row.meta) ? JSON.parse(String(row.meta || "")) : null;
+      } catch {
+        return null;
+      }
+    })(),
   }));
 }
 

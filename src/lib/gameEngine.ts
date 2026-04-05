@@ -31,7 +31,7 @@ export interface ChapterProgressState {
   phaseId: string;
   phaseIndex: number;
   eventIndex: number;
-  eventKind: "opening" | "scene" | "user" | "fixed";
+  eventKind: "opening" | "scene" | "user" | "fixed" | "ending";
   eventSummary: string;
   eventStatus: "idle" | "active" | "waiting_input" | "completed";
   userNodeId: string;
@@ -45,7 +45,7 @@ export interface ChapterProgressState {
 
 export interface RuntimeCurrentEventState {
   index: number;
-  kind: "opening" | "scene" | "user" | "fixed";
+  kind: "opening" | "scene" | "user" | "fixed" | "ending";
   summary: string;
   facts: string[];
   status: "idle" | "active" | "waiting_input" | "completed";
@@ -54,7 +54,8 @@ export interface RuntimeCurrentEventState {
 export interface RuntimeDynamicEventState {
   eventIndex: number;
   phaseId: string;
-  kind: "opening" | "scene" | "user" | "fixed";
+  kind: "opening" | "scene" | "user" | "fixed" | "ending";
+  flowType: "introduction" | "chapter_content" | "chapter_ending_check" | "free_runtime";
   summary: string;
   runtimeFacts: string[];
   summarySource: "phase" | "ai" | "memory" | "system";
@@ -69,6 +70,7 @@ export interface RuntimeDynamicEventState {
 export interface RuntimeEventDigestState {
   eventIndex: number;
   eventKind: RuntimeCurrentEventState["kind"];
+  eventFlowType: RuntimeDynamicEventState["flowType"];
   eventSummary: string;
   eventFacts: string[];
   eventStatus: RuntimeCurrentEventState["status"];
@@ -86,6 +88,16 @@ export interface RuntimeEventViewState {
   eventDigestWindowText: string;
 }
 
+function resolveRuntimeEventFlowType(input: {
+  eventKind: RuntimeCurrentEventState["kind"];
+  phaseId?: string | null;
+}): RuntimeDynamicEventState["flowType"] {
+  if (input.eventKind === "opening") return "introduction";
+  if (input.eventKind === "fixed" || input.eventKind === "ending") return "chapter_ending_check";
+  if (!String(input.phaseId || "").trim()) return "free_runtime";
+  return "chapter_content";
+}
+
 export interface RuntimeEventViewOptions {
   windowSize?: number | null;
   includeMemory?: boolean | null;
@@ -94,8 +106,16 @@ export interface RuntimeEventViewOptions {
   memoryFactLimit?: number | null;
 }
 
-export const DEFAULT_RUNTIME_EVENT_VIEW_OPTIONS: Required<RuntimeEventViewOptions> = {
-  windowSize: 3,
+export interface ResolvedRuntimeEventViewOptions {
+  windowSize: number;
+  includeMemory: boolean;
+  summaryLimit: number;
+  factLimit: number;
+  memoryFactLimit: number;
+}
+
+export const DEFAULT_RUNTIME_EVENT_VIEW_OPTIONS: ResolvedRuntimeEventViewOptions = {
+  windowSize: 10,
   includeMemory: true,
   summaryLimit: 60,
   factLimit: 2,
@@ -634,6 +654,23 @@ export function normalizeChapterRuntimeOutline(input: unknown): ChapterRuntimeOu
   };
 }
 
+// 自由章节没有结束条件，也不依赖 endingRules 切章。
+// 这类章节在静态事件耗尽后，允许继续生成新的动态事件。
+export function isFreeChapterRuntimeMode(chapter: any): boolean {
+  if (!chapter) return false;
+  const outline = normalizeChapterRuntimeOutline(chapter?.runtimeOutline);
+  const normalizedFields = normalizeChapterFields({
+    completionCondition: chapter?.completionCondition,
+  });
+  const hasCompletionCondition = normalizedFields.completionCondition != null;
+  const hasEndingRules = Boolean(
+    outline.endingRules.success.length
+    || outline.endingRules.failure.length
+    || Number(outline.endingRules.nextChapterId || 0) > 0,
+  );
+  return !hasCompletionCondition && !hasEndingRules;
+}
+
 export function buildChapterRuntimeOutline(input: {
   openingRole?: unknown;
   openingText?: unknown;
@@ -1066,6 +1103,7 @@ const DEFAULT_RUNTIME_DYNAMIC_EVENT_STATE: RuntimeDynamicEventState = {
   eventIndex: 1,
   phaseId: "",
   kind: "scene",
+  flowType: "chapter_content",
   summary: "",
   runtimeFacts: [],
   summarySource: "phase",
@@ -1095,7 +1133,7 @@ function normalizeChapterEventStatus(input: unknown): ChapterProgressState["even
 
 function normalizeRuntimeEventKind(input: unknown): RuntimeCurrentEventState["kind"] {
   const kind = String(input || "").trim();
-  if (kind === "opening" || kind === "scene" || kind === "user" || kind === "fixed") {
+  if (kind === "opening" || kind === "scene" || kind === "user" || kind === "fixed" || kind === "ending") {
     return kind;
   }
   return DEFAULT_RUNTIME_CURRENT_EVENT_STATE.kind;
@@ -1125,12 +1163,17 @@ export function normalizeRuntimeCurrentEventState(
 
 export function normalizeRuntimeDynamicEventState(raw: unknown): RuntimeDynamicEventState {
   const base = parseJsonSafe<JsonRecord>(raw, {});
+  const phaseId = String(base.phaseId || "").trim();
+  const kind = normalizeRuntimeEventKind(base.kind);
   return {
     eventIndex: Number.isFinite(Number(base.eventIndex))
       ? Math.max(1, Number(base.eventIndex))
       : DEFAULT_RUNTIME_DYNAMIC_EVENT_STATE.eventIndex,
-    phaseId: String(base.phaseId || "").trim(),
-    kind: normalizeRuntimeEventKind(base.kind),
+    phaseId,
+    kind,
+    flowType: ["introduction", "chapter_content", "chapter_ending_check", "free_runtime"].includes(String(base.flowType || "").trim())
+      ? String(base.flowType || "").trim() as RuntimeDynamicEventState["flowType"]
+      : resolveRuntimeEventFlowType({ eventKind: kind, phaseId }),
     summary: String(base.summary || "").trim(),
     runtimeFacts: Array.isArray(base.runtimeFacts)
       ? base.runtimeFacts.map((item) => String(item || "").trim()).filter(Boolean)
@@ -1181,6 +1224,7 @@ export function readRuntimeCurrentDynamicEventState(state: unknown): RuntimeDyna
 function buildRuntimeEventDigestState(input: {
   eventIndex: number;
   eventKind: RuntimeCurrentEventState["kind"];
+  eventFlowType?: RuntimeDynamicEventState["flowType"] | null;
   eventSummary: string;
   eventFacts: string[];
   eventStatus: RuntimeCurrentEventState["status"];
@@ -1194,6 +1238,7 @@ function buildRuntimeEventDigestState(input: {
   return {
     eventIndex: Number.isFinite(Number(input.eventIndex)) ? Math.max(1, Number(input.eventIndex)) : 1,
     eventKind: input.eventKind,
+    eventFlowType: input.eventFlowType || resolveRuntimeEventFlowType({ eventKind: input.eventKind }),
     eventSummary: String(input.eventSummary || "").trim(),
     eventFacts: Array.isArray(input.eventFacts)
       ? input.eventFacts.map((item) => String(item || "").trim()).filter(Boolean)
@@ -1221,6 +1266,7 @@ export function readRuntimeEventDigestByIndexState(state: unknown, eventIndex: n
     return buildRuntimeEventDigestState({
       eventIndex: dynamicEvent.eventIndex,
       eventKind: dynamicEvent.kind,
+      eventFlowType: dynamicEvent.flowType,
       eventSummary: dynamicEvent.summary,
       eventFacts: dynamicEvent.runtimeFacts,
       eventStatus: dynamicEvent.status,
@@ -1239,6 +1285,10 @@ export function readRuntimeEventDigestByIndexState(state: unknown, eventIndex: n
   return buildRuntimeEventDigestState({
     eventIndex: currentEvent.index,
     eventKind: currentEvent.kind,
+    eventFlowType: resolveRuntimeEventFlowType({
+      eventKind: currentEvent.kind,
+      phaseId: readChapterProgressState(state).phaseId,
+    }),
     eventSummary: currentEvent.summary,
     eventFacts: currentEvent.facts,
     eventStatus: currentEvent.status,
@@ -1251,20 +1301,32 @@ export function readRuntimeCurrentEventDigestState(state: unknown): RuntimeEvent
     || buildRuntimeEventDigestState({
       eventIndex: currentEvent.index,
       eventKind: currentEvent.kind,
+      eventFlowType: resolveRuntimeEventFlowType({
+        eventKind: currentEvent.kind,
+        phaseId: readChapterProgressState(state).phaseId,
+      }),
       eventSummary: currentEvent.summary,
       eventFacts: currentEvent.facts,
       eventStatus: currentEvent.status,
     });
 }
 
-export function readRuntimeEventDigestWindowState(state: unknown, windowSize = 3): RuntimeEventDigestState[] {
+export function readRuntimeEventDigestWindowState(state: unknown, windowSize = 10): RuntimeEventDigestState[] {
   if (!isRecord(state)) return [];
   const currentEvent = readRuntimeCurrentEventState(state);
   const dynamicEvents = normalizeRuntimeDynamicEventList(state.dynamicEvents);
-  const normalizedWindowSize = Number.isFinite(Number(windowSize)) ? Math.max(1, Number(windowSize)) : 3;
-  const items = dynamicEvents
-    .filter((item) => item.eventIndex >= currentEvent.index)
-    .slice(0, normalizedWindowSize);
+  const normalizedWindowSize = Number.isFinite(Number(windowSize)) ? Math.max(1, Number(windowSize)) : 10;
+  const currentIndex = dynamicEvents.findIndex((item) => Number(item.eventIndex || 0) === Number(currentEvent.index || 0));
+  if (currentIndex < 0) {
+    return [readRuntimeCurrentEventDigestState(state)];
+  }
+  const beforeCount = Math.floor((normalizedWindowSize - 1) / 2);
+  let start = Math.max(0, currentIndex - beforeCount);
+  let end = Math.min(dynamicEvents.length, start + normalizedWindowSize);
+  if (end - start < normalizedWindowSize) {
+    start = Math.max(0, end - normalizedWindowSize);
+  }
+  const items = dynamicEvents.slice(start, end);
   if (!items.length) {
     return [readRuntimeCurrentEventDigestState(state)];
   }
@@ -1305,7 +1367,8 @@ export function readRuntimeEventDigestWindowTextState(state: unknown, options?: 
           : item.eventStatus === "active"
             ? "进行中"
             : "未开始";
-      const parts = [`${item.eventIndex}. [${item.eventKind}/${status}] ${shortText(item.eventSummary, summaryLimit)}`];
+      const flowType = String(item.eventFlowType || "").trim() || "chapter_content";
+      const parts = [`${item.eventIndex}. [${flowType}/${item.eventKind}/${status}] ${shortText(item.eventSummary, summaryLimit)}`];
       const factsText = Array.isArray(item.eventFacts)
         ? item.eventFacts.map((fact) => String(fact || "").trim()).filter(Boolean).slice(0, factLimit).join("；")
         : "";
@@ -1359,7 +1422,7 @@ export function normalizeChapterProgressState(raw: unknown): ChapterProgressStat
     phaseId: String(base.phaseId || "").trim(),
     phaseIndex: Number.isFinite(Number(base.phaseIndex)) ? Math.max(0, Number(base.phaseIndex)) : DEFAULT_CHAPTER_PROGRESS_STATE.phaseIndex,
     eventIndex: Number.isFinite(Number(base.eventIndex)) ? Math.max(1, Number(base.eventIndex)) : DEFAULT_CHAPTER_PROGRESS_STATE.eventIndex,
-    eventKind: ["opening", "scene", "user", "fixed"].includes(String(base.eventKind || "").trim())
+    eventKind: ["opening", "scene", "user", "fixed", "ending"].includes(String(base.eventKind || "").trim())
       ? String(base.eventKind || "").trim() as ChapterProgressState["eventKind"]
       : DEFAULT_CHAPTER_PROGRESS_STATE.eventKind,
     eventSummary: String(base.eventSummary || "").trim(),
@@ -1433,6 +1496,10 @@ export function upsertRuntimeDynamicEventState(
       eventIndex,
       phaseId: eventIndex === progress.eventIndex ? progress.phaseId : "",
       kind: eventIndex === progress.eventIndex ? progress.eventKind : currentEvent.kind,
+      flowType: resolveRuntimeEventFlowType({
+        eventKind: eventIndex === progress.eventIndex ? progress.eventKind : currentEvent.kind,
+        phaseId: eventIndex === progress.eventIndex ? progress.phaseId : "",
+      }),
       summary: eventIndex === progress.eventIndex ? progress.eventSummary : currentEvent.summary,
       runtimeFacts: eventIndex === progress.eventIndex ? currentEvent.facts : [],
       status: eventIndex === progress.eventIndex ? progress.eventStatus : "idle",
@@ -1474,6 +1541,7 @@ export function upsertRuntimeEventDigestState(
   upsertRuntimeDynamicEventState(state, {
     eventIndex: targetEventIndex,
     kind: patch.eventKind || baseDigest.eventKind,
+    flowType: patch.eventFlowType || baseDigest.eventFlowType,
     summary: patch.eventSummary == null
       ? baseDigest.eventSummary
       : String(patch.eventSummary || "").trim(),
@@ -1859,5 +1927,6 @@ export function normalizeMessageOutput(row: any): JsonRecord | null {
   return {
     ...row,
     meta: parseJsonSafe(row.meta, {}),
+    revisitData: parseJsonSafe(row.revisitData, null),
   };
 }

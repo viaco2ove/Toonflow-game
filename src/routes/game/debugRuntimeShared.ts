@@ -1,6 +1,7 @@
 import express from "express";
 import { z } from "zod";
 import {
+  ChapterRuntimeOutline,
   normalizeChapterOutput,
   normalizeMessageOutput,
   normalizeRolePair,
@@ -192,6 +193,31 @@ export function buildDebugFreePlotMessage(roleName: string, chapterTitle: string
   });
 }
 
+function buildEmptyDebugRuntimeOutline(): ChapterRuntimeOutline {
+  return {
+    openingMessages: [],
+    phases: [],
+    userNodes: [],
+    fixedEvents: [],
+    endingRules: {
+      success: [],
+      failure: [],
+      nextChapterId: null,
+    },
+  };
+}
+
+export function buildEffectiveDebugChapter(chapter: any, debugFreePlotActive: boolean) {
+  if (!debugFreePlotActive) return chapter;
+  return {
+    ...chapter,
+    content: "",
+    openingText: "",
+    completionCondition: null,
+    runtimeOutline: buildEmptyDebugRuntimeOutline(),
+  };
+}
+
 export function getPendingDebugChapterId(state: unknown): number | null {
   if (!state || typeof state !== "object" || Array.isArray(state)) return null;
   const value = Number((state as Record<string, unknown>).debugPendingChapterId || 0);
@@ -364,6 +390,28 @@ export function evaluateDebugRuntimeOutcome(params: {
     result: resolved.outcome,
     nextChapterId: resolved.nextChapterId,
   };
+}
+
+export function buildDebugEndDialogDetail(params: {
+  endDialog?: string | null;
+  chapterTitle?: string | null;
+  matchedBy?: string | null;
+  matchedRule?: string | null;
+}) {
+  const endDialog = String(params.endDialog || "").trim();
+  const chapterTitle = String(params.chapterTitle || "当前章节").trim() || "当前章节";
+  const matchedRule = String(params.matchedRule || "").trim();
+  if (endDialog === "已失败") {
+    const reason = matchedRule ? `命中失败条件：${matchedRule}` : "命中失败条件";
+    return `章节《${chapterTitle}》判定失败。${reason}。当前调试已停止，可继续查看当前记录，或返回编辑后重试。`;
+  }
+  if (endDialog === "已完结") {
+    return `章节《${chapterTitle}》已完成，且没有下一章节。可返回编辑继续补章节。`;
+  }
+  if (endDialog === "进入自由剧情") {
+    return `章节《${chapterTitle}》已完成，接下来进入自由剧情，后续将继续按当前局势推进。`;
+  }
+  return "";
 }
 
 export function normalizeDebugRuntimeState(rawState: unknown, worldId: number, chapterId: number, world: any) {

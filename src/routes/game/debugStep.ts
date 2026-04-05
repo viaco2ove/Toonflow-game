@@ -39,6 +39,7 @@ import {
   applyDebugUserMessageProgress,
   applyDebugNarrativeMessageProgress,
   evaluateDebugRuntimeOutcome,
+  buildDebugEndDialogDetail,
 } from "./debugRuntimeShared";
 import u from "@/utils";
 
@@ -51,6 +52,7 @@ function buildDebugSuccessPayload(params: {
   chapterId: number;
   chapterTitle: string;
   endDialog?: string | null;
+  endDialogDetail?: string | null;
   messages?: unknown[];
 }) {
   const normalizedMessages = (params.messages || []).filter((item): item is Record<string, any> =>
@@ -66,6 +68,7 @@ function buildDebugSuccessPayload(params: {
     chapterTitle: params.chapterTitle,
     state: buildDebugStateSnapshot(params.state, debugRuntimeKey),
     endDialog: params.endDialog || null,
+    endDialogDetail: String(params.endDialogDetail || "").trim() || null,
     messages: normalizedMessages,
   };
 }
@@ -279,6 +282,12 @@ export default router.post(
             chapterTitle: String(chapter.title || ""),
             state,
             endDialog: "已失败",
+            endDialogDetail: buildDebugEndDialogDetail({
+              endDialog: "已失败",
+              chapterTitle: String(chapter.title || ""),
+              matchedBy: outcome.matchedBy,
+              matchedRule: outcome.matchedRule,
+            }),
             messages: emittedMessage ? [emittedMessage] : [],
           })));
         }
@@ -420,6 +429,12 @@ export default router.post(
           chapterTitle: String(chapter.title || ""),
           state,
           endDialog: "已失败",
+          endDialogDetail: buildDebugEndDialogDetail({
+            endDialog: "已失败",
+            chapterTitle: String(chapter.title || ""),
+            matchedBy: outcome.matchedBy,
+            matchedRule: outcome.matchedRule,
+          }),
           messages: [asDebugMessage({
             role: String(rolePair.narratorRole.name || "旁白"),
             roleType: "narrator",
@@ -525,6 +540,12 @@ export default router.post(
           chapterTitle: String(chapter.title || ""),
           state,
           endDialog: "已失败",
+          endDialogDetail: buildDebugEndDialogDetail({
+            endDialog: "已失败",
+            chapterTitle: String(chapter.title || ""),
+            matchedBy: narratedOutcome.matchedBy,
+            matchedRule: narratedOutcome.matchedRule,
+          }),
           messages: emittedMessage ? [emittedMessage] : [],
         })));
       }

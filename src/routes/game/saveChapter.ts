@@ -118,8 +118,17 @@ export default router.post(
       }
 
       if (existed?.id) {
+        const existedWorldId = Number(existed.worldId || 0);
+        const requestWorldId = Number(worldId || 0);
+        if (existedWorldId > 0 && requestWorldId > 0 && existedWorldId !== requestWorldId) {
+          return res.status(409).send(error("章节与当前故事不匹配，请刷新后重试"));
+        }
         id = Number(existed.id);
-        await db("t_storyChapter").where({ id }).update(payload);
+        await db("t_storyChapter").where({ id }).update({
+          ...payload,
+          // 已存在章节不允许在保存时被移动到别的故事下面。
+          worldId: existedWorldId || requestWorldId,
+        });
       } else {
         let nextSort = payload.sort;
         if (!nextSort) {

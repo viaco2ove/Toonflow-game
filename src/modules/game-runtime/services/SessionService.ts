@@ -8,6 +8,7 @@ import {
   parseJsonSafe,
   readDefaultRuntimeEventViewState,
   readRuntimeCurrentEventDigestState,
+  RuntimeEventDigestState,
   RuntimeEventViewState,
   toJsonText,
   upsertRuntimeEventDigestState,
@@ -100,12 +101,20 @@ export interface SessionNarrativePlanResult {
   presetContent: string | null;
   eventAdjustMode?: "keep" | "update" | "waiting_input" | "completed";
   eventIndex?: number;
-  eventKind?: "opening" | "scene" | "user" | "fixed";
+  eventKind?: "opening" | "scene" | "user" | "fixed" | "ending";
   eventSummary?: string;
   eventFacts?: string[];
   eventStatus?: "idle" | "active" | "waiting_input" | "completed";
   speakerMode?: "template" | "fast" | "premium";
   speakerRouteReason?: string;
+  orchestratorRuntime?: {
+    modelKey: string;
+    manufacturer: string;
+    model: string;
+    reasoningEffort: "minimal" | "low" | "medium" | "high" | "";
+    payloadMode: "compact" | "advanced";
+    payloadModeSource: "explicit" | "inferred";
+  };
 }
 
 export interface SessionOrchestrationResult {
@@ -118,6 +127,20 @@ export interface SessionOrchestrationResult {
   eventDigestWindow: RuntimeEventViewState["eventDigestWindow"];
   eventDigestWindowText: RuntimeEventViewState["eventDigestWindowText"];
   plan: SessionNarrativePlanResult | null;
+}
+
+type SessionOrchestrationResultSeed = Omit<
+  SessionOrchestrationResult,
+  "currentEventDigest" | "eventDigestWindow" | "eventDigestWindowText"
+>;
+
+export interface SessionMessageRevisitData {
+  v: 1;
+  c: number | null;
+  s: string;
+  r: number;
+  t: number;
+  st: Record<string, any>;
 }
 
 export interface CommitSessionNarrativeTurnInput {
@@ -162,6 +185,83 @@ function normalizeMessageId(value: unknown): number {
   return Number.isFinite(n) ? n : 0;
 }
 
+function normalizeSessionRound(state: Record<string, any>): number {
+  const round = Number(state.round || 0);
+  return Number.isFinite(round) && round >= 0 ? round : 0;
+}
+
+function normalizeSessionChapterId(chapterId: number | null | undefined, state: Record<string, any>): number | null {
+  const explicitChapterId = Number(chapterId || 0);
+  if (Number.isFinite(explicitChapterId) && explicitChapterId > 0) {
+    return explicitChapterId;
+  }
+  const stateChapterId = Number(state.chapterId || 0);
+  return Number.isFinite(stateChapterId) && stateChapterId > 0 ? stateChapterId : null;
+}
+
+export function buildSessionMessageRevisitData(params: {
+  state: Record<string, any>;
+  chapterId: number | null | undefined;
+  status: string;
+  capturedAt?: number;
+}): SessionMessageRevisitData {
+  return {
+    v: 1,
+    c: normalizeSessionChapterId(params.chapterId, params.state),
+    s: String(params.status || "active").trim() || "active",
+    r: normalizeSessionRound(params.state),
+    t: Number(params.capturedAt || nowTs()) || nowTs(),
+    st: parseJsonSafe<Record<string, any>>(toJsonText(params.state, {}), {}),
+  };
+}
+
+export function readSessionMessageRevisitData(input: unknown): SessionMessageRevisitData | null {
+  const parsed = parseJsonMaybe(input);
+  if (!Object.keys(parsed).length) return null;
+  const state = parseJsonMaybe(parsed.st);
+  if (!Object.keys(state).length) return null;
+  const round = Number(parsed.r || 0);
+  const capturedAt = Number(parsed.t || 0);
+  const chapterId = Number(parsed.c || 0);
+  return {
+    v: 1,
+    c: Number.isFinite(chapterId) && chapterId > 0 ? chapterId : null,
+    s: String(parsed.s || "active").trim() || "active",
+    r: Number.isFinite(round) && round >= 0 ? round : 0,
+    t: Number.isFinite(capturedAt) && capturedAt > 0 ? capturedAt : 0,
+    st: state,
+  };
+}
+
+export async function persistSessionMessageRevisitData(params: {
+  db: any;
+  rows: Array<Record<string, any> | null | undefined>;
+  state: Record<string, any>;
+  chapterId: number | null | undefined;
+  status: string;
+  capturedAt?: number;
+}): Promise<void> {
+  const rowIds = params.rows
+    .map((row) => Number(row?.id || 0))
+    .filter((id) => Number.isFinite(id) && id > 0);
+  if (!rowIds.length) return;
+  const revisitData = buildSessionMessageRevisitData({
+    state: params.state,
+    chapterId: params.chapterId,
+    status: params.status,
+    capturedAt: params.capturedAt,
+  });
+  const revisitDataText = toJsonText(revisitData, {});
+  await params.db("t_sessionMessage").whereIn("id", rowIds).update({
+    revisitData: revisitDataText,
+  });
+  const parsedRevisitData = parseJsonMaybe(revisitDataText);
+  params.rows.forEach((row) => {
+    if (!row || typeof row !== "object") return;
+    row.revisitData = parsedRevisitData;
+  });
+}
+
 function buildRecentMessages(rows: any[]): RuntimeMessageInput[] {
   return rows
     .reverse()
@@ -185,18 +285,36 @@ function readMemoryCursor(state: Record<string, any>): Record<string, any> {
   return parseJsonMaybe(state?.memoryCursor);
 }
 
+function readStableMemoryEventDigest(state: Record<string, any>): RuntimeEventDigestState & {
+  stableEventSummary: string;
+  stableEventFacts: string[];
+  stableMemorySummary: string;
+  stableMemoryFacts: string[];
+} {
+  const digest = readRuntimeCurrentEventDigestState(state);
+  return {
+    ...digest,
+    stableEventSummary: String(digest.eventSummary || "").trim(),
+    stableEventFacts: Array.isArray(digest.eventFacts)
+      ? digest.eventFacts.map((item) => String(item || "").trim()).filter(Boolean).slice(0, 6)
+      : [],
+    stableMemorySummary: String(digest.memorySummary || "").trim(),
+    stableMemoryFacts: Array.isArray(digest.memoryFacts)
+      ? digest.memoryFacts.map((item) => String(item || "").trim()).filter(Boolean).slice(0, 6)
+      : [],
+  };
+}
+
 function hasMemoryEventDelta(state: Record<string, any>): boolean {
   const cursor = readMemoryCursor(state);
-  const currentEventDigest = readRuntimeCurrentEventDigestState(state);
+  const currentEventDigest = readStableMemoryEventDigest(state);
   const cursorFacts = Array.isArray(cursor.lastEventFacts)
     ? cursor.lastEventFacts.map((item) => String(item || "").trim()).filter(Boolean)
     : [];
-  const currentFacts = Array.isArray(currentEventDigest.eventFacts)
-    ? currentEventDigest.eventFacts.map((item) => String(item || "").trim()).filter(Boolean)
-    : [];
+  const currentFacts = currentEventDigest.stableEventFacts;
   return Number(cursor.lastEventIndex || 0) !== Number(currentEventDigest.eventIndex || 0)
     || String(cursor.lastEventKind || "").trim() !== String(currentEventDigest.eventKind || "").trim()
-    || String(cursor.lastEventSummary || "").trim() !== String(currentEventDigest.eventSummary || "").trim()
+    || String(cursor.lastEventSummary || "").trim() !== currentEventDigest.stableEventSummary
     || cursorFacts.join("｜") !== currentFacts.join("｜");
 }
 
@@ -207,27 +325,21 @@ function setMemoryCursor(state: Record<string, any>, lastMessageId: number, upda
     : Number.isFinite(Number(cursor.lastMessageId || 0)) && Number(cursor.lastMessageId || 0) > 0
       ? Number(cursor.lastMessageId || 0)
       : 0;
-  const currentEventDigest = readRuntimeCurrentEventDigestState(state);
+  const currentEventDigest = readStableMemoryEventDigest(state);
   state.memoryCursor = {
     lastMessageId: stableLastMessageId,
     lastEventIndex: currentEventDigest.eventIndex,
     lastEventKind: currentEventDigest.eventKind,
-    lastEventSummary: String(currentEventDigest.eventSummary || "").trim(),
-    lastEventFacts: Array.isArray(currentEventDigest.eventFacts)
-      ? currentEventDigest.eventFacts.map((item) => String(item || "").trim()).filter(Boolean).slice(0, 6)
-      : [],
+    lastEventSummary: currentEventDigest.stableEventSummary,
+    lastEventFacts: currentEventDigest.stableEventFacts,
     updateTime: Number.isFinite(updateTime) && updateTime > 0 ? updateTime : nowTs(),
   };
 }
 
 function buildMemoryEventDeltaInput(state: Record<string, any>): RuntimeMessageInput | null {
-  const currentEventDigest = readRuntimeCurrentEventDigestState(state);
-  const eventFacts = Array.isArray(currentEventDigest.eventFacts)
-    ? currentEventDigest.eventFacts.map((item) => String(item || "").trim()).filter(Boolean).slice(0, 6)
-    : [];
-  const memoryFacts = Array.isArray(currentEventDigest.memoryFacts)
-    ? currentEventDigest.memoryFacts.map((item) => String(item || "").trim()).filter(Boolean).slice(0, 6)
-    : [];
+  const currentEventDigest = readStableMemoryEventDigest(state);
+  const eventFacts = currentEventDigest.stableEventFacts;
+  const memoryFacts = currentEventDigest.stableMemoryFacts;
   return {
     messageId: null,
     role: "系统",
@@ -235,16 +347,16 @@ function buildMemoryEventDeltaInput(state: Record<string, any>): RuntimeMessageI
     eventType: "on_event_memory_delta",
     content: [
       `事件#${Number(currentEventDigest.eventIndex || 1)} ${String(currentEventDigest.eventKind || "scene")}`,
-      String(currentEventDigest.eventSummary || "").trim(),
+      currentEventDigest.stableEventSummary,
       eventFacts.length ? `事件事实：${eventFacts.join("；")}` : "",
     ].filter(Boolean).join("\n"),
     createTime: nowTs(),
     memoryDelta: {
       eventIndex: Number(currentEventDigest.eventIndex || 1),
       eventKind: String(currentEventDigest.eventKind || "scene"),
-      eventSummary: String(currentEventDigest.eventSummary || "").trim(),
+      eventSummary: currentEventDigest.stableEventSummary,
       eventFacts,
-      memorySummary: String(currentEventDigest.memorySummary || "").trim(),
+      memorySummary: currentEventDigest.stableMemorySummary,
       memoryFacts,
     },
   };
@@ -346,6 +458,7 @@ function buildSessionPlanResult(plan: ({
   eventStatus?: unknown;
   speakerMode?: unknown;
   speakerRouteReason?: unknown;
+  orchestratorRuntime?: unknown;
 }) | null | undefined): SessionNarrativePlanResult | null {
   if (!plan) return null;
   return {
@@ -379,6 +492,8 @@ function buildSessionPlanResult(plan: ({
         ? "user"
         : plan.eventKind === "fixed"
           ? "fixed"
+          : plan.eventKind === "ending"
+            ? "ending"
           : plan.eventKind === "scene"
             ? "scene"
             : undefined,
@@ -403,23 +518,26 @@ function buildSessionPlanResult(plan: ({
           ? "premium"
           : undefined,
     speakerRouteReason: String(plan.speakerRouteReason || "").trim(),
+    orchestratorRuntime: (() => {
+      const raw = parseJsonMaybe(plan.orchestratorRuntime);
+      if (!Object.keys(raw).length) return undefined;
+      const reasoningEffort = String(raw.reasoningEffort || "").trim().toLowerCase();
+      return {
+        modelKey: String(raw.modelKey || "").trim(),
+        manufacturer: String(raw.manufacturer || "").trim(),
+        model: String(raw.model || "").trim(),
+        reasoningEffort: reasoningEffort === "minimal" || reasoningEffort === "low" || reasoningEffort === "medium" || reasoningEffort === "high"
+          ? reasoningEffort
+          : "",
+        payloadMode: String(raw.payloadMode || "").trim().toLowerCase() === "advanced" ? "advanced" : "compact",
+        payloadModeSource: String(raw.payloadModeSource || "").trim().toLowerCase() === "explicit" ? "explicit" : "inferred",
+      };
+    })(),
   };
-}
-
-function buildCurrentEventDigest(state: Record<string, any>): Record<string, any> {
-  return buildEventView(state).currentEventDigest;
 }
 
 function buildEventView(state: Record<string, any>) {
   return readDefaultRuntimeEventViewState(state);
-}
-
-function buildEventDigestWindow(state: Record<string, any>): Record<string, any>[] {
-  return buildEventView(state).eventDigestWindow;
-}
-
-function buildEventDigestWindowText(state: Record<string, any>): string {
-  return buildEventView(state).eventDigestWindowText;
 }
 
 function getPendingSessionChapterId(state: Record<string, any>): number | null {
@@ -547,7 +665,7 @@ function scheduleSessionMemoryRefresh(params: {
       if (!row) return;
       const latestState = parseJsonSafe<Record<string, any>>(row.stateJson, {});
       applyMemoryResultToState(latestState, memory);
-      const currentEventDigest = readRuntimeCurrentEventDigestState(latestState);
+      const currentEventDigest = readStableMemoryEventDigest(latestState);
       upsertRuntimeEventDigestState(latestState, {
         eventIndex: currentEventDigest.eventIndex,
         memorySummary: String(memory.summary || "").trim(),
@@ -747,12 +865,24 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
       });
 
       const messageRow = await db("t_sessionMessage").where({ id: messageId }).first();
+      await persistSessionMessageRevisitData({
+        db,
+        rows: [messageRow, narrativeMessageRow],
+        state,
+        chapterId: prevChapterId,
+        status: prevStatus,
+        capturedAt: now,
+      });
+      const eventView = buildEventView(state);
       return {
         sessionId,
         status: prevStatus,
         chapterId: prevChapterId,
         chapter: currentChapter || null,
         state,
+        currentEventDigest: eventView.currentEventDigest,
+        eventDigestWindow: eventView.eventDigestWindow,
+        eventDigestWindowText: eventView.eventDigestWindowText,
         message: normalizeMessageOutput(messageRow),
         chapterSwitchMessage: null,
         narrativeMessage: narrativeMessageRow ? normalizeMessageOutput(narrativeMessageRow) : null,
@@ -890,6 +1020,14 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
       world,
     });
     const messageRow = await db("t_sessionMessage").where({ id: messageId }).first();
+    await persistSessionMessageRevisitData({
+      db,
+      rows: [messageRow],
+      state,
+      chapterId: nextChapterId,
+      status: sessionStatus,
+      capturedAt: now,
+    });
     const activeChapter = nextChapterId
       ? normalizeChapterOutput(await db("t_storyChapter").where({ id: nextChapterId }).first())
       : null;
@@ -1074,6 +1212,14 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
   });
 
   const messageRow = await db("t_sessionMessage").where({ id: messageId }).first();
+  await persistSessionMessageRevisitData({
+    db,
+    rows: [messageRow, chapterSwitchMessageRow, ...generatedMessages],
+    state,
+    chapterId: nextChapterId,
+    status: sessionStatus,
+    capturedAt: now,
+  });
   const activeChapter = nextChapterId
     ? normalizeChapterOutput(await db("t_storyChapter").where({ id: nextChapterId }).first())
     : null;
@@ -1241,6 +1387,14 @@ export async function continueSessionNarrative(sessionIdInput: string): Promise<
     userId: currentUserId,
     world,
   });
+  await persistSessionMessageRevisitData({
+    db,
+    rows: generatedMessages,
+    state,
+    chapterId: nextChapterId,
+    status: sessionStatus,
+    capturedAt: now,
+  });
 
   const eventView = buildEventView(state);
   return {
@@ -1294,7 +1448,7 @@ export async function orchestrateSessionTurn(sessionIdInput: string): Promise<Se
   );
   const rawRecentMessages = await db("t_sessionMessage").where({ sessionId }).orderBy("id", "desc").limit(20);
   const recentMessages = buildRecentMessages(rawRecentMessages);
-  const finalizeOrchestrationResult = async (result: SessionOrchestrationResult): Promise<SessionOrchestrationResult> => {
+  const finalizeOrchestrationResult = async (result: SessionOrchestrationResultSeed): Promise<SessionOrchestrationResult> => {
     const activeChapter = result.chapterId
       ? normalizeChapterOutput(await db("t_storyChapter").where({ id: result.chapterId }).first())
       : null;
@@ -1385,16 +1539,12 @@ export async function orchestrateSessionTurn(sessionIdInput: string): Promise<Se
     const nextChapter = normalizeChapterOutput(await db("t_storyChapter").where({ id: pendingChapterId }).first());
     if (!nextChapter) {
       setPendingSessionChapterId(state, null);
-      const eventView = buildEventView(state);
       return finalizeOrchestrationResult({
         sessionId,
         status: sessionStatus,
         chapterId: currentChapterId,
         expectedRole: "",
         expectedRoleType: "",
-        currentEventDigest: eventView.currentEventDigest,
-        eventDigestWindow: eventView.eventDigestWindow,
-        eventDigestWindowText: eventView.eventDigestWindowText,
         plan: null,
       });
     }
@@ -1420,16 +1570,12 @@ export async function orchestrateSessionTurn(sessionIdInput: string): Promise<Se
     return buildChapterStartPlan(chapter);
   }
   if (canPlayerSpeakNow(state, world)) {
-    const eventView = buildEventView(state);
     return finalizeOrchestrationResult({
       sessionId,
       status: sessionStatus,
       chapterId: Number(chapter.id || 0) || null,
       expectedRole: "",
       expectedRoleType: "",
-      currentEventDigest: eventView.currentEventDigest,
-      eventDigestWindow: eventView.eventDigestWindow,
-      eventDigestWindowText: eventView.eventDigestWindowText,
       plan: null,
     });
   }
@@ -1590,6 +1736,14 @@ export async function commitSessionNarrativeTurn(input: CommitSessionNarrativeTu
       prevStatus,
       round: Number(state.round || 0),
     },
+  });
+  await persistSessionMessageRevisitData({
+    db,
+    rows: insertedRows,
+    state,
+    chapterId: nextChapterId,
+    status: sessionStatus,
+    capturedAt: now,
   });
   scheduleSessionRoleParameterCardRefresh({
     userId: currentUserId,

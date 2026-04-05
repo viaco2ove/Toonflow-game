@@ -10,15 +10,26 @@ import {
 } from "@/lib/gameEngine";
 import {
   applyPlayerProfileFromMessageToState,
+  allowPlayerTurn,
   runStorySpeakerContent,
   RuntimeMessageInput,
   runtimeStoryRoles,
+  setRuntimeTurnState,
 } from "@/modules/game-runtime/engines/NarrativeOrchestrator";
 import {
+  applyDebugNarrativeMessageProgress,
+  cacheAndBuildDebugStateSnapshot,
   asDebugMessage,
   buildDebugRecentMessages,
   debugMessageSchema,
+  evaluateDebugRuntimeOutcome,
+  getPendingDebugChapterId,
+  isDebugFreePlotActive,
   loadCachedDebugRuntimeState,
+  resolveNextChapter,
+  setPendingDebugChapterId,
+  syncDebugChapterRuntime,
+  buildDebugEndDialogDetail,
 } from "./debugRuntimeShared";
 import u from "@/utils";
 
@@ -278,17 +289,114 @@ export default router.post(
         writeStreamLine(res, { type: "sentence", data: { text: tailSentence } });
       }
 
+      let donePayload: Record<string, unknown> = {
+        content,
+        message: asDebugMessage({
+          role: roleName || "旁白",
+          roleType,
+          eventType,
+          content,
+        }),
+      };
+
+      if (!sessionId) {
+        syncDebugChapterRuntime(chapter, state);
+        const emittedMessage: RuntimeMessageInput = {
+          role: roleName || "旁白",
+          roleType,
+          eventType,
+          content,
+          createTime: Date.now(),
+        };
+        const phaseAdvance = applyDebugNarrativeMessageProgress({
+          chapter,
+          state,
+          role: String(emittedMessage.role || ""),
+          roleType: String(emittedMessage.roleType || ""),
+          content: String(emittedMessage.content || ""),
+        });
+        const debugFreePlotActive = isDebugFreePlotActive(state);
+        const outcome = evaluateDebugRuntimeOutcome({
+          chapter,
+          state,
+          messageContent: String(emittedMessage.content || ""),
+          eventType: String(emittedMessage.eventType || ""),
+          meta: {},
+          debugFreePlotActive,
+        });
+
+        let endDialog: string | null = null;
+        if (outcome.result === "failed") {
+          endDialog = "已失败";
+          setRuntimeTurnState(state, world, {
+            canPlayerSpeak: false,
+            expectedRoleType: String(plan.nextRoleType || "narrator"),
+            expectedRole: String(plan.nextRole || roleName || rolePair.narratorRole.name || "旁白"),
+            lastSpeakerRoleType: roleType,
+            lastSpeaker: roleName || rolePair.narratorRole.name || "旁白",
+          });
+        } else if (outcome.result === "success") {
+          const nextChapter = await resolveNextChapter(db, worldId, chapter, outcome.nextChapterId);
+          if (!nextChapter) {
+            (state as any).debugFreePlot = {
+              active: true,
+              fromChapterId: Number(chapter.id || 0),
+              unlockedAt: Date.now(),
+            };
+            endDialog = "进入自由剧情";
+          } else {
+            setPendingDebugChapterId(state, Number(nextChapter.id || 0));
+            setRuntimeTurnState(state, world, {
+              canPlayerSpeak: false,
+              expectedRoleType: "narrator",
+              expectedRole: String(rolePair.narratorRole.name || "旁白"),
+              lastSpeakerRoleType: roleType,
+              lastSpeaker: roleName || rolePair.narratorRole.name || "旁白",
+            });
+          }
+        } else {
+          const shouldYieldToUser = phaseAdvance.enteredUserPhase
+            || String(plan.nextRoleType || "").trim().toLowerCase() === "player";
+          if (shouldYieldToUser) {
+            allowPlayerTurn(state, world, roleType, roleName || rolePair.narratorRole.name || "旁白");
+          } else {
+            setRuntimeTurnState(state, world, {
+              canPlayerSpeak: false,
+              expectedRoleType: String(plan.nextRoleType || "narrator"),
+              expectedRole: String(plan.nextRole || roleName || rolePair.narratorRole.name || "旁白"),
+              lastSpeakerRoleType: roleType,
+              lastSpeaker: roleName || rolePair.narratorRole.name || "旁白",
+            });
+          }
+        }
+
+        const snapshot = cacheAndBuildDebugStateSnapshot({
+          userId,
+          worldId,
+          state,
+        });
+        donePayload = {
+          ...donePayload,
+          state: snapshot,
+          chapterId: Number(chapter.id || 0),
+          chapterTitle: String(chapter.title || ""),
+          endDialog,
+          endDialogDetail: buildDebugEndDialogDetail({
+            endDialog,
+            chapterTitle: String(chapter.title || ""),
+            matchedBy: outcome.matchedBy,
+            matchedRule: outcome.matchedRule,
+          }),
+          currentEventDigest: snapshot.currentEventDigest || null,
+          eventDigestWindow: Array.isArray(snapshot.eventDigestWindow) ? snapshot.eventDigestWindow : [],
+          eventDigestWindowText: String(snapshot.eventDigestWindowText || ""),
+          pendingChapterId: getPendingDebugChapterId(state),
+        };
+      }
+
       writeStreamLine(res, {
         type: "done",
-        data: {
-          content,
-          message: asDebugMessage({
-            role: roleName || "旁白",
-            roleType,
-            eventType,
-            content,
-          }),
-        },
+        data: donePayload,
       });
     } catch (err) {
       writeStreamLine(res, {

@@ -21,6 +21,20 @@ export interface RuntimeOutcomeResolution {
   nextChapterId: number | null;
 }
 
+function isDebugLogEnabled(): boolean {
+  return String(process.env.LOG_LEVEL || "").trim().toUpperCase() === "DEBUG";
+}
+
+function stringifyCondition(input: unknown): string {
+  if (input == null) return "null";
+  if (typeof input === "string") return input.trim();
+  try {
+    return JSON.stringify(input);
+  } catch {
+    return String(input);
+  }
+}
+
 export function resolveSessionStatusByOutcome(
   currentStatus: string,
   outcome: "continue" | "success" | "failed",
@@ -48,6 +62,33 @@ export function evaluateRuntimeOutcome(input: EvaluateRuntimeOutcomeInput): Runt
     ? (evaluation.nextChapterId || input.fallbackChapterId || null)
     : (input.fallbackNextChapterId || input.fallbackChapterId || null);
   const sessionStatus = resolveSessionStatusByOutcome(String(input.fallbackStatus || "active"), outcome);
+
+  if (isDebugLogEnabled()) {
+    console.log("[tag_end_chapter]", JSON.stringify({
+      chapterId: Number(input.chapter?.id || 0),
+      chapterTitle: String(input.chapter?.title || "").trim(),
+      outcome,
+      hasRule: evaluation.hasRule,
+      matchedBy: evaluation.matchedBy,
+      matchedRule: evaluation.matchedRule,
+      nextChapterId,
+      completionCondition: stringifyCondition((input.chapter as any)?.completionCondition),
+      endingRules: (() => {
+        try {
+          return JSON.stringify((input.chapter as any)?.runtimeOutline?.endingRules || null);
+        } catch {
+          return String((input.chapter as any)?.runtimeOutline?.endingRules || "");
+        }
+      })(),
+      eventType: String(input.eventType || "on_message"),
+      messageContent: String(input.messageContent || "").trim(),
+      why: evaluation.hasRule
+        ? (evaluation.result === "continue"
+          ? "章节结束条件未命中"
+          : `命中${evaluation.matchedBy === "runtime_outline" ? "运行时事件规则" : "完成条件"}:${evaluation.matchedRule || "未命名规则"}`)
+        : "当前章节没有有效结束条件，沿用fallbackOutcome",
+    }));
+  }
 
   if (Boolean(input.applyToState) && outcome !== "continue") {
     applyChapterOutcomeToState(input.chapter, input.state, {
