@@ -648,11 +648,15 @@ function collectStrictSignalTexts(input: {
 function fixedEventMatches(input: {
   label: string;
   id: string;
+  conditionExpr?: unknown;
   strictSignalTexts: string[];
   ctx: ConditionContext;
 }): boolean {
   const normalizedId = normalizeSignalText(input.id);
   if (normalizedId && input.strictSignalTexts.some((item) => item.includes(normalizedId) || normalizedId.includes(item))) {
+    return true;
+  }
+  if (input.conditionExpr != null && evaluateCondition(input.conditionExpr, input.ctx)) {
     return true;
   }
   if (evaluateCondition(input.label, input.ctx)) {
@@ -1079,6 +1083,7 @@ export function recordChapterProgressSignals(chapter: any, state: JsonRecord, in
     .filter((item) => fixedEventMatches({
       label: String(item.label || "").trim(),
       id: String(item.id || "").trim(),
+      conditionExpr: (item as any)?.conditionExpr,
       strictSignalTexts,
       ctx: {
         state,

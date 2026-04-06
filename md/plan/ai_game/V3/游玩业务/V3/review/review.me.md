@@ -30,17 +30,43 @@ streamvoice->audioProxy->saveWorld->streamvoice->listWorlds->listSession->saveCh
 无故事件被标记为已完成。
 
 测试：
-| 当前事件 | index:1 ↩ kind:scene ↩ flow:chapter_content ↩ status:idle ↩ summary:@旁白：此刻你穿越来了这个世界。请输入你的名称 性别，年龄 | 89 | 23 |
-| 当前事件 | index:1 ↩ kind:ending ↩ flow:chapter_ending_check ↩ status:active ↩ summary:结束条件：用户输入了名称 性别，年龄(用户输入不符合要求五次就是失败) | 103 | 26 |
-| 当前事件 | index:1 ↩ kind:ending ↩ flow:chapter_ending_check ↩ status:active ↩ summary:结束条件：用户输入了名称 性别，年龄(用户输入不符合要求五次就是失败) | 103 | 26 |
-| 当前事件 | index:1 ↩ kind:scene ↩ flow:chapter_content ↩ status:idle ↩ summary:旁白（饰演日程空间戒指）：戒指内部空间辽阔，但是目前基本啥也没有，只有炼炎决（炎帝的早期功法），一把灭魔尺，一本灭魔尺法，灭魔步，10颗五行回复丹。100个斗气石，1个中阶魔核。 ↩ 纳兰嫣然哦好厉害哦 ↩ 旁白（饰演日程空间戒指）：请输入你的姓名... | 183 | 46 |
-| 当前事件 | index:1 ↩ kind:scene ↩ flow:chapter_content ↩ status:idle ↩ summary:@旁白：此刻你穿越来了这个世界。请输入你的名称 性别，年龄 | 89 | 23 |
+| 当前事件 | index:1 
+ kind:scene 
+ flow:chapter_content 
+ status:idle 
+ summary:@旁白：此刻你穿越来了这个世界。请输入你的名称 性别，年龄 | 89 | 23 |
+| 当前事件 | index:1 
+ kind:ending 
+ flow:chapter_ending_check 
+ status:active 
+ summary:结束条件：用户输入了名称 性别，年龄(用户输入不符合要求五次就是失败) | 103 | 26 |
+| 当前事件 | index:1 
+ kind:ending 
+ flow:chapter_ending_check 
+ status:active 
+ summary:结束条件：用户输入了名称 性别，年龄(用户输入不符合要求五次就是失败) | 103 | 26 |
+| 当前事件 | index:1 
+ kind:scene 
+ flow:chapter_content 
+ status:idle 
+ summary:旁白（饰演日程空间戒指）：戒指内部空间辽阔，但是目前基本啥也没有，只有炼炎决（炎帝的早期功法），一把灭魔尺，一本灭魔尺法，灭魔步，10颗五行回复丹。100个斗气石，1个中阶魔核。 
+ 纳兰嫣然哦好厉害哦 
+ 旁白（饰演日程空间戒指）：请输入你的姓名... | 183 | 46 |
+| 当前事件 | index:1 
+ kind:scene 
+ flow:chapter_content 
+ status:idle 
+ summary:@旁白：此刻你穿越来了这个世界。请输入你的名称 性别，年龄 | 89 | 23 |
 全都他妈的是index:1 ？
 第一章成功后
 ![img_7.png](img_7.png)
 第二章直接一堆已完成？啥也没有做。
 而且貌似看到编排师发送了
-| 当前事件 | index:1 ↩ kind:ending ↩ flow:chapter_ending_check ↩ status:active ↩ summary:结束条件：用户输入了名称 性别，年龄(用户输入不符合要求五次就是失败) | 103 | 26 |
+| 当前事件 | index:1 
+ kind:ending 
+ flow:chapter_ending_check 
+ status:active 
+ summary:结束条件：用户输入了名称 性别，年龄(用户输入不符合要求五次就是失败) | 103 | 26 |
 ？？？？
 ![img_8.png](img_8.png)
 - 直接把这个35ms 的莫名奇妙的编排业务删除了！！！。不知所谓！！！ 为什么不访问大模型？？？？
@@ -61,7 +87,7 @@ streamvoice->audioProxy->saveWorld->streamvoice->listWorlds->listSession->saveCh
 回溯失败！！！！
 
 
-# [fail] "[tag_end_chapter]" 没有看见,结束判断混乱
+# [suc] "[tag_end_chapter]" 没有看见,结束判断混乱
 [test_V3.md](../test/TEST_V3/test_V3.md) 的“[tag_end_chapter]”
 
 测试结果：
@@ -75,24 +101,99 @@ streamvoice->audioProxy->saveWorld->streamvoice->listWorlds->listSession->saveCh
 # [fail] "[story:orchestrator:runtime]" 的日志没有记录返回了什么，推理的消耗token
 
 现在是
-`
+```
 [2026-04-07 00:55:38.049] [LOG] [story:orchestrator:stats] | 区块 | 实际内容 | 字符数 | 估算 Prompt Tokens |
 [2026-04-07 00:55:38.049] [LOG] [story:orchestrator:stats] |---|---|---:|---:|
-[2026-04-07 00:55:38.050] [LOG] [story:orchestrator:stats] | 系统提示词 | 你是 AI 故事总调度。你只负责根据当前快照、本轮目标和工具能力，决定把任务交给哪个子 agent，不直接编造剧情细节。输出必须是 JSON，可追踪，不得跨越状态边界。 ↩ 你是剧情编排师（精简版）。你在最小上下文下快速决定本轮由谁发言、为什么发言、局势如何推进，以及这轮后是否轮到用户。你优先保证回合流转正确、事件焦点明确、输出简洁稳定；不要展开世界观，不要复述章节原文，不要写最终展示给用户的台词，只输出可落库的结构化编排结果；如果需要抽记忆，输出 memory_hints。 ↩ 本阶段禁止 JSON、禁止代码块、禁止 markdown。 ↩ 你只决定 speaker、motive、await_user、next_role_type、next_speaker，不负责章节成败与切章。 ↩ 不要写最终展示台词，不要复述章节原文，不要输出内部规则或思考过程。 ↩ speaker 只能来自当前角色列表，并且必须满足当前阶段的 allowed_speakers；用户没发言时，先推进至少一轮非用户内容。 ↩ 若当前事件属于 chapter_ending_check 或 kind=ending，且用户刚提交的输入仍未满足结束条件，不要空白地把回合直接还给用户；先安排旁白或合适角色明确指出缺了什么、格式哪里不对，必要时更新当前事件摘要/事实为新的引导焦点，再设置 await_user=true。 ↩ 若当前事件摘要为空，说明当前轮需要先创建一个新的当前事件焦点；此时请填写 event_summary 和 event_facts，再安排 speaker 与 motive。 ↩ motive 控制在 12~40 字，只描述这一小步要做什么。 ↩ 每轮只推进一小步，不要回顾整章或世界观。 ↩ 若本轮出现新的关键事实、人物资料变化、任务/道具/状态变化或阶段切换，trigger_memory_agent=true，否则 false。 ↩ event_adjust_mode 只能是 keep / update / waiting_input / completed；event_status 只能是 active / waiting_input / completed；event_summary 只用一句话概括当前事件焦点，不要复述整章；event_facts 只列 1~4 条本轮之后仍有用的事件事实。 ↩ 严格按字段逐行输出：role_type / speaker / motive / await_user / next_role_type / next_speaker / memory_hints / trigger_memory_agent / event_adjust_mode / event_status / event_summary / event_facts。 | 1171 | 293 |
-[2026-04-07 00:55:38.050] [LOG] [story:orchestrator:stats] | 角色 | - player|用户|角色名:用户|年龄:0|等级:1/初入此界 ↩ - narrator|旁白|角色名:旁白|年龄:0|等级:0/初入此界 ↩ - npc|萧炎|角色名:萧炎|性别:男|年龄:20|性格:冷静凌厉|等级:0/初入此界 ↩ - npc|西游孙悟空|角色名:西游孙悟空|性别:男|年龄:9999|性格:桀骜不驯，嫉恶如仇，敢作敢当|等级:99/齐天大圣、斗战胜佛 ↩ - npc|徐阳|角色名:徐阳|性别:男|性格:沉稳冷峻，暗藏锋芒|等级:100/初入此界 ↩ - npc|龙珠孙悟空|角色名:龙珠孙悟空|性别:男|年龄:25|性格:热血好战，正直爽朗，崇尚武道，重视伙伴|等级:99/宇宙级顶尖热血战士 ↩ - npc|路人甲|角色名:路人甲|年龄:0|等级:1/初入此界 ↩ - npc|无敌金刚机器人|角色名:无敌金刚机器人|性别:男|年龄:0|等级:100/无敌最终觉醒形态 | 386 | 97 |
-[2026-04-07 00:55:38.051] [LOG] [story:orchestrator:stats] | 当前事件 | index:1 ↩ kind:scene ↩ flow:chapter_content ↩ status:idle ↩ summary:@旁白：此刻你穿越来了这个世界。请输入你的名称 性别，年龄 | 89 | 23 |
+[2026-04-07 00:55:38.050] [LOG] [story:orchestrator:stats] | 系统提示词 | 你是 AI 故事总调度。你只负责根据当前快照、本轮目标和工具能力，决定把任务交给哪个子 agent，不直接编造剧情细节。输出必须是 JSON，可追踪，不得跨越状态边界。 
+ 你是剧情编排师（精简版）。你在最小上下文下快速决定本轮由谁发言、为什么发言、局势如何推进，以及这轮后是否轮到用户。你优先保证回合流转正确、事件焦点明确、输出简洁稳定；不要展开世界观，不要复述章节原文，不要写最终展示给用户的台词，只输出可落库的结构化编排结果；如果需要抽记忆，输出 memory_hints。 
+ 本阶段禁止 JSON、禁止代码块、禁止 markdown。 
+ 你只决定 speaker、motive、await_user、next_role_type、next_speaker，不负责章节成败与切章。 
+ 不要写最终展示台词，不要复述章节原文，不要输出内部规则或思考过程。 
+ speaker 只能来自当前角色列表，并且必须满足当前阶段的 allowed_speakers；用户没发言时，先推进至少一轮非用户内容。 
+ 若当前事件属于 chapter_ending_check 或 kind=ending，且用户刚提交的输入仍未满足结束条件，不要空白地把回合直接还给用户；先安排旁白或合适角色明确指出缺了什么、格式哪里不对，必要时更新当前事件摘要/事实为新的引导焦点，再设置 await_user=true。 
+ 若当前事件摘要为空，说明当前轮需要先创建一个新的当前事件焦点；此时请填写 event_summary 和 event_facts，再安排 speaker 与 motive。 
+ motive 控制在 12~40 字，只描述这一小步要做什么。 
+ 每轮只推进一小步，不要回顾整章或世界观。 
+ 若本轮出现新的关键事实、人物资料变化、任务/道具/状态变化或阶段切换，trigger_memory_agent=true，否则 false。 
+ event_adjust_mode 只能是 keep / update / waiting_input / completed；event_status 只能是 active / waiting_input / completed；event_summary 只用一句话概括当前事件焦点，不要复述整章；event_facts 只列 1~4 条本轮之后仍有用的事件事实。 
+ 严格按字段逐行输出：role_type / speaker / motive / await_user / next_role_type / next_speaker / memory_hints / trigger_memory_agent / event_adjust_mode / event_status / event_summary / event_facts。 | 1171 | 293 |
+[2026-04-07 00:55:38.050] [LOG] [story:orchestrator:stats] | 角色 | - player|用户|角色名:用户|年龄:0|等级:1/初入此界 
+ - narrator|旁白|角色名:旁白|年龄:0|等级:0/初入此界 
+ - npc|萧炎|角色名:萧炎|性别:男|年龄:20|性格:冷静凌厉|等级:0/初入此界 
+ - npc|西游孙悟空|角色名:西游孙悟空|性别:男|年龄:9999|性格:桀骜不驯，嫉恶如仇，敢作敢当|等级:99/齐天大圣、斗战胜佛 
+ - npc|徐阳|角色名:徐阳|性别:男|性格:沉稳冷峻，暗藏锋芒|等级:100/初入此界 
+ - npc|龙珠孙悟空|角色名:龙珠孙悟空|性别:男|年龄:25|性格:热血好战，正直爽朗，崇尚武道，重视伙伴|等级:99/宇宙级顶尖热血战士 
+ - npc|路人甲|角色名:路人甲|年龄:0|等级:1/初入此界 
+ - npc|无敌金刚机器人|角色名:无敌金刚机器人|性别:男|年龄:0|等级:100/无敌最终觉醒形态 | 386 | 97 |
+[2026-04-07 00:55:38.051] [LOG] [story:orchestrator:stats] | 当前事件 | index:1 
+ kind:scene 
+ flow:chapter_content 
+ status:idle 
+ summary:@旁白：此刻你穿越来了这个世界。请输入你的名称 性别，年龄 | 89 | 23 |
 [2026-04-07 00:55:38.051] [LOG] [story:orchestrator:stats] | 最近对话 | 旁白：混沌虚空之中，一道巨大的裂隙缓缓旋转，如同一只沉睡巨兽微微张开的眼睛。 | 38 | 10 |
-[2026-04-07 00:55:38.051] [LOG] [story:orchestrator:stats] | 用户提示词 | [角色] ↩ - player|用户|角色名:用户|年龄:0|等级:1/初入此界 ↩ - narrator|旁白|角色名:旁白|年龄:0|等级:0/初入此界 ↩ - npc|萧炎|角色名:萧炎|性别:男|年龄:20|性格:冷静凌厉|等级:0/初入此界 ↩ - npc|西游孙悟空|角色名:西游孙悟空|性别:男|年龄:9999|性格:桀骜不驯，嫉恶如仇，敢作敢当|等级:99/齐天大圣、斗战胜佛 ↩ - npc|徐阳|角色名:徐阳|性别:男|性格:沉稳冷峻，暗藏锋芒|等级:100/初入此界 ↩ - npc|龙珠孙悟空|角色名:龙珠孙悟空|性别:男|年龄:25|性格:热血好战，正直爽朗，崇尚武道，重视伙伴|等级:99/宇宙级顶尖热血战士 ↩ - npc|路人甲|角色名:路人甲|年龄:0|等级:1/初入此界 ↩ - npc|无敌金刚机器人|角色名:无敌金刚机器人|性别:男|年龄:0|等级:100/无敌最终觉醒形态 ↩ [当前事件] ↩ index:1 ↩ kind:scene ↩ flow:chapter_content ↩ status:idle ↩ summary:@旁白：此刻你穿越来了这个世界。请输入你的名称 性别，年龄 ↩ [最近对话] ↩ 旁白：混沌虚空之中，一道巨大的裂隙缓缓旋转，如同一只沉睡巨兽微微张开的眼睛。 ↩ [输出] ↩ role_type: ↩ speaker: ↩ motive: ↩ await_user: ↩ next_role_type: ↩ next_speaker: ↩ chapter_outcome: ↩ next_chapter_id: ↩ memory_hints: ↩ trigger_memory_agent: ↩ event_facts: ↩ state_delta: | 705 | 177 |
-[2026-04-07 00:55:38.052] [LOG] [runNarrativePlan] 耗时: 14245ms`
-
+[2026-04-07 00:55:38.051] [LOG] [story:orchestrator:stats] | 用户提示词 | [角色] 
+ - player|用户|角色名:用户|年龄:0|等级:1/初入此界 
+ - narrator|旁白|角色名:旁白|年龄:0|等级:0/初入此界 
+ - npc|萧炎|角色名:萧炎|性别:男|年龄:20|性格:冷静凌厉|等级:0/初入此界 
+ - npc|西游孙悟空|角色名:西游孙悟空|性别:男|年龄:9999|性格:桀骜不驯，嫉恶如仇，敢作敢当|等级:99/齐天大圣、斗战胜佛 
+ - npc|徐阳|角色名:徐阳|性别:男|性格:沉稳冷峻，暗藏锋芒|等级:100/初入此界 
+ - npc|龙珠孙悟空|角色名:龙珠孙悟空|性别:男|年龄:25|性格:热血好战，正直爽朗，崇尚武道，重视伙伴|等级:99/宇宙级顶尖热血战士 
+ - npc|路人甲|角色名:路人甲|年龄:0|等级:1/初入此界 
+ - npc|无敌金刚机器人|角色名:无敌金刚机器人|性别:男|年龄:0|等级:100/无敌最终觉醒形态 
+ [当前事件] 
+ index:1 
+ kind:scene 
+ flow:chapter_content 
+ status:idle 
+ summary:@旁白：此刻你穿越来了这个世界。请输入你的名称 性别，年龄 
+ [最近对话] 
+ 旁白：混沌虚空之中，一道巨大的裂隙缓缓旋转，如同一只沉睡巨兽微微张开的眼睛。 
+ [输出] 
+ role_type: 
+ speaker: 
+ motive: 
+ await_user: 
+ next_role_type: 
+ next_speaker: 
+ chapter_outcome: 
+ next_chapter_id: 
+ memory_hints: 
+ trigger_memory_agent: 
+ event_facts: 
+ state_delta: | 705 | 177 |
+[2026-04-07 00:55:38.052] [LOG] [runNarrativePlan] 耗时: 14245ms
+```
 需要增加 返回内容和推理消耗 两行区块日志！！！！！
 
 # [fail] "章节结束条件必须判定出接口不能直接跳过!!! 未结束/失败/成功 "
-没有弹框提示结束条件判定失败。只有禁止输入。交互拉胯
-第二次进行章节调试：被直接判定为了失败？非常离谱
-![img_4.png](img_4.png)
+![img_10.png](img_10.png)
+弹窗位置不对。应该屏幕中间而不是底部
 
-# [suc] [test.V2.md](../test/test.V2.md) 的“AI故事-剧情编排(精简版)checkbox ,AI故事-剧情编排(高级版)checkbox”
+# [fail] [test.V2.md](../test/test.V2.md) 的“AI故事-剧情编排(精简版)checkbox ,AI故事-剧情编排(高级版)checkbox”
 ![img_2.png](img_2.png)
-现在没有办法看到和修改高级版 的提示词内容。
-暂时当作通过。其实依然有问题。没看出高级版高级在哪里。
+通过日志看见实际的提示词是这样的：
+```
+你是 AI 故事总调度。你只负责根据当前快照、本轮目标和工具能力，
+决定把任务交给哪个子 agent，不直接编造剧情细节。输出必须是 JSON，可追踪，不得跨越状态边界。
+ 
+ 你是剧情编排师（精简版）。
+ 你在最小上下文下快速决定本轮由谁发言、为什么发言、局势如何推进，以及这轮后是否轮到用户。你优先保证回合流转正确、事件焦点明确、输出简洁稳定；不要展开世界观，不要复述章节原文，不要写最终展示给用户的台词，只输出可落库的结构化编排结果；如果需要抽记忆，输出 memory_hints。 
+ 本阶段禁止 JSON、禁止代码块、禁止 markdown。 
+ 你只决定 speaker、motive、await_user、next_role_type、next_speaker，不负责章节成败与切章。 
+ 不要写最终展示台词，不要复述章节原文，不要输出内部规则或思考过程。 
+ speaker 只能来自当前角色列表，并且必须满足当前阶段的 allowed_speakers；用户没发言时，先推进至少一轮非用户内容。 
+ 若当前事件属于 chapter_ending_check 或 kind=ending，且用户刚提交的输入仍未满足结束条件，不要空白地把回合直接还给用户；先安排旁白或合适角色明确指出缺了什么、格式哪里不对，必要时更新当前事件摘要 / 事实为新的引导焦点，再设置 await_user=true。 
+ 若当前事件摘要为空，说明当前轮需要先创建一个新的当前事件焦点；此时请填写 event_summary 和 event_facts，再安排 speaker 与 motive。 
+ motive 控制在 12~40 字，只描述这一小步要做什么。 
+ 每轮只推进一小步，不要回顾整章或世界观。 
+ 若本轮出现新的关键事实、人物资料变化、任务 / 道具 / 状态变化或阶段切换，trigger_memory_agent=true，否则 false。 
+ event_adjust_mode 只能是 keep /update/waiting_input /completed；event_status 只能是 active /waiting_input/completed；event_summary 只用一句话概括当前事件焦点，不要复述整章；event_facts 只列 1~4 条本轮之后仍有用的事件事实。 
+ 严格按字段逐行输出：role_type /speaker/motive /await_user/next_role_type /next_speaker/memory_hints /trigger_memory_agent/event_adjust_mode /event_status/event_summary /event_facts。
+```
+而前端看见的是
+![img_11.png](img_11.png)
+
+把整个提示词全部可编辑。而且为什么又总调度 又剧情编排师的？
+这里的功能只是编排师。
+
+高级版目前与精简版 也没有差别。请问高级在哪里？？？

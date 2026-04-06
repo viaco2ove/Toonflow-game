@@ -159,6 +159,7 @@ export interface ChapterRuntimeOutline {
     id: string;
     label: string;
     requiredBeforeFinish: boolean;
+    conditionExpr?: unknown;
   }>;
   endingRules: {
     success: string[];
@@ -590,6 +591,37 @@ function splitCompletionConditionText(input: string): {
   };
 }
 
+function buildImplicitConditionExprFromText(input: unknown): unknown | null {
+  const normalized = normalizeConditionText(input);
+  if (!normalized) return null;
+  const asksIdentity =
+    (normalized.includes("输入") || normalized.includes("填写") || normalized.includes("提供") || normalized.includes("告知") || normalized.includes("绑定"))
+    && (normalized.includes("姓名") || normalized.includes("名称") || normalized.includes("名字"))
+    && normalized.includes("性别")
+    && normalized.includes("年龄");
+  const mentionsIdentityBound =
+    (normalized.includes("身份绑定") || normalized.includes("绑定身份") || normalized.includes("完成绑定"))
+    && (normalized.includes("姓名") || normalized.includes("名称") || normalized.includes("性别") || normalized.includes("年龄"));
+  if (asksIdentity || mentionsIdentityBound) {
+    return {
+      type: "equals",
+      field: "state.player.identity_bound",
+      value: true,
+    };
+  }
+  const asksIdentityFailure =
+    (normalized.includes("失败") || normalized.includes("错误"))
+    && (normalized.includes("五次") || normalized.includes("5次") || normalized.includes("累计五次"))
+    && (normalized.includes("姓名") || normalized.includes("名称") || normalized.includes("性别") || normalized.includes("年龄") || normalized.includes("角色创建"));
+  if (asksIdentityFailure) {
+    return {
+      type: "state_text_contains_all",
+      value: ["失败", normalized.includes("5次") ? "5次" : "五次", "名称", "性别", "年龄"],
+    };
+  }
+  return null;
+}
+
 function normalizeCompletionConditionArtifacts(input: unknown): CompletionConditionArtifacts {
   const condition = tryParseCondition(input);
   const fixedEvents: ChapterRuntimeOutline["fixedEvents"] = [];
@@ -599,6 +631,7 @@ function normalizeCompletionConditionArtifacts(input: unknown): CompletionCondit
     const text = String(label || "").trim();
     if (!text) return;
     const id = `fixed_event_${slugifyRuntimeKey(text, requiredBeforeFinish ? "success" : "failure")}`;
+    const conditionExpr = buildImplicitConditionExprFromText(text);
     if (!bucket.includes(id)) {
       bucket.push(id);
     }
@@ -607,6 +640,7 @@ function normalizeCompletionConditionArtifacts(input: unknown): CompletionCondit
         id,
         label: text,
         requiredBeforeFinish,
+        conditionExpr,
       });
     }
   };
@@ -668,6 +702,7 @@ function mergeRuntimeFixedEvents(
       id,
       label,
       requiredBeforeFinish: item.requiredBeforeFinish !== false,
+      conditionExpr: item.conditionExpr,
     });
   };
   existingFixedEvents.forEach(append);
@@ -733,6 +768,10 @@ export function normalizeChapterRuntimeOutline(input: unknown): ChapterRuntimeOu
       id: String((item as any)?.id || `fixed_event_${index + 1}`).trim() || `fixed_event_${index + 1}`,
       label: String((item as any)?.label || "").trim(),
       requiredBeforeFinish: (item as any)?.requiredBeforeFinish !== false,
+      conditionExpr: (() => {
+        const rawExpr = tryParseCondition((item as any)?.conditionExpr);
+        return rawExpr == null ? undefined : rawExpr;
+      })(),
     })).filter((item) => item.label)
     : [];
   const endingRulesRaw = isRecord(base.endingRules) ? base.endingRules : {};
@@ -1823,6 +1862,12 @@ function tryParseCondition(input: unknown): unknown {
 
 function compareValue(left: unknown, right: unknown, op: string): boolean {
   if (op === "equals") return left === right;
+  if (op === "filled" || op === "present") {
+    if (left === null || left === undefined) return false;
+    if (typeof left === "string") return left.trim().length > 0;
+    if (Array.isArray(left)) return left.length > 0;
+    return true;
+  }
   if (op === "contains") {
     if (Array.isArray(left)) return left.some((item) => item === right);
     return String(left ?? "").includes(String(right ?? ""));
@@ -1848,22 +1893,6 @@ function normalizeConditionText(input: unknown): string {
     .replace(/[\s，。、“”"'‘’：:；;（）()【】\[\]\-—_·•・⋯…,.!?！？]/g, "")
     .trim()
     .toLowerCase();
-}
-
-function isGenericPlayerName(input: unknown): boolean {
-  const text = normalizeEditorText(input);
-  if (!text) return true;
-  return ["用户", "用户", "主角", "我", "本人"].includes(text);
-}
-
-function hasBoundPlayerIdentity(state: JsonRecord): boolean {
-  const player = isRecord(state.player) ? state.player : {};
-  if (player.identity_bound === true) return true;
-  const card = isRecord(player.parameterCardJson) ? player.parameterCardJson : {};
-  const name = normalizeEditorText(card.name);
-  const gender = normalizeEditorText(card.gender);
-  const age = normalizeOptionalNumber(card.age);
-  return !!name && !isGenericPlayerName(name) && !!gender && age != null;
 }
 
 function collectStateConditionTexts(state: JsonRecord): string[] {
@@ -1896,39 +1925,12 @@ function collectStateConditionTexts(state: JsonRecord): string[] {
     .filter(Boolean);
 }
 
-function hasRecordedIdentityCreationFailure(state: JsonRecord): boolean {
-  if (getValueByPath(state, "flags.chapterFailed") === true) return true;
-  const textPool = collectStateConditionTexts(state);
-  return textPool.some((item) => {
-    const mentionsIdentity = item.includes("名称") || item.includes("姓名") || item.includes("性别") || item.includes("年龄") || item.includes("角色创建");
-    const mentionsFailure = item.includes("失败") || item.includes("错误");
-    const mentionsFiveTimes = item.includes("五次") || item.includes("5次") || item.includes("累计五次");
-    return mentionsIdentity && mentionsFailure && mentionsFiveTimes;
-  });
-}
-
 function evaluateNaturalLanguageCondition(text: string, ctx: ConditionContext): boolean | null {
   const normalized = normalizeConditionText(text);
   if (!normalized) return true;
-
-  const asksIdentity =
-    (normalized.includes("输入") || normalized.includes("填写") || normalized.includes("提供") || normalized.includes("告知") || normalized.includes("绑定"))
-    && (normalized.includes("姓名") || normalized.includes("名称") || normalized.includes("名字"))
-    && normalized.includes("性别")
-    && normalized.includes("年龄");
-  const mentionsIdentityBound =
-    (normalized.includes("身份绑定") || normalized.includes("绑定身份") || normalized.includes("完成绑定"))
-    && (normalized.includes("姓名") || normalized.includes("名称") || normalized.includes("性别") || normalized.includes("年龄"));
-
-  if (asksIdentity || mentionsIdentityBound) {
-    return hasBoundPlayerIdentity(ctx.state);
-  }
-  const asksIdentityFailure =
-    (normalized.includes("失败") || normalized.includes("错误"))
-    && (normalized.includes("五次") || normalized.includes("5次") || normalized.includes("累计五次"))
-    && (normalized.includes("姓名") || normalized.includes("名称") || normalized.includes("性别") || normalized.includes("年龄") || normalized.includes("角色创建"));
-  if (asksIdentityFailure) {
-    return hasRecordedIdentityCreationFailure(ctx.state);
+  const normalizedMessage = normalizeConditionText(ctx.messageContent);
+  if (normalizedMessage && (normalizedMessage.includes(normalized) || normalized.includes(normalizedMessage))) {
+    return true;
   }
   return null;
 }
@@ -1980,6 +1982,17 @@ export function evaluateCondition(input: unknown, ctx: ConditionContext): boolea
   if (op === "not") {
     const child = condition.condition ?? (Array.isArray(condition.conditions) ? condition.conditions[0] : null);
     return !evaluateCondition(child, ctx);
+  }
+  if (op === "state_text_contains_all") {
+    const values = Array.isArray(condition.value)
+      ? condition.value
+      : Array.isArray(condition.values)
+        ? condition.values
+        : [condition.value ?? condition.right];
+    const tokens = values.map((item) => normalizeConditionText(item)).filter(Boolean);
+    if (!tokens.length) return false;
+    const textPool = collectStateConditionTexts(ctx.state).join("\n");
+    return tokens.every((token) => textPool.includes(token));
   }
 
   const left = readContextValue(ctx, condition.field ?? condition.left);
