@@ -15,6 +15,7 @@ import { enforceResourceIsolation } from "@/middleware/resourceIsolation";
 import { startSessionMemoryWorker, stopSessionMemoryWorker } from "@/modules/game-runtime/services/SessionMemoryWorker";
 import { syncBundledVoicePresetSeeds } from "@/lib/voicePresetSeeds";
 import { dbBootstrapReady } from "@/utils/db";
+import { clearAllDebugRevisitTmpFiles } from "@/routes/game/debugRuntimeShared";
 
 function ensureNoProxyForLocalhost() {
   const localHosts = ["127.0.0.1", "localhost", "::1"];
@@ -67,6 +68,9 @@ export default async function startServe(randomPort: Boolean = false) {
   if (syncedVoicePresetSeeds > 0) {
     console.log(`[voice] synced bundled preset seeds: ${syncedVoicePresetSeeds}`);
   }
+  // 启动时清空上次遗留的调试回溯临时文件
+  clearAllDebugRevisitTmpFiles();
+
   startSessionMemoryWorker();
 
   app.use(express.static(rootDir));
@@ -148,14 +152,24 @@ export function closeServe(): Promise<void> {
       server.close((err?: Error) => {
         if (err) return reject(err);
         stopSessionMemoryWorker();
+        clearAllDebugRevisitTmpFiles();
         console.log("[server] closed");
         resolve();
       });
     } else {
+      clearAllDebugRevisitTmpFiles();
       resolve();
     }
   });
 }
+
+// 进程退出时清空调试回溯临时文件
+function onProcessExit() {
+  try { clearAllDebugRevisitTmpFiles(); } catch { /* ignore */ }
+}
+process.on("exit", onProcessExit);
+process.on("SIGINT", () => { onProcessExit(); process.exit(0); });
+process.on("SIGTERM", () => { onProcessExit(); process.exit(0); });
 
 const isElectron = typeof process.versions?.electron !== "undefined";
 if (!isElectron) startServe();

@@ -29,7 +29,50 @@ function asRecord(input: unknown): JsonRecord {
 }
 
 function readRuntimeOutline(chapter: any): ChapterRuntimeOutline {
-  return normalizeChapterRuntimeOutline(asRecord(chapter).runtimeOutline);
+  const outline = normalizeChapterRuntimeOutline(asRecord(chapter).runtimeOutline);
+  if (Array.isArray(outline.phases) && outline.phases.length) {
+    return outline;
+  }
+  const syntheticPhase = buildSyntheticChapterContentPhase(chapter);
+  if (!syntheticPhase) {
+    return outline;
+  }
+  return {
+    ...outline,
+    phases: [syntheticPhase],
+  };
+}
+
+function readSyntheticChapterContentSummary(chapter: any): string {
+  const text = String((chapter as any)?.content || "")
+    .replace(/\r\n/g, "\n")
+    .split("\n")
+    .map((line) => line.replace(/^@\s*[^:：\n]+[:：]\s*/, "").trim())
+    .filter(Boolean)
+    .join(" ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!text) return "";
+  return text.length > 120 ? `${text.slice(0, 120)}...` : text;
+}
+
+function buildSyntheticChapterContentPhase(chapter: any): ChapterRuntimePhase | null {
+  const summary = readSyntheticChapterContentSummary(chapter);
+  if (!summary) return null;
+  return {
+    id: "phase_synthetic_chapter_content",
+    label: "章节内容",
+    kind: "scene",
+    targetSummary: summary,
+    nextPhaseIds: [],
+    defaultNextPhaseId: null,
+    allowedSpeakers: [],
+    userNodeId: "",
+    requiredEventIds: [],
+    completionEventIds: [],
+    advanceSignals: [],
+    relatedFixedEventIds: [],
+  };
 }
 
 function readCanPlayerSpeak(state: JsonRecord): boolean {
@@ -247,7 +290,15 @@ function updateEndingState(
   extraPatch: Partial<JsonRecord> = {},
 ) {
   const current = readChapterProgressState(state);
-  const endingEventIndex = Math.max(1, outline.phases.length + 1);
+  const existingDynamicEvents = Array.isArray(state.dynamicEvents) ? state.dynamicEvents as RuntimeDynamicEventState[] : [];
+  const highestContentEventIndex = Math.max(
+    outline.phases.length,
+    ...existingDynamicEvents
+      .filter((item) => !isEndingDynamicEvent(item))
+      .map((item) => Number(item?.eventIndex || 0))
+      .filter((item) => Number.isFinite(item) && item > 0),
+  );
+  const endingEventIndex = Math.max(1, highestContentEventIndex + 1);
   const endingSummary = buildEndingEventSummary(chapter, outline);
   const rawStatus = String(extraPatch.eventStatus || current.eventStatus || "active").trim().toLowerCase();
   const endingStatus: "idle" | "active" | "waiting_input" | "completed" = rawStatus === "completed"
@@ -270,10 +321,18 @@ function updateEndingState(
     pendingGoal: endingSummary,
     ...extraPatch,
   });
-  upsertRuntimeDynamicEventState(state, {
+  const existingEnding = existingDynamicEvents
+    .map((item) => normalizeRuntimeDynamicEventState(item))
+    .find((item) => isEndingDynamicEvent(item)) || null;
+  const preservedDynamicEvents = existingDynamicEvents
+    .map((item) => normalizeRuntimeDynamicEventState(item))
+    .filter((item) => !isEndingDynamicEvent(item));
+  preservedDynamicEvents.push(normalizeRuntimeDynamicEventState({
+    ...existingEnding,
     eventIndex: endingEventIndex,
     phaseId: "",
     kind: "ending",
+    flowType: "chapter_ending_check",
     summary: endingSummary,
     runtimeFacts: [],
     summarySource: "system",
@@ -283,7 +342,8 @@ function updateEndingState(
     allowedRoles: [],
     userNodeId: "",
     updateTime: 0,
-  });
+  }));
+  setRuntimeDynamicEventList(state, preservedDynamicEvents);
   syncRuntimeCurrentEventFromChapterProgress(state);
 }
 
@@ -494,7 +554,39 @@ function buildRuntimeDynamicEvents(
       phaseId: "",
       userNodeId: String(item.userNodeId || "").trim(),
     }));
-  return [...phaseEvents, ...extraEvents].sort((a, b) => a.eventIndex - b.eventIndex);
+  const contentExtraEvents = extraEvents.filter((item) => !isEndingDynamicEvent(item));
+  const endingExtraEvents = extraEvents.filter((item) => isEndingDynamicEvent(item));
+  const highestContentEventIndex = Math.max(
+    staticEventLimit,
+    ...contentExtraEvents
+      .map((item) => Number(item.eventIndex || 0))
+      .filter((item) => Number.isFinite(item) && item > 0),
+  );
+  const normalizedEndingEvent = endingExtraEvents.length
+    ? normalizeRuntimeDynamicEventState({
+      ...endingExtraEvents
+        .slice()
+        .sort((left, right) => {
+          const updateDelta = Number(right.updateTime || 0) - Number(left.updateTime || 0);
+          return updateDelta !== 0 ? updateDelta : Number(right.eventIndex || 0) - Number(left.eventIndex || 0);
+        })[0],
+      eventIndex: Math.max(1, highestContentEventIndex + 1),
+      kind: "ending",
+      flowType: "chapter_ending_check",
+    })
+    : null;
+  return [
+    ...phaseEvents,
+    ...contentExtraEvents,
+    ...(normalizedEndingEvent ? [normalizedEndingEvent] : []),
+  ].sort((a, b) => a.eventIndex - b.eventIndex);
+}
+
+function isEndingDynamicEvent(input: RuntimeDynamicEventState | null | undefined): boolean {
+  if (!input) return false;
+  const kind = String(input.kind || "").trim().toLowerCase();
+  const flowType = String(input.flowType || "").trim().toLowerCase();
+  return kind === "ending" || flowType === "chapter_ending_check";
 }
 
 function syncRuntimeDynamicEvents(state: JsonRecord, outline: ChapterRuntimeOutline): RuntimeDynamicEventState[] {
@@ -574,6 +666,70 @@ function fixedEventMatches(input: {
 export function initializeChapterProgressForState(chapter: any, state: JsonRecord): void {
   const outline = readRuntimeOutline(chapter);
   const current = readChapterProgressState(state);
+  const chapterId = Number(chapter?.id || 0);
+  
+  // 检查是否切换了章节：如果chapterId变化，需要重置completedEvents
+  const isChapterSwitched = current.chapterId > 0 && current.chapterId !== chapterId;
+  
+  if (isChapterSwitched) {
+    // 章节切换：重置completedEvents和phase相关状态，但保留其他状态
+    const freshCompletedEvents: string[] = [];
+    if (isFreeChapterRuntimeMode(chapter)) {
+      if (!outline.phases.length) {
+        ensureFreeChapterDynamicEventState(chapter, state, 1, {
+          completedEvents: freshCompletedEvents,
+        });
+        return;
+      }
+    }
+    // 重新初始化章节进度，从第一个事件开始
+    const nextUserNode = findNextPendingUserNode(outline, freshCompletedEvents);
+    const activePhaseInfo = resolveCurrentOrInitialPhase(outline, "", freshCompletedEvents);
+    if (!activePhaseInfo.phase && !nextUserNode) {
+      if (isFreeChapterRuntimeMode(chapter)) {
+        ensureFreeChapterDynamicEventState(chapter, state, 1, {
+          completedEvents: freshCompletedEvents,
+        });
+        return;
+      }
+      if (hasChapterEndingEvent(chapter, outline)) {
+        updateEndingState(chapter, outline, state, {
+          completedEvents: freshCompletedEvents,
+        });
+        return;
+      }
+      const finalPhase = resolveFinalPhase(outline);
+      updatePhaseState(outline, state, finalPhase.phase, finalPhase.phaseIndex, null, -1, "idle", {
+        chapterId,
+        completedEvents: freshCompletedEvents,
+      });
+      return;
+    }
+    const activePhase = activePhaseInfo.phase;
+    const effectiveUserNodeId = activePhase?.kind === "user"
+      ? (activePhase.userNodeId || nextUserNode?.id || null)
+      : (nextUserNode?.id || null);
+    const effectiveUserNodeIndex = effectiveUserNodeId
+      ? outline.userNodes.findIndex((item) => item.id === effectiveUserNodeId)
+      : -1;
+    const shouldWaitForUser = activePhase?.kind === "user" && readCanPlayerSpeak(state);
+    updatePhaseState(
+      outline,
+      state,
+      activePhase,
+      activePhaseInfo.phaseIndex,
+      effectiveUserNodeId,
+      effectiveUserNodeIndex,
+      shouldWaitForUser ? "waiting_input" : "idle",
+      {
+        chapterId,
+        completedEvents: freshCompletedEvents,
+      },
+    );
+    return;
+  }
+  
+  // 同一章节内的正常初始化逻辑
   if (isFreeChapterRuntimeMode(chapter)) {
     if (!outline.phases.length) {
       ensureFreeChapterDynamicEventState(chapter, state, current.eventIndex || 1, {
@@ -605,7 +761,9 @@ export function initializeChapterProgressForState(chapter: any, state: JsonRecor
       return;
     }
     const finalPhase = resolveFinalPhase(outline);
-    updatePhaseState(outline, state, finalPhase.phase, finalPhase.phaseIndex, null, -1, "idle");
+    updatePhaseState(outline, state, finalPhase.phase, finalPhase.phaseIndex, null, -1, "idle", {
+      chapterId,
+    });
     return;
   }
   const activePhase = activePhaseInfo.phase;
@@ -624,6 +782,9 @@ export function initializeChapterProgressForState(chapter: any, state: JsonRecor
     effectiveUserNodeId,
     effectiveUserNodeIndex,
     shouldWaitForUser ? "waiting_input" : "idle",
+    {
+      chapterId,
+    },
   );
 }
 
@@ -789,6 +950,19 @@ export function advanceChapterProgressAfterNarrative(chapter: any, state: JsonRe
 } {
   const outline = readRuntimeOutline(chapter);
   const current = readChapterProgressState(state);
+
+  // 首先进行事件完整性验证
+  const validation = validateEventCompleteness(chapter, state);
+  console.log("[event:completeness:check]", JSON.stringify({
+    chapterId: Number(chapter?.id || 0),
+    eventIndex: current.eventIndex,
+    isComplete: validation.isComplete,
+    hasStarted: validation.hasStarted,
+    hasProgressed: validation.hasProgressed,
+    hasEnded: validation.hasEnded,
+    details: validation.details,
+  }));
+
   if (!outline.phases.length) {
     return { phaseChanged: false, enteredUserPhase: false, matchedPhaseSignal: false };
   }
@@ -946,4 +1120,198 @@ export function recordChapterProgressSignals(chapter: any, state: JsonRecord, in
     matchedFixedEvents,
     markedPhaseCompleted,
   };
+}
+
+/**
+ * 事件完整性验证结果
+ */
+export interface EventCompletenessValidation {
+  /** 事件是否完整 */
+  isComplete: boolean;
+  /** 开始状态 */
+  hasStarted: boolean;
+  /** 进行中状态 */
+  hasProgressed: boolean;
+  /** 结束状态 */
+  hasEnded: boolean;
+  /** 验证详情 */
+  details: string[];
+  /** 建议的下一个事件索引 */
+  suggestedNextEventIndex: number;
+}
+
+/**
+ * 验证当前事件的完整性
+ * 检查事件是否经历了：开始 -> 经过 -> 结束 的完整生命周期
+ */
+export function validateEventCompleteness(chapter: any, state: JsonRecord): EventCompletenessValidation {
+  const outline = readRuntimeOutline(chapter);
+  const current = readChapterProgressState(state);
+  const details: string[] = [];
+
+  // 1. 检查事件是否开始
+  const hasStarted = current.eventIndex > 0 && current.eventStatus !== "idle";
+  if (hasStarted) {
+    details.push(`[开始] 事件 ${current.eventIndex} 已启动 (状态: ${current.eventStatus})`);
+  } else {
+    details.push(`[开始] 事件未启动 (状态: ${current.eventStatus})`);
+  }
+
+  // 2. 检查事件是否经过（有内容生成）
+  const currentEvent = readRuntimeCurrentEventState(state);
+  const hasProgressed = hasStarted && (
+    currentEvent.status === "active" ||
+    currentEvent.status === "waiting_input" ||
+    currentEvent.status === "completed" ||
+    (current.eventKind === "user" && current.userNodeStatus === "waiting_input")
+  );
+  if (hasProgressed) {
+    details.push(`[经过] 事件 ${current.eventIndex} 已推进 (类型: ${current.eventKind}, 当前事件状态: ${currentEvent.status})`);
+  } else {
+    details.push(`[经过] 事件 ${current.eventIndex} 未推进`);
+  }
+
+  // 3. 检查事件是否结束
+  const isPhaseDone = isPhaseCompleted(current.completedEvents, current.phaseId);
+  const hasEnded = isPhaseDone || current.eventStatus === "completed";
+  if (hasEnded) {
+    details.push(`[结束] 事件 ${current.eventIndex} 已完成 (completedEvents: ${current.completedEvents.length})`);
+  } else {
+    details.push(`[结束] 事件 ${current.eventIndex} 未完成`);
+  }
+
+  // 4. 计算建议的下一个事件索引
+  let suggestedNextEventIndex = current.eventIndex;
+  if (hasEnded) {
+    // 如果当前事件已完成，建议进入下一个事件
+    suggestedNextEventIndex = current.eventIndex + 1;
+  }
+
+  // 5. 验证事件索引是否与实际phase匹配
+  const expectedPhaseIndex = current.eventIndex - 1;
+  const currentPhaseIndex = outline.phases.findIndex((p) => p.id === current.phaseId);
+  if (currentPhaseIndex >= 0 && currentPhaseIndex !== expectedPhaseIndex) {
+    details.push(`[警告] 事件索引不匹配: eventIndex=${current.eventIndex}, 但phaseIndex=${currentPhaseIndex} (期望: ${expectedPhaseIndex})`);
+  }
+
+  // 6. 检查章节切换问题
+  const chapterId = Number(chapter?.id || 0);
+  if (current.chapterId > 0 && current.chapterId !== chapterId) {
+    details.push(`[错误] 章节ID不匹配: chapterProgress.chapterId=${current.chapterId}, 当前章节=${chapterId}`);
+  }
+
+  const isComplete = hasStarted && hasProgressed && hasEnded;
+
+  return {
+    isComplete,
+    hasStarted,
+    hasProgressed,
+    hasEnded,
+    details,
+    suggestedNextEventIndex,
+  };
+}
+
+/**
+ * 判定是否可以进入下一个事件
+ */
+export interface NextEventDecision {
+  /** 是否可以进入下一个事件 */
+  canAdvance: boolean;
+  /** 原因说明 */
+  reason: string;
+  /** 下一个事件的信息 */
+  nextEvent?: {
+    eventIndex: number;
+    phaseId: string;
+    eventKind: string;
+    eventSummary: string;
+  };
+  /** 是否是章节结束 */
+  isChapterEnding: boolean;
+}
+
+/**
+ * 判定是否可以进入下一个事件
+ * 基于当前事件状态和章节编排图进行判定
+ */
+export function canAdvanceToNextEvent(chapter: any, state: JsonRecord): NextEventDecision {
+  const outline = readRuntimeOutline(chapter);
+  const current = readChapterProgressState(state);
+
+  // 1. 验证当前事件完整性
+  const validation = validateEventCompleteness(chapter, state);
+
+  // 2. 如果当前事件未完成，不能进入下一个事件
+  if (!validation.hasEnded) {
+    return {
+      canAdvance: false,
+      reason: `当前事件 ${current.eventIndex} 未完成: ${validation.details.join("; ")}`,
+      isChapterEnding: false,
+    };
+  }
+
+  // 3. 查找下一个phase
+  const currentPhaseIndex = outline.phases.findIndex((p) => p.id === current.phaseId);
+  const nextPhaseIndex = currentPhaseIndex + 1;
+
+  // 4. 检查是否到达章节末尾
+  if (nextPhaseIndex >= outline.phases.length) {
+    // 检查是否有章节结束事件
+    if (hasChapterEndingEvent(chapter, outline)) {
+      return {
+        canAdvance: true,
+        reason: `当前事件 ${current.eventIndex} 已完成，进入章节结束事件`,
+        nextEvent: {
+          eventIndex: outline.phases.length + 1,
+          phaseId: "",
+          eventKind: "ending",
+          eventSummary: buildEndingEventSummary(chapter, outline),
+        },
+        isChapterEnding: true,
+      };
+    }
+    return {
+      canAdvance: false,
+      reason: `已到达章节末尾，没有更多事件 (当前: ${current.eventIndex}/${outline.phases.length})`,
+      isChapterEnding: true,
+    };
+  }
+
+  // 5. 获取下一个phase的信息
+  const nextPhase = outline.phases[nextPhaseIndex];
+  const nextEventIndex = nextPhaseIndex + 1;
+
+  return {
+    canAdvance: true,
+    reason: `当前事件 ${current.eventIndex} 已完成，可以进入事件 ${nextEventIndex}`,
+    nextEvent: {
+      eventIndex: nextEventIndex,
+      phaseId: nextPhase.id,
+      eventKind: nextPhase.kind || "scene",
+      eventSummary: String(nextPhase.targetSummary || nextPhase.label || "").trim(),
+    },
+    isChapterEnding: false,
+  };
+}
+
+/**
+ * 记录事件推进判定日志
+ */
+export function logEventAdvanceDecision(chapter: any, state: JsonRecord, decision: NextEventDecision): void {
+  const current = readChapterProgressState(state);
+  const chapterId = Number(chapter?.id || 0);
+
+  console.log("[event:advance:decision]", JSON.stringify({
+    chapterId,
+    currentEventIndex: current.eventIndex,
+    currentPhaseId: current.phaseId,
+    currentEventKind: current.eventKind,
+    currentEventStatus: current.eventStatus,
+    canAdvance: decision.canAdvance,
+    reason: decision.reason,
+    nextEvent: decision.nextEvent,
+    isChapterEnding: decision.isChapterEnding,
+    completedEvents: current.completedEvents,
+  }));
 }

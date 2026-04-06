@@ -21,6 +21,7 @@ import {
   triggerStoryMemoryRefreshInBackground,
 } from "@/modules/game-runtime/engines/NarrativeOrchestrator";
 import { handleMiniGameTurn } from "@/modules/game-runtime/engines/MiniGameController";
+import { initializeChapterProgressForState } from "@/modules/game-runtime/engines/ChapterProgressEngine";
 import {
   asDebugMessage,
   buildDebugFreePlotMessage,
@@ -40,6 +41,8 @@ import {
   applyDebugNarrativeMessageProgress,
   evaluateDebugRuntimeOutcome,
   buildDebugEndDialogDetail,
+  saveDebugRevisitPoint,
+  buildDebugMessageWithRevisitData,
 } from "./debugRuntimeShared";
 import u from "@/utils";
 
@@ -54,15 +57,33 @@ function buildDebugSuccessPayload(params: {
   endDialog?: string | null;
   endDialogDetail?: string | null;
   messages?: unknown[];
+  saveRevisit?: boolean;
 }) {
-  const normalizedMessages = (params.messages || []).filter((item): item is Record<string, any> =>
-    Boolean(item && typeof item === "object" && !Array.isArray(item)));
+  const rawMessages = params.messages || [];
+  const normalizedMessages = rawMessages
+    .filter((item): item is Record<string, any> =>
+      Boolean(item && typeof item === "object" && !Array.isArray(item)))
+    .map((msg, index) => ({
+      ...msg,
+      canRevisit: index < rawMessages.length - 1, // 除了最后一条，其他都支持回溯
+    }));
   const debugRuntimeKey = cacheDebugRuntimeState(
     params.state,
     params.userId,
     params.worldId,
     readDebugRuntimeKey(params.state),
   );
+
+  // 保存回溯点
+  if (params.saveRevisit !== false && rawMessages.length > 0) {
+    saveDebugRevisitPoint(
+      debugRuntimeKey,
+      params.state,
+      rawMessages as RuntimeMessageInput[],
+      params.chapterId || null,
+    );
+  }
+
   return {
     chapterId: params.chapterId,
     chapterTitle: params.chapterTitle,
@@ -130,6 +151,8 @@ export default router.post(
         applyPlayerProfileFromMessageToState(state, world, playerContent);
       }
       syncDebugChapterRuntime(chapter, state);
+      // 确保章节进度已初始化（eventIndex 等）
+      initializeChapterProgressForState(chapter, state);
       const debugFreePlotActive = isDebugFreePlotActive(state);
       const effectiveChapter = debugFreePlotActive
         ? {
@@ -186,6 +209,7 @@ export default router.post(
         }
 
         if (!messages.length) {
+          // 使用 /introduction 接口生成开场白，而不是内部处理
           syncDebugChapterRuntime(chapter, state);
           const openingRuntimeMessage = buildOpeningRuntimeMessage(world, chapter, String(rolePair.narratorRole.name || "旁白"));
           setRuntimeTurnState(state, world, {
@@ -195,15 +219,21 @@ export default router.post(
             lastSpeakerRoleType: String(openingRuntimeMessage.roleType || "narrator"),
             lastSpeaker: String(openingRuntimeMessage.role || rolePair.narratorRole.name || "旁白"),
           });
-          return res.status(200).send(success(buildDebugSuccessPayload({
-            userId,
-            worldId,
-            chapterId: Number(chapter.id || 0),
-            chapterTitle: String(chapter.title || ""),
-            state,
-            endDialog: null,
-            messages: [asDebugMessage(openingRuntimeMessage)],
-          })));
+          // 如果有开场白内容，设置等待用户输入状态
+          // 如果没有开场白，直接进入编排流程
+          if (String(openingRuntimeMessage.content || "").trim()) {
+            return res.status(200).send(success(buildDebugSuccessPayload({
+              userId,
+              worldId,
+              chapterId: Number(chapter.id || 0),
+              chapterTitle: String(chapter.title || ""),
+              state,
+              endDialog: null,
+              messages: [asDebugMessage(openingRuntimeMessage)],
+              saveRevisit: true, // 保存回溯点
+            })));
+          }
+          // 没有开场白，继续进入编排流程（跳过等待用户输入）
         }
 
         if (canPlayerSpeakNow(state, world)) {

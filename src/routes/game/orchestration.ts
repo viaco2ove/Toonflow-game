@@ -42,6 +42,7 @@ import {
   buildEffectiveDebugChapter,
   evaluateDebugRuntimeOutcome,
   buildDebugEndDialogDetail,
+  saveDebugRevisitPoint,
 } from "./debugRuntimeShared";
 import u from "@/utils";
 
@@ -175,12 +176,25 @@ function buildOrchestrationPayload(params: {
   endDialog?: string | null;
   endDialogDetail?: string | null;
   plan?: ReturnType<typeof buildPlanResult>;
+  messages?: RuntimeMessageInput[];
 }) {
   const stateSnapshot = cacheAndBuildDebugStateSnapshot({
     userId: params.userId,
     worldId: params.worldId,
     state: params.state,
   });
+
+  // 保存回溯点（用于台词回溯功能）
+  const debugRuntimeKey = stateSnapshot.debugRuntimeKey as string;
+  if (debugRuntimeKey && params.messages) {
+    saveDebugRevisitPoint(
+      debugRuntimeKey,
+      params.state,
+      params.messages,
+      params.chapterId
+    );
+  }
+
   if (String(process.env.LOG_LEVEL || "").trim().toUpperCase() === "DEBUG") {
     const planSource = String(params.plan?.planSource || "").trim();
     const tag = planSource === "opening_preset"
@@ -414,6 +428,7 @@ export default router.post(
               state,
               endDialog: null,
               plan: null,
+              messages: inputMessages,
             })));
           }
           chapter = nextChapter;
@@ -426,6 +441,7 @@ export default router.post(
             state,
             endDialog: null,
             plan: nextChapterStart.plan,
+            messages: inputMessages,
           })));
         }
 
@@ -440,19 +456,21 @@ export default router.post(
             state,
             endDialog: null,
             plan: chapterStart.plan,
+            messages: inputMessages,
           })));
         }
 
         if (canPlayerSpeakNow(state, world)) {
-          return res.status(200).send(success(buildOrchestrationPayload({
-            userId,
-            worldId,
-            chapterId: Number(chapter.id || 0),
-            chapterTitle: String(chapter.title || ""),
-            state,
-            endDialog: null,
-            plan: null,
-          })));
+        return res.status(200).send(success(buildOrchestrationPayload({
+          userId,
+          worldId,
+          chapterId: Number(chapter.id || 0),
+          chapterTitle: String(chapter.title || ""),
+          state,
+          endDialog: null,
+          plan: null,
+          messages: inputMessages,
+        })));
         }
 
         const plan = await runNarrativePlan({
@@ -487,6 +505,7 @@ export default router.post(
           state,
           endDialog: null,
           plan: buildPlanResult({ ...plan, eventType: "on_orchestrated_reply", planSource: "ai_orchestrator" }),
+          messages: inputMessages,
         })));
       }
 
@@ -526,6 +545,7 @@ export default router.post(
             nextRole: "",
             nextRoleType: "",
           }) : null,
+          messages: inputMessages,
         })));
       }
 
@@ -570,6 +590,7 @@ export default router.post(
             matchedBy: outcome.matchedBy,
             matchedRule: outcome.matchedRule,
           }),
+          messages: inputMessages,
         })));
       }
 
@@ -595,19 +616,21 @@ export default router.post(
               nextRole: String(rolePair.narratorRole.name || "旁白"),
               nextRoleType: "narrator",
             }),
+            messages: inputMessages,
           })));
         }
         chapter = nextChapter;
         const nextChapterStart = await buildChapterStartPlan(nextChapter);
-        return res.status(200).send(success(buildOrchestrationPayload({
-          userId,
-          worldId,
-          chapterId: nextChapterStart.chapterId,
-          chapterTitle: nextChapterStart.chapterTitle,
-          state,
-          endDialog: null,
-          plan: nextChapterStart.plan,
-        })));
+      return res.status(200).send(success(buildOrchestrationPayload({
+        userId,
+        worldId,
+        chapterId: nextChapterStart.chapterId,
+        chapterTitle: nextChapterStart.chapterTitle,
+        state,
+        endDialog: null,
+        plan: nextChapterStart.plan,
+        messages: inputMessages,
+      })));
       }
 
       const plan = await runNarrativePlan({
@@ -643,6 +666,7 @@ export default router.post(
         state,
         endDialog: null,
         plan: buildPlanResult({ ...plan, eventType: "on_orchestrated_reply", planSource: "ai_orchestrator" }),
+        messages: inputMessages,
       })));
     } catch (err) {
       if (isSessionServiceError(err)) {

@@ -53,6 +53,69 @@ import {
   TriggerHit,
 } from "@/modules/game-runtime/types/runtime";
 
+// ==================== 游玩模式回溯功能内存缓存 ====================
+//
+// 设计：
+//   - 内存层：每个 sessionId 保留最近 SESSION_REVISIT_HOT_SIZE 条，热数据直接命中
+//   - 持久化层：t_sessionMessage.revisitData 字段
+//   - 读取顺序：优先内存 → 数据库字段 → 提示缺少记忆
+
+const SESSION_REVISIT_HOT_SIZE = 10; // 内存保留最近 N 条
+
+interface SessionRevisitCacheItem {
+  sessionId: string;
+  messageId: number;
+  revisitData: SessionMessageRevisitData;
+  capturedAt: number;
+}
+
+// 内存层：sessionId -> 最近 N 条（按 messageId 升序）
+const SESSION_REVISIT_HOT = new Map<string, SessionRevisitCacheItem[]>();
+
+// 保存回溯点到内存缓存
+function saveSessionRevisitToHotCache(
+  sessionId: string,
+  messageId: number,
+  revisitData: SessionMessageRevisitData,
+): void {
+  const items = SESSION_REVISIT_HOT.get(sessionId) || [];
+  // 移除重复的 messageId
+  const filtered = items.filter((item) => item.messageId !== messageId);
+  // 添加新的
+  filtered.push({
+    sessionId,
+    messageId,
+    revisitData,
+    capturedAt: revisitData.t,
+  });
+  // 按 messageId 排序
+  filtered.sort((a, b) => a.messageId - b.messageId);
+  // 保留最近 N 条
+  const trimmed = filtered.slice(-SESSION_REVISIT_HOT_SIZE);
+  SESSION_REVISIT_HOT.set(sessionId, trimmed);
+}
+
+// 从内存缓存读取回溯点
+function readSessionRevisitFromHotCache(
+  sessionId: string,
+  messageId: number,
+): SessionMessageRevisitData | null {
+  const items = SESSION_REVISIT_HOT.get(sessionId);
+  if (!items) return null;
+  const found = items.find((item) => item.messageId === messageId);
+  return found?.revisitData || null;
+}
+
+// 清空指定 session 的缓存
+export function clearSessionRevisitCache(sessionId: string): void {
+  SESSION_REVISIT_HOT.delete(sessionId);
+}
+
+// 清空所有缓存
+export function clearAllSessionRevisitCaches(): void {
+  SESSION_REVISIT_HOT.clear();
+}
+
 export interface AddSessionMessageInput {
   sessionId: string;
   roleType?: string | null;
@@ -215,7 +278,20 @@ export function buildSessionMessageRevisitData(params: {
   };
 }
 
-export function readSessionMessageRevisitData(input: unknown): SessionMessageRevisitData | null {
+export function readSessionMessageRevisitData(
+  input: unknown,
+  sessionId?: string,
+  messageId?: number,
+): SessionMessageRevisitData | null {
+  // 1. 优先从内存缓存读取
+  if (sessionId && messageId && Number.isFinite(messageId) && messageId > 0) {
+    const cached = readSessionRevisitFromHotCache(sessionId, messageId);
+    if (cached) {
+      return cached;
+    }
+  }
+  
+  // 2. 从数据库字段读取
   const parsed = parseJsonMaybe(input);
   if (!Object.keys(parsed).length) return null;
   const state = parseJsonMaybe(parsed.st);
@@ -223,7 +299,8 @@ export function readSessionMessageRevisitData(input: unknown): SessionMessageRev
   const round = Number(parsed.r || 0);
   const capturedAt = Number(parsed.t || 0);
   const chapterId = Number(parsed.c || 0);
-  return {
+  
+  const result: SessionMessageRevisitData = {
     v: 1,
     c: Number.isFinite(chapterId) && chapterId > 0 ? chapterId : null,
     s: String(parsed.s || "active").trim() || "active",
@@ -231,6 +308,13 @@ export function readSessionMessageRevisitData(input: unknown): SessionMessageRev
     t: Number.isFinite(capturedAt) && capturedAt > 0 ? capturedAt : 0,
     st: state,
   };
+  
+  // 如果从数据库读取成功，同时缓存到内存
+  if (sessionId && messageId && Number.isFinite(messageId) && messageId > 0) {
+    saveSessionRevisitToHotCache(sessionId, messageId, result);
+  }
+  
+  return result;
 }
 
 export async function persistSessionMessageRevisitData(params: {
@@ -240,6 +324,7 @@ export async function persistSessionMessageRevisitData(params: {
   chapterId: number | null | undefined;
   status: string;
   capturedAt?: number;
+  sessionId?: string | null; // 添加 sessionId 参数
 }): Promise<void> {
   const rowIds = params.rows
     .map((row) => Number(row?.id || 0))
@@ -251,6 +336,15 @@ export async function persistSessionMessageRevisitData(params: {
     status: params.status,
     capturedAt: params.capturedAt,
   });
+  
+  // 保存到内存缓存
+  if (params.sessionId) {
+    rowIds.forEach((messageId) => {
+      saveSessionRevisitToHotCache(params.sessionId!, messageId, revisitData);
+    });
+  }
+  
+  // 持久化到数据库
   const revisitDataText = toJsonText(revisitData, {});
   await params.db("t_sessionMessage").whereIn("id", rowIds).update({
     revisitData: revisitDataText,

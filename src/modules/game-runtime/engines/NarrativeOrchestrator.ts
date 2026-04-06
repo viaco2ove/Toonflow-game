@@ -885,8 +885,12 @@ function buildCompactOrchestratorSections(payload: OrchestratorPromptPayload): A
   const rolesText = payload.roles
     .map((role) => `- ${sanitizeRoleType(role.roleType)}|${normalizeScalarText(role.name)}|${describeRole(role, true)}`)
     .join("\n");
+  // 事件索引规则：
+  // - 开场白 (eventKind: "opening") 不占用事件序号，eventIndex 为 undefined
+  // - 章节内容 (eventKind: "scene") 从 index:1 开始
+  // - 结局判断 (eventKind: "ending") 紧随章节内容之后
   const currentEventLines = [
-    `index:${payload.currentEventIndex || 1}`,
+    payload.currentEventIndex != null ? `index:${payload.currentEventIndex}` : "",
     `kind:${payload.currentEventKind || "scene"}`,
     `flow:${payload.currentEventFlowType || "chapter_content"}`,
     `status:${payload.currentEventStatus || "active"}`,
@@ -909,7 +913,7 @@ function buildCompactOrchestratorSections(payload: OrchestratorPromptPayload): A
   ].filter(Boolean).join("\n");
   return [
     { title: "角色", content: rolesText || "无" },
-    { title: "当前事件", content: currentEventLines || "index:1\nkind:scene\nsummary:当前事件未命名" },
+    { title: "当前事件", content: currentEventLines || "kind:scene\nflow:chapter_content\nsummary:当前事件未命名" },
     ...((!payload.currentEventSummary && !payload.currentEventFacts.length && eventSeed)
       ? [{ title: "事件种子", content: eventSeed }]
       : []),
@@ -926,7 +930,7 @@ function buildOrchestratorPromptStats(payload: OrchestratorPromptPayload, compac
       { title: "角色列表", content: payload.roles.map((role) => `- ${sanitizeRoleType(role.roleType)} | ${normalizeScalarText(role.name)} | ${describeRole(role)}`).join("\n") || "无" },
       { title: "剧情摘要", content: payload.storyState || "无" },
       { title: "当前阶段", content: [`label:${payload.currentPhaseLabel || "未命名阶段"}`, payload.currentPhaseGoal ? `goal:${payload.currentPhaseGoal}` : "", `allowed_speakers:${payload.phaseAllowedSpeakers.length ? payload.phaseAllowedSpeakers.join("、") : "全部当前角色"}`].filter(Boolean).join("\n") },
-      { title: "当前事件", content: [`index:${payload.currentEventIndex || 1}`, `kind:${payload.currentEventKind || "scene"}`, `flow:${payload.currentEventFlowType || "chapter_content"}`, `status:${payload.currentEventStatus || "active"}`, `summary:${payload.currentEventSummary || "当前事件未命名"}`, payload.currentEventFacts.length ? `facts:${payload.currentEventFacts.join("；")}` : "", payload.currentEventMemorySummary ? `memory_summary:${payload.currentEventMemorySummary}` : "", payload.currentEventMemoryFacts.length ? `memory_facts:${payload.currentEventMemoryFacts.join("；")}` : "", payload.currentEventWindow ? `事件窗口:${payload.currentEventWindow}` : ""].filter(Boolean).join("\n") },
+      { title: "当前事件", content: [payload.currentEventIndex != null ? `index:${payload.currentEventIndex}` : "", `kind:${payload.currentEventKind || "scene"}`, `flow:${payload.currentEventFlowType || "chapter_content"}`, `status:${payload.currentEventStatus || "active"}`, `summary:${payload.currentEventSummary || "当前事件未命名"}`, payload.currentEventFacts.length ? `facts:${payload.currentEventFacts.join("；")}` : "", payload.currentEventMemorySummary ? `memory_summary:${payload.currentEventMemorySummary}` : "", payload.currentEventMemoryFacts.length ? `memory_facts:${payload.currentEventMemoryFacts.join("；")}` : "", payload.currentEventWindow ? `事件窗口:${payload.currentEventWindow}` : ""].filter(Boolean).join("\n") },
       { title: "回合状态", content: [`can_player_speak:${payload.turnState.canPlayerSpeak ? "true" : "false"}`, `expected_role_type:${sanitizeRoleType(payload.turnState.expectedRoleType)}`, `expected_role:${payload.turnState.expectedRole || "无"}`, `last_speaker_role_type:${sanitizeRoleType(payload.turnState.lastSpeakerRoleType)}`, `last_speaker:${payload.turnState.lastSpeaker || "无"}`].join("\n") },
       { title: "最近对话", content: payload.recentDialogue || "无" },
       { title: "用户本轮输入", content: payload.latestPlayerMessage || "无" },
@@ -949,8 +953,9 @@ function logOrchestratorPromptStats(
   systemPrompt: string,
   userPrompt: string,
   runtimeError: unknown,
+  tokenUsage?: { inputTokens?: number; outputTokens?: number; reasoningTokens?: number } | null,
+  rawResponse?: string | null,
 ) {
-  if (!isDebugLogEnabled()) return;
   const rows: PromptStatRow[] = [
     {
       block: "系统提示词",
@@ -968,19 +973,55 @@ function logOrchestratorPromptStats(
   ];
   const totalPromptChars = systemPrompt.length + userPrompt.length;
   const totalPromptTokens = estimatePromptTokens(`${systemPrompt}\n${userPrompt}`.trim());
-  console.log("[story:orchestrator:runtime]", JSON.stringify(runtime));
+
+  // 单次编排只保留一条 runtime 日志，避免同一轮配置/响应各打一条导致看起来像重复调用。
+  const runtimeLog: Record<string, any> = {
+    ...runtime,
+    requestChars: totalPromptChars,
+    systemChars: systemPrompt.length,
+    userChars: userPrompt.length,
+    requestStatus: runtimeError ? "fallback" : "success",
+    responseTextLength: rawResponse ? rawResponse.length : 0,
+    responseText: rawResponse ? rawResponse.slice(0, 500) : "",
+    tokenUsage: tokenUsage || null,
+  };
+  if (runtimeError) {
+    runtimeLog.error = normalizePromptStatContent((runtimeError as any)?.message || String(runtimeError));
+  }
+
+  console.log("[story:orchestrator:runtime]", JSON.stringify(runtimeLog));
   console.log(`[story:orchestrator:stats] request_chars=${totalPromptChars} estimated_tokens=${totalPromptTokens} system_chars=${systemPrompt.length} user_chars=${userPrompt.length}`);
+
+  if (tokenUsage) {
+    console.log(`[story:orchestrator:stats] actual_input_tokens=${tokenUsage.inputTokens || 0} actual_output_tokens=${tokenUsage.outputTokens || 0} actual_reasoning_tokens=${tokenUsage.reasoningTokens || 0}`);
+  }
+
+  const responseText = String(rawResponse || "").trim();
+  if (responseText) {
+    console.log(`[story:orchestrator:stats] response_chars=${responseText.length}`);
+    console.log(`[story:orchestrator:stats] response_preview=${normalizePromptStatContent(responseText)}`);
+  }
+
   if (runtimeError) {
     console.log(`[story:orchestrator:stats] request_status=fallback reason=${normalizePromptStatContent((runtimeError as any)?.message || String(runtimeError))}`);
   } else {
     console.log("[story:orchestrator:stats] request_status=success");
   }
-  console.log("[story:orchestrator:stats] 以下为 prompt 体积估算，不等于模型真实 usage。");
-  console.log("[story:orchestrator:stats] | 区块 | 实际内容 | 字符数 | 估算 Prompt Tokens |");
-  console.log("[story:orchestrator:stats] |---|---|---:|---:|");
-  rows.forEach((row) => {
-    console.log(`[story:orchestrator:stats] | ${row.block} | ${normalizePromptStatContent(row.content)} | ${row.chars} | ${row.estimatedTokens} |`);
-  });
+  
+  if (isDebugLogEnabled()) {
+    console.log("[story:orchestrator:stats] 以下为 prompt 体积估算，不等于模型真实 usage。");
+    console.log("[story:orchestrator:stats] | 区块 | 实际内容 | 字符数 | 估算 Prompt Tokens |");
+    console.log("[story:orchestrator:stats] |---|---|---:|---:|");
+    rows.forEach((row) => {
+      console.log(`[story:orchestrator:stats] | ${row.block} | ${normalizePromptStatContent(row.content)} | ${row.chars} | ${row.estimatedTokens} |`);
+    });
+    if (responseText) {
+      console.log(`[story:orchestrator:stats] | 返回内容 | ${normalizePromptStatContent(responseText)} | ${responseText.length} | - |`);
+    }
+    if (tokenUsage) {
+      console.log(`[story:orchestrator:stats] | 实际推理消耗 | input=${tokenUsage.inputTokens || 0}, output=${tokenUsage.outputTokens || 0}, reasoning=${tokenUsage.reasoningTokens || 0} | - | - |`);
+    }
+  }
 }
 
 function buildOrchestratorUserPrompt(payload: OrchestratorPromptPayload, compactMode = false): string {
@@ -2280,6 +2321,8 @@ async function doRunNarrativePlan(input: OrchestratorInput): Promise<NarrativePl
   });
   const userPrompt = buildOrchestratorUserPrompt(payload, compactMode);
   let orchestratorRuntimeError: unknown = null;
+  let orchestratorRawText = "";
+  let orchestratorTokenUsage: { inputTokens?: number; outputTokens?: number; reasoningTokens?: number } | null = null;
   try {
     // 发送请求 进行编排
     const result = await u.ai.text.invoke(
@@ -2307,8 +2350,10 @@ async function doRunNarrativePlan(input: OrchestratorInput): Promise<NarrativePl
         maxRetries: input.maxRetries ?? 0,
       },
       promptAiConfig as any,
-	    );
+    );
     const rawText = unwrapModelText((result as any)?.text || "");
+    orchestratorRawText = rawText;
+    orchestratorTokenUsage = (result as any)?.usage || null;
     const objectLike = parseJsonSafe<Record<string, unknown>>(rawText, {});
     const fieldMap = parseFieldMap(rawText);
     const speaker = normalizeScalarText(
@@ -2535,7 +2580,16 @@ async function doRunNarrativePlan(input: OrchestratorInput): Promise<NarrativePl
     console.log("[orchestrator] userPrompt.length=", userPrompt.length);
     console.log("[orchestrator] roles=", payload.roles.length);
     console.log("[orchestrator] payloadMode=", orchestratorRuntime.payloadMode, "reasoningEffort=", orchestratorRuntime.reasoningEffort || "未指定");
-    logOrchestratorPromptStats(payload, compactMode, orchestratorRuntime, systemPrompt, userPrompt, orchestratorRuntimeError);
+    logOrchestratorPromptStats(
+      payload,
+      compactMode,
+      orchestratorRuntime,
+      systemPrompt,
+      userPrompt,
+      orchestratorRuntimeError,
+      orchestratorTokenUsage,
+      orchestratorRawText,
+    );
   }
 }
 
@@ -2580,7 +2634,7 @@ export async function runNarrativeOrchestrator(input: OrchestratorInput): Promis
     currentRole: matchedRole,
     motive: plan.motive,
   });
-  return {
+  const result = {
     ...plan,
     triggerMemoryAgent: shouldForceMemoryRefresh
       ? true
@@ -2591,6 +2645,25 @@ export async function runNarrativeOrchestrator(input: OrchestratorInput): Promis
     speakerMode: speakerDecision.mode,
     speakerRouteReason: speakerDecision.reason,
   };
+
+  // DEBUG 日志：记录 orchestrator 返回内容
+  if (isDebugLogEnabled()) {
+    console.log("[story:orchestrator:result]", JSON.stringify({
+      role: result.role,
+      roleType: result.roleType,
+      motive: result.motive,
+      content: result.content?.slice(0, 100) || "",
+      contentLength: result.content?.length || 0,
+      awaitUser: result.awaitUser,
+      eventKind: result.eventKind,
+      eventStatus: result.eventStatus,
+      chapterOutcome: result.chapterOutcome,
+      speakerMode: result.speakerMode,
+      orchestratorRuntime: result.orchestratorRuntime,
+    }));
+  }
+
+  return result;
 }
 
 // 调用记忆管理模型，压缩对后续剧情有用的信息。

@@ -34,9 +34,39 @@ function isRecord(input: unknown): input is Record<string, any> {
 
 function hasEffectiveRule(input: unknown): boolean {
   if (input === null || input === undefined) return false;
-  if (typeof input === "string") return input.trim().length > 0;
-  if (Array.isArray(input)) return input.length > 0;
-  if (typeof input === "object") return Object.keys(input as Record<string, unknown>).length > 0;
+  if (typeof input === "string") {
+    const text = input.trim();
+    if (!text) return false;
+    // 空字符串、空格、纯空白字符不算有效规则
+    return text.length > 0;
+  }
+  if (Array.isArray(input)) {
+    // 空数组不算有效规则
+    if (input.length === 0) return false;
+    // 检查数组中是否有有效元素
+    return input.some((item) => hasEffectiveRule(item));
+  }
+  if (typeof input === "object") {
+    const keys = Object.keys(input as Record<string, unknown>);
+    if (keys.length === 0) return false;
+    // 检查对象中是否有有效的规则字段
+    const obj = input as Record<string, unknown>;
+    // 常见的规则字段：success, failure, pass, fail, type, op
+    const ruleKeys = ["success", "failure", "pass", "fail", "type", "op", "field", "value", "conditions"];
+    for (const key of ruleKeys) {
+      if (key in obj && hasEffectiveRule(obj[key])) {
+        return true;
+      }
+    }
+    // 如果没有常见的规则字段，但有其他键，检查它们是否有值
+    for (const key of keys) {
+      const value = obj[key];
+      if (value !== null && value !== undefined && value !== "") {
+        return true;
+      }
+    }
+    return false;
+  }
   return true;
 }
 
@@ -68,19 +98,35 @@ function evaluateStructuredCondition(
   ctx: ConditionContext,
 ): { result: "continue" | "success" | "failed"; matchedRule: string | null } {
   if (!hasEffectiveRule(condition)) {
+    // 没有有效规则，继续章节
     return { result: "continue", matchedRule: null };
   }
   if (isRecord(condition)) {
     const failureNode = condition.failure ?? condition.failed ?? condition.fail;
-    // null 代表“未配置该分支”，不能继续送进条件引擎，否则会误判为命中。
-    if (failureNode != null && evaluateCondition(failureNode, ctx)) {
-      return { result: "failed", matchedRule: "completion.failure" };
+    // null 代表"未配置该分支"，不能继续送进条件引擎，否则会误判为命中。
+    if (failureNode != null && hasEffectiveRule(failureNode)) {
+      // 只有当failure节点有有效规则时才评估
+      const failureMatched = evaluateCondition(failureNode, ctx);
+      if (failureMatched) {
+        return { result: "failed", matchedRule: "completion.failure" };
+      }
     }
     const successNode = condition.success ?? condition.pass;
-    if (successNode != null && evaluateCondition(successNode, ctx)) {
-      return { result: "success", matchedRule: "completion.success" };
+    if (successNode != null && hasEffectiveRule(successNode)) {
+      // 只有当success节点有有效规则时才评估
+      const successMatched = evaluateCondition(successNode, ctx);
+      if (successMatched) {
+        return { result: "success", matchedRule: "completion.success" };
+      }
+    }
+    // 如果success和failure都没有，检查condition本身是否是规则
+    const hasRuleFields = ["type", "op", "field", "conditions", "value"].some((k) => k in condition);
+    if (!hasRuleFields) {
+      // 不是规则结构，继续章节
+      return { result: "continue", matchedRule: null };
     }
   }
+  // 普通条件评估
   return evaluateCondition(condition, ctx)
     ? { result: "success", matchedRule: "completion" }
     : { result: "continue", matchedRule: null };

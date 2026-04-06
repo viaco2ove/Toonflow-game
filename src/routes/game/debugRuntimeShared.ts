@@ -1,5 +1,7 @@
 import express from "express";
 import { z } from "zod";
+import fs from "fs";
+import path from "path";
 import {
   ChapterRuntimeOutline,
   normalizeChapterOutput,
@@ -8,6 +10,7 @@ import {
   normalizeSessionState,
   nowTs,
   readDefaultRuntimeEventViewState,
+  readChapterProgressState,
 } from "@/lib/gameEngine";
 import {
   advanceChapterProgressAfterNarrative,
@@ -27,8 +30,196 @@ import {
   TaskProgressChange,
   TriggerHit,
 } from "@/modules/game-runtime/types/runtime";
+import { getTmpDebugRevisitDir } from "@/lib/runtimePaths";
 
 const router = express.Router();
+
+// ==================== 回溯功能（内存 + 临时文件两级存储）====================
+//
+// 设计：
+//   - 内存层：每个 debugRuntimeKey 保留最近 DEBUG_REVISIT_HOT_SIZE 条，热数据直接命中
+//   - 文件层：溢出到 getTmpDebugRevisitDir()/<debugRuntimeKey>.json，无限量，按需加载
+//   - 销毁：clearDebugRevisitHistory() 主动销毁 或 进程退出时清空整个 tmp 目录
+//
+
+const DEBUG_REVISIT_HOT_SIZE = 5; // 内存保留最近 N 条
+
+interface DebugRevisitPoint {
+  debugRuntimeKey: string;
+  messageCount: number;
+  state: Record<string, any>;
+  round: number;
+  chapterId: number | null;
+  createdAt: number;
+}
+
+// 内存层：key -> 最近 N 条（按 messageCount 升序）
+const DEBUG_REVISIT_HOT = new Map<string, DebugRevisitPoint[]>();
+
+// ---- 临时文件路径 ----
+
+function sanitizeKey(key: string): string {
+  // 只允许字母/数字/下划线/连字符，防止路径穿越
+  return key.replace(/[^a-zA-Z0-9_\-]/g, "_").slice(0, 128);
+}
+
+function getRevisitFilePath(debugRuntimeKey: string): string {
+  const dir = getTmpDebugRevisitDir();
+  return path.join(dir, `${sanitizeKey(debugRuntimeKey)}.json`);
+}
+
+function ensureRevisitDir(): void {
+  const dir = getTmpDebugRevisitDir();
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+}
+
+// ---- 文件层读写 ----
+
+function readRevisitFile(debugRuntimeKey: string): DebugRevisitPoint[] {
+  try {
+    const filePath = getRevisitFilePath(debugRuntimeKey);
+    if (!fs.existsSync(filePath)) return [];
+    const raw = fs.readFileSync(filePath, "utf8");
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed as DebugRevisitPoint[];
+  } catch {
+    return [];
+  }
+}
+
+function writeRevisitFile(debugRuntimeKey: string, points: DebugRevisitPoint[]): void {
+  try {
+    ensureRevisitDir();
+    const filePath = getRevisitFilePath(debugRuntimeKey);
+    fs.writeFileSync(filePath, JSON.stringify(points), "utf8");
+  } catch (e) {
+    console.warn("[debug:revisit] failed to write tmp file:", e);
+  }
+}
+
+function deleteRevisitFile(debugRuntimeKey: string): void {
+  try {
+    const filePath = getRevisitFilePath(debugRuntimeKey);
+    if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+  } catch {
+    // ignore
+  }
+}
+
+// ---- 公开 API ----
+
+export function saveDebugRevisitPoint(
+  debugRuntimeKey: string,
+  state: Record<string, any>,
+  messages: RuntimeMessageInput[],
+  chapterId: number | null
+): void {
+  const newPoint: DebugRevisitPoint = {
+    debugRuntimeKey,
+    messageCount: messages.length,
+    state: cloneDebugRuntimeState(state),
+    round: Number(state.round || 0),
+    chapterId,
+    createdAt: nowTs(),
+  };
+
+  // 更新内存层
+  const hot = DEBUG_REVISIT_HOT.get(debugRuntimeKey) || [];
+  // 去重（同 messageCount 替换旧的）
+  const deduped = hot.filter(p => p.messageCount !== newPoint.messageCount);
+  deduped.push(newPoint);
+  deduped.sort((a, b) => a.messageCount - b.messageCount);
+
+  if (deduped.length <= DEBUG_REVISIT_HOT_SIZE) {
+    // 全部放内存
+    DEBUG_REVISIT_HOT.set(debugRuntimeKey, deduped);
+  } else {
+    // 溢出：把旧条目刷入文件，内存只保留最新 N 条
+    const hot_kept = deduped.slice(-DEBUG_REVISIT_HOT_SIZE);
+    const spill = deduped.slice(0, deduped.length - DEBUG_REVISIT_HOT_SIZE);
+    DEBUG_REVISIT_HOT.set(debugRuntimeKey, hot_kept);
+
+    // 追加到文件（合并去重后写回）
+    const existing = readRevisitFile(debugRuntimeKey);
+    const merged = [...existing, ...spill]
+      .reduce<DebugRevisitPoint[]>((acc, p) => {
+        const idx = acc.findIndex(x => x.messageCount === p.messageCount);
+        if (idx >= 0) acc[idx] = p; else acc.push(p);
+        return acc;
+      }, [])
+      .sort((a, b) => a.messageCount - b.messageCount);
+    writeRevisitFile(debugRuntimeKey, merged);
+  }
+}
+
+export function getDebugRevisitPoint(
+  debugRuntimeKey: string,
+  messageCount: number
+): DebugRevisitPoint | null {
+  // 1. 先查内存
+  const hot = DEBUG_REVISIT_HOT.get(debugRuntimeKey) || [];
+  const hotHit = hot.find(p => p.messageCount === messageCount);
+  if (hotHit) return hotHit;
+
+  // 2. 再查文件
+  const filePoints = readRevisitFile(debugRuntimeKey);
+  return filePoints.find(p => p.messageCount === messageCount) || null;
+}
+
+export function readDebugRevisitPoints(debugRuntimeKey: string): DebugRevisitPoint[] {
+  const hot = DEBUG_REVISIT_HOT.get(debugRuntimeKey) || [];
+  const hotSet = new Set(hot.map(p => p.messageCount));
+  const filePoints = readRevisitFile(debugRuntimeKey).filter(p => !hotSet.has(p.messageCount));
+  return [...filePoints, ...hot].sort((a, b) => a.messageCount - b.messageCount);
+}
+
+export function clearDebugRevisitHistory(debugRuntimeKey: string): void {
+  DEBUG_REVISIT_HOT.delete(debugRuntimeKey);
+  deleteRevisitFile(debugRuntimeKey);
+}
+
+/** 清空所有调试回溯临时文件（进程退出或启动初始化时调用）*/
+export function clearAllDebugRevisitTmpFiles(): void {
+  try {
+    const dir = getTmpDebugRevisitDir();
+    if (!fs.existsSync(dir)) return;
+    const files = fs.readdirSync(dir);
+    for (const file of files) {
+      if (file.endsWith(".json")) {
+        try { fs.unlinkSync(path.join(dir, file)); } catch { /* ignore */ }
+      }
+    }
+  } catch {
+    // ignore
+  }
+  DEBUG_REVISIT_HOT.clear();
+}
+
+export function buildDebugMessageWithRevisitData(
+  message: RuntimeMessageInput,
+  debugRuntimeKey: string,
+  messageIndex: number,
+  canRevisit: boolean
+): Record<string, any> {
+  return {
+    ...normalizeMessageOutput({
+      id: messageIndex,
+      role: message.role,
+      roleType: message.roleType,
+      eventType: message.eventType,
+      content: message.content,
+      createTime: message.createTime,
+      meta: {},
+    }),
+    canRevisit,
+  };
+}
+
+// ==================== 原有代码 ====================
+
 const DEBUG_RUNTIME_CACHE_TTL_MS = 1000 * 60 * 60;
 const DEBUG_RUNTIME_CACHE = new Map<string, {
   userId: number;
@@ -121,6 +312,7 @@ function compactTextList(input: unknown, limit = 6): string[] {
 
 export function buildDebugStateSnapshot(state: Record<string, any>, debugRuntimeKey: string) {
   const eventView = readDefaultRuntimeEventViewState(state);
+  const chapterProgress = readChapterProgressState(state);
   const snapshot: Record<string, any> = {
     debugRuntimeKey,
     version: Number(state.version || 1),
@@ -131,6 +323,20 @@ export function buildDebugStateSnapshot(state: Record<string, any>, debugRuntime
     currentEventDigest: cloneDebugRuntimeState(eventView.currentEventDigest),
     eventDigestWindow: cloneDebugRuntimeState(eventView.eventDigestWindow),
     eventDigestWindowText: eventView.eventDigestWindowText,
+    // 添加章节进度信息，包含 completedEvents 用于正确显示事件索引
+    chapterProgress: {
+      chapterId: chapterProgress.chapterId,
+      phaseId: chapterProgress.phaseId,
+      phaseIndex: chapterProgress.phaseIndex,
+      eventIndex: chapterProgress.eventIndex,
+      eventKind: chapterProgress.eventKind,
+      eventSummary: chapterProgress.eventSummary,
+      eventStatus: chapterProgress.eventStatus,
+      completedEvents: chapterProgress.completedEvents,
+      userNodeId: chapterProgress.userNodeId,
+      userNodeIndex: chapterProgress.userNodeIndex,
+      userNodeStatus: chapterProgress.userNodeStatus,
+    },
   };
   if (state.player && typeof state.player === "object") {
     snapshot.player = cloneDebugRuntimeState(state.player);
@@ -428,5 +634,76 @@ export function setDebugOpeningTurnState(state: Record<string, any>, world: any,
     lastSpeaker: roleName,
   });
 }
+
+// ==================== 回溯接口 ====================
+const revisitBodySchema = z.object({
+  debugRuntimeKey: z.string(),
+  messageCount: z.number(),
+});
+const revisitQuerySchema = z.object({
+  debugRuntimeKey: z.string(),
+});
+
+router.post("/revisit", async (req, res) => {
+  try {
+    const parsed = revisitBodySchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: "参数错误", detail: parsed.error.message });
+    }
+    const { debugRuntimeKey, messageCount } = parsed.data;
+    const point = getDebugRevisitPoint(debugRuntimeKey, messageCount);
+    if (!point) {
+      return res.status(404).json({ error: "未找到可回溯点" });
+    }
+    // 清理之后的回溯历史（截断未来记录）
+    const history = readDebugRevisitPoints(debugRuntimeKey);
+    const validHistory = history.filter(p => p.messageCount <= messageCount);
+    // 写回内存（只用新实现，不再用旧 DEBUG_REVISIT_HISTORY）
+    const hot = validHistory.slice(-DEBUG_REVISIT_HOT_SIZE);
+    DEBUG_REVISIT_HOT.set(debugRuntimeKey, hot);
+    // 溢出写文件
+    if (validHistory.length > DEBUG_REVISIT_HOT_SIZE) {
+      const spill = validHistory.slice(0, validHistory.length - DEBUG_REVISIT_HOT_SIZE);
+      const existing = readRevisitFile(debugRuntimeKey);
+      const merged = [...existing, ...spill]
+        .reduce<DebugRevisitPoint[]>((acc, p) => {
+          const idx = acc.findIndex(x => x.messageCount === p.messageCount);
+          if (idx >= 0) acc[idx] = p; else acc.push(p);
+          return acc;
+        }, [])
+        .sort((a, b) => a.messageCount - b.messageCount);
+      writeRevisitFile(debugRuntimeKey, merged);
+    }
+    return res.status(200).json({
+      state: point.state,
+      round: point.round,
+      chapterId: point.chapterId,
+      messageCount: point.messageCount,
+    });
+  } catch (e: any) {
+    console.error("[debug:revisit:error]", e);
+    return res.status(500).json({ error: e?.message || "回溯失败" });
+  }
+});
+
+router.get("/revisit/history", async (req, res) => {
+  try {
+    const parsed = revisitQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      return res.status(400).json({ error: "参数错误", detail: parsed.error.message });
+    }
+    const { debugRuntimeKey } = parsed.data;
+    const history = readDebugRevisitPoints(debugRuntimeKey);
+    return res.status(200).json(history.map(p => ({
+      messageCount: p.messageCount,
+      round: p.round,
+      chapterId: p.chapterId,
+      createdAt: p.createdAt,
+    })));
+  } catch (e: any) {
+    console.error("[debug:revisit:history:error]", e);
+    return res.status(500).json({ error: e?.message || "获取回溯历史失败" });
+  }
+});
 
 export default router;

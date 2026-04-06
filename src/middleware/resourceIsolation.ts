@@ -28,6 +28,10 @@ const NON_PROJECT_SCOPED_PATHS = new Set<string>([
   "/game/separateRoleAvatar/status",
   "/game/debugStep",
   "/game/streamvoice",
+  "/game/initDebug",
+  "/game/initStory",
+  "/game/debugRuntimeShared/revisit",
+  "/game/debugRuntimeShared/revisit/history",
 ]);
 
 function toPositiveInt(value: any): number | null {

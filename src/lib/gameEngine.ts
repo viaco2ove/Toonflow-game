@@ -28,6 +28,7 @@ export interface ChapterDialogueLine {
 }
 
 export interface ChapterProgressState {
+  chapterId: number; // 当前章节ID，用于区分不同章节的事件状态
   phaseId: string;
   phaseIndex: number;
   eventIndex: number;
@@ -37,7 +38,7 @@ export interface ChapterProgressState {
   userNodeId: string;
   userNodeIndex: number;
   userNodeStatus: "idle" | "waiting_input" | "completed" | "skipped";
-  completedEvents: string[];
+  completedEvents: string[]; // 格式: ["phase:{phaseId}", "userNode:{userNodeId}"]
   pendingGoal: string;
   fixedOutcomeLocked: boolean;
   lastEvaluatedMessageId: number;
@@ -1186,6 +1187,7 @@ function normalizeRuntimeNpcMap(rawNpcs: unknown, npcRolesRaw: unknown): JsonRec
 }
 
 const DEFAULT_CHAPTER_PROGRESS_STATE: ChapterProgressState = {
+  chapterId: 0,
   phaseId: "",
   phaseIndex: 0,
   eventIndex: 1,
@@ -1529,6 +1531,7 @@ export function normalizeChapterProgressState(raw: unknown): ChapterProgressStat
     ? base.completedEvents.map((item) => String(item || "").trim()).filter(Boolean)
     : [];
   return {
+    chapterId: Number.isFinite(Number(base.chapterId)) ? Math.max(0, Number(base.chapterId)) : DEFAULT_CHAPTER_PROGRESS_STATE.chapterId,
     phaseId: String(base.phaseId || "").trim(),
     phaseIndex: Number.isFinite(Number(base.phaseIndex)) ? Math.max(0, Number(base.phaseIndex)) : DEFAULT_CHAPTER_PROGRESS_STATE.phaseIndex,
     eventIndex: Number.isFinite(Number(base.eventIndex)) ? Math.max(1, Number(base.eventIndex)) : DEFAULT_CHAPTER_PROGRESS_STATE.eventIndex,
@@ -1714,7 +1717,10 @@ export function normalizeSessionState(
   const player = isRecord(base.player) ? base.player : {};
   const narrator = isRecord(base.narrator) ? base.narrator : {};
   const rawTurnState = isRecord(base.turnState) ? base.turnState : {};
-  const chapterProgress = normalizeChapterProgressState(base.chapterProgress);
+  const chapterProgress = normalizeChapterProgressState({
+    ...base.chapterProgress,
+    chapterId: Number(base.chapterProgress?.chapterId || chapterId || 0),
+  });
   const currentEvent = normalizeRuntimeCurrentEventState(base.currentEvent, {
     index: chapterProgress.eventIndex,
     kind: chapterProgress.eventKind,
