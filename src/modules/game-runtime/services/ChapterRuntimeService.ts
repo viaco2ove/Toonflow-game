@@ -352,7 +352,9 @@ async function evaluateChapterOutcomeByAi(input: EvaluateRuntimeOutcomeInput): P
       modelConfig as any,
     );
     // normalizeResultObject = 把“看起来像 object 的脏数据”修正成真正的 object
-    const responseObject = normalizeResultObject(result);
+    const rawObject = (result as any)?.object ?? (typeof result === "object" ? result : null);
+
+    const responseObject = normalizeResultObject(rawObject);
     const responseObjectText = responseObject
       ? JSON.stringify(responseObject, null, 2)
       : "";
