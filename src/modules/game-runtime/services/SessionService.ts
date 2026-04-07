@@ -1034,12 +1034,16 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
     syncChapterProgressWithRuntime(currentChapter, state);
   }
   if (currentChapter) {
+    const recentMessagesForOutcome = roleTypeValue === "player" && eventTypeValue === "on_message"
+      ? buildRecentMessages(await db("t_sessionMessage").where({ sessionId }).orderBy("id", "desc").limit(20))
+      : [];
     const mergedOutcome = await evaluateRuntimeOutcome({
       chapter: currentChapter,
       state,
       messageContent,
       eventType: eventTypeValue,
       meta: metaObj,
+      recentMessages: recentMessagesForOutcome,
       fallbackStatus: sessionStatus,
       fallbackChapterId: nextChapterId || prevChapterId,
       applyToState: true,
@@ -1420,6 +1424,7 @@ export async function continueSessionNarrative(sessionIdInput: string): Promise<
     messageContent: String(latestGeneratedMessage?.content || ""),
     eventType: String(latestGeneratedMessage?.eventType || "on_orchestrated_reply"),
     meta: {},
+    recentMessages,
     fallbackStatus: prevStatus,
     fallbackChapterId: prevChapterId,
     applyToState: true,
@@ -1694,6 +1699,7 @@ export async function orchestrateSessionTurn(sessionIdInput: string): Promise<Se
     messageContent: String(latestRecentMessage?.content || ""),
     eventType: String(latestRecentMessage?.eventType || "on_message"),
     meta: {},
+    recentMessages,
     fallbackStatus: sessionStatus,
     fallbackChapterId: Number(chapter.id || 0) || null,
     applyToState: true,
@@ -1793,6 +1799,13 @@ export async function commitSessionNarrativeTurn(input: CommitSessionNarrativeTu
       messageContent: String(latestGeneratedMessage?.content || input.content || ""),
       eventType: String(latestGeneratedMessage?.eventType || input.eventType || pendingPlan?.eventType || "on_orchestrated_reply"),
       meta: {},
+      recentMessages: insertedRows.map((item) => ({
+        role: String(item.role || ""),
+        roleType: String(item.roleType || ""),
+        eventType: String(item.eventType || ""),
+        content: String(item.content || ""),
+        createTime: Number(item.createTime || 0),
+      })),
       fallbackStatus: sessionStatus,
       fallbackChapterId: nextChapterId,
       applyToState: true,

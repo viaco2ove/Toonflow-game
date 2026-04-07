@@ -174,7 +174,7 @@ streamvoice->audioProxy->saveWorld->streamvoice->listWorlds->listSession->saveCh
 ![img_12.png](img_12.png)
 
 解决方案：
-[fail]1.[story:chapter_ending_check:runtime]:AI故事-章节判定日志 日志格式和[story:orchestrator:runtime]的日志  一样
+[suc]1.[story:chapter_ending_check:runtime]:AI故事-章节判定日志 日志格式和[story:orchestrator:runtime]的日志  一样
 看见：[2026-04-07 14:10:56.225] [LOG] [story:chapter_ending_check:stats] | 返回内容 | 无 | 0 | 0 |
 为什么是无？
 [fail]2. 使用“AI故事-章节判定”agent 去判断结束条件是否 未结束/完成/失败。不要进行硬编码的方式进行判定。

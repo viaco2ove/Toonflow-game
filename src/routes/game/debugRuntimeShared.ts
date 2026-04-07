@@ -570,6 +570,7 @@ export async function evaluateDebugRuntimeOutcome(params: {
   messageContent?: string;
   eventType?: string;
   meta?: Record<string, any>;
+  recentMessages?: any[];
   debugFreePlotActive?: boolean;
 }) {
   if (!params.chapter || params.debugFreePlotActive) {
@@ -588,6 +589,7 @@ export async function evaluateDebugRuntimeOutcome(params: {
     messageContent: params.messageContent,
     eventType: params.eventType,
     meta: params.meta,
+    recentMessages: params.recentMessages,
     applyToState: true,
   });
   if (resolved.outcome !== "continue") {

@@ -294,6 +294,7 @@ export default router.post(
           messageContent: String(emittedMessage?.content || ""),
           eventType: String(emittedMessage?.eventType || "on_orchestrated_reply"),
           meta: {},
+          recentMessages: emittedMessage ? [...recentMessages, emittedMessage] : recentMessages,
           debugFreePlotActive,
         });
 
@@ -449,6 +450,7 @@ export default router.post(
         messageContent: playerContent,
         eventType: "on_message",
         meta: {},
+        recentMessages,
         debugFreePlotActive,
       });
       if (outcome.result === "failed") {
@@ -559,6 +561,7 @@ export default router.post(
         messageContent: String(emittedMessage?.content || ""),
         eventType: String(emittedMessage?.eventType || "on_orchestrated_reply"),
         meta: {},
+        recentMessages: emittedMessage ? [...recentMessages, emittedMessage] : recentMessages,
         debugFreePlotActive,
       });
 

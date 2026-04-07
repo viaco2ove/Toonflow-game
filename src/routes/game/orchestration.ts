@@ -562,6 +562,7 @@ export default router.post(
         messageContent: playerContent,
         eventType: "on_message",
         meta: {},
+        recentMessages,
         debugFreePlotActive,
       });
       if (outcome.result === "failed") {

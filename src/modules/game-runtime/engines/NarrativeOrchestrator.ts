@@ -2521,6 +2521,7 @@ async function doRunNarrativePlan(input: OrchestratorInput): Promise<NarrativePl
     throw createRuntimeModelError("orchestrator", "模型返回结构无效或缺少可执行的角色编排");
   } catch (err) {
     orchestratorRuntimeError = err;
+    const pendingEndingGuide = input.state?.__pendingEndingGuide === true;
     console.warn("[story:orchestrator] error", {
       manufacturer: (promptAiConfig as any)?.manufacturer || "",
       model: (promptAiConfig as any)?.model || "",
@@ -2531,7 +2532,7 @@ async function doRunNarrativePlan(input: OrchestratorInput): Promise<NarrativePl
     if (isProviderBalanceOrQuotaError(err)) {
       throw createRuntimeModelError("orchestrator", "当前故事编排模型余额不足，请充值或切换模型后重试");
     }
-    if (input.state?.__pendingEndingGuide === true) {
+    if (pendingEndingGuide) {
       input.state.__pendingEndingGuide = false;
     }
     return buildFallbackNarrativePlan({
@@ -2543,7 +2544,7 @@ async function doRunNarrativePlan(input: OrchestratorInput): Promise<NarrativePl
       hasPlayerInput,
       world: input.world,
       fallbackReason: err,
-      pendingEndingGuide: input.state?.__pendingEndingGuide === true,
+      pendingEndingGuide,
       orchestratorRuntime,
     });
   } finally {

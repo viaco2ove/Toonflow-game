@@ -322,6 +322,7 @@ export default router.post(
           messageContent: String(emittedMessage.content || ""),
           eventType: String(emittedMessage.eventType || ""),
           meta: {},
+          recentMessages: [...recentMessages, emittedMessage],
           debugFreePlotActive,
         });
 

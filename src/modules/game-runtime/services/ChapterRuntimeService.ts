@@ -11,6 +11,7 @@ export interface EvaluateRuntimeOutcomeInput {
   messageContent?: string;
   eventType?: string;
   meta?: JsonRecord;
+  recentMessages?: any[];
   fallbackStatus?: string;
   fallbackChapterId?: number | null;
   fallbackOutcome?: "continue" | "success" | "failed";
@@ -68,6 +69,21 @@ function getPromptValue(row: any): string {
 
 function unwrapModelText(input: unknown): string {
   return normalizeScalarText(input).replace(/^```[a-zA-Z]*\s*|\s*```$/g, "").trim();
+}
+
+function normalizeResultObject(input: unknown): Record<string, unknown> | null {
+  if (!input || typeof input !== "object"){
+    console.log("input =", input);
+    console.log("typeof input =", typeof input);
+    console.log("is null =", input === null);
+    console.log("is undefined =", input === undefined);
+    return null;
+  }
+  try {
+    return JSON.parse(JSON.stringify(input)) as Record<string, unknown>;
+  } catch {
+    return input as Record<string, unknown>;
+  }
 }
 
 function parseFieldMap(rawText: string): Record<string, string> {
@@ -147,6 +163,7 @@ function buildChapterJudgeInputSnapshot(input: {
   state: JsonRecord;
   messageContent?: string;
   eventType?: string;
+  recentMessages?: any[];
 }): JsonRecord {
   const chapterProgress = typeof input.state.chapterProgress === "object" && input.state.chapterProgress !== null
     ? input.state.chapterProgress as Record<string, unknown>
@@ -161,6 +178,17 @@ function buildChapterJudgeInputSnapshot(input: {
   const currentEvent = typeof input.state.currentEventDigest === "object" && input.state.currentEventDigest !== null
     ? input.state.currentEventDigest as Record<string, unknown>
     : {};
+  const recentDialogue = Array.isArray(input.recentMessages)
+    ? input.recentMessages
+      .slice(-10)
+      .map((item) => ({
+        role: normalizeScalarText(item?.role) || "未知角色",
+        role_type: normalizeScalarText(item?.roleType) || "",
+        event_type: normalizeScalarText(item?.eventType) || "",
+        content: shortText(item?.content, 160) || "",
+      }))
+      .filter((item) => item.content)
+    : [];
   return {
     chapter: {
       title: normalizeScalarText(input.chapter?.title) || "未命名章节",
@@ -182,6 +210,7 @@ function buildChapterJudgeInputSnapshot(input: {
       message_content: normalizeScalarText(input.messageContent) || "",
       event_type: normalizeScalarText(input.eventType) || "on_message",
     },
+    recent_dialogue: recentDialogue,
   };
 }
 
@@ -190,6 +219,7 @@ function buildChapterJudgePrompt(input: {
   state: JsonRecord;
   messageContent?: string;
   eventType?: string;
+  recentMessages?: any[];
 }): string {
   return JSON.stringify(buildChapterJudgeInputSnapshot(input), null, 2);
 }
@@ -218,7 +248,7 @@ function buildChapterJudgeStats(input: {
   prompt: string;
   responseText: string;
   tokenUsage?: ChapterJudgeTokenUsage | null;
-  requestStatus: "success" | "fallback";
+  requestStatus: "success" | "fallback" | "skip_no_prompt";
   manufacturer: string;
   model: string;
   reasoningEffort: string;
@@ -284,13 +314,25 @@ async function evaluateChapterOutcomeByAi(input: EvaluateRuntimeOutcomeInput): P
   }
   const prompt = await loadChapterJudgePrompt();
   if (!prompt) {
+    buildChapterJudgeStats({
+      systemPrompt: "",
+      prompt: buildChapterJudgePrompt(input),
+      responseText: "未加载到 AI故事-章节判定 Prompt，已回退到规则判定。",
+      tokenUsage: null,
+      requestStatus: "skip_no_prompt",
+      manufacturer: "",
+      model: "",
+      reasoningEffort: "",
+    });
     return fallback;
   }
-  const modelConfig = await resolveChapterJudgeModel(input.userId);
   const userPrompt = buildChapterJudgePrompt(input);
   let rawText = "";
   let tokenUsage: ChapterJudgeTokenUsage | null = null;
+  let requestStage = "resolve_model";
   try {
+    const modelConfig = await resolveChapterJudgeModel(input.userId);
+    requestStage = "invoke_model";
     const result = await u.ai.text.invoke(
       {
         usageType: "章节判定",
@@ -309,12 +351,14 @@ async function evaluateChapterOutcomeByAi(input: EvaluateRuntimeOutcomeInput): P
       },
       modelConfig as any,
     );
-    const objectLike = typeof (result as any)?.object === "object" && (result as any)?.object !== null
-      ? (result as any).object as Record<string, unknown>
-      : {};
-    rawText = objectLike && Object.keys(objectLike).length
-      ? JSON.stringify(objectLike, null, 2)
-      : unwrapModelText((result as any)?.text || "");
+    // normalizeResultObject = 把“看起来像 object 的脏数据”修正成真正的 object
+    const responseObject = normalizeResultObject(result);
+    const responseObjectText = responseObject
+      ? JSON.stringify(responseObject, null, 2)
+      : "";
+    const fallbackText = unwrapModelText((result as any)?.text || "");
+    const responseText = responseObjectText || fallbackText;
+    rawText = responseText;
     tokenUsage = {
       inputTokens: Number((result as any)?.usage?.inputTokens || 0),
       outputTokens: Number((result as any)?.usage?.outputTokens || 0),
@@ -322,34 +366,34 @@ async function evaluateChapterOutcomeByAi(input: EvaluateRuntimeOutcomeInput): P
     };
     const fieldMap = parseFieldMap(rawText);
     const resultValue = normalizeOutcome(
-      objectLike.result
-      || objectLike.outcome
+      responseObject?.result
+      || responseObject?.outcome
       || getPlainField(fieldMap, "result", "outcome"),
     );
     const matchedRule = normalizeScalarText(
-      objectLike.matched_rule
-      || objectLike.matchedRule
+      responseObject?.matched_rule
+      || responseObject?.matchedRule
       || getPlainField(fieldMap, "matched_rule", "matchedrule"),
     ) || null;
     const reason = normalizeScalarText(
-      objectLike.reason
+      responseObject?.reason
       || getPlainField(fieldMap, "reason"),
     ) || null;
     const guideSummary = normalizeGuideSummary(
       reason || "",
-      objectLike.guide_summary
-      || objectLike.guideSummary
+      responseObject?.guide_summary
+      || responseObject?.guideSummary
       || getPlainField(fieldMap, "guide_summary", "guidesummary"),
     );
     const guideFacts = normalizeGuideFacts(
       reason || "",
-      objectLike.guide_facts
-      || objectLike.guideFacts
+      responseObject?.guide_facts
+      || responseObject?.guideFacts
       || [],
     );
     const nextChapterIdText = normalizeScalarText(
-      objectLike.next_chapter_id
-      || objectLike.nextChapterId
+      responseObject?.next_chapter_id
+      || responseObject?.nextChapterId
       || getPlainField(fieldMap, "next_chapter_id", "nextchapterid"),
     );
     const nextChapterId = Number.isFinite(Number(nextChapterIdText)) && Number(nextChapterIdText) > 0
@@ -379,7 +423,7 @@ async function evaluateChapterOutcomeByAi(input: EvaluateRuntimeOutcomeInput): P
     buildChapterJudgeStats({
       systemPrompt: prompt,
       prompt: userPrompt,
-      responseText: rawText,
+      responseText: rawText || `章节判定未拿到模型返回内容（阶段: ${requestStage}）`,
       tokenUsage,
       requestStatus: "fallback",
       manufacturer: "",
@@ -389,6 +433,7 @@ async function evaluateChapterOutcomeByAi(input: EvaluateRuntimeOutcomeInput): P
     console.warn("[story:chapter_ending_check:error]", {
       chapterId: Number(input.chapter?.id || 0),
       chapterTitle: normalizeScalarText(input.chapter?.title),
+      stage: requestStage,
       message: (err as any)?.message || String(err),
     });
     return fallback;
