@@ -1719,13 +1719,39 @@ function buildFallbackNarrativePlan(input: {
   hasPlayerInput: boolean;
   world: any;
   fallbackReason: unknown;
+  pendingEndingGuide?: boolean;
   orchestratorRuntime?: NarrativeRuntimeMeta;
 }): NarrativePlanResult {
-  const currentRole = resolveFallbackRole(input.roles, input.turnState, input.latestPlayerMessage);
+  const currentRole = input.pendingEndingGuide
+    ? (findFirstRoleByType(input.roles, "narrator") || resolveFallbackRole(input.roles, input.turnState, input.latestPlayerMessage))
+    : resolveFallbackRole(input.roles, input.turnState, input.latestPlayerMessage);
   const shouldYieldToUser = input.currentPhase?.kind === "user"
     || input.currentEvent.eventStatus === "waiting_input"
     || phaseRequestsUserIdentity(input.currentPhase)
     || (isProviderBalanceOrQuotaError(input.fallbackReason) && phaseRequestsUserIdentity(input.currentPhase));
+  if (input.pendingEndingGuide) {
+    return {
+      role: normalizeScalarText(currentRole.name),
+      roleType: sanitizeRoleType(currentRole.roleType || "narrator"),
+      motive: "结束条件尚未满足，先明确告诉用户还缺哪些关键信息，再把回合交还给用户。",
+      memoryHints: [],
+      triggerMemoryAgent: false,
+      stateDelta: {},
+      awaitUser: true,
+      nextRole: normalizeScalarText(rolePairForWorld(input.world).playerRole.name) || "用户",
+      nextRoleType: "player",
+      chapterOutcome: "continue",
+      nextChapterId: null,
+      source: "fallback",
+      eventAdjustMode: "waiting_input",
+      eventIndex: input.currentEvent.eventIndex,
+      eventKind: input.currentEvent.eventKind,
+      eventSummary: input.currentEvent.eventSummary,
+      eventFacts: input.currentEvent.eventFacts,
+      eventStatus: "waiting_input",
+      orchestratorRuntime: input.orchestratorRuntime,
+    };
+  }
   const nextRole = resolvePhaseAwareNextRole({
     requestedNextRole: "",
     requestedNextRoleType: "",
@@ -2230,6 +2256,7 @@ async function doRunNarrativePlan(input: OrchestratorInput): Promise<NarrativePl
     currentEventKind: currentEvent.eventKind,
     currentEventFlowType: currentEvent.eventFlowType,
     currentEventStatus: currentEvent.eventStatus,
+    pendingEndingGuide: input.state?.__pendingEndingGuide === true,
   });
   if (ruleDecision.resolved && ruleDecision.plan) {
     console.log("[rule:orchestrator] hit", {
@@ -2407,12 +2434,16 @@ async function doRunNarrativePlan(input: OrchestratorInput): Promise<NarrativePl
     const normalizedNextChapterId = allowControlHints && Number.isFinite(nextChapterId) && nextChapterId > 0
       ? nextChapterId
       : null;
-    const canYieldDirectly = awaitUser && hasPlayerInput && !matchedRole;
+    const pendingEndingGuide = input.state?.__pendingEndingGuide === true;
+    const canYieldDirectly = awaitUser && hasPlayerInput && !matchedRole && !pendingEndingGuide;
     if (motive && looksLikeDirectiveLeak(motive, currentChapter.directive, currentChapter.openingText)) {
       throw createRuntimeModelError("orchestrator", "模型返回结构无效或泄漏了内部编排内容");
     }
 
     if (matchedRole) {
+      if (pendingEndingGuide) {
+        input.state.__pendingEndingGuide = false;
+      }
       if (!motive) {
         throw createRuntimeModelError("orchestrator", "模型返回结构无效或缺少发言动机");
       }
@@ -2462,6 +2493,9 @@ async function doRunNarrativePlan(input: OrchestratorInput): Promise<NarrativePl
     };
   }
   if (canYieldDirectly) {
+      if (pendingEndingGuide) {
+        input.state.__pendingEndingGuide = false;
+      }
       return {
         role: "",
         roleType: "player",
@@ -2497,6 +2531,9 @@ async function doRunNarrativePlan(input: OrchestratorInput): Promise<NarrativePl
     if (isProviderBalanceOrQuotaError(err)) {
       throw createRuntimeModelError("orchestrator", "当前故事编排模型余额不足，请充值或切换模型后重试");
     }
+    if (input.state?.__pendingEndingGuide === true) {
+      input.state.__pendingEndingGuide = false;
+    }
     return buildFallbackNarrativePlan({
       roles,
       turnState,
@@ -2506,6 +2543,7 @@ async function doRunNarrativePlan(input: OrchestratorInput): Promise<NarrativePl
       hasPlayerInput,
       world: input.world,
       fallbackReason: err,
+      pendingEndingGuide: input.state?.__pendingEndingGuide === true,
       orchestratorRuntime,
     });
   } finally {

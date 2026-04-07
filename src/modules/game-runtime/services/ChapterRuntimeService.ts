@@ -448,6 +448,7 @@ export async function evaluateRuntimeOutcome(input: EvaluateRuntimeOutcomeInput)
   }));
 
   if (evaluation.hasRule && outcome === "continue") {
+    input.state.__pendingEndingGuide = true;
     activateChapterEndingCheckState({
       chapter: input.chapter,
       state: input.state,
@@ -456,6 +457,8 @@ export async function evaluateRuntimeOutcome(input: EvaluateRuntimeOutcomeInput)
       guideFacts: Array.isArray(evaluation.guideFacts) ? evaluation.guideFacts : [],
       eventStatus: "active",
     });
+  } else {
+    input.state.__pendingEndingGuide = false;
   }
 
   if (Boolean(input.applyToState) && outcome !== "continue") {

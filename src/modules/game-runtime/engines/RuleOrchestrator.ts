@@ -129,6 +129,7 @@ export function resolveRuleNarrativePlan(input: {
   currentEventKind?: string;
   currentEventFlowType?: string;
   currentEventStatus?: string;
+  pendingEndingGuide?: boolean;
 }): RuleNarrativeDecision {
   const progress = readChapterProgressState(input.state);
   const userDisplayName = normalizeScalarText(input.userDisplayName) || "用户";
@@ -139,7 +140,8 @@ export function resolveRuleNarrativePlan(input: {
     : [];
   const shouldLetAiHandleLatestUserInput = Boolean(latestPlayerMessage)
     && (
-      progress.userNodeStatus === "waiting_input"
+      input.pendingEndingGuide === true
+      || progress.userNodeStatus === "waiting_input"
       || normalizeScalarText(input.currentEventStatus) === "waiting_input"
       || normalizeScalarText(input.currentEventKind) === "ending"
       || normalizeScalarText(input.currentEventFlowType) === "chapter_ending_check"

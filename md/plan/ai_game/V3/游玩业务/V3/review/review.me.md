@@ -174,13 +174,17 @@ streamvoice->audioProxy->saveWorld->streamvoice->listWorlds->listSession->saveCh
 ![img_12.png](img_12.png)
 
 解决方案：
-1.[story:chapter_ending_check:runtime]:AI故事-章节判定日志 日志格式和[story:orchestrator:runtime]的日志  一样
-目前少了“System Prompt” 区块的打印
-2. 使用“AI故事-章节判定”agent 去判断结束条件是否 未结束/完成/失败。不要进行硬编码的方式进行判定。
+[fail]1.[story:chapter_ending_check:runtime]:AI故事-章节判定日志 日志格式和[story:orchestrator:runtime]的日志  一样
+看见：[2026-04-07 14:10:56.225] [LOG] [story:chapter_ending_check:stats] | 返回内容 | 无 | 0 | 0 |
+为什么是无？
+[fail]2. 使用“AI故事-章节判定”agent 去判断结束条件是否 未结束/完成/失败。不要进行硬编码的方式进行判定。
 未结束就增加一个引导事件：找角色告诉用户如何可以完成条件。 然后进行编排。
-3. “AI故事-章节判定”agent 的提示词设计，目的是让大模型返回可以转换为判断对象的内容而不是一堆纯文本
+![img_13.png](img_13.png) 没有看见有新增引导事件！
+[suc]3. “AI故事-章节判定”agent 的提示词设计，目的是让大模型返回可以转换为判断对象的内容而不是一堆纯文本
 章节判定器agent提示词设计：
 [story-chapter.md](story-chapter.md)
+
+4. 章节判定 发送内容缺少了最近对话台词（10条）导致无法判断是否结果。
 
 
 
