@@ -96,7 +96,7 @@ streamvoice->audioProxy->saveWorld->streamvoice->listWorlds->listSession->saveCh
 ![img.png](img.png)
 
 
-# [fail] "[story:orchestrator:runtime]" 的日志没有记录返回了什么，推理的消耗token
+# [suc] "[story:orchestrator:runtime]" 的日志没有记录返回了什么，推理的消耗token
 
 现在是
 ```
