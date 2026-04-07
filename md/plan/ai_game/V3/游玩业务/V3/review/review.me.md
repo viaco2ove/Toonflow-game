@@ -163,12 +163,12 @@ streamvoice->audioProxy->saveWorld->streamvoice->listWorlds->listSession->saveCh
 ```
 需要增加 返回内容和推理消耗 两行区块日志！！！！！
 
-# [fail] "章节结束条件必须判定出接口不能直接跳过!!! 未结束/失败/成功 "
+# [suc] "章节结束条件必须判定出接口不能直接跳过!!! 未结束/失败/成功 "
 ![img_10.png](img_10.png)
 弹窗位置不对。应该屏幕中间而不是底部
 
 
-# [fail] 事件混乱-结束条件判断事件的agent 混乱
+# [suc] 事件混乱-结束条件判断事件的agent 混乱
 测试结果：[tag_end_chapter] 看到进入结束条件判断的事件时 没有发生正确的提示词进行判断
 应该用：AI故事-章节判定， 结束条件不能使用硬编码去进行判断要经过大模型进行判断
 ![img_12.png](img_12.png)
@@ -184,7 +184,7 @@ streamvoice->audioProxy->saveWorld->streamvoice->listWorlds->listSession->saveCh
 章节判定器agent提示词设计：
 [story-chapter.md](story-chapter.md)
 
-4. 章节判定 发送内容缺少了最近对话台词（10条）导致无法判断是否结果。
+[suc]4. 章节判定 发送内容缺少了最近对话台词（10条）导致无法判断是否结果。
 
 
 
