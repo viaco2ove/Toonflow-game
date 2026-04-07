@@ -223,11 +223,14 @@ function buildChapterJudgeStats(input: {
   model: string;
   reasoningEffort: string;
 }) {
+  const totalRequestChars = input.systemPrompt.length + input.prompt.length;
   const runtimeLog = {
     manufacturer: input.manufacturer,
     model: input.model,
     reasoningEffort: input.reasoningEffort || "",
-    requestChars: input.prompt.length,
+    requestChars: totalRequestChars,
+    systemChars: input.systemPrompt.length,
+    userChars: input.prompt.length,
     requestStatus: input.requestStatus,
     responseText: input.responseText,
     responseTextLength: input.responseText.length,
@@ -235,7 +238,7 @@ function buildChapterJudgeStats(input: {
   };
   console.log("[story:chapter_ending_check:runtime]", JSON.stringify(runtimeLog));
   if (!isDebugLogEnabled()) return;
-  console.log(`[story:chapter_ending_check:stats] request_chars=${input.prompt.length} request_status=${input.requestStatus}`);
+  console.log(`[story:chapter_ending_check:stats] request_chars=${totalRequestChars} system_chars=${input.systemPrompt.length} user_chars=${input.prompt.length} request_status=${input.requestStatus}`);
   console.log(`[story:chapter_ending_check:stats] | 区块 | 实际内容 | 字符数 | 估算 Tokens |`);
   console.log(`[story:chapter_ending_check:stats] | System Prompt | ${shortText(input.systemPrompt, 240000) || "无"} | ${input.systemPrompt.length} | ${Math.max(input.systemPrompt ? 1 : 0, Math.ceil(input.systemPrompt.length / 4))} |`);
   console.log(`[story:chapter_ending_check:stats] | 用户提示词 | ${shortText(input.prompt, 240000)} | ${input.prompt.length} | ${Math.max(1, Math.ceil(input.prompt.length / 4))} |`);

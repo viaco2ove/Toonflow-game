@@ -185,7 +185,7 @@ streamvoice->audioProxy->saveWorld->streamvoice->listWorlds->listSession->saveCh
 
 
 
-# [fail] [test.V2.md](../test/test.V2.md) 的“AI故事-剧情编排(精简版)checkbox ,AI故事-剧情编排(高级版)checkbox”
+# [suc] [test.V2.md](../test/test.V2.md) 的“AI故事-剧情编排(精简版)checkbox ,AI故事-剧情编排(高级版)checkbox”
 ![img_2.png](img_2.png)
 通过日志看见实际的提示词是这样的：
 ```
