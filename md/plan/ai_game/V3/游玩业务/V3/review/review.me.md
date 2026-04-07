@@ -23,7 +23,7 @@ streamvoice->audioProxy->saveWorld->streamvoice->listWorlds->listSession->saveCh
 # [suc] 开场白没有独立于第一章章节内容
 [test_V3.1.md](../test/TEST_V3/test_V3.1.md)
 
-# [fail] 事件混乱
+# [checking] 事件混乱
 [test_V3.1.md](../test/TEST_V3/test_V3.1.md) 的
 “章节内容的事件和结束条件的事件分离开！每个事件都有开始-经过-结束的过程。”
 ![img_1.png](img_1.png)
@@ -92,7 +92,7 @@ streamvoice->audioProxy->saveWorld->streamvoice->listWorlds->listSession->saveCh
 
 
 
-# [fail] 事件混乱也导致了编排混乱
+# [checking] 事件混乱也导致了编排混乱
 ![img.png](img.png)
 
 
