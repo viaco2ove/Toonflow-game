@@ -5,6 +5,20 @@ import {
   toJsonText,
 } from "@/lib/gameEngine";
 
+function stripLegacyStoryMainPrefix(prompt: unknown): string {
+  const lines = String(prompt || "")
+    .split(/\r?\n/)
+    .map((line) => line.trimEnd());
+  const filtered = lines.filter((line) => {
+    const normalized = line.trim();
+    if (!normalized) return true;
+    if (normalized.includes("你是 AI 故事总调度")) return false;
+    if (normalized.includes("决定把任务交给哪个子 agent")) return false;
+    return true;
+  });
+  return filtered.join("\n").trim();
+}
+
 export default async (knex: Knex): Promise<void> => {
   const legacyVolcengineTextModelAliases: Record<string, string> = {
     "Doubao-Seed-2.0-pro": "doubao-seed-2-0-pro-260215",
@@ -685,6 +699,7 @@ export default async (knex: Knex): Promise<void> => {
     { name: "视频提示词生成", key: "videoPrompt" },
     { name: "图片编辑", key: "editImage" },
     { name: "AI故事-编排师", key: "storyOrchestratorModel" },
+    { name: "AI故事-章节判定", key: "storyChapterJudgeModel" },
     { name: "AI故事-快速角色发言", key: "storyFastSpeakerModel" },
     { name: "AI故事-角色发言", key: "storySpeakerModel" },
     { name: "AI故事-记忆管理", key: "storyMemoryModel" },
@@ -732,7 +747,47 @@ export default async (knex: Knex): Promise<void> => {
         type: "subAgent",
         parentCode: "story-main",
         defaultValue:
-          "你是剧情编排师（精简版）。你在最小上下文下快速决定本轮由谁发言、为什么发言、局势如何推进，以及这轮后是否轮到用户。你优先保证回合流转正确、事件焦点明确、输出简洁稳定；不要展开世界观，不要复述章节原文，不要写最终展示给用户的台词，只输出可落库的结构化编排结果；如果需要抽记忆，输出 memory_hints。",
+          `你是剧情编排师（极简版）。
+
+只做一件事：决定本轮由谁发言，以及剧情推进一小步。
+
+要求：
+- 不写台词、不写剧情正文
+- 不复述章节或背景
+- 每轮只推进一小步
+- 返回结果要快速
+
+规则：
+1. speaker 必须来自当前角色列表，并符合 allowed_speakers
+2. 若用户未发言，先安排一轮非用户推进
+3. motive 用一句短话（10~25字）说明本轮要做什么
+4. 不输出解释或多余内容
+
+事件：
+- 若 event_summary 为空 → 必须补一句 summary + 1~2条 facts
+- summary：一句话
+- facts：只保留关键信息
+
+状态：
+- event_adjust_mode: keep / update / waiting_input / completed
+- event_status: active / waiting_input / completed
+
+记忆：
+- 有新信息或变化 → trigger_memory_agent=true
+- 否则 false
+
+输出（逐行）：
+role_type:
+speaker:
+motive:
+await_user:
+next_role_type:
+next_speaker:
+trigger_memory_agent:
+event_adjust_mode:
+event_status:
+event_summary:
+event_facts:`,
       },
       {
         code: "story-orchestrator-advanced",
@@ -740,7 +795,78 @@ export default async (knex: Knex): Promise<void> => {
         type: "subAgent",
         parentCode: "story-main",
         defaultValue:
-          "你是剧情编排师（高级版）。你会结合更完整的章节提纲、事件窗口、角色状态和最近对话，决定本轮由谁发言、为什么发言、局势如何推进，以及这轮后是否轮到用户。你要更重视事件推进质量、章节目标衔接、失败/纠错引导和角色稳定性；不要直接写最终展示给用户的台词，只输出可落库的结构化编排结果；如果需要抽记忆，输出 memory_hints。",
+          `你是剧情编排师（高级版）。
+
+你的任务：
+基于当前章节提纲、事件状态和对话，决定本轮剧情推进策略，包括：
+- 谁发言（speaker）
+- 发言动机（motive）
+- 剧情如何推进（通过角色行动/信息）
+- 是否轮到用户（await_user）
+- 下一步角色（next_speaker）
+
+核心目标：
+- 保持剧情推进质量
+- 维持角色一致性
+- 强化事件目标推进
+- 避免空转或重复
+
+关键原则：
+1. 每轮推进“一个有效变化”（信息 /行动 /冲突）
+2. 不复述章节或背景
+3. 不输出最终展示台词
+4. 优先推动事件目标，而非闲聊
+5. 控制节奏：避免连续 NPC 抢回合
+
+事件控制：
+- event_summary：当前事件核心焦点（一句话）
+- event_facts：1~4 条关键事实（长期有效）
+- 若目标未达成 → 不允许结束事件
+
+用户控制：
+- 若属于 ending_check 且用户未达标：
+  → 必须安排角色明确指出问题
+  → 再 await_user=true
+- 若需要用户行动：
+  → 必须明确引导（通过 motive）
+
+角色选择：
+- speaker 必须符合 allowed_speakers
+- 优先选择“最能推动当前目标”的角色
+
+记忆策略：
+- 新事实 / 状态变化 /任务变化 → trigger_memory_agent=true
+- 普通对话 → false
+
+状态机：
+- event_adjust_mode:
+  - keep：继续
+  - update：更新焦点
+  - waiting_input：等待用户
+  - completed：事件结束
+
+- event_status:
+  - active
+  - waiting_input
+  - completed
+
+输出要求：
+- 严格逐行输出字段
+- 不得输出 JSON / markdown / 解释
+
+输出字段：
+role_type:
+speaker:
+motive:
+await_user:
+next_role_type:
+next_speaker:
+memory_hints:
+trigger_memory_agent:
+event_adjust_mode:
+event_status:
+event_summary:
+event_facts:`,
       },
       {
         code: "story-speaker",
@@ -764,7 +890,7 @@ export default async (knex: Knex): Promise<void> => {
         type: "subAgent",
         parentCode: "story-main",
         defaultValue:
-          "你是章节判定器。你只判断当前章节是否成功、失败或继续，以及是否进入下一章。你不能编写剧情，只能根据章节规则和运行态给出可解释、可追踪的判定结果。",
+          "你是章节判定器。你只判断当前章节是否成功、失败或继续，以及是否进入下一章。你不能编写剧情，只能根据章节规则和运行态返回可解释、可追踪的 JSON 判定对象；当结果为 continue 时，还必须返回一条引导摘要和若干引导事实，供后续编排生成提示用户如何完成结束条件的引导事件。",
       },
       {
         code: "story-mini-game",
@@ -830,6 +956,27 @@ export default async (knex: Knex): Promise<void> => {
         if (Object.keys(patch).length) {
           await knex("t_prompts").where("id", existed.id).update(patch);
         }
+      }
+    }
+
+    const orchestratorCodes = ["story-orchestrator", "story-orchestrator-compact", "story-orchestrator-advanced"];
+    for (const code of orchestratorCodes) {
+      const existed = existingCodeMap.get(code)
+        || await knex("t_prompts").where("code", code).first("id", "defaultValue", "customValue");
+      if (!existed?.id) continue;
+      const nextDefaultValue = stripLegacyStoryMainPrefix(existed.defaultValue);
+      const nextCustomValue = String(existed.customValue || "").trim()
+        ? stripLegacyStoryMainPrefix(existed.customValue)
+        : existed.customValue;
+      const patch: Record<string, unknown> = {};
+      if (String(existed.defaultValue || "") !== nextDefaultValue) {
+        patch.defaultValue = nextDefaultValue;
+      }
+      if (String(existed.customValue || "") !== String(nextCustomValue || "")) {
+        patch.customValue = nextCustomValue;
+      }
+      if (Object.keys(patch).length) {
+        await knex("t_prompts").where("id", existed.id).update(patch);
       }
     }
   }

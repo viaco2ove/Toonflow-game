@@ -90,9 +90,7 @@ streamvoice->audioProxy->saveWorld->streamvoice->listWorlds->listSession->saveCh
 # [suc] "[tag_end_chapter]" 没有看见,结束判断混乱
 [test_V3.md](../test/TEST_V3/test_V3.md) 的“[tag_end_chapter]”
 
-测试结果：
-全都是："why":"章节结束条件未命中" 。没有出现判定失败的情况
-成功的倒是有：,"why":"命中运行时事件规则:fixed_event_用户输入了名称_性别_年龄"
+
 
 # [fail] 事件混乱也导致了编排混乱
 ![img.png](img.png)
@@ -169,6 +167,24 @@ streamvoice->audioProxy->saveWorld->streamvoice->listWorlds->listSession->saveCh
 ![img_10.png](img_10.png)
 弹窗位置不对。应该屏幕中间而不是底部
 
+
+# [fail] 事件混乱-结束条件判断事件的agent 混乱
+测试结果：[tag_end_chapter] 看到进入结束条件判断的事件时 没有发生正确的提示词进行判断
+应该用：AI故事-章节判定， 结束条件不能使用硬编码去进行判断要经过大模型进行判断
+![img_12.png](img_12.png)
+
+解决方案：
+1.[story:chapter_ending_check:runtime]:AI故事-章节判定日志 日志格式和[story:orchestrator:runtime]的日志  一样
+目前少了“System Prompt” 区块的打印
+2. 使用“AI故事-章节判定”agent 去判断结束条件是否 未结束/完成/失败。不要进行硬编码的方式进行判定。
+未结束就增加一个引导事件：找角色告诉用户如何可以完成条件。 然后进行编排。
+3. “AI故事-章节判定”agent 的提示词设计，目的是让大模型返回可以转换为判断对象的内容而不是一堆纯文本
+章节判定器agent提示词设计：
+[story-chapter.md](story-chapter.md)
+
+
+
+
 # [fail] [test.V2.md](../test/test.V2.md) 的“AI故事-剧情编排(精简版)checkbox ,AI故事-剧情编排(高级版)checkbox”
 ![img_2.png](img_2.png)
 通过日志看见实际的提示词是这样的：
@@ -197,3 +213,10 @@ streamvoice->audioProxy->saveWorld->streamvoice->listWorlds->listSession->saveCh
 这里的功能只是编排师。
 
 高级版目前与精简版 也没有差别。请问高级在哪里？？？
+- 问题：依然在后端硬拼提示词。 前端配置精简版，高级  
+  版的设计压根就是废的。
+- 解决方案：
+   - 不允许后端评编排师的提示词。 而且精简版在保证合理性和功能的基础进行真正的精简并且要求模型快速返回结果。 前端完全控制编排师的提示词。
+   - 后端音频的部分也写到数据库中。前端可配
+   - 默认的前端可编辑提示词改为：[Prompt.md](Prompt.md)
+   - 进行编排时不应该发生“AI故事-总调度”的提示词。

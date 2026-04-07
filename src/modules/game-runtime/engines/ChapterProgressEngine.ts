@@ -15,6 +15,7 @@ import {
   setRuntimeDynamicEventList,
   syncRuntimeCurrentEventFromChapterProgress,
   upsertRuntimeDynamicEventState,
+  upsertRuntimeEventDigestState,
 } from "@/lib/gameEngine";
 import {
   AppliedDelta,
@@ -283,6 +284,66 @@ function buildEndingEventSummary(chapter: any, outline: ChapterRuntimeOutline): 
   return "结束条件判定";
 }
 
+function readEndingRuleLabels(outline: ChapterRuntimeOutline): { success: string[]; failure: string[] } {
+  const fixedEventMap = new Map(
+    outline.fixedEvents
+      .map((item) => [String(item.id || "").trim(), String(item.label || "").trim()] as const)
+      .filter(([id, label]) => id && label),
+  );
+  const success = outline.endingRules.success
+    .map((item) => fixedEventMap.get(String(item || "").trim()) || "")
+    .filter(Boolean);
+  const failure = outline.endingRules.failure
+    .map((item) => fixedEventMap.get(String(item || "").trim()) || "")
+    .filter(Boolean);
+  return { success, failure };
+}
+
+function buildEndingEventFacts(input: {
+  chapter: any;
+  outline: ChapterRuntimeOutline;
+  completedEvents: string[];
+}): string[] {
+  const { chapter, outline, completedEvents } = input;
+  const facts: string[] = [];
+  const { success, failure } = readEndingRuleLabels(outline);
+  const condition = readCompletionCondition(chapter);
+  const completed = new Set(completedEvents.map((item) => String(item || "").trim()).filter(Boolean));
+  const matchedSuccess = outline.endingRules.success.filter((item) => completed.has(String(item || "").trim()));
+  const matchedFailure = outline.endingRules.failure.filter((item) => completed.has(String(item || "").trim()));
+  if (typeof condition === "string" && condition.trim()) {
+    facts.push(`结束条件原文：${condition.trim()}`);
+  }
+  if (success.length) {
+    facts.push(`成功条件：${success.join("；")}`);
+  }
+  if (failure.length) {
+    facts.push(`失败条件：${failure.join("；")}`);
+  }
+  if (matchedSuccess.length) {
+    const matchedLabels = success.length
+      ? outline.fixedEvents
+        .filter((item) => matchedSuccess.includes(String(item.id || "").trim()))
+        .map((item) => String(item.label || "").trim())
+        .filter(Boolean)
+      : [];
+    facts.push(`已命中成功条件：${(matchedLabels.length ? matchedLabels : matchedSuccess).join("；")}`);
+  }
+  if (matchedFailure.length) {
+    const matchedLabels = failure.length
+      ? outline.fixedEvents
+        .filter((item) => matchedFailure.includes(String(item.id || "").trim()))
+        .map((item) => String(item.label || "").trim())
+        .filter(Boolean)
+      : [];
+    facts.push(`已命中失败条件：${(matchedLabels.length ? matchedLabels : matchedFailure).join("；")}`);
+  }
+  if (!matchedSuccess.length && !matchedFailure.length) {
+    facts.push("当前尚未命中结束条件，需继续推进或补全条件。");
+  }
+  return facts;
+}
+
 function updateEndingState(
   chapter: any,
   outline: ChapterRuntimeOutline,
@@ -300,6 +361,14 @@ function updateEndingState(
   );
   const endingEventIndex = Math.max(1, highestContentEventIndex + 1);
   const endingSummary = buildEndingEventSummary(chapter, outline);
+  const completedEvents = normalizeCompletedEvents(Array.isArray(extraPatch.completedEvents)
+    ? extraPatch.completedEvents as string[]
+    : current.completedEvents);
+  const endingFacts = buildEndingEventFacts({
+    chapter,
+    outline,
+    completedEvents,
+  });
   const rawStatus = String(extraPatch.eventStatus || current.eventStatus || "active").trim().toLowerCase();
   const endingStatus: "idle" | "active" | "waiting_input" | "completed" = rawStatus === "completed"
     ? "completed"
@@ -334,7 +403,7 @@ function updateEndingState(
     kind: "ending",
     flowType: "chapter_ending_check",
     summary: endingSummary,
-    runtimeFacts: [],
+    runtimeFacts: endingFacts,
     summarySource: "system",
     memorySummary: "",
     memoryFacts: [],
@@ -345,6 +414,53 @@ function updateEndingState(
   }));
   setRuntimeDynamicEventList(state, preservedDynamicEvents);
   syncRuntimeCurrentEventFromChapterProgress(state);
+}
+
+export function activateChapterEndingCheckState(input: {
+  chapter: any;
+  state: JsonRecord;
+  reason?: string | null;
+  guideSummary?: string | null;
+  guideFacts?: string[] | null;
+  eventStatus?: "idle" | "active" | "waiting_input" | "completed";
+}): void {
+  const outline = readRuntimeOutline(input.chapter);
+  if (!hasChapterEndingEvent(input.chapter, outline)) return;
+  const current = readChapterProgressState(input.state);
+  const guideSummary = String(input.guideSummary || "").trim();
+  updateEndingState(input.chapter, outline, input.state, {
+    completedEvents: normalizeCompletedEvents(Array.isArray(current.completedEvents) ? current.completedEvents : []),
+    eventSummary: guideSummary || undefined,
+    eventStatus: input.eventStatus || "active",
+  });
+  const reason = String(input.reason || "").trim();
+  if (!reason) return;
+  const digest = readChapterProgressState(input.state);
+  const currentDigest = readRuntimeCurrentEventState(input.state);
+  const facts = Array.isArray(currentDigest.facts)
+    ? currentDigest.facts.map((item) => String(item || "").trim()).filter(Boolean)
+    : [];
+  const guideFacts = Array.isArray(input.guideFacts)
+    ? input.guideFacts.map((item) => String(item || "").trim()).filter(Boolean)
+    : [];
+  const reasonFact = `判定说明：${reason}`;
+  const nextFacts = [...facts];
+  for (const fact of guideFacts) {
+    if (fact && !nextFacts.includes(fact)) {
+      nextFacts.push(fact);
+    }
+  }
+  if (!nextFacts.includes(reasonFact)) {
+    nextFacts.push(reasonFact);
+  }
+  upsertRuntimeEventDigestState(input.state, {
+    eventIndex: digest.eventIndex,
+    eventKind: "ending",
+    eventFlowType: "chapter_ending_check",
+    eventStatus: input.eventStatus || "active",
+    eventSummary: guideSummary || undefined,
+    eventFacts: nextFacts,
+  });
 }
 
 function ensureFreeChapterDynamicEventState(

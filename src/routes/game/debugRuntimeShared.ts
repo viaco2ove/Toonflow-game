@@ -563,7 +563,8 @@ export function applyDebugNarrativeMessageProgress(params: {
   };
 }
 
-export function evaluateDebugRuntimeOutcome(params: {
+export async function evaluateDebugRuntimeOutcome(params: {
+  userId?: number;
   chapter: any;
   state: Record<string, any>;
   messageContent?: string;
@@ -580,7 +581,8 @@ export function evaluateDebugRuntimeOutcome(params: {
       hasRule: false,
     };
   }
-  const resolved = evaluateRuntimeOutcome({
+  const resolved = await evaluateRuntimeOutcome({
+    userId: params.userId,
     chapter: params.chapter,
     state: params.state,
     messageContent: params.messageContent,

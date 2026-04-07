@@ -1024,96 +1024,74 @@ function logOrchestratorPromptStats(
   }
 }
 
-function buildOrchestratorUserPrompt(payload: OrchestratorPromptPayload, compactMode = false): string {
+function buildOrchestratorInputSnapshot(payload: OrchestratorPromptPayload, compactMode = false): JsonRecord {
+  const roleList = payload.roles.map((role) => ({
+    role_type: sanitizeRoleType(role.roleType),
+    name: normalizeScalarText(role.name),
+    profile: describeRole(role, compactMode),
+  }));
+  const snapshot: JsonRecord = {
+    world: {
+      name: payload.worldName || "未命名世界",
+      intro: payload.worldIntro || "",
+    },
+    chapter: {
+      title: payload.chapterTitle || "未命名章节",
+      directive: payload.chapterDirective || "",
+      user_turns: payload.chapterUserTurns || "",
+      opening: payload.chapterOpening || "",
+    },
+    roles: roleList,
+    wildcard_roles: payload.wildcardRoles.map((item) => ({
+      name: item.name,
+      role_type: sanitizeRoleType(item.roleType),
+    })),
+    narrator_wildcard_fallback: payload.narratorActsAsWildcardFallback,
+    story_state: payload.storyState || "",
+    current_phase: {
+      label: payload.currentPhaseLabel || "未命名阶段",
+      goal: payload.currentPhaseGoal || "",
+      allowed_speakers: payload.phaseAllowedSpeakers,
+    },
+    current_event: {
+      index: payload.currentEventIndex ?? 1,
+      kind: payload.currentEventKind || "scene",
+      flow: payload.currentEventFlowType || "chapter_content",
+      status: payload.currentEventStatus || "active",
+      summary: payload.currentEventSummary || "当前事件未命名",
+      facts: payload.currentEventFacts,
+      memory_summary: payload.currentEventMemorySummary || "",
+      memory_facts: payload.currentEventMemoryFacts,
+      window: compactMode ? "" : (payload.currentEventWindow || ""),
+    },
+    turn_state: {
+      can_player_speak: payload.turnState.canPlayerSpeak,
+      expected_role_type: sanitizeRoleType(payload.turnState.expectedRoleType),
+      expected_role: payload.turnState.expectedRole || "",
+      last_speaker_role_type: sanitizeRoleType(payload.turnState.lastSpeakerRoleType),
+      last_speaker: payload.turnState.lastSpeaker || "",
+    },
+    recent_dialogue: payload.recentDialogue || "",
+    latest_player_message: payload.latestPlayerMessage || "",
+  };
   if (compactMode) {
-    const compactSections = buildCompactOrchestratorSections(payload);
-    return [
-      ...compactSections.flatMap((section) => [
-        `[${section.title}]`,
-        section.content,
-        "",
-      ]),
-      "",
-      "[输出]",
-      "role_type:",
-      "speaker:",
-      "motive:",
-      "await_user:",
-      "next_role_type:",
-      "next_speaker:",
-      "chapter_outcome:",
-      "next_chapter_id:",
-      "memory_hints:",
-      "trigger_memory_agent:",
-      "event_facts:",
-      "state_delta:",
-    ].filter(Boolean).join("\n");
+    delete (snapshot.current_event as JsonRecord).window;
+    if (!payload.currentEventSummary && !payload.currentEventFacts.length) {
+      (snapshot as JsonRecord).event_seed = shortText(
+        [
+          payload.chapterDirective,
+          payload.chapterUserTurns,
+          payload.chapterOpening,
+        ].filter(Boolean).join("\n"),
+        160,
+      );
+    }
   }
-  return [
-    "[世界]",
-    `名称: ${payload.worldName || "未命名世界"}`,
-    payload.worldIntro ? `简介: ${payload.worldIntro}` : "",
-    "",
-    "[章节内部提纲]",
-    `标题: ${payload.chapterTitle || "未命名章节"}`,
-    payload.chapterDirective ? `提纲摘录: ${payload.chapterDirective}` : "",
-    payload.chapterUserTurns ? `用户交互节点:\n${payload.chapterUserTurns}` : "",
-    payload.chapterOpening ? `开场白: ${payload.chapterOpening}` : "",
-    "",
-    "[角色列表]",
-    ...payload.roles.map((role) => `- ${sanitizeRoleType(role.roleType)} | ${normalizeScalarText(role.name)} | ${describeRole(role)}`),
-    "",
-    "[万能角色]",
-    payload.wildcardRoles.length
-      ? payload.wildcardRoles.map((item) => `${item.name}(${sanitizeRoleType(item.roleType)})`).join("、")
-      : (payload.narratorActsAsWildcardFallback ? "无万能角色，可由旁白兜底一次性路人/环境播报" : "无"),
-    "",
-    "[剧情摘要]",
-    payload.storyState || "暂无额外摘要",
-    "",
-    "[当前阶段]",
-    `label: ${payload.currentPhaseLabel || "未命名阶段"}`,
-    payload.currentPhaseGoal ? `goal: ${payload.currentPhaseGoal}` : "",
-    `allowed_speakers: ${payload.phaseAllowedSpeakers.length ? payload.phaseAllowedSpeakers.join("、") : "全部当前角色"}`,
-    "",
-    "[当前事件]",
-    `index: ${payload.currentEventIndex || 1}`,
-    `kind: ${payload.currentEventKind || "scene"}`,
-    `flow: ${payload.currentEventFlowType || "chapter_content"}`,
-    `status: ${payload.currentEventStatus || "active"}`,
-    `summary: ${payload.currentEventSummary || "当前事件未命名"}`,
-    payload.currentEventFacts.length ? `facts: ${payload.currentEventFacts.join("；")}` : "",
-    payload.currentEventMemorySummary ? `memory_summary: ${payload.currentEventMemorySummary}` : "",
-    payload.currentEventMemoryFacts.length ? `memory_facts: ${payload.currentEventMemoryFacts.join("；")}` : "",
-    payload.currentEventWindow ? `事件窗口:\n${payload.currentEventWindow}` : "",
-    "",
-    "[回合状态]",
-    `can_player_speak: ${payload.turnState.canPlayerSpeak ? "true" : "false"}`,
-    `expected_role_type: ${sanitizeRoleType(payload.turnState.expectedRoleType)}`,
-    `expected_role: ${payload.turnState.expectedRole || "无"}`,
-    `last_speaker_role_type: ${sanitizeRoleType(payload.turnState.lastSpeakerRoleType)}`,
-    `last_speaker: ${payload.turnState.lastSpeaker || "无"}`,
-    "",
-    "[最近对话]",
-    payload.recentDialogue || "无",
-    "",
-    "[用户本轮输入]",
-    payload.latestPlayerMessage || "无",
-    "",
-    "[输出字段]",
-    "role_type:",
-    "speaker:",
-    "motive:",
-    "await_user:",
-    "next_role_type:",
-    "next_speaker:",
-    "chapter_outcome:",
-    "next_chapter_id:",
-    "memory_hints:",
-    "trigger_memory_agent:",
-    "event_facts:",
-    "state_delta:",
-  ].filter(Boolean).join("\n");
+  return snapshot;
+}
+
+function buildOrchestratorUserPrompt(payload: OrchestratorPromptPayload, compactMode = false): string {
+  return JSON.stringify(buildOrchestratorInputSnapshot(payload, compactMode), null, 2);
 }
 
 // 把当前说话人和上下文拼成角色发言提示词。
@@ -1878,69 +1856,30 @@ function buildMemoryEventDeltaText(messages: RuntimeMessageInput[], compactMode 
   return chunks.join(compactMode ? "\n" : "\n\n");
 }
 
+function stripLegacyStoryMainPrefix(prompt: string): string {
+  const lines = String(prompt || "")
+    .split(/\r?\n/)
+    .map((line) => line.trimEnd());
+  const filtered = lines.filter((line) => {
+    const normalized = line.trim();
+    if (!normalized) return true;
+    if (normalized.includes("你是 AI 故事总调度")) return false;
+    if (normalized.includes("决定把任务交给哪个子 agent")) return false;
+    return true;
+  });
+  return filtered.join("\n").trim();
+}
+
 // 组装编排师的系统提示词。
 function buildOrchestratorSystemPrompt(
-  mainPrompt: string,
   orchestratorPrompt: string,
   compactMode = false,
-  options?: {
-    allowControlHints?: boolean;
-    allowStateDelta?: boolean;
-  },
 ): string {
-  const allowControlHints = options?.allowControlHints !== false;
-  const allowStateDelta = options?.allowStateDelta !== false;
-  const outputFields = buildOrchestratorOutputFields({ allowControlHints, allowStateDelta });
+  const normalizedPrompt = stripLegacyStoryMainPrefix(orchestratorPrompt);
   if (compactMode) {
-    return [
-      mainPrompt,
-      orchestratorPrompt,
-      "本阶段禁止 JSON、禁止代码块、禁止 markdown。",
-      allowControlHints
-        ? "你只决定 speaker、motive、await_user、next_role_type、next_speaker，并可给出章节结果提示。"
-        : "你只决定 speaker、motive、await_user、next_role_type、next_speaker，不负责章节成败与切章。",
-      "不要写最终展示台词，不要复述章节原文，不要输出内部规则或思考过程。",
-      "speaker 只能来自当前角色列表，并且必须满足当前阶段的 allowed_speakers；用户没发言时，先推进至少一轮非用户内容。",
-      "若当前事件属于 chapter_ending_check 或 kind=ending，且用户刚提交的输入仍未满足结束条件，不要空白地把回合直接还给用户；先安排旁白或合适角色明确指出缺了什么、格式哪里不对，必要时更新当前事件摘要/事实为新的引导焦点，再设置 await_user=true。",
-      "若当前事件摘要为空，说明当前轮需要先创建一个新的当前事件焦点；此时请填写 event_summary 和 event_facts，再安排 speaker 与 motive。",
-      "motive 控制在 12~40 字，只描述这一小步要做什么。",
-      "每轮只推进一小步，不要回顾整章或世界观。",
-      "若本轮出现新的关键事实、人物资料变化、任务/道具/状态变化或阶段切换，trigger_memory_agent=true，否则 false。",
-      "event_adjust_mode 只能是 keep / update / waiting_input / completed；event_status 只能是 active / waiting_input / completed；event_summary 只用一句话概括当前事件焦点，不要复述整章；event_facts 只列 1~4 条本轮之后仍有用的事件事实。",
-      `严格按字段逐行输出：${outputFields}。`,
-    ].join("\n");
+    return normalizedPrompt;
   }
-  return [
-    mainPrompt,
-    orchestratorPrompt,
-    "硬性规则：",
-    "1. 开场白由系统单独处理，你不要重复输出开场白。",
-    "2. 章节内容是内部编排说明，用来指导谁说话、因为什么说、剧情怎么推进，绝对不能原样复述给用户。",
-    "3. 你只负责剧情编排和角色调度，只输出 speaker + motive + 回合流转，不直接写最终可见台词。",
-    "4. 只能从当前可用角色中选择 speaker，并且必须满足当前阶段的 allowed_speakers；绝不能代替用户说完整台词。",
-    "5. motive 必须是简洁的发言动机或推进目标，默认控制在 20~60 字，不要写成长篇旁白。",
-    "6. 如果这轮结束后应该轮到用户发言，设置 awaitUser=true；若这轮仍需先有角色说话，也要先给出 speaker 和 motive。",
-    allowControlHints
-      ? "7. 优先推进剧情，保持角色设定稳定，并根据章节目标给出章节结果提示。"
-      : "7. 优先推进剧情，保持角色设定稳定，但不要替规则引擎决定章节成功、失败或切章。",
-    "8. 本阶段禁止 JSON、禁止代码块、禁止 markdown；只按字段逐行输出。",
-    "9. 开场白只负责第一句开场，后续对话必须推进新内容，不得复述开场白。",
-    "10. 当用户发来“.”时，表示用户跳过本轮，由其他角色继续推进剧情。",
-    "11. 当 turnState.canPlayerSpeak=false 时，绝不能要求用户发言，也不能代替用户说台词。",
-    "12. motive 绝不能以“章节内容：”“开场白：”“故事背景：”开头，也不能直接粘贴章节原文段落。",
-    "13. 圆括号/方括号中的内容属于特殊内容，可作为动作、心理、状态变化参考，但不要机械朗读这些括号内容。",
-    "14. 若存在万能角色，可让万能角色临时扮演路人/配角；若没有万能角色，旁白可以承担一次性的路人或环境播报。",
-    "15. 若章节判定成功但没有下一章节，不要宣告故事彻底结束；运行时会转入自由剧情，继续按角色与局势编排。",
-    "16. 章节内容是给编排师看的内部提纲，只能用于安排谁说话、说什么、剧情怎么发展，绝不能直接念给用户。",
-    "17. 当用户尚未输入、只是刚进入章节时，必须先推进至少一轮非用户对话，不能空着内容直接把回合交给用户。",
-    "18. 若 [用户交互节点] 已明确要求用户观察、选择、发言或行动，一旦剧情推进到该节点，必须设置 awaitUser=true 且 next_role_type=player；不要继续让 NPC 抢走用户回合。",
-    "19. 若本轮出现新的关键事实、人物资料更新、关系/任务/状态变化、关键道具变化或章节阶段切换，trigger_memory_agent=true；普通闲聊或无新增信息时为 false。",
-    "20. event_adjust_mode 只能填写 keep / update / waiting_input / completed；event_status 只能填写 active / waiting_input / completed；event_summary 只概括当前事件焦点，不得复述章节原文或整章内容；event_facts 只列 1~4 条本轮之后仍有用的事件事实。",
-    "21. 若当前事件属于 chapter_ending_check 或 kind=ending，且用户刚提交的输入仍未满足结束条件，必须先安排旁白或合适角色明确指出缺少的信息、格式要求或失败原因，再把回合交还用户；不要只输出空 speaker 然后继续等待用户。",
-    "22. 若当前事件摘要为空，说明当前轮需要先创建一个新的当前事件焦点；此时必须填写 event_summary 和 event_facts，再安排谁说话。",
-    compactMode ? "补充：当前模型较弱，每轮只推进一小步，默认控制在 120 字以内；不要长篇回顾世界观或整章提纲。" : "",
-    `23. 最终输出严格使用以下字段名逐行输出：${outputFields}。`,
-  ].filter(Boolean).join("\n\n");
+  return normalizedPrompt;
 }
 
 // 组装角色发言器的系统提示词。
@@ -1976,7 +1915,6 @@ function buildSpeakerSystemPrompt(speakerPrompt: string, compactMode = false): s
 async function loadStoryPrompts() {
   const rows = await u.db("t_prompts")
     .whereIn("code", [
-      "story-main",
       "story-orchestrator",
       "story-orchestrator-compact",
       "story-orchestrator-advanced",
@@ -1992,7 +1930,6 @@ async function loadStoryPrompts() {
   const compactOrchestrator = getPromptValue(map.get("story-orchestrator-compact")) || legacyOrchestrator;
   const advancedOrchestrator = getPromptValue(map.get("story-orchestrator-advanced")) || legacyOrchestrator;
   return {
-    storyMain: getPromptValue(map.get("story-main")),
     storyOrchestrator: legacyOrchestrator,
     storyOrchestratorCompact: compactOrchestrator,
     storyOrchestratorAdvanced: advancedOrchestrator,
@@ -2315,10 +2252,7 @@ async function doRunNarrativePlan(input: OrchestratorInput): Promise<NarrativePl
     };
   }
 
-  const systemPrompt = buildOrchestratorSystemPrompt(prompts.storyMain, orchestratorPrompt, compactMode, {
-    allowControlHints,
-    allowStateDelta,
-  });
+  const systemPrompt = buildOrchestratorSystemPrompt(orchestratorPrompt, compactMode);
   const userPrompt = buildOrchestratorUserPrompt(payload, compactMode);
   let orchestratorRuntimeError: unknown = null;
   let orchestratorRawText = "";

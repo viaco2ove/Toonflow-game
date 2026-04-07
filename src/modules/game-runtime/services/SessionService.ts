@@ -1034,7 +1034,7 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
     syncChapterProgressWithRuntime(currentChapter, state);
   }
   if (currentChapter) {
-    const mergedOutcome = evaluateRuntimeOutcome({
+    const mergedOutcome = await evaluateRuntimeOutcome({
       chapter: currentChapter,
       state,
       messageContent,
@@ -1414,7 +1414,7 @@ export async function continueSessionNarrative(sessionIdInput: string): Promise<
     eventTypeFallback: "on_orchestrated_reply",
   });
   const latestGeneratedMessage = generatedMessages[generatedMessages.length - 1];
-  const mergedOutcome = evaluateRuntimeOutcome({
+  const mergedOutcome = await evaluateRuntimeOutcome({
     chapter,
     state,
     messageContent: String(latestGeneratedMessage?.content || ""),
@@ -1688,7 +1688,7 @@ export async function orchestrateSessionTurn(sessionIdInput: string): Promise<Se
   applyOrchestratorResultToState(state, plan);
   applyNarrativeMemoryHintsToState(state, plan.memoryHints);
   const latestRecentMessage = recentMessages[recentMessages.length - 1];
-  const mergedOutcome = evaluateRuntimeOutcome({
+  const mergedOutcome = await evaluateRuntimeOutcome({
     chapter,
     state,
     messageContent: String(latestRecentMessage?.content || ""),
@@ -1787,7 +1787,7 @@ export async function commitSessionNarrativeTurn(input: CommitSessionNarrativeTu
     : null;
   if (chapter) {
     const latestGeneratedMessage = insertedRows[insertedRows.length - 1];
-    const mergedOutcome = evaluateRuntimeOutcome({
+    const mergedOutcome = await evaluateRuntimeOutcome({
       chapter,
       state,
       messageContent: String(latestGeneratedMessage?.content || input.content || ""),

@@ -288,7 +288,7 @@ export default router.post(
             content: emittedMessage.content,
           })
           : { enteredUserPhase: false };
-        const outcome = evaluateDebugRuntimeOutcome({
+        const outcome = await evaluateDebugRuntimeOutcome({
           chapter,
           state,
           messageContent: String(emittedMessage?.content || ""),
@@ -443,7 +443,7 @@ export default router.post(
         eventType: "on_message",
         meta: {},
       });
-      const outcome = evaluateDebugRuntimeOutcome({
+      const outcome = await evaluateDebugRuntimeOutcome({
         chapter,
         state,
         messageContent: playerContent,
@@ -553,7 +553,7 @@ export default router.post(
           content: emittedMessage.content,
         })
         : { enteredUserPhase: false };
-      const narratedOutcome = evaluateDebugRuntimeOutcome({
+      const narratedOutcome = await evaluateDebugRuntimeOutcome({
         chapter,
         state,
         messageContent: String(emittedMessage?.content || ""),

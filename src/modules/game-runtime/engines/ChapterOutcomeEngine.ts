@@ -18,6 +18,9 @@ export interface ChapterOutcomeResult {
   nextChapterId: number | null;
   matchedBy: "runtime_outline" | "completion_condition" | "none";
   matchedRule: string | null;
+  reason?: string | null;
+  guideSummary?: string | null;
+  guideFacts?: string[] | null;
 }
 
 export interface ChapterOutcomeInput {

@@ -316,7 +316,7 @@ export default router.post(
           content: String(emittedMessage.content || ""),
         });
         const debugFreePlotActive = isDebugFreePlotActive(state);
-        const outcome = evaluateDebugRuntimeOutcome({
+        const outcome = await evaluateDebugRuntimeOutcome({
           chapter,
           state,
           messageContent: String(emittedMessage.content || ""),

@@ -556,7 +556,7 @@ export default router.post(
         eventType: "on_message",
         meta: {},
       });
-      const outcome = evaluateDebugRuntimeOutcome({
+      const outcome = await evaluateDebugRuntimeOutcome({
         chapter,
         state,
         messageContent: playerContent,

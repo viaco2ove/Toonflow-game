@@ -1,7 +1,11 @@
+import u from "@/utils";
 import { JsonRecord } from "@/lib/gameEngine";
 import { applyChapterOutcomeToState, ChapterOutcomeResult, evaluateChapterOutcome } from "@/modules/game-runtime/engines/ChapterOutcomeEngine";
+import { activateChapterEndingCheckState } from "@/modules/game-runtime/engines/ChapterProgressEngine";
+import { z } from "zod";
 
 export interface EvaluateRuntimeOutcomeInput {
+  userId?: number;
   chapter: any;
   state: JsonRecord;
   messageContent?: string;
@@ -21,8 +25,29 @@ export interface RuntimeOutcomeResolution {
   nextChapterId: number | null;
 }
 
+type ChapterJudgeTokenUsage = {
+  inputTokens?: number;
+  outputTokens?: number;
+  reasoningTokens?: number;
+};
+
+const chapterJudgeOutputSchema = {
+  result: z.enum(["continue", "success", "failed"]),
+  matched_rule: z.string().nullable().optional(),
+  reason: z.string().nullable().optional(),
+  next_chapter_id: z.union([z.number().int().positive(), z.null()]).optional(),
+  guide_summary: z.string().nullable().optional(),
+  guide_facts: z.array(z.string()).optional(),
+};
+
 function isDebugLogEnabled(): boolean {
   return String(process.env.LOG_LEVEL || "").trim().toUpperCase() === "DEBUG";
+}
+
+function normalizeScalarText(input: unknown): string {
+  const text = String(input ?? "").trim();
+  if (!text || text === "null" || text === "undefined") return "";
+  return text;
 }
 
 function stringifyCondition(input: unknown): string {
@@ -35,6 +60,338 @@ function stringifyCondition(input: unknown): string {
   }
 }
 
+function getPromptValue(row: any): string {
+  const customValue = normalizeScalarText(row?.customValue);
+  if (customValue) return customValue;
+  return normalizeScalarText(row?.defaultValue);
+}
+
+function unwrapModelText(input: unknown): string {
+  return normalizeScalarText(input).replace(/^```[a-zA-Z]*\s*|\s*```$/g, "").trim();
+}
+
+function parseFieldMap(rawText: string): Record<string, string> {
+  const lines = unwrapModelText(rawText)
+    .split(/\r?\n+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+  const result: Record<string, string> = {};
+
+  // 首先尝试解析 key: value 格式
+  for (const line of lines) {
+    const matched = line.match(/^[-*]?\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*[:：=]\s*(.*)$/);
+    if (!matched) continue;
+    result[matched[1].toLowerCase()] = matched[2].trim();
+  }
+
+  // 如果没有解析到任何字段，尝试逐行 key-value 格式（key 一行，value 一行）
+  if (Object.keys(result).length === 0 && lines.length >= 2) {
+    const validKeys = new Set([
+      "result", "matched_rule", "matchedrule", "reason",
+      "next_chapter_id", "nextchapterid", "guide_summary", "guidesummary", "guide_facts", "guidefacts"
+    ]);
+    for (let i = 0; i < lines.length - 1; i++) {
+      const key = lines[i].toLowerCase().replace(/^[-*]?\s*/, "").trim();
+      if (validKeys.has(key)) {
+        // 下一行是 value
+        let value = lines[i + 1].trim();
+        // 处理可能的 JSON 数组格式
+        if (value.startsWith("[") && value.endsWith("]")) {
+          // 保持数组格式
+        } else if (value.startsWith("[") && !value.endsWith("]")) {
+          // 数组跨多行，收集完整数组
+          const arrayLines = [value];
+          let j = i + 2;
+          while (j < lines.length && !lines[j].trim().endsWith("]")) {
+            arrayLines.push(lines[j].trim());
+            j++;
+          }
+          if (j < lines.length) {
+            arrayLines.push(lines[j].trim());
+          }
+          value = arrayLines.join(" ");
+          i = j - 1; // 跳过已处理的行
+        }
+        result[key] = value;
+        i++; // 跳过 value 行
+      }
+    }
+  }
+
+  return result;
+}
+
+function getPlainField(fields: Record<string, string>, ...keys: string[]): string {
+  for (const key of keys) {
+    const value = normalizeScalarText(fields[key.toLowerCase()]);
+    if (value) return value;
+  }
+  return "";
+}
+
+function normalizeOutcome(value: unknown): "continue" | "success" | "failed" {
+  const text = normalizeScalarText(value).toLowerCase();
+  if (text === "success" || text === "completed" || text === "pass") return "success";
+  if (text === "failed" || text === "fail" || text === "failure" || text === "lose") return "failed";
+  return "continue";
+}
+
+function shortText(input: unknown, limit = 160): string {
+  const text = normalizeScalarText(input);
+  if (!text) return "";
+  return text.length > limit ? `${text.slice(0, limit)}...` : text;
+}
+
+function buildChapterJudgeInputSnapshot(input: {
+  chapter: any;
+  state: JsonRecord;
+  messageContent?: string;
+  eventType?: string;
+}): JsonRecord {
+  const chapterProgress = typeof input.state.chapterProgress === "object" && input.state.chapterProgress !== null
+    ? input.state.chapterProgress as Record<string, unknown>
+    : {};
+  const completedEvents = Array.isArray(chapterProgress.completedEvents)
+    ? chapterProgress.completedEvents.map((item) => normalizeScalarText(item)).filter(Boolean)
+    : [];
+  const runtimeOutline = (input.chapter as any)?.runtimeOutline;
+  const endingRules = runtimeOutline && typeof runtimeOutline === "object"
+    ? (runtimeOutline as any).endingRules ?? null
+    : null;
+  const currentEvent = typeof input.state.currentEventDigest === "object" && input.state.currentEventDigest !== null
+    ? input.state.currentEventDigest as Record<string, unknown>
+    : {};
+  return {
+    chapter: {
+      title: normalizeScalarText(input.chapter?.title) || "未命名章节",
+      completion_condition: (input.chapter as any)?.completionCondition ?? null,
+      ending_rules: endingRules,
+    },
+    current_event: {
+      index: Number(normalizeScalarText(currentEvent.eventIndex) || "0"),
+      kind: normalizeScalarText(currentEvent.eventKind) || "scene",
+      flow: normalizeScalarText(currentEvent.eventFlowType) || "chapter_content",
+      status: normalizeScalarText(currentEvent.eventStatus) || "idle",
+      summary: shortText(currentEvent.eventSummary, 120) || "",
+      facts: Array.isArray((currentEvent as any).eventFacts)
+        ? (currentEvent as any).eventFacts.map((item: unknown) => normalizeScalarText(item)).filter(Boolean)
+        : [],
+    },
+    runtime_state: {
+      completed_events: completedEvents,
+      message_content: normalizeScalarText(input.messageContent) || "",
+      event_type: normalizeScalarText(input.eventType) || "on_message",
+    },
+  };
+}
+
+function buildChapterJudgePrompt(input: {
+  chapter: any;
+  state: JsonRecord;
+  messageContent?: string;
+  eventType?: string;
+}): string {
+  return JSON.stringify(buildChapterJudgeInputSnapshot(input), null, 2);
+}
+
+async function loadChapterJudgePrompt(): Promise<string> {
+  const row = await u.db("t_prompts")
+    .where("code", "story-chapter")
+    .first("defaultValue", "customValue");
+  return getPromptValue(row);
+}
+
+async function resolveChapterJudgeModel(userId?: number) {
+  const primary = await u.getPromptAi("storyChapterJudgeModel", userId);
+  if (normalizeScalarText((primary as Record<string, unknown> | null)?.manufacturer)) {
+    return primary;
+  }
+  const fallback = await u.getPromptAi("storyOrchestratorModel", userId);
+  if (normalizeScalarText((fallback as Record<string, unknown> | null)?.manufacturer)) {
+    return fallback;
+  }
+  throw new Error("章节判定对接的模型未配置");
+}
+
+function buildChapterJudgeStats(input: {
+  systemPrompt: string;
+  prompt: string;
+  responseText: string;
+  tokenUsage?: ChapterJudgeTokenUsage | null;
+  requestStatus: "success" | "fallback";
+  manufacturer: string;
+  model: string;
+  reasoningEffort: string;
+}) {
+  const runtimeLog = {
+    manufacturer: input.manufacturer,
+    model: input.model,
+    reasoningEffort: input.reasoningEffort || "",
+    requestChars: input.prompt.length,
+    requestStatus: input.requestStatus,
+    responseText: input.responseText,
+    responseTextLength: input.responseText.length,
+    tokenUsage: input.tokenUsage || null,
+  };
+  console.log("[story:chapter_ending_check:runtime]", JSON.stringify(runtimeLog));
+  if (!isDebugLogEnabled()) return;
+  console.log(`[story:chapter_ending_check:stats] request_chars=${input.prompt.length} request_status=${input.requestStatus}`);
+  console.log(`[story:chapter_ending_check:stats] | 区块 | 实际内容 | 字符数 | 估算 Tokens |`);
+  console.log(`[story:chapter_ending_check:stats] | System Prompt | ${shortText(input.systemPrompt, 240000) || "无"} | ${input.systemPrompt.length} | ${Math.max(input.systemPrompt ? 1 : 0, Math.ceil(input.systemPrompt.length / 4))} |`);
+  console.log(`[story:chapter_ending_check:stats] | 用户提示词 | ${shortText(input.prompt, 240000)} | ${input.prompt.length} | ${Math.max(1, Math.ceil(input.prompt.length / 4))} |`);
+  console.log(`[story:chapter_ending_check:stats] | 返回内容 | ${shortText(input.responseText, 240000) || "无"} | ${input.responseText.length} | ${Math.max(input.responseText ? 1 : 0, Math.ceil(input.responseText.length / 4))} |`);
+  if (input.tokenUsage) {
+    console.log(`[story:chapter_ending_check:stats] | 实际推理消耗 | input=${input.tokenUsage.inputTokens || 0}, output=${input.tokenUsage.outputTokens || 0}, reasoning=${input.tokenUsage.reasoningTokens || 0} | - | - |`);
+  }
+}
+
+function normalizeGuideSummary(reason: string, rawGuideSummary: unknown): string {
+  const guideSummary = normalizeScalarText(rawGuideSummary);
+  if (guideSummary) return guideSummary;
+  if (!reason) {
+    return "继续检查章节结束条件并引导用户补全缺失信息";
+  }
+  return `结束条件未满足，需引导用户继续补全信息`;
+}
+
+function normalizeGuideFacts(reason: string, rawGuideFacts: unknown): string[] {
+  const guideFacts = Array.isArray(rawGuideFacts)
+    ? rawGuideFacts.map((item) => normalizeScalarText(item)).filter(Boolean)
+    : [];
+  if (guideFacts.length) {
+    return guideFacts.slice(0, 3);
+  }
+  return [
+    "当前章节结束条件尚未命中，需要继续当前章节。",
+    reason || "当前用户输入还不足以满足成功或失败条件。",
+    "需要通过角色引导用户明确补充完成结束条件所需的信息。",
+  ].filter(Boolean);
+}
+
+async function evaluateChapterOutcomeByAi(input: EvaluateRuntimeOutcomeInput): Promise<ChapterOutcomeResult | null> {
+  const fallback = evaluateChapterOutcome({
+    chapter: input.chapter,
+    state: input.state,
+    messageContent: input.messageContent,
+    eventType: input.eventType,
+    meta: input.meta,
+  });
+  if (!fallback.hasRule) {
+    return fallback;
+  }
+  const prompt = await loadChapterJudgePrompt();
+  if (!prompt) {
+    return fallback;
+  }
+  const modelConfig = await resolveChapterJudgeModel(input.userId);
+  const userPrompt = buildChapterJudgePrompt(input);
+  let rawText = "";
+  let tokenUsage: ChapterJudgeTokenUsage | null = null;
+  try {
+    const result = await u.ai.text.invoke(
+      {
+        usageType: "章节判定",
+        usageRemark: normalizeScalarText(input.chapter?.title) || "未知章节",
+        usageMeta: {
+          stage: "storyChapterJudgeModel",
+          chapterId: Number(input.chapter?.id || 0),
+          chapterTitle: normalizeScalarText(input.chapter?.title),
+        },
+        output: chapterJudgeOutputSchema,
+        messages: [
+          { role: "system", content: prompt },
+          { role: "user", content: userPrompt },
+        ],
+        maxRetries: 0,
+      },
+      modelConfig as any,
+    );
+    const objectLike = typeof (result as any)?.object === "object" && (result as any)?.object !== null
+      ? (result as any).object as Record<string, unknown>
+      : {};
+    rawText = objectLike && Object.keys(objectLike).length
+      ? JSON.stringify(objectLike, null, 2)
+      : unwrapModelText((result as any)?.text || "");
+    tokenUsage = {
+      inputTokens: Number((result as any)?.usage?.inputTokens || 0),
+      outputTokens: Number((result as any)?.usage?.outputTokens || 0),
+      reasoningTokens: Number((result as any)?.usage?.outputTokenDetails?.reasoningTokens || (result as any)?.usage?.reasoningTokens || 0),
+    };
+    const fieldMap = parseFieldMap(rawText);
+    const resultValue = normalizeOutcome(
+      objectLike.result
+      || objectLike.outcome
+      || getPlainField(fieldMap, "result", "outcome"),
+    );
+    const matchedRule = normalizeScalarText(
+      objectLike.matched_rule
+      || objectLike.matchedRule
+      || getPlainField(fieldMap, "matched_rule", "matchedrule"),
+    ) || null;
+    const reason = normalizeScalarText(
+      objectLike.reason
+      || getPlainField(fieldMap, "reason"),
+    ) || null;
+    const guideSummary = normalizeGuideSummary(
+      reason || "",
+      objectLike.guide_summary
+      || objectLike.guideSummary
+      || getPlainField(fieldMap, "guide_summary", "guidesummary"),
+    );
+    const guideFacts = normalizeGuideFacts(
+      reason || "",
+      objectLike.guide_facts
+      || objectLike.guideFacts
+      || [],
+    );
+    const nextChapterIdText = normalizeScalarText(
+      objectLike.next_chapter_id
+      || objectLike.nextChapterId
+      || getPlainField(fieldMap, "next_chapter_id", "nextchapterid"),
+    );
+    const nextChapterId = Number.isFinite(Number(nextChapterIdText)) && Number(nextChapterIdText) > 0
+      ? Number(nextChapterIdText)
+      : fallback.nextChapterId;
+    buildChapterJudgeStats({
+      systemPrompt: prompt,
+      prompt: userPrompt,
+      responseText: rawText,
+      tokenUsage,
+      requestStatus: "success",
+      manufacturer: normalizeScalarText((modelConfig as any)?.manufacturer),
+      model: normalizeScalarText((modelConfig as any)?.model),
+      reasoningEffort: normalizeScalarText((modelConfig as any)?.reasoningEffort),
+    });
+    return {
+      hasRule: true,
+      result: resultValue,
+      nextChapterId,
+      matchedBy: resultValue === "continue" ? "none" : "completion_condition",
+      matchedRule,
+      reason,
+      guideSummary: resultValue === "continue" ? guideSummary : null,
+      guideFacts: resultValue === "continue" ? guideFacts : [],
+    };
+  } catch (err) {
+    buildChapterJudgeStats({
+      systemPrompt: prompt,
+      prompt: userPrompt,
+      responseText: rawText,
+      tokenUsage,
+      requestStatus: "fallback",
+      manufacturer: "",
+      model: "",
+      reasoningEffort: "",
+    });
+    console.warn("[story:chapter_ending_check:error]", {
+      chapterId: Number(input.chapter?.id || 0),
+      chapterTitle: normalizeScalarText(input.chapter?.title),
+      message: (err as any)?.message || String(err),
+    });
+    return fallback;
+  }
+}
+
 export function resolveSessionStatusByOutcome(
   currentStatus: string,
   outcome: "continue" | "success" | "failed",
@@ -44,10 +401,9 @@ export function resolveSessionStatusByOutcome(
   return currentStatus;
 }
 
-// 正式链和调试链统一使用这一层做章节结果收口，
-// 避免一边走硬规则、一边自己拼 fallback。
-export function evaluateRuntimeOutcome(input: EvaluateRuntimeOutcomeInput): RuntimeOutcomeResolution {
-  const evaluation = evaluateChapterOutcome({
+// 正式链和调试链统一使用这一层做章节结果收口。
+export async function evaluateRuntimeOutcome(input: EvaluateRuntimeOutcomeInput): Promise<RuntimeOutcomeResolution> {
+  const evaluation = await evaluateChapterOutcomeByAi(input) || evaluateChapterOutcome({
     chapter: input.chapter,
     state: input.state,
     messageContent: input.messageContent,
@@ -63,7 +419,6 @@ export function evaluateRuntimeOutcome(input: EvaluateRuntimeOutcomeInput): Runt
     : (input.fallbackNextChapterId || input.fallbackChapterId || null);
   const sessionStatus = resolveSessionStatusByOutcome(String(input.fallbackStatus || "active"), outcome);
 
-  // 总是输出 [tag_end_chapter] 日志，便于调试和追踪
   console.log("[tag_end_chapter]", JSON.stringify({
     chapterId: Number(input.chapter?.id || 0),
     chapterTitle: String(input.chapter?.title || "").trim(),
@@ -85,9 +440,20 @@ export function evaluateRuntimeOutcome(input: EvaluateRuntimeOutcomeInput): Runt
     why: evaluation.hasRule
       ? (evaluation.result === "continue"
         ? "章节结束条件未命中"
-        : `命中${evaluation.matchedBy === "runtime_outline" ? "运行时事件规则" : "完成条件"}:${evaluation.matchedRule || "未命名规则"}`)
+        : `命中${evaluation.matchedBy === "runtime_outline" ? "运行时事件规则" : "章节判定"}:${evaluation.matchedRule || "未命名规则"}`)
       : "当前章节没有有效结束条件，沿用fallbackOutcome",
   }));
+
+  if (evaluation.hasRule && outcome === "continue") {
+    activateChapterEndingCheckState({
+      chapter: input.chapter,
+      state: input.state,
+      reason: evaluation.reason || null,
+      guideSummary: evaluation.guideSummary || null,
+      guideFacts: Array.isArray(evaluation.guideFacts) ? evaluation.guideFacts : [],
+      eventStatus: "active",
+    });
+  }
 
   if (Boolean(input.applyToState) && outcome !== "continue") {
     applyChapterOutcomeToState(input.chapter, input.state, {
