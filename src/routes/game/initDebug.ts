@@ -16,6 +16,7 @@ import {
   syncDebugChapterRuntime,
   isDebugFreePlotActive,
   cacheDebugRuntimeState,
+  readDebugRuntimeKey,
 } from "./debugRuntimeShared";
 
 const router = express.Router();
@@ -85,8 +86,13 @@ export default router.post(
       const effectiveChapter = buildEffectiveDebugChapter(chapter, debugFreePlotActive);
       syncDebugChapterRuntime(effectiveChapter, state);
 
-      // 4. 缓存状态
-      cacheDebugRuntimeState(state, userId, worldId, undefined);
+      // 4. 初始化调试 key。调试会话从 initDebug 开始固定一把 key，后续所有接口都必须复用。
+      const debugRuntimeKey = cacheDebugRuntimeState(
+        state,
+        userId,
+        worldId,
+        readDebugRuntimeKey(state) || undefined,
+      );
 
       // 5. 构建返回结果
       const stateSnapshot = cacheAndBuildDebugStateSnapshot({
@@ -94,6 +100,7 @@ export default router.post(
         worldId,
         state,
       });
+      stateSnapshot.debugRuntimeKey = debugRuntimeKey;
 
       const result = {
         worldId,

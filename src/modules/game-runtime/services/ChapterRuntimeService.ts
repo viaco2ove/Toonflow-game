@@ -174,41 +174,61 @@ function shortText(input: unknown, limit = 160): string {
   return text.length > limit ? `${text.slice(0, limit)}...` : text;
 }
 
-function buildChapterJudgeInputSnapshot(input: {
+type BuildChapterJudgeInput = {
   chapter: any;
   state: JsonRecord;
   messageContent?: string;
   eventType?: string;
   recentMessages?: any[];
-}): JsonRecord {
-  const chapterProgress = typeof input.state.chapterProgress === "object" && input.state.chapterProgress !== null
-    ? input.state.chapterProgress as Record<string, unknown>
-    : {};
+  runtimeStateSend?: boolean;
+};
+
+function buildChapterJudgeInputSnapshot({
+  chapter,
+  state,
+  messageContent,
+  eventType,
+  recentMessages,
+  runtimeStateSend = false,
+}: BuildChapterJudgeInput): JsonRecord {
+  const chapterProgress =
+    typeof state.chapterProgress === "object" && state.chapterProgress !== null
+      ? (state.chapterProgress as Record<string, unknown>)
+      : {};
+
   const completedEvents = Array.isArray(chapterProgress.completedEvents)
-    ? chapterProgress.completedEvents.map((item) => normalizeScalarText(item)).filter(Boolean)
+    ? chapterProgress.completedEvents
+        .map((item) => normalizeScalarText(item))
+        .filter(Boolean)
     : [];
-  const runtimeOutline = (input.chapter as any)?.runtimeOutline;
-  const endingRules = runtimeOutline && typeof runtimeOutline === "object"
-    ? (runtimeOutline as any).endingRules ?? null
-    : null;
-  const currentEvent = typeof input.state.currentEventDigest === "object" && input.state.currentEventDigest !== null
-    ? input.state.currentEventDigest as Record<string, unknown>
-    : {};
-  const recentDialogue = Array.isArray(input.recentMessages)
-    ? input.recentMessages
-      .slice(-10)
-      .map((item) => ({
-        role: normalizeScalarText(item?.role) || "未知角色",
-        role_type: normalizeScalarText(item?.roleType) || "",
-        event_type: normalizeScalarText(item?.eventType) || "",
-        content: shortText(item?.content, 160) || "",
-      }))
-      .filter((item) => item.content)
+
+  const runtimeOutline = (chapter as any)?.runtimeOutline;
+  const endingRules =
+    runtimeOutline && typeof runtimeOutline === "object"
+      ? (runtimeOutline as any).endingRules ?? null
+      : null;
+
+  const currentEvent =
+    typeof state.currentEventDigest === "object" && state.currentEventDigest !== null
+      ? (state.currentEventDigest as Record<string, unknown>)
+      : {};
+
+  const recentDialogue = Array.isArray(recentMessages)
+    ? recentMessages
+        .slice(-10)
+        .map((item) => ({
+          role: normalizeScalarText(item?.role) || "未知角色",
+          role_type: normalizeScalarText(item?.roleType) || "",
+          event_type: normalizeScalarText(item?.eventType) || "",
+          content: shortText(item?.content, 160) || "",
+        }))
+        .filter((item) => item.content)
     : [];
+
   return {
     chapter: {
-      title: normalizeScalarText(input.chapter?.title) || "未命名章节",
-      completion_condition: (input.chapter as any)?.completionCondition ?? null,
+      title: normalizeScalarText(chapter?.title) || "未命名章节",
+      completion_condition: (chapter as any)?.completionCondition ?? null,
       ending_rules: endingRules,
     },
     current_event: {
@@ -218,14 +238,20 @@ function buildChapterJudgeInputSnapshot(input: {
       status: normalizeScalarText(currentEvent.eventStatus) || "idle",
       summary: shortText(currentEvent.eventSummary, 120) || "",
       facts: Array.isArray((currentEvent as any).eventFacts)
-        ? (currentEvent as any).eventFacts.map((item: unknown) => normalizeScalarText(item)).filter(Boolean)
+        ? (currentEvent as any).eventFacts
+            .map((item: unknown) => normalizeScalarText(item))
+            .filter(Boolean)
         : [],
     },
-    runtime_state: {
-      completed_events: completedEvents,
-      message_content: normalizeScalarText(input.messageContent) || "",
-      event_type: normalizeScalarText(input.eventType) || "on_message",
-    },
+    ...(runtimeStateSend
+      ? {
+          runtime_state: {
+            completed_events: completedEvents,
+            message_content: normalizeScalarText(messageContent) || "",
+            event_type: normalizeScalarText(eventType) || "on_message",
+          },
+        }
+      : {}),
     recent_dialogue: recentDialogue,
   };
 }

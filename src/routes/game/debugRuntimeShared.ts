@@ -2,6 +2,7 @@ import express from "express";
 import { z } from "zod";
 import fs from "fs";
 import path from "path";
+import { error, success } from "@/lib/responseFormat";
 import {
   ChapterRuntimeOutline,
   normalizeChapterOutput,
@@ -687,7 +688,7 @@ router.post("/revisit", async (req, res) => {
   try {
     const parsed = revisitBodySchema.safeParse(req.body);
     if (!parsed.success) {
-      return res.status(400).json({ error: "参数错误", detail: parsed.error.message });
+      return res.status(400).send(error(`参数错误: ${parsed.error.message}`));
     }
     const { debugRuntimeKey, messageCount } = parsed.data;
     const point = getDebugRevisitPoint(debugRuntimeKey, messageCount);
@@ -697,7 +698,7 @@ router.post("/revisit", async (req, res) => {
         requestedMessageCount: messageCount,
         availableMessageCounts: readDebugRevisitPoints(debugRuntimeKey).map((item) => item.messageCount),
       }));
-      return res.status(404).json({ error: "未找到可回溯点" });
+      return res.status(404).send(error("未找到可回溯点"));
     }
     console.log("[debug:revisit:hit]", JSON.stringify({
       debugRuntimeKey,
@@ -711,16 +712,16 @@ router.post("/revisit", async (req, res) => {
     // 回溯后要截断“未来记录”，内存层保留最近 N 条，文件层保留完整有效历史。
     DEBUG_REVISIT_HOT.set(debugRuntimeKey, validHistory.slice(-DEBUG_REVISIT_HOT_SIZE));
     writeRevisitFile(debugRuntimeKey, validHistory);
-    return res.status(200).json({
+    return res.status(200).send(success({
       state: point.state,
       messages: point.messages,
       round: point.round,
       chapterId: point.chapterId,
       messageCount: point.messageCount,
-    });
+    }));
   } catch (e: any) {
     console.error("[debug:revisit:error]", e);
-    return res.status(500).json({ error: e?.message || "回溯失败" });
+    return res.status(500).send(error(e?.message || "回溯失败"));
   }
 });
 
@@ -728,19 +729,19 @@ router.get("/revisit/history", async (req, res) => {
   try {
     const parsed = revisitQuerySchema.safeParse(req.query);
     if (!parsed.success) {
-      return res.status(400).json({ error: "参数错误", detail: parsed.error.message });
+      return res.status(400).send(error(`参数错误: ${parsed.error.message}`));
     }
     const { debugRuntimeKey } = parsed.data;
     const history = readDebugRevisitPoints(debugRuntimeKey);
-    return res.status(200).json(history.map(p => ({
+    return res.status(200).send(success(history.map(p => ({
       messageCount: p.messageCount,
       round: p.round,
       chapterId: p.chapterId,
       createdAt: p.createdAt,
-    })));
+    }))));
   } catch (e: any) {
     console.error("[debug:revisit:history:error]", e);
-    return res.status(500).json({ error: e?.message || "获取回溯历史失败" });
+    return res.status(500).send(error(e?.message || "获取回溯历史失败"));
   }
 });
 
