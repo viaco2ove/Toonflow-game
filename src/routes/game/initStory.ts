@@ -4,7 +4,6 @@ import { validateFields } from "@/middleware/middleware";
 import { error, success } from "@/lib/responseFormat";
 import {
   createGameSessionId,
-  extractFirstChapterDialogueLine,
   getGameDb,
   normalizeChapterOutput,
   parseJsonSafe,
@@ -21,16 +20,6 @@ import {
   readChapterInitialSnapshotCache,
 } from "@/lib/sessionInitialSnapshot";
 import {
-  applyMemoryResultToState,
-  summarizeNarrativePlan,
-  triggerStoryMemoryRefreshInBackground,
-  runNarrativePlan,
-} from "@/modules/game-runtime/engines/NarrativeOrchestrator";
-import { 
-  persistSessionMessageRevisitData,
-  orchestrateSessionTurn,
-} from "@/modules/game-runtime/services/SessionService";
-import {
   initializeChapterProgressForState,
   syncChapterProgressWithRuntime,
 } from "@/modules/game-runtime/engines/ChapterProgressEngine";
@@ -46,14 +35,6 @@ function isPublishedWorld(row: any): boolean {
   return String(settings?.publishStatus || "").trim() === "published";
 }
 
-function normalizeSessionRow(row: any) {
-  if (!row) return null;
-  return {
-    ...row,
-    state: parseJsonSafe(row.stateJson, {}),
-  };
-}
-
 function buildContentVersion(world: any, chapter: any, now: number): string {
   const snapshotVersion = buildChapterInitialSnapshotVersion(world, chapter);
   if (snapshotVersion) {
@@ -63,97 +44,9 @@ function buildContentVersion(world: any, chapter: any, now: number): string {
   return `w:${Number(world?.id || 0)}@${worldVersion}`;
 }
 
-function buildPlanResult(plan: ({
-  role: string;
-  roleType: string;
-  motive: string;
-  awaitUser: boolean;
-  nextRole: string;
-  nextRoleType: string;
-  source: "ai" | "fallback" | "rule";
-  memoryHints?: string[];
-  triggerMemoryAgent?: boolean;
-  stateDelta?: Record<string, unknown>;
-  eventType?: string;
-  presetContent?: string;
-  eventAdjustMode?: "keep" | "update" | "waiting_input" | "completed";
-  eventIndex?: number;
-  eventKind?: "opening" | "scene" | "user" | "fixed" | "ending";
-  eventSummary?: string;
-  eventFacts?: string[];
-  eventStatus?: "idle" | "active" | "waiting_input" | "completed";
-  speakerMode?: "template" | "fast" | "premium";
-  speakerRouteReason?: string;
-  planSource?: string;
-}) | null) {
-  if (!plan) return null;
-  return {
-    role: String(plan.role || "").trim(),
-    roleType: String(plan.roleType || "").trim(),
-    motive: String(plan.motive || "").trim(),
-    awaitUser: Boolean(plan.awaitUser),
-    nextRole: String(plan.nextRole || "").trim(),
-    nextRoleType: String(plan.nextRoleType || "").trim(),
-    source: plan.source === "fallback" ? "fallback" : plan.source === "rule" ? "rule" : "ai",
-    triggerMemoryAgent: Boolean(plan.triggerMemoryAgent),
-    eventType: String(plan.eventType || "on_orchestrated_reply").trim() || "on_orchestrated_reply",
-    presetContent: String(plan.presetContent || "").trim() || null,
-    eventAdjustMode: plan.eventAdjustMode === "update"
-      ? "update"
-      : plan.eventAdjustMode === "waiting_input"
-        ? "waiting_input"
-        : plan.eventAdjustMode === "completed"
-          ? "completed"
-          : plan.eventAdjustMode === "keep"
-            ? "keep"
-            : undefined,
-    eventIndex: Number.isFinite(Number(plan.eventIndex)) ? Math.max(1, Number(plan.eventIndex)) : undefined,
-    eventKind: plan.eventKind === "opening"
-      ? "opening"
-      : plan.eventKind === "user"
-        ? "user"
-        : plan.eventKind === "fixed"
-          ? "fixed"
-          : plan.eventKind === "ending"
-            ? "ending"
-            : plan.eventKind === "scene"
-              ? "scene"
-              : undefined,
-    eventSummary: String(plan.eventSummary || "").trim(),
-    eventFacts: Array.isArray(plan.eventFacts)
-      ? plan.eventFacts.map((item) => String(item || "").trim()).filter(Boolean)
-      : [],
-    eventStatus: plan.eventStatus === "active"
-      ? "active"
-      : plan.eventStatus === "waiting_input"
-        ? "waiting_input"
-        : plan.eventStatus === "completed"
-          ? "completed"
-          : plan.eventStatus === "idle"
-            ? "idle"
-            : undefined,
-    speakerMode: plan.speakerMode === "template"
-      ? "template"
-      : plan.speakerMode === "fast"
-        ? "fast"
-        : plan.speakerMode === "premium"
-          ? "premium"
-          : undefined,
-    speakerRouteReason: String(plan.speakerRouteReason || "").trim(),
-    planSource: (() => {
-      const explicit = String(plan.planSource || "").trim();
-      if (explicit) return explicit;
-      if (String(plan.eventType || "").trim() === "on_opening" && String(plan.presetContent || "").trim()) {
-        return "opening_preset";
-      }
-      return plan.source === "rule" ? "rule_orchestrator" : plan.source === "fallback" ? "fallback_orchestrator" : "ai_orchestrator";
-    })(),
-  };
-}
-
 /**
  * 统一的游玩模式初始化接口
- * 合并了 startSession + orchestration 两个接口，减少前端请求次数
+ * 只负责创建正式会话和初始化运行态；开场白与第一章编排由后续独立接口处理。
  */
 export default router.post(
   "/",
@@ -178,7 +71,6 @@ export default router.post(
         return res.status(400).send(error("worldId 不能为空"));
       }
 
-      const skipOpening = Boolean(req.body.skipOpening);
       const chapterId = Number(req.body.chapterId || 0);
 
       // 1. 获取故事世界

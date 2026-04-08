@@ -310,23 +310,36 @@ export default router.post(
           content,
           createTime: Date.now(),
         };
-        const phaseAdvance = applyDebugNarrativeMessageProgress({
-          chapter,
-          state,
-          role: String(emittedMessage.role || ""),
-          roleType: String(emittedMessage.roleType || ""),
-          content: String(emittedMessage.content || ""),
-        });
+        const normalizedEventType = String(emittedMessage.eventType || "").trim().toLowerCase();
+        const isOpeningMessage = normalizedEventType === "on_opening";
+        // 开场白属于章节外引导消息，只负责把用户带入故事，不应该直接推进章节正文或结束条件。
+        // 否则回溯到“开场白”时，后端保存下来的 state 会已经跳到章节内容/结束条件，导致回溯快照脏掉。
+        const phaseAdvance = isOpeningMessage
+          ? { enteredUserPhase: false }
+          : applyDebugNarrativeMessageProgress({
+            chapter,
+            state,
+            role: String(emittedMessage.role || ""),
+            roleType: String(emittedMessage.roleType || ""),
+            content: String(emittedMessage.content || ""),
+          });
         const debugFreePlotActive = isDebugFreePlotActive(state);
-        const outcome = await evaluateDebugRuntimeOutcome({
-          chapter,
-          state,
-          messageContent: String(emittedMessage.content || ""),
-          eventType: String(emittedMessage.eventType || ""),
-          meta: {},
-          recentMessages: [...recentMessages, emittedMessage],
-          debugFreePlotActive,
-        });
+        const outcome = isOpeningMessage
+          ? {
+            result: "continue" as const,
+            nextChapterId: null,
+            matchedBy: "none" as const,
+            matchedRule: null,
+          }
+          : await evaluateDebugRuntimeOutcome({
+            chapter,
+            state,
+            messageContent: String(emittedMessage.content || ""),
+            eventType: String(emittedMessage.eventType || ""),
+            meta: {},
+            recentMessages: [...recentMessages, emittedMessage],
+            debugFreePlotActive,
+          });
 
         let endDialog: string | null = null;
         if (outcome.result === "failed") {
@@ -357,6 +370,15 @@ export default router.post(
               lastSpeaker: roleName || rolePair.narratorRole.name || "旁白",
             });
           }
+        } else if (isOpeningMessage) {
+          // 开场白结束后仍应由系统继续推进到第一章首轮编排，而不是在这里改变章节事件状态。
+          setRuntimeTurnState(state, world, {
+            canPlayerSpeak: false,
+            expectedRoleType: "narrator",
+            expectedRole: String(rolePair.narratorRole.name || "旁白"),
+            lastSpeakerRoleType: roleType,
+            lastSpeaker: roleName || rolePair.narratorRole.name || "旁白",
+          });
         } else {
           const shouldYieldToUser = phaseAdvance.enteredUserPhase
             || String(plan.nextRoleType || "").trim().toLowerCase() === "player";
