@@ -15,7 +15,6 @@ import { enforceResourceIsolation } from "@/middleware/resourceIsolation";
 import { startSessionMemoryWorker, stopSessionMemoryWorker } from "@/modules/game-runtime/services/SessionMemoryWorker";
 import { syncBundledVoicePresetSeeds } from "@/lib/voicePresetSeeds";
 import { dbBootstrapReady } from "@/utils/db";
-import { clearAllDebugRevisitTmpFiles } from "@/routes/game/debugRuntimeShared";
 
 function ensureNoProxyForLocalhost() {
   const localHosts = ["127.0.0.1", "localhost", "::1"];
@@ -68,8 +67,7 @@ export default async function startServe(randomPort: Boolean = false) {
   if (syncedVoicePresetSeeds > 0) {
     console.log(`[voice] synced bundled preset seeds: ${syncedVoicePresetSeeds}`);
   }
-  // 启动时清空上次遗留的调试回溯临时文件
-  clearAllDebugRevisitTmpFiles();
+  // 调试回溯需要跨热更新/重启保留临时文件，这里不再启动即清空。
 
   startSessionMemoryWorker();
 
@@ -152,20 +150,18 @@ export function closeServe(): Promise<void> {
       server.close((err?: Error) => {
         if (err) return reject(err);
         stopSessionMemoryWorker();
-        clearAllDebugRevisitTmpFiles();
         console.log("[server] closed");
         resolve();
       });
     } else {
-      clearAllDebugRevisitTmpFiles();
       resolve();
     }
   });
 }
 
-// 进程退出时清空调试回溯临时文件
+// 进程退出不再删除调试回溯文件，避免热更新/重启后回溯点全部丢失。
 function onProcessExit() {
-  try { clearAllDebugRevisitTmpFiles(); } catch { /* ignore */ }
+  try { stopSessionMemoryWorker(); } catch { /* ignore */ }
 }
 process.on("exit", onProcessExit);
 process.on("SIGINT", () => { onProcessExit(); process.exit(0); });

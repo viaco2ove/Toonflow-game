@@ -132,34 +132,24 @@ export function saveDebugRevisitPoint(
     createdAt: nowTs(),
   };
 
-  // 更新内存层
+  // 每次保存都同时更新内存层和文件层。
+  // 内存层只保留最近 N 条做热命中，文件层保存完整历史，避免进程重启/热更新后回溯点丢失。
   const hot = DEBUG_REVISIT_HOT.get(debugRuntimeKey) || [];
-  // 去重（同 messageCount 替换旧的）
-  const deduped = hot.filter(p => p.messageCount !== newPoint.messageCount);
-  deduped.push(newPoint);
-  deduped.sort((a, b) => a.messageCount - b.messageCount);
+  const filePoints = readRevisitFile(debugRuntimeKey);
+  const merged = [...filePoints, ...hot, newPoint]
+    .reduce<DebugRevisitPoint[]>((acc, point) => {
+      const existingIndex = acc.findIndex((item) => item.messageCount === point.messageCount);
+      if (existingIndex >= 0) {
+        acc[existingIndex] = point;
+      } else {
+        acc.push(point);
+      }
+      return acc;
+    }, [])
+    .sort((left, right) => left.messageCount - right.messageCount);
 
-  if (deduped.length <= DEBUG_REVISIT_HOT_SIZE) {
-    // 全部放内存
-    DEBUG_REVISIT_HOT.set(debugRuntimeKey, deduped);
-  } else {
-    // 溢出：把旧条目刷入文件，内存只保留最新 N 条
-    const hot_kept = deduped.slice(-DEBUG_REVISIT_HOT_SIZE);
-    const spill = deduped.slice(0, deduped.length - DEBUG_REVISIT_HOT_SIZE);
-    DEBUG_REVISIT_HOT.set(debugRuntimeKey, hot_kept);
-
-    // 追加到文件（合并去重后写回）
-    const existing = readRevisitFile(debugRuntimeKey);
-    const merged = [...existing, ...spill]
-      .reduce<DebugRevisitPoint[]>((acc, p) => {
-        const idx = acc.findIndex(x => x.messageCount === p.messageCount);
-        if (idx >= 0) acc[idx] = p; else acc.push(p);
-        return acc;
-      }, [])
-      .sort((a, b) => a.messageCount - b.messageCount);
-    console.debug("[debug:revisit] writeRevisitFile")
-    writeRevisitFile(debugRuntimeKey, merged);
-  }
+  DEBUG_REVISIT_HOT.set(debugRuntimeKey, merged.slice(-DEBUG_REVISIT_HOT_SIZE));
+  writeRevisitFile(debugRuntimeKey, merged);
 }
 
 export function getDebugRevisitPoint(
@@ -176,7 +166,6 @@ export function getDebugRevisitPoint(
   const filePoints = readRevisitFile(debugRuntimeKey);
   const exactFileHit = filePoints.find(p => p.messageCount === normalizedMessageCount);
   if (exactFileHit) return exactFileHit;
-  console.debug("[debug:revisit:hit] filePoints:",filePoints);
 
   // 3. 精确命中不到时，回退到最近且不超过请求值的回溯点，避免因为计数口径差 1 条而直接失败。
   const merged = [...hot, ...filePoints]
@@ -715,23 +704,9 @@ router.post("/revisit", async (req, res) => {
     // 清理之后的回溯历史（截断未来记录）
     const history = readDebugRevisitPoints(debugRuntimeKey);
     const validHistory = history.filter(p => p.messageCount <= messageCount);
-    // 写回内存（只用新实现，不再用旧 DEBUG_REVISIT_HISTORY）
-    const hot = validHistory.slice(-DEBUG_REVISIT_HOT_SIZE);
-    DEBUG_REVISIT_HOT.set(debugRuntimeKey, hot);
-    // 溢出写文件
-    if (validHistory.length > DEBUG_REVISIT_HOT_SIZE) {
-      const spill = validHistory.slice(0, validHistory.length - DEBUG_REVISIT_HOT_SIZE);
-      const existing = readRevisitFile(debugRuntimeKey);
-      const merged = [...existing, ...spill]
-        .reduce<DebugRevisitPoint[]>((acc, p) => {
-          const idx = acc.findIndex(x => x.messageCount === p.messageCount);
-          if (idx >= 0) acc[idx] = p; else acc.push(p);
-          return acc;
-        }, [])
-        .sort((a, b) => a.messageCount - b.messageCount);
-      console.debug("[debug:revisit] writeRevisitFile")
-      writeRevisitFile(debugRuntimeKey, merged);
-    }
+    // 回溯后要截断“未来记录”，内存层保留最近 N 条，文件层保留完整有效历史。
+    DEBUG_REVISIT_HOT.set(debugRuntimeKey, validHistory.slice(-DEBUG_REVISIT_HOT_SIZE));
+    writeRevisitFile(debugRuntimeKey, validHistory);
     return res.status(200).json({
       state: point.state,
       messages: point.messages,

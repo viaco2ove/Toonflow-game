@@ -41,7 +41,6 @@ import {
   buildEffectiveDebugChapter,
   evaluateDebugRuntimeOutcome,
   buildDebugEndDialogDetail,
-  saveDebugRevisitPoint,
 } from "./debugRuntimeShared";
 import u from "@/utils";
 
@@ -268,20 +267,9 @@ function buildOrchestrationPayload(params: {
     worldId: params.worldId,
     state: params.state,
   });
-
-  // 保存回溯点（用于台词回溯功能）
-  const debugRuntimeKey = stateSnapshot.debugRuntimeKey as string;
-  if (debugRuntimeKey && params.messages) {
-    const nextDebugMessageCount = Math.max(0, Number(params.state?.debugMessageCount || 0)) + params.messages.length;
-    params.state.debugMessageCount = nextDebugMessageCount;
-    saveDebugRevisitPoint(
-      debugRuntimeKey,
-      params.state,
-      params.messages,
-      params.chapterId,
-      nextDebugMessageCount,
-    );
-  }
+  // /game/orchestration 只返回“计划”和最新状态，不直接产出新的可见台词。
+  // 回溯点只能在真正生成出可见消息时保存（例如 streamlines/debugStep），
+  // 否则会把整段历史错误地重复累加到 debugMessageCount，导致 messageCount 漂移。
 
   if (String(process.env.LOG_LEVEL || "").trim().toUpperCase() === "DEBUG") {
     const planSource = asTrimmedText(params.plan?.planSource);
