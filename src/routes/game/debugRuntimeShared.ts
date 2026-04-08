@@ -116,11 +116,15 @@ export function saveDebugRevisitPoint(
   debugRuntimeKey: string,
   state: Record<string, any>,
   messages: RuntimeMessageInput[],
-  chapterId: number | null
+  chapterId: number | null,
+  messageCountOverride?: number | null,
 ): void {
+  const normalizedMessageCount = Number(messageCountOverride ?? state?.debugMessageCount ?? messages.length);
   const newPoint: DebugRevisitPoint = {
     debugRuntimeKey,
-    messageCount: messages.length,
+    messageCount: Number.isFinite(normalizedMessageCount) && normalizedMessageCount > 0
+      ? normalizedMessageCount
+      : messages.length,
     state: cloneDebugRuntimeState(state),
     messages: cloneDebugRuntimeState(messages),
     round: Number(state.round || 0),
@@ -153,6 +157,7 @@ export function saveDebugRevisitPoint(
         return acc;
       }, [])
       .sort((a, b) => a.messageCount - b.messageCount);
+    console.debug("[debug:revisit] writeRevisitFile")
     writeRevisitFile(debugRuntimeKey, merged);
   }
 }
@@ -161,14 +166,32 @@ export function getDebugRevisitPoint(
   debugRuntimeKey: string,
   messageCount: number
 ): DebugRevisitPoint | null {
+  const normalizedMessageCount = Number(messageCount || 0);
   // 1. 先查内存
   const hot = DEBUG_REVISIT_HOT.get(debugRuntimeKey) || [];
-  const hotHit = hot.find(p => p.messageCount === messageCount);
+  const hotHit = hot.find(p => p.messageCount === normalizedMessageCount);
   if (hotHit) return hotHit;
 
   // 2. 再查文件
   const filePoints = readRevisitFile(debugRuntimeKey);
-  return filePoints.find(p => p.messageCount === messageCount) || null;
+  const exactFileHit = filePoints.find(p => p.messageCount === normalizedMessageCount);
+  if (exactFileHit) return exactFileHit;
+  console.debug("[debug:revisit:hit] filePoints:",filePoints);
+
+  // 3. 精确命中不到时，回退到最近且不超过请求值的回溯点，避免因为计数口径差 1 条而直接失败。
+  const merged = [...hot, ...filePoints]
+    .reduce<DebugRevisitPoint[]>((acc, point) => {
+      const existingIndex = acc.findIndex((item) => item.messageCount === point.messageCount);
+      if (existingIndex >= 0) {
+        acc[existingIndex] = point;
+      } else {
+        acc.push(point);
+      }
+      return acc;
+    }, [])
+    .sort((left, right) => left.messageCount - right.messageCount);
+  const fallback = [...merged].reverse().find((point) => point.messageCount <= normalizedMessageCount);
+  return fallback || null;
 }
 
 export function readDebugRevisitPoints(debugRuntimeKey: string): DebugRevisitPoint[] {
@@ -216,6 +239,10 @@ export function buildDebugMessageWithRevisitData(
       createTime: message.createTime,
       meta: {},
     }),
+    revisitData: {
+      debugRuntimeKey,
+      messageCount: messageIndex,
+    },
     canRevisit,
   };
 }
@@ -462,19 +489,30 @@ export function buildOpeningRuntimeMessage(world: any, chapter: any, narratorNam
   };
 }
 
+// 调试态会生成“章节失败/进入自由剧情”之类的系统收口台词，这些不是用户真实对话，
+// 不能再喂回章节判定/编排/记忆，否则会污染下一轮判断。
+function isSyntheticDebugTerminalEvent(eventType: string): boolean {
+  const normalized = String(eventType || "").trim().toLowerCase();
+  return normalized === "on_debug_failed"
+    || normalized === "on_debug_success"
+    || normalized === "on_debug_free_plot";
+}
+
 export function buildDebugRecentMessages(
   messages: RuntimeMessageInput[],
   playerRoleName: string,
   playerContent: string,
 ) {
   const normalizedContent = String(playerContent || "").trim();
-  const list = messages.map((item) => ({
-    role: String(item.role || ""),
-    roleType: String(item.roleType || ""),
-    eventType: String(item.eventType || ""),
-    content: String(item.content || ""),
-    createTime: Number(item.createTime || 0),
-  }));
+  const list = messages
+    .filter((item) => !isSyntheticDebugTerminalEvent(String(item?.eventType || "")))
+    .map((item) => ({
+      role: String(item.role || ""),
+      roleType: String(item.roleType || ""),
+      eventType: String(item.eventType || ""),
+      content: String(item.content || ""),
+      createTime: Number(item.createTime || 0),
+    }));
   if (!normalizedContent) {
     return list;
   }
@@ -661,8 +699,19 @@ router.post("/revisit", async (req, res) => {
     const { debugRuntimeKey, messageCount } = parsed.data;
     const point = getDebugRevisitPoint(debugRuntimeKey, messageCount);
     if (!point) {
+      console.warn("[debug:revisit:not_found]", JSON.stringify({
+        debugRuntimeKey,
+        requestedMessageCount: messageCount,
+        availableMessageCounts: readDebugRevisitPoints(debugRuntimeKey).map((item) => item.messageCount),
+      }));
       return res.status(404).json({ error: "未找到可回溯点" });
     }
+    console.log("[debug:revisit:hit]", JSON.stringify({
+      debugRuntimeKey,
+      requestedMessageCount: messageCount,
+      restoredMessageCount: point.messageCount,
+      availableMessageCounts: readDebugRevisitPoints(debugRuntimeKey).map((item) => item.messageCount),
+    }));
     // 清理之后的回溯历史（截断未来记录）
     const history = readDebugRevisitPoints(debugRuntimeKey);
     const validHistory = history.filter(p => p.messageCount <= messageCount);
@@ -680,6 +729,7 @@ router.post("/revisit", async (req, res) => {
           return acc;
         }, [])
         .sort((a, b) => a.messageCount - b.messageCount);
+      console.debug("[debug:revisit] writeRevisitFile")
       writeRevisitFile(debugRuntimeKey, merged);
     }
     return res.status(200).json({

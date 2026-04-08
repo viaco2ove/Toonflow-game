@@ -57,30 +57,39 @@ function buildDebugSuccessPayload(params: {
   endDialog?: string | null;
   endDialogDetail?: string | null;
   messages?: unknown[];
+  allMessages?: RuntimeMessageInput[];
   saveRevisit?: boolean;
 }) {
   const rawMessages = params.messages || [];
-  const normalizedMessages = rawMessages
-    .filter((item): item is Record<string, any> =>
-      Boolean(item && typeof item === "object" && !Array.isArray(item)))
-    .map((msg, index) => ({
-      ...msg,
-      canRevisit: index < rawMessages.length - 1, // 除了最后一条，其他都支持回溯
-    }));
+  const messageCountOffset = Math.max(0, Number(params.state?.debugMessageCount || 0));
   const debugRuntimeKey = cacheDebugRuntimeState(
     params.state,
     params.userId,
     params.worldId,
     readDebugRuntimeKey(params.state),
   );
+  const normalizedMessages = rawMessages
+    .filter((item): item is Record<string, any> =>
+      Boolean(item && typeof item === "object" && !Array.isArray(item)))
+    .map((msg, index) => buildDebugMessageWithRevisitData(
+      msg as RuntimeMessageInput,
+      debugRuntimeKey,
+      messageCountOffset + index + 1,
+      index < rawMessages.length - 1, // 除了最后一条，其他都支持回溯
+    ));
 
   // 保存回溯点
   if (params.saveRevisit !== false && rawMessages.length > 0) {
+    const revisitMessages = Array.isArray(params.allMessages) && params.allMessages.length
+      ? params.allMessages
+      : rawMessages as RuntimeMessageInput[];
+    params.state.debugMessageCount = messageCountOffset + rawMessages.length;
     saveDebugRevisitPoint(
       debugRuntimeKey,
       params.state,
-      rawMessages as RuntimeMessageInput[],
+      revisitMessages,
       params.chapterId || null,
+      params.state.debugMessageCount,
     );
   }
 
@@ -467,12 +476,8 @@ export default router.post(
             matchedBy: outcome.matchedBy,
             matchedRule: outcome.matchedRule,
           }),
-          messages: [asDebugMessage({
-            role: String(rolePair.narratorRole.name || "旁白"),
-            roleType: "narrator",
-            eventType: "on_debug_failed",
-            content: `章节《${String(chapter.title || "当前章节")}》判定失败，调试结束。`,
-          })],
+          // 调试结束由 endDialog 呈现，不再拼一条失败系统消息进入对话。
+          messages: [],
         })));
       }
 

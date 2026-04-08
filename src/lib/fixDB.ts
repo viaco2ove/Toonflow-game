@@ -894,7 +894,9 @@ event_facts:`,
 
 ## 任务
 根据用户提供的章节信息、当前事件状态和运行态数据，判断章节是否应该结束。
-
+## 特别注意
+用户指的是台词里用户： recent_dialogue 数据里的 "role": "用户"
+用户输入："2", 不是代表输入了两次！！！
 ## 输出格式
 必须只输出一个 JSON 对象，不要解释，不要代码块，不要 markdown 格式。
 
@@ -914,12 +916,7 @@ event_facts:`,
 
 result=continue:
 {"result":"continue","matched_rule":null,"reason":"用户尚未输入名称、性别、年龄，未满足结束条件","next_chapter_id":null,"guide_summary":"需要引导用户输入角色名称、性别和年龄","guide_facts":["用户尚未提供角色基本信息","需要询问用户角色名称","需要询问用户角色性别和年龄"]}
-
-result=success:
-{"result":"success","matched_rule":"fixed_event_用户输入了名称_性别_年龄","reason":"用户已完成角色创建，满足成功条件","next_chapter_id":null,"guide_summary":"","guide_facts":[]}
-
-result=failed:
-{"result":"failed","matched_rule":"fixed_event_用户输入不符合要求2次","reason":"用户累计2次输入不符合要求，判定失败","next_chapter_id":null,"guide_summary":"","guide_facts":[]}`,
+`,
       },
       {
         code: "story-mini-game",

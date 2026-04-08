@@ -20,6 +20,7 @@ import {
   applyDebugNarrativeMessageProgress,
   cacheAndBuildDebugStateSnapshot,
   asDebugMessage,
+  buildDebugMessageWithRevisitData,
   buildDebugRecentMessages,
   debugMessageSchema,
   evaluateDebugRuntimeOutcome,
@@ -27,6 +28,7 @@ import {
   isDebugFreePlotActive,
   loadCachedDebugRuntimeState,
   resolveNextChapter,
+  saveDebugRevisitPoint,
   setPendingDebugChapterId,
   syncDebugChapterRuntime,
   buildDebugEndDialogDetail,
@@ -371,11 +373,27 @@ export default router.post(
           }
         }
 
+        const debugMessageCount = Math.max(0, Number(state.debugMessageCount || 0)) + 1;
+        state.debugMessageCount = debugMessageCount;
         const snapshot = cacheAndBuildDebugStateSnapshot({
           userId,
           worldId,
           state,
         });
+        // 调试回溯必须保存“截至当前台词”为止的完整消息列表，不能只存本轮新增的一句。
+        saveDebugRevisitPoint(
+          String(snapshot.debugRuntimeKey || ""),
+          state,
+          [...messages, emittedMessage],
+          Number(chapter.id || 0) || null,
+          debugMessageCount,
+        );
+        donePayload.message = buildDebugMessageWithRevisitData(
+          emittedMessage,
+          String(snapshot.debugRuntimeKey || ""),
+          debugMessageCount,
+          true,
+        );
         donePayload = {
           ...donePayload,
           state: snapshot,

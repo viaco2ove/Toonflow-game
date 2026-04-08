@@ -9,3 +9,7 @@
 [story:chapter_ending_check:runtime]:AI故事-章节判定日志
 [game:orchestrator:key_nodes]:game/orchestration 请求的关键节点打印,记录编排流程的日志
 [orchestration] 打印编排请求关键节点日志
+
+## 后端通用tag
+[debug:revisit:not_found]: 回溯失败
+[debug:revisit]: 回溯相关

@@ -272,11 +272,14 @@ function buildOrchestrationPayload(params: {
   // 保存回溯点（用于台词回溯功能）
   const debugRuntimeKey = stateSnapshot.debugRuntimeKey as string;
   if (debugRuntimeKey && params.messages) {
+    const nextDebugMessageCount = Math.max(0, Number(params.state?.debugMessageCount || 0)) + params.messages.length;
+    params.state.debugMessageCount = nextDebugMessageCount;
     saveDebugRevisitPoint(
       debugRuntimeKey,
       params.state,
       params.messages,
-      params.chapterId
+      params.chapterId,
+      nextDebugMessageCount,
     );
   }
 
@@ -925,13 +928,7 @@ async function handleDebugPlayerTurn(params: {
   const outcome = arbitration.outcome;
 
   if (outcome.result === "failed") {
-    const failedMessage = {
-      role: asTrimmedText(params.rolePair.narratorRole.name, "旁白"),
-      roleType: "narrator",
-      eventType: "on_debug_failed",
-      content: `章节《${asTrimmedText(params.chapter.title, "当前章节")}》判定失败，调试结束。`,
-      createTime: nowTs(),
-    };
+    // 调试结束用 endDialog 呈现即可，不再额外塞一条系统台词污染最近对话。
     return sendDebugSuccess(params.res, {
       userId: params.userId,
       worldId: params.worldId,
@@ -939,7 +936,7 @@ async function handleDebugPlayerTurn(params: {
       chapterTitle: asTrimmedText(params.chapter.title),
       state: params.state,
       endDialog: "已失败",
-      plan: buildPresetPlan(failedMessage, { awaitUser: false, nextRole: "", nextRoleType: "" }),
+      plan: null,
       endDialogDetail: buildDebugEndDialogDetail({
         endDialog: "已失败",
         chapterTitle: asTrimmedText(params.chapter.title),
