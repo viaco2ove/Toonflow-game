@@ -769,7 +769,8 @@ function fixedEventMatches(input: {
   ctx: ConditionContext;
 }): boolean {
   const normalizedId = normalizeSignalText(input.id);
-  if (normalizedId && input.strictSignalTexts.some((item) => item.includes(normalizedId) || normalizedId.includes(item))) {
+  // fixed event 只能被明确的 signal 或条件表达式命中，避免用户只输入 “2” 就误命中 “输入不符合要求2次”。
+  if (normalizedId && input.strictSignalTexts.some((item) => item === normalizedId)) {
     return true;
   }
   if (input.conditionExpr != null && evaluateCondition(input.conditionExpr, input.ctx)) {
@@ -780,7 +781,7 @@ function fixedEventMatches(input: {
   }
   const normalizedLabel = normalizeSignalText(input.label);
   if (!normalizedLabel) return false;
-  return input.strictSignalTexts.some((item) => item.includes(normalizedLabel) || normalizedLabel.includes(item));
+  return input.strictSignalTexts.some((item) => item === normalizedLabel);
 }
 
 export function initializeChapterProgressForState(chapter: any, state: JsonRecord): void {

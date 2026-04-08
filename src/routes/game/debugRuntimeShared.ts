@@ -300,7 +300,9 @@ export function loadCachedDebugRuntimeState(state: unknown, userId: number, worl
   if (!cached) return null;
   if (cached.userId !== userId || cached.worldId !== worldId) return null;
   cached.updatedAt = nowTs();
-  return cloneDebugRuntimeState(cached.state);
+  const snapshot = cloneDebugRuntimeState(cached.state);
+  snapshot.debugRuntimeKey = key;
+  return snapshot;
 }
 
 export function cacheDebugRuntimeState(
@@ -310,7 +312,9 @@ export function cacheDebugRuntimeState(
   existingKey?: string,
 ): string {
   purgeExpiredDebugRuntimeCache();
-  const key = existingKey || createDebugRuntimeKey();
+  const key = existingKey || readDebugRuntimeKey(state) || createDebugRuntimeKey();
+  // 调试会话必须固定复用同一把 debugRuntimeKey；否则回溯文件会被写散到多个文件名里。
+  state.debugRuntimeKey = key;
   DEBUG_RUNTIME_CACHE.set(key, {
     userId,
     worldId,
@@ -332,7 +336,7 @@ export function buildDebugStateSnapshot(state: Record<string, any>, debugRuntime
   const eventView = readDefaultRuntimeEventViewState(state);
   const chapterProgress = readChapterProgressState(state);
   const snapshot: Record<string, any> = {
-    debugRuntimeKey,
+    debugRuntimeKey: String(debugRuntimeKey || readDebugRuntimeKey(state) || "").trim(),
     version: Number(state.version || 1),
     worldId: Number(state.worldId || 0) || undefined,
     chapterId: Number(state.chapterId || 0) || undefined,

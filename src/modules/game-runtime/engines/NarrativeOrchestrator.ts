@@ -1548,7 +1548,16 @@ export function applyPlayerProfileFromMessageToState(state: JsonRecord, world: a
   const displayName = normalizeScalarText(rolePair.playerRole.name) || "用户";
   const currentName = normalizeScalarText(currentPlayer.name || displayName) || displayName;
   const parsed = parsePlayerProfileFromMessage(text, currentName);
+  const identityAlreadyBound = currentPlayer.identity_bound === true;
+  const parsedCompleteProfile = Boolean(parsed.name && parsed.gender && parsed.age != null);
   if (!parsed.name && !parsed.gender && parsed.age == null) {
+    if (!identityAlreadyBound && text) {
+      const previousInvalidAttempts = Number(currentPlayer.identity_invalid_attempts || 0);
+      currentPlayer.identity_invalid_attempts = Number.isFinite(previousInvalidAttempts)
+        ? previousInvalidAttempts + 1
+        : 1;
+      state.player = currentPlayer;
+    }
     return currentPlayer;
   }
 
@@ -1583,8 +1592,14 @@ export function applyPlayerProfileFromMessageToState(state: JsonRecord, world: a
   if (parsed.age != null) {
     nextCard.age = parsed.age;
   }
-  if (parsed.name && parsed.gender && parsed.age != null) {
+  if (parsedCompleteProfile) {
     nextPlayer.identity_bound = true;
+    nextPlayer.identity_invalid_attempts = 0;
+  } else if (!identityAlreadyBound && text) {
+    const previousInvalidAttempts = Number(currentPlayer.identity_invalid_attempts || 0);
+    nextPlayer.identity_invalid_attempts = Number.isFinite(previousInvalidAttempts)
+      ? previousInvalidAttempts + 1
+      : 1;
   }
   nextPlayer.parameterCardJson = Object.keys(nextCard).length ? nextCard : null;
   state.player = nextPlayer;

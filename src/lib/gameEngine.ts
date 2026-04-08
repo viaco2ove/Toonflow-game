@@ -591,6 +591,40 @@ function splitCompletionConditionText(input: string): {
   };
 }
 
+function parseChineseCountToken(input: string): number | null {
+  const text = String(input || "").trim();
+  if (!text) return null;
+  if (/^\d+$/.test(text)) {
+    const value = Number(text);
+    return Number.isFinite(value) && value > 0 ? value : null;
+  }
+  const digits: Record<string, number> = {
+    "零": 0,
+    "一": 1,
+    "二": 2,
+    "两": 2,
+    "三": 3,
+    "四": 4,
+    "五": 5,
+    "六": 6,
+    "七": 7,
+    "八": 8,
+    "九": 9,
+    "十": 10,
+  };
+  if (text === "十") return 10;
+  if (/^十[一二三四五六七八九]$/.test(text)) {
+    return 10 + (digits[text.slice(1)] || 0);
+  }
+  if (/^[一二三四五六七八九]十$/.test(text)) {
+    return (digits[text[0]] || 0) * 10;
+  }
+  if (/^[一二三四五六七八九]十[一二三四五六七八九]$/.test(text)) {
+    return (digits[text[0]] || 0) * 10 + (digits[text[2]] || 0);
+  }
+  return digits[text] ?? null;
+}
+
 function buildImplicitConditionExprFromText(input: unknown): unknown | null {
   const normalized = normalizeConditionText(input);
   if (!normalized) return null;
@@ -611,12 +645,21 @@ function buildImplicitConditionExprFromText(input: unknown): unknown | null {
   }
   const asksIdentityFailure =
     (normalized.includes("失败") || normalized.includes("错误"))
-    && (normalized.includes("五次") || normalized.includes("5次") || normalized.includes("累计五次"))
+    && /([0-9一二三四五六七八九十两]+)次/.test(normalized)
     && (normalized.includes("姓名") || normalized.includes("名称") || normalized.includes("性别") || normalized.includes("年龄") || normalized.includes("角色创建"));
   if (asksIdentityFailure) {
+    const countToken = normalized.match(/([0-9一二三四五六七八九十两]+)次/)?.[1] || "";
+    const requiredAttempts = parseChineseCountToken(countToken);
+    if (requiredAttempts != null) {
+      return {
+        type: "gte",
+        field: "state.player.identity_invalid_attempts",
+        value: requiredAttempts,
+      };
+    }
     return {
       type: "state_text_contains_all",
-      value: ["失败", normalized.includes("5次") ? "5次" : "五次", "名称", "性别", "年龄"],
+      value: ["失败", "名称", "性别", "年龄"],
     };
   }
   return null;
