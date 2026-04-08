@@ -94,6 +94,8 @@ type OrchestrationRequestTrace = {
   chapterId: number;
   sessionId: string;
   debugRuntimeKey?: string;
+  planMode?: string;
+  judgeMode?: string;
 };
 
 // 统一把 unknown 转成可安全拼接日志/响应的短文本，避免出现 [object Object]。
@@ -344,6 +346,15 @@ function sendDebugSuccess(
   return res.status(200).send(success(buildOrchestrationPayload(params)));
 }
 
+// 调试态的候选编排只读状态快照，避免 speculative plan 提前污染主运行态。
+function cloneDebugRuntimeValue<T>(input: T): T {
+  try {
+    return JSON.parse(JSON.stringify(input ?? null)) as T;
+  } catch {
+    return input;
+  }
+}
+
 // 把编排结果回写到 turn-state，确保“当前轮到谁发言”前后端一致。
 function applyDebugPlanTurnState(
   state: Record<string, any>,
@@ -376,6 +387,31 @@ function applyDebugPlanTurnState(
     lastSpeakerRoleType: String(plan.roleType || "narrator"),
     lastSpeaker: String(plan.role || rolePair.narratorRole.name || "旁白"),
   });
+}
+
+// 统一把编排结果真正落到调试运行态，确保 candidatePlan / finalPlan 最终只提交一次。
+function applyDebugNarrativePlanToState(params: {
+  userId: number;
+  world: any;
+  chapter: any;
+  state: Record<string, any>;
+  recentMessages: ReturnType<typeof buildDebugRecentMessages>;
+  rolePair: ReturnType<typeof normalizeRolePair>;
+  plan: Awaited<ReturnType<typeof runNarrativePlan>>;
+}) {
+  applyOrchestratorResultToState(params.state, params.plan);
+  applyNarrativeMemoryHintsToState(params.state, params.plan.memoryHints);
+  if (params.plan.triggerMemoryAgent) {
+    triggerStoryMemoryRefreshInBackground({
+      userId: params.userId,
+      world: params.world,
+      chapter: params.chapter,
+      state: params.state,
+      recentMessages: params.recentMessages,
+    });
+  }
+  applyDebugPlanTurnState(params.state, params.world, params.rolePair, params.plan);
+  return buildPlanResult({ ...params.plan, eventType: "on_orchestrated_reply", planSource: "ai_orchestrator" });
 }
 
 // 调试态统一走“编排 -> 回写 state -> 记忆刷新”的完整链路。
@@ -411,19 +447,15 @@ async function runAndApplyDebugNarrativePlan(params: {
     awaitUser: Boolean(plan.awaitUser),
     source: asTrimmedText(plan.source),
   });
-  applyOrchestratorResultToState(params.state, plan);
-  applyNarrativeMemoryHintsToState(params.state, plan.memoryHints);
-  if (plan.triggerMemoryAgent) {
-    triggerStoryMemoryRefreshInBackground({
-      userId: params.userId,
-      world: params.world,
-      chapter: params.chapter,
-      state: params.state,
-      recentMessages: params.recentMessages,
-    });
-  }
-  applyDebugPlanTurnState(params.state, params.world, params.rolePair, plan);
-  return buildPlanResult({ ...plan, eventType: "on_orchestrated_reply", planSource: "ai_orchestrator" });
+  return applyDebugNarrativePlanToState({
+    userId: params.userId,
+    world: params.world,
+    chapter: params.chapter,
+    state: params.state,
+    recentMessages: params.recentMessages,
+    rolePair: params.rolePair,
+    plan,
+  });
 }
 
 // 章节开场单独拆出来，统一处理“显式开场白”和“无开场白直接编排”两种情况。
@@ -683,6 +715,138 @@ async function handleInitialDebugTurn(params: {
   });
 }
 
+// 调试态并发启动“章节判定 + 候选编排”，最后只把裁决后的 finalPlan 落到主运行态。
+async function runConcurrentDebugJudgeAndNarrative(params: {
+  userId: number;
+  world: any;
+  chapter: any;
+  effectiveChapter: any;
+  state: Record<string, any>;
+  rolePair: ReturnType<typeof normalizeRolePair>;
+  recentMessages: ReturnType<typeof buildDebugRecentMessages>;
+  playerContent: string;
+  requestTrace: OrchestrationRequestTrace;
+  debugFreePlotActive: boolean;
+}) {
+  const candidateState = cloneDebugRuntimeValue(params.state);
+  const candidateRecentMessages = cloneDebugRuntimeValue(params.recentMessages);
+  const candidateTrace = {
+    ...params.requestTrace,
+    planMode: "candidate",
+  };
+  logOrchestrationKeyNode(params.requestTrace, "concurrent_arbiter:start", {
+    recentMessageCount: params.recentMessages.length,
+  });
+  const candidatePlanPromise = runNarrativePlan({
+    userId: params.userId,
+    world: params.world,
+    chapter: params.effectiveChapter,
+    state: candidateState,
+    recentMessages: candidateRecentMessages,
+    playerMessage: params.playerContent,
+    maxRetries: 0,
+    allowControlHints: false,
+    allowStateDelta: false,
+    traceMeta: candidateTrace,
+  });
+  const outcome = await evaluateDebugRuntimeOutcome({
+    userId: params.userId,
+    chapter: params.chapter,
+    state: params.state,
+    messageContent: params.playerContent,
+    eventType: "on_message",
+    meta: {},
+    recentMessages: params.recentMessages,
+    debugFreePlotActive: params.debugFreePlotActive,
+    traceMeta: {
+      ...params.requestTrace,
+      judgeMode: "primary",
+    },
+  });
+  logOrchestrationKeyNode(params.requestTrace, "concurrent_arbiter:judge_done", {
+    outcome: asTrimmedText(outcome.result),
+    hasPendingEndingGuide: params.state.__pendingEndingGuide === true,
+  });
+
+  const discardCandidatePlan = () => {
+    void candidatePlanPromise.catch(() => null);
+  };
+
+  if (outcome.result !== "continue") {
+    logOrchestrationKeyNode(params.requestTrace, "concurrent_arbiter:discard_candidate", {
+      reason: `judge_${asTrimmedText(outcome.result)}`,
+    });
+    discardCandidatePlan();
+    return {
+      outcome,
+      plan: null as ReturnType<typeof buildPlanResult> | null,
+    };
+  }
+
+  if (params.state.__pendingEndingGuide === true) {
+    logOrchestrationKeyNode(params.requestTrace, "concurrent_arbiter:rerun_with_guide", {
+      reason: "judge_continue_requires_guide",
+    });
+    discardCandidatePlan();
+    return {
+      outcome,
+      plan: await runAndApplyDebugNarrativePlan({
+        userId: params.userId,
+        world: params.world,
+        chapter: params.effectiveChapter,
+        state: params.state,
+        recentMessages: params.recentMessages,
+        playerMessage: params.playerContent,
+        rolePair: params.rolePair,
+        requestTrace: {
+          ...params.requestTrace,
+          planMode: "final",
+        },
+      }),
+    };
+  }
+
+  try {
+    const candidatePlan = await candidatePlanPromise;
+    logOrchestrationKeyNode(params.requestTrace, "concurrent_arbiter:reuse_candidate", {
+      role: asTrimmedText(candidatePlan.role),
+      awaitUser: Boolean(candidatePlan.awaitUser),
+    });
+    return {
+      outcome,
+      plan: applyDebugNarrativePlanToState({
+        userId: params.userId,
+        world: params.world,
+        chapter: params.effectiveChapter,
+        state: params.state,
+        recentMessages: params.recentMessages,
+        rolePair: params.rolePair,
+        plan: candidatePlan,
+      }),
+    };
+  } catch (err) {
+    logOrchestrationKeyNode(params.requestTrace, "concurrent_arbiter:candidate_failed", {
+      reason: asTrimmedText((err as any)?.message, "candidate_failed"),
+    });
+    return {
+      outcome,
+      plan: await runAndApplyDebugNarrativePlan({
+        userId: params.userId,
+        world: params.world,
+        chapter: params.effectiveChapter,
+        state: params.state,
+        recentMessages: params.recentMessages,
+        playerMessage: params.playerContent,
+        rolePair: params.rolePair,
+        requestTrace: {
+          ...params.requestTrace,
+          planMode: "fallback_final",
+        },
+      }),
+    };
+  }
+}
+
 // 处理“用户已发言”的分支：小游戏、结束判定、切章与继续编排都从这里统一分发。
 async function handleDebugPlayerTurn(params: {
   res: express.Response;
@@ -746,24 +910,19 @@ async function handleDebugPlayerTurn(params: {
     eventType: "on_message",
     meta: {},
   });
-  logOrchestrationKeyNode(params.requestTrace, "chapter_outcome:start", {
-    playerMessageLength: params.playerContent.length,
-  });
-  const outcome = await evaluateDebugRuntimeOutcome({
+  const arbitration = await runConcurrentDebugJudgeAndNarrative({
     userId: params.userId,
+    world: params.world,
     chapter: params.chapter,
+    effectiveChapter: params.effectiveChapter,
     state: params.state,
-    messageContent: params.playerContent,
-    eventType: "on_message",
-    meta: {},
+    rolePair: params.rolePair,
     recentMessages: params.recentMessages,
+    playerContent: params.playerContent,
+    requestTrace: params.requestTrace,
     debugFreePlotActive: params.debugFreePlotActive,
-    traceMeta: params.requestTrace,
   });
-  logOrchestrationKeyNode(params.requestTrace, "chapter_outcome:done", {
-    outcome: asTrimmedText(outcome.result),
-    matchedRule: asTrimmedText(outcome.matchedRule),
-  });
+  const outcome = arbitration.outcome;
 
   if (outcome.result === "failed") {
     const failedMessage = {
@@ -846,16 +1005,7 @@ async function handleDebugPlayerTurn(params: {
   }
 
   // 章节未结束时继续交给编排师，生成下一轮角色/旁白发言。
-  const plan = await runAndApplyDebugNarrativePlan({
-    userId: params.userId,
-    world: params.world,
-    state: params.state,
-    recentMessages: params.recentMessages,
-    chapter: params.effectiveChapter,
-    playerMessage: params.playerContent,
-    rolePair: params.rolePair,
-    requestTrace: params.requestTrace,
-  });
+  const plan = arbitration.plan;
   return sendDebugSuccess(params.res, {
     userId: params.userId,
     worldId: params.worldId,

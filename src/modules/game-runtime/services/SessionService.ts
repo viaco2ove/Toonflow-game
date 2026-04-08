@@ -659,6 +659,28 @@ function setPendingSessionNarrativePlan(state: Record<string, any>, plan: Sessio
   delete state.pendingNarrativePlan;
 }
 
+function isDebugLogEnabled(): boolean {
+  return String(process.env.LOG_LEVEL || "").trim().toUpperCase() === "DEBUG";
+}
+
+function cloneSessionRuntimeValue<T>(input: T): T {
+  try {
+    return JSON.parse(JSON.stringify(input ?? null)) as T;
+  } catch {
+    return input;
+  }
+}
+
+// 正式会话也用统一 tag 串起请求链路，方便和调试态一起比对重复调用。
+function logSessionOrchestrationKeyNode(node: string, traceMeta: Record<string, unknown>, extra?: Record<string, unknown>) {
+  if (!isDebugLogEnabled()) return;
+  console.log("[game:orchestrator:key_nodes]", JSON.stringify({
+    node,
+    ...traceMeta,
+    ...(extra || {}),
+  }));
+}
+
 function applyPlanTurnStateToSessionState(
   state: Record<string, any>,
   world: any,
@@ -684,6 +706,33 @@ function applyPlanTurnStateToSessionState(
   });
 }
 
+// 正式会话只在裁决完成后提交一次 plan，避免 candidatePlan 提前污染 session state。
+function applySessionNarrativePlanToState(params: {
+  userId: number;
+  world: any;
+  chapter: any;
+  state: Record<string, any>;
+  recentMessages: RuntimeMessageInput[];
+  plan: Awaited<ReturnType<typeof runNarrativePlan>>;
+}) {
+  applyOrchestratorResultToState(params.state, params.plan);
+  applyNarrativeMemoryHintsToState(params.state, params.plan.memoryHints);
+  if (params.plan.triggerMemoryAgent) {
+    triggerStoryMemoryRefreshInBackground({
+      userId: params.userId,
+      world: params.world,
+      chapter: params.chapter,
+      state: params.state,
+      recentMessages: params.recentMessages,
+    });
+  }
+  applyPlanTurnStateToSessionState(params.state, params.world, params.plan);
+  return buildSessionPlanResult({
+    ...params.plan,
+    eventType: "on_orchestrated_reply",
+  });
+}
+
 async function countSessionMessages(db: any, sessionId: string): Promise<number> {
   const row = await db("t_sessionMessage")
     .where({ sessionId })
@@ -692,6 +741,153 @@ async function countSessionMessages(db: any, sessionId: string): Promise<number>
   const raw = Array.isArray(row) ? row[0]?.count : row?.count;
   const count = Number(raw || 0);
   return Number.isFinite(count) && count >= 0 ? count : 0;
+}
+
+// 正式会话并发执行“章节判定 + 候选编排”，最后只提交裁决后的 finalPlan。
+async function runConcurrentSessionJudgeAndNarrative(params: {
+  userId: number;
+  world: any;
+  chapter: any;
+  state: Record<string, any>;
+  recentMessages: RuntimeMessageInput[];
+  latestRecentMessage: RuntimeMessageInput;
+  sessionStatus: string;
+  fallbackChapterId: number | null;
+  traceMeta: Record<string, unknown>;
+}) {
+  const candidateState = cloneSessionRuntimeValue(params.state);
+  const candidateRecentMessages = cloneSessionRuntimeValue(params.recentMessages);
+  logSessionOrchestrationKeyNode("session_concurrent_arbiter:start", params.traceMeta, {
+    recentMessageCount: params.recentMessages.length,
+  });
+  const candidatePlanPromise = runNarrativePlan({
+    userId: params.userId,
+    world: params.world,
+    chapter: params.chapter,
+    state: candidateState,
+    recentMessages: candidateRecentMessages,
+    playerMessage: "",
+    maxRetries: 0,
+    allowControlHints: false,
+    allowStateDelta: false,
+    traceMeta: {
+      ...params.traceMeta,
+      planMode: "candidate",
+    },
+  });
+  const mergedOutcome = await evaluateRuntimeOutcome({
+    userId: params.userId,
+    chapter: params.chapter,
+    state: params.state,
+    messageContent: String(params.latestRecentMessage?.content || ""),
+    eventType: String(params.latestRecentMessage?.eventType || "on_message"),
+    meta: {},
+    recentMessages: params.recentMessages,
+    fallbackStatus: params.sessionStatus,
+    fallbackChapterId: params.fallbackChapterId,
+    applyToState: true,
+    traceMeta: {
+      ...params.traceMeta,
+      judgeMode: "primary",
+    },
+  });
+  logSessionOrchestrationKeyNode("session_concurrent_arbiter:judge_done", params.traceMeta, {
+    outcome: mergedOutcome.outcome,
+    hasPendingEndingGuide: params.state.__pendingEndingGuide === true,
+  });
+  const discardCandidatePlan = () => {
+    void candidatePlanPromise.catch(() => null);
+  };
+  if (mergedOutcome.outcome !== "continue") {
+    logSessionOrchestrationKeyNode("session_concurrent_arbiter:discard_candidate", params.traceMeta, {
+      reason: `judge_${mergedOutcome.outcome}`,
+    });
+    discardCandidatePlan();
+    return {
+      mergedOutcome,
+      plan: null as SessionNarrativePlanResult | null,
+    };
+  }
+  if (params.state.__pendingEndingGuide === true) {
+    logSessionOrchestrationKeyNode("session_concurrent_arbiter:rerun_with_guide", params.traceMeta, {
+      reason: "judge_continue_requires_guide",
+    });
+    discardCandidatePlan();
+    const finalPlan = await runNarrativePlan({
+      userId: params.userId,
+      world: params.world,
+      chapter: params.chapter,
+      state: params.state,
+      recentMessages: params.recentMessages,
+      playerMessage: "",
+      maxRetries: 0,
+      allowControlHints: false,
+      allowStateDelta: false,
+      traceMeta: {
+        ...params.traceMeta,
+        planMode: "final",
+      },
+    });
+    return {
+      mergedOutcome,
+      plan: applySessionNarrativePlanToState({
+        userId: params.userId,
+        world: params.world,
+        chapter: params.chapter,
+        state: params.state,
+        recentMessages: params.recentMessages,
+        plan: finalPlan,
+      }),
+    };
+  }
+  try {
+    const candidatePlan = await candidatePlanPromise;
+    logSessionOrchestrationKeyNode("session_concurrent_arbiter:reuse_candidate", params.traceMeta, {
+      role: String(candidatePlan.role || ""),
+      awaitUser: Boolean(candidatePlan.awaitUser),
+    });
+    return {
+      mergedOutcome,
+      plan: applySessionNarrativePlanToState({
+        userId: params.userId,
+        world: params.world,
+        chapter: params.chapter,
+        state: params.state,
+        recentMessages: params.recentMessages,
+        plan: candidatePlan,
+      }),
+    };
+  } catch (err) {
+    logSessionOrchestrationKeyNode("session_concurrent_arbiter:candidate_failed", params.traceMeta, {
+      reason: String((err as any)?.message || "candidate_failed"),
+    });
+    const finalPlan = await runNarrativePlan({
+      userId: params.userId,
+      world: params.world,
+      chapter: params.chapter,
+      state: params.state,
+      recentMessages: params.recentMessages,
+      playerMessage: "",
+      maxRetries: 0,
+      allowControlHints: false,
+      allowStateDelta: false,
+      traceMeta: {
+        ...params.traceMeta,
+        planMode: "fallback_final",
+      },
+    });
+    return {
+      mergedOutcome,
+      plan: applySessionNarrativePlanToState({
+        userId: params.userId,
+        world: params.world,
+        chapter: params.chapter,
+        state: params.state,
+        recentMessages: params.recentMessages,
+        plan: finalPlan,
+      }),
+    };
+  }
 }
 
 async function insertSessionNarrativeMessages(params: {
@@ -1385,6 +1581,21 @@ export async function continueSessionNarrative(sessionIdInput: string): Promise<
 
   const rawRecentMessages = await db("t_sessionMessage").where({ sessionId }).orderBy("id", "desc").limit(20);
   const recentMessages = buildRecentMessages(rawRecentMessages);
+  const requestTrace = {
+    requestId: `continue_session_${sessionId}_${nowTs()}_${Math.random().toString(36).slice(2, 8)}`,
+    route: "/game/continueSessionNarrative",
+    branch: "session_continue",
+    sessionId,
+    worldId: Number(sessionRow.worldId || 0),
+    chapterId: prevChapterId || 0,
+    userId: currentUserId,
+  };
+  logSessionOrchestrationKeyNode("session_continue:accepted", requestTrace, {
+    recentMessageCount: recentMessages.length,
+  });
+
+  // 续写链没有新的用户输入，章节判定必须等待新台词生成后再执行，因此保留串行流程。
+  logSessionOrchestrationKeyNode("session_continue:runNarrativeOrchestrator:start", requestTrace);
   const orchestrator = await runNarrativeOrchestrator({
     userId: currentUserId,
     world,
@@ -1395,6 +1606,14 @@ export async function continueSessionNarrative(sessionIdInput: string): Promise<
     maxRetries: 0,
     allowControlHints: false,
     allowStateDelta: false,
+    traceMeta: {
+      ...requestTrace,
+      planMode: "session_continue",
+    },
+  });
+  logSessionOrchestrationKeyNode("session_continue:runNarrativeOrchestrator:done", requestTrace, {
+    role: String(orchestrator.role || ""),
+    awaitUser: Boolean(orchestrator.awaitUser),
   });
   const narrativePlan = summarizeNarrativePlan(orchestrator);
   applyNarrativeMemoryHintsToState(state, orchestrator.memoryHints);
@@ -1418,6 +1637,9 @@ export async function continueSessionNarrative(sessionIdInput: string): Promise<
     eventTypeFallback: "on_orchestrated_reply",
   });
   const latestGeneratedMessage = generatedMessages[generatedMessages.length - 1];
+  logSessionOrchestrationKeyNode("session_continue:chapter_outcome:start", requestTrace, {
+    latestEventType: String(latestGeneratedMessage?.eventType || "on_orchestrated_reply"),
+  });
   const mergedOutcome = await evaluateRuntimeOutcome({
     chapter,
     state,
@@ -1428,6 +1650,14 @@ export async function continueSessionNarrative(sessionIdInput: string): Promise<
     fallbackStatus: prevStatus,
     fallbackChapterId: prevChapterId,
     applyToState: true,
+    traceMeta: {
+      ...requestTrace,
+      judgeMode: "session_continue",
+    },
+  });
+  logSessionOrchestrationKeyNode("session_continue:chapter_outcome:done", requestTrace, {
+    outcome: mergedOutcome.outcome,
+    nextChapterId: mergedOutcome.nextChapterId,
   });
   let sessionStatus = mergedOutcome.sessionStatus;
   let nextChapterId = mergedOutcome.nextChapterId;
@@ -1547,6 +1777,18 @@ export async function orchestrateSessionTurn(sessionIdInput: string): Promise<Se
   );
   const rawRecentMessages = await db("t_sessionMessage").where({ sessionId }).orderBy("id", "desc").limit(20);
   const recentMessages = buildRecentMessages(rawRecentMessages);
+  const requestTrace = {
+    requestId: `orch_session_${sessionId}_${nowTs()}_${Math.random().toString(36).slice(2, 8)}`,
+    route: "/game/orchestration",
+    branch: "session",
+    sessionId,
+    worldId: Number(sessionRow.worldId || 0),
+    chapterId: currentChapterId || 0,
+    userId: currentUserId,
+  };
+  logSessionOrchestrationKeyNode("session_request:accepted", requestTrace, {
+    recentMessageCount: recentMessages.length,
+  });
   const finalizeOrchestrationResult = async (result: SessionOrchestrationResultSeed): Promise<SessionOrchestrationResult> => {
     const activeChapter = result.chapterId
       ? normalizeChapterOutput(await db("t_storyChapter").where({ id: result.chapterId }).first())
@@ -1616,20 +1858,27 @@ export async function orchestrateSessionTurn(sessionIdInput: string): Promise<Se
       maxRetries: 0,
       allowControlHints: false,
       allowStateDelta: false,
+      traceMeta: {
+        ...requestTrace,
+        planMode: "chapter_start",
+        chapterId: Number(chapter.id || 0),
+      },
     });
-    applyOrchestratorResultToState(state, plan);
-    applyNarrativeMemoryHintsToState(state, plan.memoryHints);
-    applyPlanTurnStateToSessionState(state, world, plan);
+    const builtPlan = applySessionNarrativePlanToState({
+      userId: currentUserId,
+      world,
+      chapter,
+      state,
+      recentMessages: [],
+      plan,
+    });
     return finalizeOrchestrationResult({
       sessionId,
       status: sessionStatus,
       chapterId: Number(chapter.id || 0) || null,
       expectedRole: "",
       expectedRoleType: "",
-      plan: buildSessionPlanResult({
-        ...plan,
-        eventType: "on_orchestrated_reply",
-      }),
+      plan: builtPlan,
     });
   };
 
@@ -1679,31 +1928,23 @@ export async function orchestrateSessionTurn(sessionIdInput: string): Promise<Se
     });
   }
 
-  const plan = await runNarrativePlan({
+  const latestRecentMessage = recentMessages[recentMessages.length - 1];
+  const arbitration = await runConcurrentSessionJudgeAndNarrative({
     userId: currentUserId,
     world,
     chapter,
     state,
     recentMessages,
-    playerMessage: "",
-    maxRetries: 0,
-    allowControlHints: false,
-    allowStateDelta: false,
-  });
-  applyOrchestratorResultToState(state, plan);
-  applyNarrativeMemoryHintsToState(state, plan.memoryHints);
-  const latestRecentMessage = recentMessages[recentMessages.length - 1];
-  const mergedOutcome = await evaluateRuntimeOutcome({
-    chapter,
-    state,
-    messageContent: String(latestRecentMessage?.content || ""),
-    eventType: String(latestRecentMessage?.eventType || "on_message"),
-    meta: {},
-    recentMessages,
-    fallbackStatus: sessionStatus,
+    latestRecentMessage,
+    sessionStatus,
     fallbackChapterId: Number(chapter.id || 0) || null,
-    applyToState: true,
+    traceMeta: {
+      ...requestTrace,
+      chapterId: Number(chapter.id || 0),
+    },
   });
+  const mergedOutcome = arbitration.mergedOutcome;
+  const plan = arbitration.plan;
 
   let nextStatus = mergedOutcome.sessionStatus;
   let nextChapterId = mergedOutcome.nextChapterId;
@@ -1714,7 +1955,7 @@ export async function orchestrateSessionTurn(sessionIdInput: string): Promise<Se
     if (resolvedNextChapterId && resolvedNextChapterId !== Number(chapter.id || 0)) {
       const resolvedNextChapter = normalizeChapterOutput(await db("t_storyChapter").where({ id: resolvedNextChapterId }).first());
       if (resolvedNextChapter) {
-        if (String(plan.role || "").trim()) {
+        if (String(plan?.role || "").trim()) {
           setPendingSessionChapterId(state, resolvedNextChapterId);
         } else {
           nextChapter = resolvedNextChapter;
@@ -1724,7 +1965,6 @@ export async function orchestrateSessionTurn(sessionIdInput: string): Promise<Se
       }
     }
   }
-  applyPlanTurnStateToSessionState(state, world, plan);
   const eventView = buildEventView(state);
   const result: SessionOrchestrationResult = {
     sessionId,
@@ -1735,10 +1975,7 @@ export async function orchestrateSessionTurn(sessionIdInput: string): Promise<Se
     currentEventDigest: eventView.currentEventDigest,
     eventDigestWindow: eventView.eventDigestWindow,
     eventDigestWindowText: eventView.eventDigestWindowText,
-    plan: buildSessionPlanResult({
-      ...plan,
-      eventType: "on_orchestrated_reply",
-    }),
+    plan,
   };
   return finalizeOrchestrationResult(result);
 }
