@@ -2945,6 +2945,9 @@ export async function advanceNarrativeUntilPlayerTurn(input: OrchestratorInput &
   const emitted: RuntimeMessageInput[] = [];
   const recentMessages = [...input.recentMessages];
   const maxAutoTurns = Math.max(1, Math.min(Number(input.maxAutoTurns || 3), 5));
+  if(isDebugLogEnabled()){
+    console.log(`[orchestration] maxAutoTurns:`,maxAutoTurns);
+  }
   let current = input.initialResult;
 
   for (let step = 0; step < maxAutoTurns; step += 1) {

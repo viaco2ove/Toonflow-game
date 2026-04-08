@@ -85,6 +85,7 @@ type PlanLike = {
   };
 };
 
+// 统一把 unknown 转成可安全拼接日志/响应的短文本，避免出现 [object Object]。
 function asTrimmedText(value: unknown, fallback = "") {
   if (typeof value === "string") return value.trim();
   if (typeof value === "number" || typeof value === "boolean") return String(value).trim();
@@ -284,6 +285,7 @@ function buildPresetPlan(message: {
   });
 }
 
+// 调试态统一成功返回入口，避免每个分支都重复拼 payload + success envelope。
 function sendDebugSuccess(
   res: express.Response,
   params: Parameters<typeof buildOrchestrationPayload>[0],
