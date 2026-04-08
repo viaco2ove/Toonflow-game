@@ -5,6 +5,7 @@ import { error, success } from "@/lib/responseFormat";
 import {
   getGameDb,
   normalizeChapterOutput,
+  parseJsonSafe,
   normalizeRolePair,
   normalizeSessionState,
   readDefaultRuntimeEventViewState,
@@ -239,7 +240,16 @@ export default router.post(
         if (!world) {
           return res.status(404).send(error("未找到故事"));
         }
-        chapter = await db("t_storyChapter").where({ id: Number(sessionRow.chapterId || 0) }).first();
+        const sessionState = parseJsonSafe<Record<string, any>>(sessionRow.stateJson, {});
+        // 兼容旧 session：历史数据里 chapterId 可能没写入 t_gameSession，
+        // 这里优先读 session.chapterId，其次回退到 stateJson.chapterId，最后再回退首章。
+        const sessionChapterId = Number(sessionRow.chapterId || sessionState.chapterId || 0);
+        if (sessionChapterId > 0) {
+          chapter = await db("t_storyChapter").where({ id: sessionChapterId, worldId }).first();
+        }
+        if (!chapter) {
+          chapter = await db("t_storyChapter").where({ worldId }).orderBy("sort", "asc").orderBy("id", "asc").first();
+        }
         chapter = normalizeChapterOutput(chapter);
         if (!chapter) {
           return res.status(404).send(error("当前没有章节可游玩"));

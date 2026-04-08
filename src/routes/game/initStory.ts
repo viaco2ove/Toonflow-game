@@ -135,6 +135,9 @@ export default router.post(
         sessionId,
         userId,
         worldId,
+        // 正式会话后续的 /game/introduction、/game/orchestration 都依赖 session.chapterId
+        // 来恢复当前章节。这里不落库会导致正式游玩开场白阶段查章节得到 null。
+        chapterId: Number(chapter.id || 0) || null,
         projectId: req.body.projectId || null,
         title: sessionTitle,
         stateJson: toJsonText(state, {}),
