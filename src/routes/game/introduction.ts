@@ -7,6 +7,8 @@ import {
   normalizeChapterOutput,
   normalizeRolePair,
   normalizeSessionState,
+  readDefaultRuntimeEventViewState,
+  toJsonText,
 } from "@/lib/gameEngine";
 import {
   buildEffectiveDebugChapter,
@@ -204,6 +206,7 @@ function buildPresetPlan(message: {
 export default router.post(
   "/",
   validateFields({
+    sessionId: z.string().optional().nullable(),
     worldId: z.number().optional().nullable(),
     chapterId: z.number().optional().nullable(),
     state: z.any().optional().nullable(),
@@ -217,48 +220,99 @@ export default router.post(
         return res.status(401).send(error("用户未登录"));
       }
 
-      const worldId = Number(req.body.worldId || 0);
-      if (!worldId) {
-        return res.status(400).send(error("worldId 不能为空"));
-      }
-      const chapterId = Number(req.body.chapterId || 0);
-      const world = await db("t_storyWorld as w")
-        .leftJoin("t_project as p", "w.projectId", "p.id")
-        .where("w.id", worldId)
-        .where("p.userId", userId)
-        .select("w.*")
-        .first();
-      if (!world) {
-        return res.status(404).send(error("未找到故事"));
-      }
-
+      const sessionId = String(req.body.sessionId || "").trim();
+      const requestWorldId = Number(req.body.worldId || 0);
+      const requestChapterId = Number(req.body.chapterId || 0);
+      let worldId = requestWorldId;
       let chapter: any = null;
-      if (chapterId > 0) {
-        chapter = await db("t_storyChapter").where({ id: chapterId, worldId }).first();
-      }
-      if (!chapter) {
-        chapter = await db("t_storyChapter").where({ worldId }).orderBy("sort", "asc").orderBy("id", "asc").first();
-      }
-      chapter = normalizeChapterOutput(chapter);
-      if (!chapter) {
-        return res.status(404).send(error("当前没有章节可调试"));
+      let world: any = null;
+      let state: Record<string, any> = {};
+
+      if (sessionId) {
+        // 正式游玩模式：开场白必须基于已创建的 session 生成，避免再把开场白塞回 initStory。
+        const sessionRow = await db("t_gameSession").where({ sessionId, userId }).first();
+        if (!sessionRow) {
+          return res.status(404).send(error("会话不存在"));
+        }
+        worldId = Number(sessionRow.worldId || 0);
+        world = await db("t_storyWorld").where({ id: worldId }).first();
+        if (!world) {
+          return res.status(404).send(error("未找到故事"));
+        }
+        chapter = await db("t_storyChapter").where({ id: Number(sessionRow.chapterId || 0) }).first();
+        chapter = normalizeChapterOutput(chapter);
+        if (!chapter) {
+          return res.status(404).send(error("当前没有章节可游玩"));
+        }
+        const rolePair = normalizeRolePair(world.playerRole, world.narratorRole);
+        state = normalizeSessionState(
+          sessionRow.stateJson,
+          worldId,
+          Number(chapter.id || 0),
+          rolePair,
+          world,
+        );
+      } else {
+        if (!worldId) {
+          return res.status(400).send(error("worldId 不能为空"));
+        }
+        world = await db("t_storyWorld as w")
+          .leftJoin("t_project as p", "w.projectId", "p.id")
+          .where("w.id", worldId)
+          .where("p.userId", userId)
+          .select("w.*")
+          .first();
+        if (!world) {
+          return res.status(404).send(error("未找到故事"));
+        }
+        if (requestChapterId > 0) {
+          chapter = await db("t_storyChapter").where({ id: requestChapterId, worldId }).first();
+        }
+        if (!chapter) {
+          chapter = await db("t_storyChapter").where({ worldId }).orderBy("sort", "asc").orderBy("id", "asc").first();
+        }
+        chapter = normalizeChapterOutput(chapter);
+        if (!chapter) {
+          return res.status(404).send(error("当前没有章节可调试"));
+        }
+
+        const rolePair = normalizeRolePair(world.playerRole, world.narratorRole);
+        const cachedRuntimeState = loadCachedDebugRuntimeState(req.body.state, userId, worldId);
+        state = normalizeSessionState(
+          cachedRuntimeState || req.body.state,
+          worldId,
+          Number(chapter.id || 0),
+          rolePair,
+          world,
+        );
       }
 
       const rolePair = normalizeRolePair(world.playerRole, world.narratorRole);
-      const cachedRuntimeState = loadCachedDebugRuntimeState(req.body.state, userId, worldId);
-      const state = normalizeSessionState(
-        cachedRuntimeState || req.body.state,
-        worldId,
-        Number(chapter.id || 0),
-        rolePair,
-        world,
-      );
       const debugFreePlotActive = isDebugFreePlotActive(state);
       const effectiveChapter = buildEffectiveDebugChapter(chapter, debugFreePlotActive);
       syncDebugChapterRuntime(effectiveChapter, state);
       const openingMessage = buildOpeningRuntimeMessage(world, chapter, String(rolePair.narratorRole.name || "旁白"));
       setDebugOpeningTurnState(state, world, String(openingMessage.role || rolePair.narratorRole.name || "旁白"), String(openingMessage.roleType || "narrator"));
+      if (sessionId) {
+        await db("t_gameSession").where({ sessionId }).update({
+          stateJson: toJsonText(state, {}),
+        });
+      }
       if (!String(openingMessage.content || "").trim()) {
+        if (sessionId) {
+          const eventView = readDefaultRuntimeEventViewState(state);
+          return res.status(200).send(success({
+            sessionId,
+            status: "active",
+            chapterId: Number(chapter.id || 0),
+            expectedRole: String(rolePair.narratorRole.name || "旁白"),
+            expectedRoleType: "narrator",
+            plan: null,
+            currentEventDigest: eventView.currentEventDigest,
+            eventDigestWindow: eventView.eventDigestWindow,
+            eventDigestWindowText: eventView.eventDigestWindowText,
+          }));
+        }
         return res.status(200).send(success(buildOrchestrationPayload({
           userId,
           worldId,
@@ -268,6 +322,24 @@ export default router.post(
           endDialog: null,
           plan: null,
         })));
+      }
+      if (sessionId) {
+        const eventView = readDefaultRuntimeEventViewState(state);
+        return res.status(200).send(success({
+          sessionId,
+          status: "active",
+          chapterId: Number(chapter.id || 0),
+          expectedRole: String(rolePair.narratorRole.name || "旁白"),
+          expectedRoleType: "narrator",
+          plan: buildPresetPlan(openingMessage, {
+            awaitUser: false,
+            nextRole: String(rolePair.narratorRole.name || "旁白"),
+            nextRoleType: "narrator",
+          }),
+          currentEventDigest: eventView.currentEventDigest,
+          eventDigestWindow: eventView.eventDigestWindow,
+          eventDigestWindowText: eventView.eventDigestWindowText,
+        }));
       }
       return res.status(200).send(success(buildOrchestrationPayload({
         userId,

@@ -195,7 +195,7 @@ export default router.post(
       }
       if (!chapter) {
         res.status(404);
-        writeStreamLine(res, { type: "error", data: { message: "当前没有章节可调试" } });
+        writeStreamLine(res, { type: "error", data: { message: "当前没有章节可游玩或者调试" } });
         return;
       }
 

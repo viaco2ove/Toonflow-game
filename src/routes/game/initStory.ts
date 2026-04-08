@@ -22,9 +22,6 @@ import {
 } from "@/lib/sessionInitialSnapshot";
 import {
   applyMemoryResultToState,
-  resolveOpeningMessage,
-  RuntimeMessageInput,
-  setRuntimeTurnState,
   summarizeNarrativePlan,
   triggerStoryMemoryRefreshInBackground,
   runNarrativePlan,
@@ -254,89 +251,13 @@ export default router.post(
         updateTime: now,
       });
 
-      // 6. 准备开场白
-      const openingMessage = resolveOpeningMessage(world, chapter);
-      const hasOpening = String(openingMessage?.content || "").trim().length > 0;
-      
-      let openingPlan = null;
-      let firstChapterPlan = null;
-      let messages: RuntimeMessageInput[] = [];
-
-      // 7. 如果有开场白且不跳过
-      if (hasOpening && openingMessage && !skipOpening) {
-        setRuntimeTurnState(state, world, {
-          canPlayerSpeak: false,
-          expectedRole: String(rolePair.narratorRole.name || "旁白"),
-          expectedRoleType: "narrator",
-          lastSpeaker: "",
-          lastSpeakerRoleType: "",
-        });
-        
-        openingPlan = buildPlanResult({
-          role: String(openingMessage.role || "旁白"),
-          roleType: String(openingMessage.roleType || "narrator"),
-          motive: "开场白",
-          awaitUser: false,
-          nextRole: String(rolePair.narratorRole.name || "旁白"),
-          nextRoleType: "narrator",
-          source: "fallback",
-          planSource: "opening_preset",
-          eventType: "on_opening",
-          presetContent: String(openingMessage.content || ""),
-          eventKind: undefined, // 开场白不占用事件序号
-          eventIndex: undefined,
-        });
-        
-        messages.push({
-          role: String(openingMessage.role || "旁白"),
-          roleType: String(openingMessage.roleType || "narrator"),
-          content: String(openingMessage.content || ""),
-          eventType: "on_opening",
-        });
-      }
-
-      // 8. 生成第一章编排计划
-      const recentMessages: RuntimeMessageInput[] = messages.slice(-10);
-      
-      const chapterStartPlan = await runNarrativePlan({
-        userId,
-        world,
-        chapter,
-        state,
-        recentMessages,
-      });
-
-      if (chapterStartPlan) {
-        firstChapterPlan = buildPlanResult({
-          role: String(chapterStartPlan.role || rolePair.narratorRole.name || "旁白"),
-          roleType: String(chapterStartPlan.roleType || "narrator"),
-          motive: String(chapterStartPlan.motive || "章节开始"),
-          awaitUser: Boolean(chapterStartPlan.awaitUser),
-          nextRole: String(chapterStartPlan.nextRole || ""),
-          nextRoleType: String(chapterStartPlan.nextRoleType || ""),
-          source: chapterStartPlan.source === "rule" ? "rule" : chapterStartPlan.source === "fallback" ? "fallback" : "ai",
-          memoryHints: Array.isArray(chapterStartPlan.memoryHints) ? chapterStartPlan.memoryHints : [],
-          triggerMemoryAgent: Boolean(chapterStartPlan.triggerMemoryAgent),
-          stateDelta: chapterStartPlan.stateDelta || {},
-          eventType: "on_orchestrated_reply",
-          eventAdjustMode: chapterStartPlan.eventAdjustMode as any,
-          eventIndex: 1, // 第一章内容事件索引为 1
-          eventKind: "scene", // 章节内容事件
-          eventSummary: String(chapterStartPlan.eventSummary || "").trim(),
-          eventFacts: Array.isArray(chapterStartPlan.eventFacts) ? chapterStartPlan.eventFacts : [],
-          eventStatus: "active",
-          speakerMode: chapterStartPlan.speakerMode as any,
-          speakerRouteReason: String(chapterStartPlan.speakerRouteReason || "").trim(),
-        });
-      }
-
-      // 9. 更新 session 状态
+      // 6. initStory 只负责创建正式会话和初始化运行态，不再内嵌开场白/第一章编排。
       await db("t_gameSession").where({ sessionId }).update({
         stateJson: toJsonText(state, {}),
         updateTime: nowTs(),
       });
 
-      // 10. 构建返回结果
+      // 7. 返回初始化结果，后续由 /game/introduction 和 /game/orchestration 分步推进。
       const eventView = readDefaultRuntimeEventViewState(state);
       const result = {
         sessionId,
@@ -344,8 +265,8 @@ export default router.post(
         chapterId: Number(chapter.id || 0),
         chapterTitle: String(chapter.title || ""),
         state,
-        opening: openingPlan, // 开场白计划（可为null）
-        firstChapter: firstChapterPlan, // 第一章编排计划
+        opening: null,
+        firstChapter: null,
         currentEventDigest: eventView.currentEventDigest,
         eventDigestWindow: eventView.eventDigestWindow,
         eventDigestWindowText: eventView.eventDigestWindowText,
