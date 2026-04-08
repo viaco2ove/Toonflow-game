@@ -536,15 +536,27 @@ export function resolveSessionStatusByOutcome(
   return currentStatus;
 }
 
-// 正式链和调试链统一使用这一层做章节结果收口。
-export async function evaluateRuntimeOutcome(input: EvaluateRuntimeOutcomeInput): Promise<RuntimeOutcomeResolution> {
-  const evaluation = await evaluateChapterOutcomeByAi(input) || evaluateChapterOutcome({
+/**
+ * 先用规则引擎做一次轻量判定。
+ * 这里只关心“当前章节是否存在有效结束条件”，避免没有结束条件时仍然触发 AI 章节判定。
+ */
+function buildRuleBasedChapterOutcome(input: EvaluateRuntimeOutcomeInput): ChapterOutcomeResult {
+  return evaluateChapterOutcome({
     chapter: input.chapter,
     state: input.state,
     messageContent: input.messageContent,
     eventType: input.eventType,
     meta: input.meta,
   });
+}
+
+// 正式链和调试链统一使用这一层做章节结果收口。
+export async function evaluateRuntimeOutcome(input: EvaluateRuntimeOutcomeInput): Promise<RuntimeOutcomeResolution> {
+  const fallbackEvaluation = buildRuleBasedChapterOutcome(input);
+  // 没有任何结束条件时，不应该触发 AI 章节判定器；否则会产生无意义的模型调用和误导日志。
+  const evaluation = fallbackEvaluation.hasRule
+    ? (await evaluateChapterOutcomeByAi(input) || fallbackEvaluation)
+    : fallbackEvaluation;
 
   const outcome = evaluation.hasRule
     ? evaluation.result
@@ -576,8 +588,17 @@ export async function evaluateRuntimeOutcome(input: EvaluateRuntimeOutcomeInput)
       ? (evaluation.result === "continue"
         ? "章节结束条件未命中"
         : `命中${evaluation.matchedBy === "runtime_outline" ? "运行时事件规则" : "章节判定"}:${evaluation.matchedRule || "未命名规则"}`)
-      : "当前章节没有有效结束条件，沿用fallbackOutcome",
+      : "当前章节没有有效结束条件，跳过AI章节判定并沿用fallbackOutcome",
   }));
+
+  if (!evaluation.hasRule && isDebugLogEnabled()) {
+    console.log("[story:chapter_ending_check:skip]", JSON.stringify({
+      chapterId: Number(input.chapter?.id || 0),
+      chapterTitle: String(input.chapter?.title || "").trim(),
+      reason: "skip_no_rule",
+      traceMeta: normalizeTraceMeta(input.traceMeta),
+    }));
+  }
 
   if (evaluation.hasRule && outcome === "continue") {
     input.state.__pendingEndingGuide = true;
