@@ -955,6 +955,7 @@ function logOrchestratorPromptStats(
   runtimeError: unknown,
   tokenUsage?: { inputTokens?: number; outputTokens?: number; reasoningTokens?: number } | null,
   rawResponse?: string | null,
+  timing?: { buildMs?: number; invokeMs?: number; totalMs?: number } | null,
 ) {
   const rows: PromptStatRow[] = [
     {
@@ -984,13 +985,16 @@ function logOrchestratorPromptStats(
     responseTextLength: rawResponse ? rawResponse.length : 0,
     responseText: rawResponse ? rawResponse.slice(0, 500) : "",
     tokenUsage: tokenUsage || null,
+    buildMs: Number(timing?.buildMs || 0),
+    invokeMs: Number(timing?.invokeMs || 0),
+    totalMs: Number(timing?.totalMs || 0),
   };
   if (runtimeError) {
     runtimeLog.error = normalizePromptStatContent((runtimeError as any)?.message || String(runtimeError));
   }
 
   console.log("[story:orchestrator:runtime]", JSON.stringify(runtimeLog));
-  console.log(`[story:orchestrator:stats] request_chars=${totalPromptChars} estimated_tokens=${totalPromptTokens} system_chars=${systemPrompt.length} user_chars=${userPrompt.length}`);
+  console.log(`[story:orchestrator:stats] request_chars=${totalPromptChars} estimated_tokens=${totalPromptTokens} system_chars=${systemPrompt.length} user_chars=${userPrompt.length} build_ms=${Number(timing?.buildMs || 0)} invoke_ms=${Number(timing?.invokeMs || 0)} total_ms=${Number(timing?.totalMs || 0)}`);
 
   if (tokenUsage) {
     console.log(`[story:orchestrator:stats] actual_input_tokens=${tokenUsage.inputTokens || 0} actual_output_tokens=${tokenUsage.outputTokens || 0} actual_reasoning_tokens=${tokenUsage.reasoningTokens || 0}`);
@@ -2279,13 +2283,18 @@ async function doRunNarrativePlan(input: OrchestratorInput): Promise<NarrativePl
     };
   }
 
+  const totalStartedAt = Date.now();
+  const buildStartedAt = Date.now();
   const systemPrompt = buildOrchestratorSystemPrompt(orchestratorPrompt, compactMode);
   const userPrompt = buildOrchestratorUserPrompt(payload, compactMode);
+  const promptBuildMs = Date.now() - buildStartedAt;
   let orchestratorRuntimeError: unknown = null;
   let orchestratorRawText = "";
   let orchestratorTokenUsage: { inputTokens?: number; outputTokens?: number; reasoningTokens?: number } | null = null;
+  let orchestratorInvokeMs = 0;
   try {
     // 发送请求 进行编排
+    const invokeStartedAt = Date.now();
     const result = await u.ai.text.invoke(
       {
         plainTextOutput: true,
@@ -2312,6 +2321,7 @@ async function doRunNarrativePlan(input: OrchestratorInput): Promise<NarrativePl
       },
       promptAiConfig as any,
     );
+    orchestratorInvokeMs = Date.now() - invokeStartedAt;
     const rawText = unwrapModelText((result as any)?.text || "");
     orchestratorRawText = rawText;
     orchestratorTokenUsage = (result as any)?.usage || null;
@@ -2562,6 +2572,11 @@ async function doRunNarrativePlan(input: OrchestratorInput): Promise<NarrativePl
       orchestratorRuntimeError,
       orchestratorTokenUsage,
       orchestratorRawText,
+      {
+        buildMs: promptBuildMs,
+        invokeMs: orchestratorInvokeMs,
+        totalMs: Date.now() - totalStartedAt,
+      },
     );
   }
 }

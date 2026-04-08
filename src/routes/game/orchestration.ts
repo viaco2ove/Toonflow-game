@@ -26,7 +26,6 @@ import {
   isSessionServiceError,
 } from "@/modules/game-runtime/services/SessionService";
 import {
-  asDebugMessage,
   buildDebugFreePlotMessage,
   buildDebugRecentMessages,
   buildOpeningRuntimeMessage,
@@ -48,27 +47,32 @@ import u from "@/utils";
 
 const router = express.Router();
 
-// 把编排器/兜底返回统一收口成前端稳定可消费的计划结构。
-function buildPlanResult(plan: ({
+type PlanSourceType = "ai" | "fallback" | "rule";
+type PlanEventAdjustMode = "keep" | "update" | "waiting_input" | "completed";
+type PlanEventKind = "opening" | "scene" | "user" | "fixed" | "ending";
+type PlanEventStatus = "idle" | "active" | "waiting_input" | "completed";
+type PlanSpeakerMode = "template" | "fast" | "premium";
+
+type PlanLike = {
   role: string;
   roleType: string;
   motive: string;
   awaitUser: boolean;
   nextRole: string;
   nextRoleType: string;
-  source: "ai" | "fallback" | "rule";
+  source: PlanSourceType;
   memoryHints?: string[];
   triggerMemoryAgent?: boolean;
   stateDelta?: Record<string, unknown>;
   eventType?: string;
   presetContent?: string;
-  eventAdjustMode?: "keep" | "update" | "waiting_input" | "completed";
+  eventAdjustMode?: PlanEventAdjustMode;
   eventIndex?: number;
-  eventKind?: "opening" | "scene" | "user" | "fixed" | "ending";
+  eventKind?: PlanEventKind;
   eventSummary?: string;
   eventFacts?: string[];
-  eventStatus?: "idle" | "active" | "waiting_input" | "completed";
-  speakerMode?: "template" | "fast" | "premium";
+  eventStatus?: PlanEventStatus;
+  speakerMode?: PlanSpeakerMode;
   speakerRouteReason?: string;
   planSource?: string;
   orchestratorRuntime?: {
@@ -79,90 +83,117 @@ function buildPlanResult(plan: ({
     payloadMode?: unknown;
     payloadModeSource?: unknown;
   };
-}) | null) {
+};
+
+function asTrimmedText(value: unknown, fallback = "") {
+  if (typeof value === "string") return value.trim();
+  if (typeof value === "number" || typeof value === "boolean") return String(value).trim();
+  return fallback;
+}
+
+// 统一 source 字段，避免前端再自己猜是 AI、规则还是兜底结果。
+function normalizePlanSource(source: PlanSourceType) {
+  if (source === "fallback") return "fallback";
+  if (source === "rule") return "rule";
+  return "ai";
+}
+
+// 只保留前端认得的事件调整模式，脏值直接丢掉。
+function normalizePlanEventAdjustMode(mode?: PlanEventAdjustMode) {
+  if (!mode) return undefined;
+  if (mode === "keep" || mode === "update" || mode === "waiting_input" || mode === "completed") return mode;
+  return undefined;
+}
+
+// 统一规范事件类型，避免调试态和正式态出现不同枚举值。
+function normalizePlanEventKind(kind?: PlanEventKind) {
+  if (!kind) return undefined;
+  if (kind === "opening" || kind === "scene" || kind === "user" || kind === "fixed" || kind === "ending") return kind;
+  return undefined;
+}
+
+// 统一规范事件状态，防止前端收到未知状态后展示异常。
+function normalizePlanEventStatus(status?: PlanEventStatus) {
+  if (!status) return undefined;
+  if (status === "idle" || status === "active" || status === "waiting_input" || status === "completed") return status;
+  return undefined;
+}
+
+// 统一规范发言模式，保证前端只处理有限的展示分支。
+function normalizePlanSpeakerMode(mode?: PlanSpeakerMode) {
+  if (!mode) return undefined;
+  if (mode === "template" || mode === "fast" || mode === "premium") return mode;
+  return undefined;
+}
+
+// 推理强度是可选配置，只有受支持的值才继续透传给前端。
+function normalizeReasoningEffort(value: unknown) {
+  const normalized = asTrimmedText(value).toLowerCase();
+  if (normalized === "minimal" || normalized === "low" || normalized === "medium" || normalized === "high") return normalized;
+  return "";
+}
+
+// payload 模式只允许 compact/advanced 两种，其他值一律回退到 compact。
+function normalizePayloadMode(value: unknown) {
+  return asTrimmedText(value).toLowerCase() === "advanced" ? "advanced" : "compact";
+}
+
+// 区分 payload 模式来源，方便调试“显式配置”和“推断配置”。
+function normalizePayloadModeSource(value: unknown) {
+  return asTrimmedText(value).toLowerCase() === "explicit" ? "explicit" : "inferred";
+}
+
+// 统一推导 planSource，避免每个调用方都重复拼接来源标签。
+function resolvePlanSource(plan: PlanLike) {
+  const explicit = asTrimmedText(plan.planSource);
+  if (explicit) return explicit;
+  const eventType = asTrimmedText(plan.eventType);
+  const presetContent = asTrimmedText(plan.presetContent);
+  if (eventType === "on_opening" && presetContent) return "opening_preset";
+  if (plan.source === "rule") return "rule_orchestrator";
+  if (plan.source === "fallback") return "fallback_orchestrator";
+  return "ai_orchestrator";
+}
+
+// 编排运行信息只做轻量裁剪，避免把后端内部对象原样暴露给前端。
+function normalizeOrchestratorRuntime(plan: PlanLike) {
+  if (!plan.orchestratorRuntime) return undefined;
+  return {
+    modelKey: asTrimmedText(plan.orchestratorRuntime.modelKey),
+    manufacturer: asTrimmedText(plan.orchestratorRuntime.manufacturer),
+    model: asTrimmedText(plan.orchestratorRuntime.model),
+    reasoningEffort: normalizeReasoningEffort(plan.orchestratorRuntime.reasoningEffort),
+    payloadMode: normalizePayloadMode(plan.orchestratorRuntime.payloadMode),
+    payloadModeSource: normalizePayloadModeSource(plan.orchestratorRuntime.payloadModeSource),
+  };
+}
+
+// 把编排器/兜底返回统一收口成前端稳定可消费的计划结构。
+function buildPlanResult(plan: PlanLike | null) {
   if (!plan) return null;
   return {
-    role: String(plan.role || "").trim(),
-    roleType: String(plan.roleType || "").trim(),
-    motive: String(plan.motive || "").trim(),
+    role: asTrimmedText(plan.role),
+    roleType: asTrimmedText(plan.roleType),
+    motive: asTrimmedText(plan.motive),
     awaitUser: Boolean(plan.awaitUser),
-    nextRole: String(plan.nextRole || "").trim(),
-    nextRoleType: String(plan.nextRoleType || "").trim(),
-    source: plan.source === "fallback"
-      ? "fallback"
-      : plan.source === "rule"
-        ? "rule"
-        : "ai",
+    nextRole: asTrimmedText(plan.nextRole),
+    nextRoleType: asTrimmedText(plan.nextRoleType),
+    source: normalizePlanSource(plan.source),
     triggerMemoryAgent: Boolean(plan.triggerMemoryAgent),
-    eventType: String(plan.eventType || "on_orchestrated_reply").trim() || "on_orchestrated_reply",
-    presetContent: String(plan.presetContent || "").trim() || null,
-    eventAdjustMode: plan.eventAdjustMode === "update"
-      ? "update"
-      : plan.eventAdjustMode === "waiting_input"
-        ? "waiting_input"
-        : plan.eventAdjustMode === "completed"
-          ? "completed"
-          : plan.eventAdjustMode === "keep"
-            ? "keep"
-            : undefined,
+    eventType: asTrimmedText(plan.eventType, "on_orchestrated_reply") || "on_orchestrated_reply",
+    presetContent: asTrimmedText(plan.presetContent) || null,
+    eventAdjustMode: normalizePlanEventAdjustMode(plan.eventAdjustMode),
     eventIndex: Number.isFinite(Number(plan.eventIndex)) ? Math.max(1, Number(plan.eventIndex)) : undefined,
-    eventKind: plan.eventKind === "opening"
-      ? "opening"
-      : plan.eventKind === "user"
-        ? "user"
-        : plan.eventKind === "fixed"
-          ? "fixed"
-          : plan.eventKind === "ending"
-            ? "ending"
-          : plan.eventKind === "scene"
-            ? "scene"
-            : undefined,
-    eventSummary: String(plan.eventSummary || "").trim(),
+    eventKind: normalizePlanEventKind(plan.eventKind),
+    eventSummary: asTrimmedText(plan.eventSummary),
     eventFacts: Array.isArray(plan.eventFacts)
-      ? plan.eventFacts.map((item) => String(item || "").trim()).filter(Boolean)
+      ? plan.eventFacts.map((item) => asTrimmedText(item)).filter(Boolean)
       : [],
-    eventStatus: plan.eventStatus === "active"
-      ? "active"
-      : plan.eventStatus === "waiting_input"
-        ? "waiting_input"
-        : plan.eventStatus === "completed"
-          ? "completed"
-          : plan.eventStatus === "idle"
-            ? "idle"
-            : undefined,
-    speakerMode: plan.speakerMode === "template"
-      ? "template"
-      : plan.speakerMode === "fast"
-        ? "fast"
-        : plan.speakerMode === "premium"
-          ? "premium"
-          : undefined,
-    speakerRouteReason: String(plan.speakerRouteReason || "").trim(),
-    planSource: (() => {
-      const explicit = String(plan.planSource || "").trim();
-      if (explicit) return explicit;
-      if (String(plan.eventType || "").trim() === "on_opening" && String(plan.presetContent || "").trim()) {
-        return "opening_preset";
-      }
-      return plan.source === "rule"
-        ? "rule_orchestrator"
-        : plan.source === "fallback"
-          ? "fallback_orchestrator"
-          : "ai_orchestrator";
-    })(),
-    orchestratorRuntime: plan.orchestratorRuntime
-      ? {
-        modelKey: String(plan.orchestratorRuntime.modelKey || "").trim(),
-        manufacturer: String(plan.orchestratorRuntime.manufacturer || "").trim(),
-        model: String(plan.orchestratorRuntime.model || "").trim(),
-        reasoningEffort: (() => {
-          const value = String(plan.orchestratorRuntime?.reasoningEffort || "").trim().toLowerCase();
-          return value === "minimal" || value === "low" || value === "medium" || value === "high" ? value : "";
-        })(),
-        payloadMode: String(plan.orchestratorRuntime.payloadMode || "").trim().toLowerCase() === "advanced" ? "advanced" : "compact",
-        payloadModeSource: String(plan.orchestratorRuntime.payloadModeSource || "").trim().toLowerCase() === "explicit" ? "explicit" : "inferred",
-      }
-      : undefined,
+    eventStatus: normalizePlanEventStatus(plan.eventStatus),
+    speakerMode: normalizePlanSpeakerMode(plan.speakerMode),
+    speakerRouteReason: asTrimmedText(plan.speakerRouteReason),
+    planSource: resolvePlanSource(plan),
+    orchestratorRuntime: normalizeOrchestratorRuntime(plan),
   };
 }
 
@@ -196,17 +227,17 @@ function buildOrchestrationPayload(params: {
   }
 
   if (String(process.env.LOG_LEVEL || "").trim().toUpperCase() === "DEBUG") {
-    const planSource = String(params.plan?.planSource || "").trim();
+    const planSource = asTrimmedText(params.plan?.planSource);
     const tag = planSource === "opening_preset"
       ? "story:introduction:plan"
       : "story:orchestrator:plan";
     console.log(`[${tag}]`, JSON.stringify({
       planSource,
       awaitUser: Boolean(params.plan?.awaitUser),
-      nextRoleType: String(params.plan?.nextRoleType || "").trim(),
-      roleType: String(params.plan?.roleType || "").trim(),
-      nextRole: String(params.plan?.nextRole || "").trim(),
-      role: String(params.plan?.role || "").trim(),
+      nextRoleType: asTrimmedText(params.plan?.nextRoleType),
+      roleType: asTrimmedText(params.plan?.roleType),
+      nextRole: asTrimmedText(params.plan?.nextRole),
+      role: asTrimmedText(params.plan?.role),
     }));
   }
   return {
@@ -235,20 +266,600 @@ function buildPresetPlan(message: {
   nextRole?: string;
   nextRoleType?: string;
 }) {
+  const messageEventType = asTrimmedText(message?.eventType, "on_debug");
   return buildPlanResult({
-    role: String(message?.role || "旁白"),
-    roleType: String(message?.roleType || "narrator"),
+    role: asTrimmedText(message?.role, "旁白"),
+    roleType: asTrimmedText(message?.roleType, "narrator"),
     motive: "",
     awaitUser: Boolean(next.awaitUser),
-    nextRole: String(next.nextRole || ""),
-    nextRoleType: String(next.nextRoleType || ""),
+    nextRole: asTrimmedText(next.nextRole),
+    nextRoleType: asTrimmedText(next.nextRoleType),
     source: "fallback",
-    planSource: String(message?.eventType || "").trim() === "on_opening" ? "opening_preset" : "preset",
+    planSource: messageEventType === "on_opening" ? "opening_preset" : "preset",
     memoryHints: [],
     triggerMemoryAgent: false,
     stateDelta: {},
-    eventType: String(message?.eventType || "on_debug"),
-    presetContent: String(message?.content || ""),
+    eventType: messageEventType,
+    presetContent: asTrimmedText(message?.content),
+  });
+}
+
+function sendDebugSuccess(
+  res: express.Response,
+  params: Parameters<typeof buildOrchestrationPayload>[0],
+) {
+  return res.status(200).send(success(buildOrchestrationPayload(params)));
+}
+
+// 把编排结果回写到 turn-state，确保“当前轮到谁发言”前后端一致。
+function applyDebugPlanTurnState(
+  state: Record<string, any>,
+  world: any,
+  rolePair: ReturnType<typeof normalizeRolePair>,
+  plan: {
+    awaitUser?: boolean;
+    nextRole?: string;
+    nextRoleType?: string;
+    role?: string;
+    roleType?: string;
+  },
+) {
+  // 调试编排也复用正式会话的 turn-state 规则，保证“该轮到谁说”在前后端一致。
+  const shouldYieldToUser =
+    Boolean(plan.awaitUser) || String(plan.nextRoleType || "").trim().toLowerCase() === "player";
+  if (shouldYieldToUser) {
+    allowPlayerTurn(
+      state,
+      world,
+      String(plan.roleType || "narrator"),
+      String(plan.role || rolePair.narratorRole.name || "旁白"),
+    );
+    return;
+  }
+  setRuntimeTurnState(state, world, {
+    canPlayerSpeak: false,
+    expectedRoleType: String(plan.nextRoleType || "narrator"),
+    expectedRole: String(plan.nextRole || plan.role || rolePair.narratorRole.name || "旁白"),
+    lastSpeakerRoleType: String(plan.roleType || "narrator"),
+    lastSpeaker: String(plan.role || rolePair.narratorRole.name || "旁白"),
+  });
+}
+
+// 调试态统一走“编排 -> 回写 state -> 记忆刷新”的完整链路。
+async function runAndApplyDebugNarrativePlan(params: {
+  userId: number;
+  world: any;
+  chapter: any;
+  state: Record<string, any>;
+  recentMessages: ReturnType<typeof buildDebugRecentMessages>;
+  playerMessage: string;
+  rolePair: ReturnType<typeof normalizeRolePair>;
+}) {
+  const plan = await runNarrativePlan({
+    userId: params.userId,
+    world: params.world,
+    chapter: params.chapter,
+    state: params.state,
+    recentMessages: params.recentMessages,
+    playerMessage: params.playerMessage,
+    maxRetries: 0,
+    allowControlHints: false,
+    allowStateDelta: false,
+  });
+  applyOrchestratorResultToState(params.state, plan);
+  applyNarrativeMemoryHintsToState(params.state, plan.memoryHints);
+  if (plan.triggerMemoryAgent) {
+    triggerStoryMemoryRefreshInBackground({
+      userId: params.userId,
+      world: params.world,
+      chapter: params.chapter,
+      state: params.state,
+      recentMessages: params.recentMessages,
+    });
+  }
+  applyDebugPlanTurnState(params.state, params.world, params.rolePair, plan);
+  return buildPlanResult({ ...plan, eventType: "on_orchestrated_reply", planSource: "ai_orchestrator" });
+}
+
+// 章节开场单独拆出来，统一处理“显式开场白”和“无开场白直接编排”两种情况。
+async function buildDebugChapterStartPlan(params: {
+  userId: number;
+  world: any;
+  targetChapter: any;
+  state: Record<string, any>;
+  rolePair: ReturnType<typeof normalizeRolePair>;
+  recentMessages: ReturnType<typeof buildDebugRecentMessages>;
+  debugFreePlotActive: boolean;
+}) {
+  params.state.chapterId = Number(params.targetChapter.id || 0);
+  const effectiveChapter = buildEffectiveDebugChapter(params.targetChapter, params.debugFreePlotActive);
+  syncDebugChapterRuntime(effectiveChapter, params.state);
+  const openingMessage = buildOpeningRuntimeMessage(
+    params.world,
+    params.targetChapter,
+    String(params.rolePair.narratorRole.name || "旁白"),
+  );
+  setRuntimeTurnState(params.state, params.world, {
+    canPlayerSpeak: false,
+    expectedRoleType: "narrator",
+    expectedRole: String(params.rolePair.narratorRole.name || "旁白"),
+    lastSpeakerRoleType: String(openingMessage.roleType || "narrator"),
+    lastSpeaker: String(openingMessage.role || params.rolePair.narratorRole.name || "旁白"),
+  });
+
+  // 有显式章节开场词时，先把这一句完整返回给前端；没有时再直接跑一次编排器。
+  if (String(openingMessage.content || "").trim()) {
+    return {
+      chapterId: Number(params.targetChapter.id || 0),
+      chapterTitle: String(params.targetChapter.title || ""),
+      plan: buildPresetPlan(openingMessage, {
+        awaitUser: false,
+        nextRole: String(params.rolePair.narratorRole.name || "旁白"),
+        nextRoleType: "narrator",
+      }),
+    };
+  }
+
+  const startedAt = Date.now();
+  const plan = await runAndApplyDebugNarrativePlan({
+    userId: params.userId,
+    world: params.world,
+    chapter: effectiveChapter,
+    state: params.state,
+    recentMessages: params.recentMessages,
+    playerMessage: "",
+    rolePair: params.rolePair,
+  });
+  console.log(
+    `[runNarrativePlan] userId=${params.userId} chapter=${effectiveChapter.id} 耗时=${Date.now() - startedAt}ms`,
+  );
+  return {
+    chapterId: Number(params.targetChapter.id || 0),
+    chapterTitle: String(params.targetChapter.title || ""),
+    plan,
+  };
+}
+
+// 统一读取当前故事和章节，避免主流程里反复写同一段查询逻辑。
+async function resolveDebugWorldAndChapter(params: {
+  db: ReturnType<typeof getGameDb>;
+  userId: number;
+  worldId: number;
+  chapterId: number;
+}) {
+  const world = await params.db("t_storyWorld as w")
+    .leftJoin("t_project as p", "w.projectId", "p.id")
+    .where("w.id", params.worldId)
+    .where("p.userId", params.userId)
+    .select("w.*")
+    .first();
+  if (!world) {
+    throw new Error("NOT_FOUND_WORLD");
+  }
+
+  let chapter: any = null;
+  if (params.chapterId > 0) {
+    chapter = await params.db("t_storyChapter").where({ id: params.chapterId, worldId: params.worldId }).first();
+  }
+  if (!chapter) {
+    chapter = await params.db("t_storyChapter")
+      .where({ worldId: params.worldId })
+      .orderBy("sort", "asc")
+      .orderBy("id", "asc")
+      .first();
+  }
+  chapter = normalizeChapterOutput(chapter);
+  if (!chapter) {
+    throw new Error("NOT_FOUND_CHAPTER");
+  }
+
+  return { world, chapter };
+}
+
+// 把请求里的 state/messages 还原成调试运行上下文，供后续所有分支复用。
+function buildDebugRuntimeContext(params: {
+  req: express.Request;
+  userId: number;
+  worldId: number;
+  world: any;
+  chapter: any;
+  playerContent: string;
+  inputMessages: RuntimeMessageInput[];
+}) {
+  const rolePair = normalizeRolePair(params.world.playerRole, params.world.narratorRole);
+  const cachedRuntimeState = loadCachedDebugRuntimeState(params.req.body.state, params.userId, params.worldId);
+  const state = normalizeSessionState(
+    cachedRuntimeState || params.req.body.state,
+    params.worldId,
+    Number(params.chapter.id || 0),
+    rolePair,
+    params.world,
+  );
+  if (params.playerContent) {
+    applyPlayerProfileFromMessageToState(state, params.world, params.playerContent);
+  }
+  const debugFreePlotActive = isDebugFreePlotActive(state);
+  const effectiveChapter = buildEffectiveDebugChapter(params.chapter, debugFreePlotActive);
+  syncDebugChapterRuntime(effectiveChapter, state);
+  // 先把前端消息裁成纯文本快照，避免后续 recentMessages 混入脏字段。
+  const messages = params.inputMessages.map((item) => ({
+    role: asTrimmedText(item.role),
+    roleType: asTrimmedText(item.roleType),
+    eventType: asTrimmedText(item.eventType),
+    content: asTrimmedText(item.content),
+    createTime: Number(item.createTime || 0),
+  }));
+  const recentMessages = buildDebugRecentMessages(
+    messages,
+    asTrimmedText(state.player?.name, rolePair.playerRole.name || "用户"),
+    params.playerContent,
+  );
+  return { rolePair, state, debugFreePlotActive, effectiveChapter, recentMessages };
+}
+
+// 处理“未输入用户消息”的启动分支：首次进入、切下一章、等待用户或继续编排。
+async function handleInitialDebugTurn(params: {
+  res: express.Response;
+  db: ReturnType<typeof getGameDb>;
+  userId: number;
+  worldId: number;
+  world: any;
+  chapter: any;
+  state: Record<string, any>;
+  rolePair: ReturnType<typeof normalizeRolePair>;
+  recentMessages: ReturnType<typeof buildDebugRecentMessages>;
+  debugFreePlotActive: boolean;
+  inputMessages: RuntimeMessageInput[];
+  effectiveChapter: any;
+}) {
+  const pendingChapterId = getPendingDebugChapterId(params.state);
+  if (pendingChapterId) {
+    // 上一轮已经宣告章节完成，但前端还没请求下一轮时，用 pending 标记串起新章节开场。
+    const nextChapter = normalizeChapterOutput(await params.db("t_storyChapter").where({ id: pendingChapterId, worldId: params.worldId }).first());
+    setPendingDebugChapterId(params.state, null);
+    if (!nextChapter) {
+      return sendDebugSuccess(params.res, {
+        userId: params.userId,
+        worldId: params.worldId,
+        chapterId: Number(params.chapter.id || 0),
+        chapterTitle: asTrimmedText(params.chapter.title),
+        state: params.state,
+        endDialog: null,
+        plan: null,
+        messages: params.inputMessages,
+      });
+    }
+    const nextChapterStart = await buildDebugChapterStartPlan({
+      userId: params.userId,
+      world: params.world,
+      targetChapter: nextChapter,
+      state: params.state,
+      rolePair: params.rolePair,
+      recentMessages: params.recentMessages,
+      debugFreePlotActive: params.debugFreePlotActive,
+    });
+    return sendDebugSuccess(params.res, {
+      userId: params.userId,
+      worldId: params.worldId,
+      chapterId: nextChapterStart.chapterId,
+      chapterTitle: nextChapterStart.chapterTitle,
+      state: params.state,
+      endDialog: null,
+      plan: nextChapterStart.plan,
+      messages: params.inputMessages,
+    });
+  }
+
+  if (!params.recentMessages.length) {
+    // 首次进入调试页时没有历史消息，直接生成当前章节开场。
+    const chapterStart = await buildDebugChapterStartPlan({
+      userId: params.userId,
+      world: params.world,
+      targetChapter: params.chapter,
+      state: params.state,
+      rolePair: params.rolePair,
+      recentMessages: params.recentMessages,
+      debugFreePlotActive: params.debugFreePlotActive,
+    });
+    return sendDebugSuccess(params.res, {
+      userId: params.userId,
+      worldId: params.worldId,
+      chapterId: chapterStart.chapterId,
+      chapterTitle: chapterStart.chapterTitle,
+      state: params.state,
+      endDialog: null,
+      plan: chapterStart.plan,
+      messages: params.inputMessages,
+    });
+  }
+
+  if (canPlayerSpeakNow(params.state, params.world)) {
+    return sendDebugSuccess(params.res, {
+      userId: params.userId,
+      worldId: params.worldId,
+      chapterId: Number(params.chapter.id || 0),
+      chapterTitle: asTrimmedText(params.chapter.title),
+      state: params.state,
+      endDialog: null,
+      plan: null,
+      messages: params.inputMessages,
+    });
+  }
+
+  // 当前不该轮到用户时，继续推进一次旁白/NPC 的编排结果。
+  const plan = await runAndApplyDebugNarrativePlan({
+    userId: params.userId,
+    world: params.world,
+    state: params.state,
+    recentMessages: params.recentMessages,
+    chapter: params.effectiveChapter,
+    playerMessage: "",
+    rolePair: params.rolePair,
+  });
+  return sendDebugSuccess(params.res, {
+    userId: params.userId,
+    worldId: params.worldId,
+    chapterId: Number(params.chapter.id || 0),
+    chapterTitle: asTrimmedText(params.chapter.title),
+    state: params.state,
+    endDialog: null,
+    plan,
+    messages: params.inputMessages,
+  });
+}
+
+// 处理“用户已发言”的分支：小游戏、结束判定、切章与继续编排都从这里统一分发。
+async function handleDebugPlayerTurn(params: {
+  res: express.Response;
+  db: ReturnType<typeof getGameDb>;
+  userId: number;
+  worldId: number;
+  world: any;
+  chapter: any;
+  state: Record<string, any>;
+  rolePair: ReturnType<typeof normalizeRolePair>;
+  recentMessages: ReturnType<typeof buildDebugRecentMessages>;
+  debugFreePlotActive: boolean;
+  inputMessages: RuntimeMessageInput[];
+  playerContent: string;
+  effectiveChapter: any;
+}) {
+  if (!canPlayerSpeakNow(params.state, params.world)) {
+    return params.res.status(409).send(error("当前还没轮到用户发言"));
+  }
+
+  const miniGameResult = await handleMiniGameTurn({
+    userId: params.userId,
+    world: params.world,
+    chapter: params.chapter,
+    state: params.state,
+    recentMessages: params.recentMessages,
+    playerMessage: params.playerContent,
+    mode: "debug",
+  });
+  if (miniGameResult?.intercepted) {
+    // 小游戏命中了自己的状态机时，剧情编排本轮直接让位给小游戏结果。
+    const presetMessage = miniGameResult.message
+      ? {
+        role: miniGameResult.message.role,
+        roleType: miniGameResult.message.roleType,
+        eventType: miniGameResult.message.eventType,
+        content: miniGameResult.message.content,
+        createTime: nowTs(),
+      }
+      : null;
+    return sendDebugSuccess(params.res, {
+      userId: params.userId,
+      worldId: params.worldId,
+      chapterId: Number(params.chapter.id || 0),
+      chapterTitle: asTrimmedText(params.chapter.title),
+      state: params.state,
+      endDialog: null,
+      plan: presetMessage
+        ? buildPresetPlan(presetMessage, { awaitUser: false, nextRole: "", nextRoleType: "" })
+        : null,
+      messages: params.inputMessages,
+    });
+  }
+
+  // 先把用户这句输入应用到调试态，再进入章节结束判定。
+  applyDebugUserMessageProgress({
+    chapter: params.chapter,
+    state: params.state,
+    messageContent: params.playerContent,
+    eventType: "on_message",
+    meta: {},
+  });
+  const outcome = await evaluateDebugRuntimeOutcome({
+    chapter: params.chapter,
+    state: params.state,
+    messageContent: params.playerContent,
+    eventType: "on_message",
+    meta: {},
+    recentMessages: params.recentMessages,
+    debugFreePlotActive: params.debugFreePlotActive,
+  });
+
+  if (outcome.result === "failed") {
+    const failedMessage = {
+      role: asTrimmedText(params.rolePair.narratorRole.name, "旁白"),
+      roleType: "narrator",
+      eventType: "on_debug_failed",
+      content: `章节《${asTrimmedText(params.chapter.title, "当前章节")}》判定失败，调试结束。`,
+      createTime: nowTs(),
+    };
+    return sendDebugSuccess(params.res, {
+      userId: params.userId,
+      worldId: params.worldId,
+      chapterId: Number(params.chapter.id || 0),
+      chapterTitle: asTrimmedText(params.chapter.title),
+      state: params.state,
+      endDialog: "已失败",
+      plan: buildPresetPlan(failedMessage, { awaitUser: false, nextRole: "", nextRoleType: "" }),
+      endDialogDetail: buildDebugEndDialogDetail({
+        endDialog: "已失败",
+        chapterTitle: asTrimmedText(params.chapter.title),
+        matchedBy: outcome.matchedBy,
+        matchedRule: outcome.matchedRule,
+      }),
+      messages: params.inputMessages,
+    });
+  }
+
+  if (outcome.result === "success") {
+    const nextChapter = normalizeChapterOutput(
+      await resolveNextChapter(params.db, params.worldId, params.chapter, outcome.nextChapterId),
+    );
+    if (!nextChapter) {
+      // 没有下一章时，调试态自动转入自由剧情，方便继续压编排与角色发言。
+      (params.state as any).debugFreePlot = {
+        active: true,
+        fromChapterId: Number(params.chapter.id || 0),
+        unlockedAt: nowTs(),
+      };
+      const freePlotMessage = buildDebugFreePlotMessage(
+        asTrimmedText(params.rolePair.narratorRole.name, "旁白"),
+        asTrimmedText(params.chapter.title, "当前章节"),
+      );
+      return sendDebugSuccess(params.res, {
+        userId: params.userId,
+        worldId: params.worldId,
+        chapterId: Number(params.chapter.id || 0),
+        chapterTitle: asTrimmedText(params.chapter.title),
+        state: params.state,
+        endDialog: null,
+        plan: buildPresetPlan(freePlotMessage, {
+          awaitUser: false,
+          nextRole: asTrimmedText(params.rolePair.narratorRole.name, "旁白"),
+          nextRoleType: "narrator",
+        }),
+        messages: params.inputMessages,
+      });
+    }
+
+    // 命中成功后直接串起下一章开场，避免前端自己补章节切换逻辑。
+    const nextChapterStart = await buildDebugChapterStartPlan({
+      userId: params.userId,
+      world: params.world,
+      targetChapter: nextChapter,
+      state: params.state,
+      rolePair: params.rolePair,
+      recentMessages: params.recentMessages,
+      debugFreePlotActive: params.debugFreePlotActive,
+    });
+    return sendDebugSuccess(params.res, {
+      userId: params.userId,
+      worldId: params.worldId,
+      chapterId: nextChapterStart.chapterId,
+      chapterTitle: nextChapterStart.chapterTitle,
+      state: params.state,
+      endDialog: null,
+      plan: nextChapterStart.plan,
+      messages: params.inputMessages,
+    });
+  }
+
+  // 章节未结束时继续交给编排师，生成下一轮角色/旁白发言。
+  const plan = await runAndApplyDebugNarrativePlan({
+    userId: params.userId,
+    world: params.world,
+    state: params.state,
+    recentMessages: params.recentMessages,
+    chapter: params.effectiveChapter,
+    playerMessage: params.playerContent,
+    rolePair: params.rolePair,
+  });
+  return sendDebugSuccess(params.res, {
+    userId: params.userId,
+    worldId: params.worldId,
+    chapterId: Number(params.chapter.id || 0),
+    chapterTitle: asTrimmedText(params.chapter.title),
+    state: params.state,
+    endDialog: null,
+    plan,
+    messages: params.inputMessages,
+  });
+}
+
+// 调试路由的主分发函数：负责鉴权、装配上下文，并按“首次进入/用户发言”两条链拆开处理。
+async function handleDebugOrchestrationRequest(req: express.Request, res: express.Response) {
+  const sessionId = asTrimmedText(req.body.sessionId);
+  if (sessionId) {
+    const result = await orchestrateSessionTurn(sessionId);
+    return res.status(200).send(success(result));
+  }
+
+  const db = getGameDb();
+  const userId = Number((req as any)?.user?.id || 0);
+  if (!Number.isFinite(userId) || userId <= 0) {
+    return res.status(401).send(error("用户未登录"));
+  }
+
+  const worldId = Number(req.body.worldId || 0);
+  if (!worldId) {
+    return res.status(400).send(error("worldId 不能为空"));
+  }
+  const chapterId = Number(req.body.chapterId || 0);
+  const playerContent = asTrimmedText(req.body.playerContent);
+  const inputMessages = (Array.isArray(req.body.messages) ? req.body.messages : []) as RuntimeMessageInput[];
+
+  let world: any;
+  let chapter: any;
+  try {
+    ({ world, chapter } = await resolveDebugWorldAndChapter({ db, userId, worldId, chapterId }));
+  } catch (err) {
+    const errCode = err instanceof Error ? err.message : "";
+    if (errCode === "NOT_FOUND_WORLD") {
+      return res.status(404).send(error("未找到故事"));
+    }
+    if (errCode === "NOT_FOUND_CHAPTER") {
+      return res.status(404).send(error("当前没有章节可调试"));
+    }
+    throw err;
+  }
+
+  // 先构建一次统一运行上下文，后续两个主分支都直接复用，避免重复做状态归一化。
+  const runtimeContext = buildDebugRuntimeContext({
+    req,
+    userId,
+    worldId,
+    world,
+    chapter,
+    playerContent,
+    inputMessages,
+  });
+
+  if (!playerContent) {
+    return handleInitialDebugTurn({
+      res,
+      db,
+      userId,
+      worldId,
+      world,
+      chapter,
+      state: runtimeContext.state,
+      rolePair: runtimeContext.rolePair,
+      recentMessages: runtimeContext.recentMessages,
+      debugFreePlotActive: runtimeContext.debugFreePlotActive,
+      inputMessages,
+      effectiveChapter: runtimeContext.effectiveChapter,
+    });
+  }
+
+  return handleDebugPlayerTurn({
+    res,
+    db,
+    userId,
+    worldId,
+    world,
+    chapter,
+    state: runtimeContext.state,
+    rolePair: runtimeContext.rolePair,
+    recentMessages: runtimeContext.recentMessages,
+    debugFreePlotActive: runtimeContext.debugFreePlotActive,
+    inputMessages,
+    playerContent,
+    effectiveChapter: runtimeContext.effectiveChapter,
   });
 }
 
@@ -264,411 +875,8 @@ export default router.post(
   }),
   async (req, res) => {
     try {
-      const sessionId = String(req.body.sessionId || "").trim();
-      if (sessionId) {
-        const result = await orchestrateSessionTurn(sessionId);
-        return res.status(200).send(success(result));
-      }
-
-      const db = getGameDb();
-      const userId = Number((req as any)?.user?.id || 0);
-      if (!Number.isFinite(userId) || userId <= 0) {
-        return res.status(401).send(error("用户未登录"));
-      }
-
-      const worldId = Number(req.body.worldId || 0);
-      if (!worldId) {
-        return res.status(400).send(error("worldId 不能为空"));
-      }
-      const chapterId = Number(req.body.chapterId || 0);
-      const playerContent = String(req.body.playerContent || "").trim();
-      const inputMessages = (Array.isArray(req.body.messages) ? req.body.messages : []) as RuntimeMessageInput[];
-
-      const world = await db("t_storyWorld as w")
-        .leftJoin("t_project as p", "w.projectId", "p.id")
-        .where("w.id", worldId)
-        .where("p.userId", userId)
-        .select("w.*")
-        .first();
-      if (!world) {
-        return res.status(404).send(error("未找到故事"));
-      }
-
-      let chapter: any = null;
-      if (chapterId > 0) {
-        chapter = await db("t_storyChapter").where({ id: chapterId, worldId }).first();
-      }
-      if (!chapter) {
-        chapter = await db("t_storyChapter").where({ worldId }).orderBy("sort", "asc").orderBy("id", "asc").first();
-      }
-      chapter = normalizeChapterOutput(chapter);
-      if (!chapter) {
-        return res.status(404).send(error("当前没有章节可调试"));
-      }
-
-      const rolePair = normalizeRolePair(world.playerRole, world.narratorRole);
-      const cachedRuntimeState = loadCachedDebugRuntimeState(req.body.state, userId, worldId);
-      const state = normalizeSessionState(
-        cachedRuntimeState || req.body.state,
-        worldId,
-        Number(chapter.id || 0),
-        rolePair,
-        world,
-      );
-      if (playerContent) {
-        applyPlayerProfileFromMessageToState(state, world, playerContent);
-      }
-      const debugFreePlotActive = isDebugFreePlotActive(state);
-      let effectiveChapter = buildEffectiveDebugChapter(chapter, debugFreePlotActive);
-      syncDebugChapterRuntime(effectiveChapter, state);
-      const messages = inputMessages.map((item) => ({
-        role: String(item.role || ""),
-        roleType: String(item.roleType || ""),
-        eventType: String(item.eventType || ""),
-        content: String(item.content || ""),
-        createTime: Number(item.createTime || 0),
-      }));
-      const recentMessages = buildDebugRecentMessages(messages, String(state.player?.name || rolePair.playerRole.name || "用户"), playerContent);
-
-      function applyPlanTurnState(plan: {
-        awaitUser?: boolean;
-        nextRole?: string;
-        nextRoleType?: string;
-        role?: string;
-        roleType?: string;
-      }) {
-        // 调试编排也复用正式会话的 turn-state 规则，保证“该轮到谁说”在前后端一致。
-        const shouldYieldToPlayer = Boolean(plan.awaitUser) || String(plan.nextRoleType || "").trim().toLowerCase() === "player";
-        if (shouldYieldToPlayer) {
-          allowPlayerTurn(state, world, String(plan.roleType || "narrator"), String(plan.role || rolePair.narratorRole.name || "旁白"));
-          return;
-        }
-        setRuntimeTurnState(state, world, {
-          canPlayerSpeak: false,
-          expectedRoleType: String(plan.nextRoleType || "narrator"),
-          expectedRole: String(plan.nextRole || plan.role || rolePair.narratorRole.name || "旁白"),
-          lastSpeakerRoleType: String(plan.roleType || "narrator"),
-          lastSpeaker: String(plan.role || rolePair.narratorRole.name || "旁白"),
-        });
-      }
-
-      async function buildChapterStartPlan(targetChapter: any) {
-        state.chapterId = Number(targetChapter.id || 0);
-        const targetEffectiveChapter = buildEffectiveDebugChapter(targetChapter, debugFreePlotActive);
-        syncDebugChapterRuntime(targetEffectiveChapter, state);
-        const openingMessage = buildOpeningRuntimeMessage(world, targetChapter, String(rolePair.narratorRole.name || "旁白"));
-        setRuntimeTurnState(state, world, {
-          canPlayerSpeak: false,
-          expectedRoleType: "narrator",
-          expectedRole: String(rolePair.narratorRole.name || "旁白"),
-          lastSpeakerRoleType: String(openingMessage.roleType || "narrator"),
-          lastSpeaker: String(openingMessage.role || rolePair.narratorRole.name || "旁白"),
-        });
-        // 有显式章节开场词时，先把这一句完整返回给前端；没有时再直接跑一次编排器。
-        if (String(openingMessage.content || "").trim()) {
-        return {
-          chapterId: Number(targetChapter.id || 0),
-          chapterTitle: String(targetChapter.title || ""),
-          plan: buildPresetPlan(openingMessage, {
-              awaitUser: false,
-              nextRole: String(rolePair.narratorRole.name || "旁白"),
-              nextRoleType: "narrator",
-            }),
-          };
-        }
-        effectiveChapter = targetEffectiveChapter;
-        // 调用大模型进行编排
-        const start = Date.now();
-        const targetPlan = await runNarrativePlan({
-          userId,
-          world,
-          chapter: targetEffectiveChapter,
-          state,
-          recentMessages,
-          playerMessage: "",
-          maxRetries: 0,
-          allowControlHints: false,
-          allowStateDelta: false,
-        });
-        const cost = Date.now() - start;
-        console.log(
-          `[runNarrativePlan] userId=${userId} chapter=${targetEffectiveChapter.id} 耗时=${cost}ms`
-        );
-        applyOrchestratorResultToState(state, targetPlan);
-        applyNarrativeMemoryHintsToState(state, targetPlan.memoryHints);
-        if (targetPlan.triggerMemoryAgent) {
-          triggerStoryMemoryRefreshInBackground({
-            userId,
-            world,
-            chapter: targetEffectiveChapter,
-            state,
-            recentMessages,
-          });
-        }
-        applyPlanTurnState(targetPlan);
-        return {
-          chapterId: Number(targetChapter.id || 0),
-          chapterTitle: String(targetChapter.title || ""),
-          plan: buildPlanResult({ ...targetPlan, eventType: "on_orchestrated_reply", planSource: "ai_orchestrator" }),
-        };
-      }
-
-      if (!playerContent) {
-        const pendingChapterId = getPendingDebugChapterId(state);
-        if (pendingChapterId) {
-          // 上一轮已经宣告章节完成，但前端还没请求下一轮时，用 pending 标记串起新章节开场。
-          const nextChapter = normalizeChapterOutput(await db("t_storyChapter").where({ id: pendingChapterId, worldId }).first());
-          setPendingDebugChapterId(state, null);
-          if (!nextChapter) {
-            return res.status(200).send(success(buildOrchestrationPayload({
-              userId,
-              worldId,
-              chapterId: Number(chapter.id || 0),
-              chapterTitle: String(chapter.title || ""),
-              state,
-              endDialog: null,
-              plan: null,
-              messages: inputMessages,
-            })));
-          }
-          chapter = nextChapter;
-          const nextChapterStart = await buildChapterStartPlan(nextChapter);
-          return res.status(200).send(success(buildOrchestrationPayload({
-            userId,
-            worldId,
-            chapterId: nextChapterStart.chapterId,
-            chapterTitle: nextChapterStart.chapterTitle,
-            state,
-            endDialog: null,
-            plan: nextChapterStart.plan,
-            messages: inputMessages,
-          })));
-        }
-
-        if (!messages.length) {
-          // 首次进入调试页时没有历史消息，直接生成当前章节开场。
-          const chapterStart = await buildChapterStartPlan(chapter);
-          return res.status(200).send(success(buildOrchestrationPayload({
-            userId,
-            worldId,
-            chapterId: chapterStart.chapterId,
-            chapterTitle: chapterStart.chapterTitle,
-            state,
-            endDialog: null,
-            plan: chapterStart.plan,
-            messages: inputMessages,
-          })));
-        }
-
-        if (canPlayerSpeakNow(state, world)) {
-        return res.status(200).send(success(buildOrchestrationPayload({
-          userId,
-          worldId,
-          chapterId: Number(chapter.id || 0),
-          chapterTitle: String(chapter.title || ""),
-          state,
-          endDialog: null,
-          plan: null,
-          messages: inputMessages,
-        })));
-        }
-
-        const plan = await runNarrativePlan({
-          userId,
-          world,
-          chapter: effectiveChapter,
-          state,
-          recentMessages,
-          playerMessage: "",
-          maxRetries: 0,
-          allowControlHints: false,
-          allowStateDelta: false,
-        });
-        applyOrchestratorResultToState(state, plan);
-        applyNarrativeMemoryHintsToState(state, plan.memoryHints);
-        if (plan.triggerMemoryAgent) {
-          triggerStoryMemoryRefreshInBackground({
-            userId,
-            world,
-            chapter: effectiveChapter,
-            state,
-            recentMessages,
-          });
-        }
-
-        applyPlanTurnState(plan);
-        return res.status(200).send(success(buildOrchestrationPayload({
-          userId,
-          worldId,
-          chapterId: Number(chapter.id || 0),
-          chapterTitle: String(chapter.title || ""),
-          state,
-          endDialog: null,
-          plan: buildPlanResult({ ...plan, eventType: "on_orchestrated_reply", planSource: "ai_orchestrator" }),
-          messages: inputMessages,
-        })));
-      }
-
-      if (!canPlayerSpeakNow(state, world)) {
-        return res.status(409).send(error("当前还没轮到用户发言"));
-      }
-
-      const miniGameResult = await handleMiniGameTurn({
-        userId,
-        world,
-        chapter,
-        state,
-        recentMessages,
-        playerMessage: playerContent,
-        mode: "debug",
-      });
-      if (miniGameResult?.intercepted) {
-        // 小游戏命中了自己的状态机时，剧情编排本轮直接让位给小游戏结果。
-        const presetMessage = miniGameResult.message
-          ? {
-            role: miniGameResult.message.role,
-            roleType: miniGameResult.message.roleType,
-            eventType: miniGameResult.message.eventType,
-            content: miniGameResult.message.content,
-            createTime: nowTs(),
-          }
-          : null;
-        return res.status(200).send(success(buildOrchestrationPayload({
-          userId,
-          worldId,
-          chapterId: Number(chapter.id || 0),
-          chapterTitle: String(chapter.title || ""),
-          state,
-          endDialog: null,
-          plan: presetMessage ? buildPresetPlan(presetMessage, {
-            awaitUser: false,
-            nextRole: "",
-            nextRoleType: "",
-          }) : null,
-          messages: inputMessages,
-        })));
-      }
-
-      applyDebugUserMessageProgress({
-        chapter,
-        state,
-        messageContent: playerContent,
-        eventType: "on_message",
-        meta: {},
-      });
-      const outcome = await evaluateDebugRuntimeOutcome({
-        chapter,
-        state,
-        messageContent: playerContent,
-        eventType: "on_message",
-        meta: {},
-        recentMessages,
-        debugFreePlotActive,
-      });
-      if (outcome.result === "failed") {
-        const message = {
-          role: String(rolePair.narratorRole.name || "旁白"),
-          roleType: "narrator",
-          eventType: "on_debug_failed",
-          content: `章节《${String(chapter.title || "当前章节")}》判定失败，调试结束。`,
-          createTime: nowTs(),
-        };
-        return res.status(200).send(success(buildOrchestrationPayload({
-          userId,
-          worldId,
-          chapterId: Number(chapter.id || 0),
-          chapterTitle: String(chapter.title || ""),
-          state,
-          endDialog: "已失败",
-          plan: buildPresetPlan(message, {
-            awaitUser: false,
-            nextRole: "",
-            nextRoleType: "",
-          }),
-          endDialogDetail: buildDebugEndDialogDetail({
-            endDialog: "已失败",
-            chapterTitle: String(chapter.title || ""),
-            matchedBy: outcome.matchedBy,
-            matchedRule: outcome.matchedRule,
-          }),
-          messages: inputMessages,
-        })));
-      }
-
-      if (outcome.result === "success") {
-        const nextChapter = normalizeChapterOutput(await resolveNextChapter(db, worldId, chapter, outcome.nextChapterId));
-        if (!nextChapter) {
-          // 没有下一章时，调试态自动转入自由剧情，方便继续压编排与角色发言。
-          (state as any).debugFreePlot = {
-            active: true,
-            fromChapterId: Number(chapter.id || 0),
-            unlockedAt: nowTs(),
-          };
-          const freePlotMessage = buildDebugFreePlotMessage(String(rolePair.narratorRole.name || "旁白"), String(chapter.title || "当前章节"));
-          return res.status(200).send(success(buildOrchestrationPayload({
-            userId,
-            worldId,
-            chapterId: Number(chapter.id || 0),
-            chapterTitle: String(chapter.title || ""),
-            state,
-            endDialog: null,
-            plan: buildPresetPlan(freePlotMessage, {
-              awaitUser: false,
-              nextRole: String(rolePair.narratorRole.name || "旁白"),
-              nextRoleType: "narrator",
-            }),
-            messages: inputMessages,
-          })));
-        }
-        chapter = nextChapter;
-        const nextChapterStart = await buildChapterStartPlan(nextChapter);
-      return res.status(200).send(success(buildOrchestrationPayload({
-        userId,
-        worldId,
-        chapterId: nextChapterStart.chapterId,
-        chapterTitle: nextChapterStart.chapterTitle,
-        state,
-        endDialog: null,
-        plan: nextChapterStart.plan,
-        messages: inputMessages,
-      })));
-      }
-
-      const plan = await runNarrativePlan({
-        userId,
-        world,
-        chapter: effectiveChapter,
-        state,
-        recentMessages,
-        playerMessage: playerContent,
-        maxRetries: 0,
-        allowControlHints: false,
-        allowStateDelta: false,
-      });
-      applyOrchestratorResultToState(state, plan);
-      applyNarrativeMemoryHintsToState(state, plan.memoryHints);
-      if (plan.triggerMemoryAgent) {
-        triggerStoryMemoryRefreshInBackground({
-          userId,
-          world,
-          chapter: effectiveChapter,
-          state,
-          recentMessages,
-        });
-      }
-
-      applyPlanTurnState(plan);
-
-      return res.status(200).send(success(buildOrchestrationPayload({
-        userId,
-        worldId,
-        chapterId: Number(chapter.id || 0),
-        chapterTitle: String(chapter.title || ""),
-        state,
-        endDialog: null,
-        plan: buildPlanResult({ ...plan, eventType: "on_orchestrated_reply", planSource: "ai_orchestrator" }),
-        messages: inputMessages,
-      })));
+      // 路由本体只保留异常收口，真正的调试流程交给拆分后的主分发函数。
+      return await handleDebugOrchestrationRequest(req, res);
     } catch (err) {
       if (isSessionServiceError(err)) {
         return res.status(err.status).send(error(err.message));

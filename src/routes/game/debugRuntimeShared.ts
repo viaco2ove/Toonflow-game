@@ -48,6 +48,7 @@ interface DebugRevisitPoint {
   debugRuntimeKey: string;
   messageCount: number;
   state: Record<string, any>;
+  messages: RuntimeMessageInput[];
   round: number;
   chapterId: number | null;
   createdAt: number;
@@ -121,6 +122,7 @@ export function saveDebugRevisitPoint(
     debugRuntimeKey,
     messageCount: messages.length,
     state: cloneDebugRuntimeState(state),
+    messages: cloneDebugRuntimeState(messages),
     round: Number(state.round || 0),
     chapterId,
     createdAt: nowTs(),
@@ -680,6 +682,7 @@ router.post("/revisit", async (req, res) => {
     }
     return res.status(200).json({
       state: point.state,
+      messages: point.messages,
       round: point.round,
       chapterId: point.chapterId,
       messageCount: point.messageCount,

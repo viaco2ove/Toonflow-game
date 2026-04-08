@@ -252,6 +252,9 @@ function buildChapterJudgeStats(input: {
   manufacturer: string;
   model: string;
   reasoningEffort: string;
+  buildMs?: number;
+  invokeMs?: number;
+  totalMs?: number;
 }) {
   const totalRequestChars = input.systemPrompt.length + input.prompt.length;
   const runtimeLog = {
@@ -265,10 +268,13 @@ function buildChapterJudgeStats(input: {
     responseText: input.responseText,
     responseTextLength: input.responseText.length,
     tokenUsage: input.tokenUsage || null,
+    buildMs: Number(input.buildMs || 0),
+    invokeMs: Number(input.invokeMs || 0),
+    totalMs: Number(input.totalMs || 0),
   };
   console.log("[story:chapter_ending_check:runtime]", JSON.stringify(runtimeLog));
   if (!isDebugLogEnabled()) return;
-  console.log(`[story:chapter_ending_check:stats] request_chars=${totalRequestChars} system_chars=${input.systemPrompt.length} user_chars=${input.prompt.length} request_status=${input.requestStatus}`);
+  console.log(`[story:chapter_ending_check:stats] request_chars=${totalRequestChars} system_chars=${input.systemPrompt.length} user_chars=${input.prompt.length} request_status=${input.requestStatus} build_ms=${Number(input.buildMs || 0)} invoke_ms=${Number(input.invokeMs || 0)} total_ms=${Number(input.totalMs || 0)}`);
   console.log(`[story:chapter_ending_check:stats] | 区块 | 实际内容 | 字符数 | 估算 Tokens |`);
   console.log(`[story:chapter_ending_check:stats] | System Prompt | ${shortText(input.systemPrompt, 240000) || "无"} | ${input.systemPrompt.length} | ${Math.max(input.systemPrompt ? 1 : 0, Math.ceil(input.systemPrompt.length / 4))} |`);
   console.log(`[story:chapter_ending_check:stats] | 用户提示词 | ${shortText(input.prompt, 240000)} | ${input.prompt.length} | ${Math.max(1, Math.ceil(input.prompt.length / 4))} |`);
@@ -276,6 +282,7 @@ function buildChapterJudgeStats(input: {
   if (input.tokenUsage) {
     console.log(`[story:chapter_ending_check:stats] | 实际推理消耗 | input=${input.tokenUsage.inputTokens || 0}, output=${input.tokenUsage.outputTokens || 0}, reasoning=${input.tokenUsage.reasoningTokens || 0} | - | - |`);
   }
+
 }
 
 function normalizeGuideSummary(reason: string, rawGuideSummary: unknown): string {
@@ -302,6 +309,7 @@ function normalizeGuideFacts(reason: string, rawGuideFacts: unknown): string[] {
 }
 
 async function evaluateChapterOutcomeByAi(input: EvaluateRuntimeOutcomeInput): Promise<ChapterOutcomeResult | null> {
+  const totalStartedAt = Date.now();
   const fallback = evaluateChapterOutcome({
     chapter: input.chapter,
     state: input.state,
@@ -323,16 +331,23 @@ async function evaluateChapterOutcomeByAi(input: EvaluateRuntimeOutcomeInput): P
       manufacturer: "",
       model: "",
       reasoningEffort: "",
+      buildMs: 0,
+      invokeMs: 0,
+      totalMs: Date.now() - totalStartedAt,
     });
     return fallback;
   }
+  const buildStartedAt = Date.now();
   const userPrompt = buildChapterJudgePrompt(input);
+  const buildMs = Date.now() - buildStartedAt;
   let rawText = "";
   let tokenUsage: ChapterJudgeTokenUsage | null = null;
   let requestStage = "resolve_model";
+  let invokeMs = 0;
   try {
     const modelConfig = await resolveChapterJudgeModel(input.userId);
     requestStage = "invoke_model";
+    const invokeStartedAt = Date.now();
     const result = await u.ai.text.invoke(
       {
         usageType: "章节判定",
@@ -351,6 +366,7 @@ async function evaluateChapterOutcomeByAi(input: EvaluateRuntimeOutcomeInput): P
       },
       modelConfig as any,
     );
+    invokeMs = Date.now() - invokeStartedAt;
     // normalizeResultObject = 把“看起来像 object 的脏数据”修正成真正的 object
     const rawObject = (result as any)?.object ?? (typeof result === "object" ? result : null);
 
@@ -410,6 +426,9 @@ async function evaluateChapterOutcomeByAi(input: EvaluateRuntimeOutcomeInput): P
       manufacturer: normalizeScalarText((modelConfig as any)?.manufacturer),
       model: normalizeScalarText((modelConfig as any)?.model),
       reasoningEffort: normalizeScalarText((modelConfig as any)?.reasoningEffort),
+      buildMs,
+      invokeMs,
+      totalMs: Date.now() - totalStartedAt,
     });
     return {
       hasRule: true,
@@ -431,6 +450,9 @@ async function evaluateChapterOutcomeByAi(input: EvaluateRuntimeOutcomeInput): P
       manufacturer: "",
       model: "",
       reasoningEffort: "",
+      buildMs,
+      invokeMs,
+      totalMs: Date.now() - totalStartedAt,
     });
     console.warn("[story:chapter_ending_check:error]", {
       chapterId: Number(input.chapter?.id || 0),
