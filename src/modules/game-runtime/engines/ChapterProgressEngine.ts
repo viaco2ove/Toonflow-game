@@ -23,17 +23,24 @@ import {
   TriggerHit,
 } from "@/modules/game-runtime/types/runtime";
 
+/**
+ * 将未知输入安全转换为普通对象，避免后续读取章节和运行态字段时反复判空。
+ */
 function asRecord(input: unknown): JsonRecord {
   return typeof input === "object" && input !== null && !Array.isArray(input)
     ? input as JsonRecord
     : {};
 }
 
+/**
+ * 读取章节运行时编排图；老章节没有显式 phases 时，会自动补一个“章节内容”兜底事件。
+ */
 function readRuntimeOutline(chapter: any): ChapterRuntimeOutline {
   const outline = normalizeChapterRuntimeOutline(asRecord(chapter).runtimeOutline);
   if (Array.isArray(outline.phases) && outline.phases.length) {
     return outline;
   }
+  // 未配置 phases 的章节仍然要能跑事件链，这里主动合成一个最小 scene 事件。
   const syntheticPhase = buildSyntheticChapterContentPhase(chapter);
   if (!syntheticPhase) {
     return outline;
@@ -44,6 +51,9 @@ function readRuntimeOutline(chapter: any): ChapterRuntimeOutline {
   };
 }
 
+/**
+ * 从章节正文里提取简短摘要，作为合成章节内容事件的展示文本。
+ */
 function readSyntheticChapterContentSummary(chapter: any): string {
   const text = String((chapter as any)?.content || "")
     .replace(/\r\n/g, "\n")
@@ -57,6 +67,9 @@ function readSyntheticChapterContentSummary(chapter: any): string {
   return text.length > 120 ? `${text.slice(0, 120)}...` : text;
 }
 
+/**
+ * 为未配置 runtimeOutline.phases 的章节生成一个兜底 scene 事件。
+ */
 function buildSyntheticChapterContentPhase(chapter: any): ChapterRuntimePhase | null {
   const summary = readSyntheticChapterContentSummary(chapter);
   if (!summary) return null;
@@ -76,15 +89,24 @@ function buildSyntheticChapterContentPhase(chapter: any): ChapterRuntimePhase | 
   };
 }
 
+/**
+ * 读取当前是否轮到用户输入。
+ */
 function readCanPlayerSpeak(state: JsonRecord): boolean {
   const turnState = asRecord(state.turnState);
   return turnState.canPlayerSpeak !== false;
 }
 
+/**
+ * 归一化已完成事件列表，去重并清理空白项。
+ */
 function normalizeCompletedEvents(input: string[]): string[] {
   return Array.from(new Set(input.map((item) => String(item || "").trim()).filter(Boolean)));
 }
 
+/**
+ * 将输入文本归一化为便于事件匹配的紧凑字符串。
+ */
 function normalizeSignalText(input: unknown): string {
   return String(input || "")
     .replace(/[\s，。、“”"'‘’：:；;（）()【】\[\]\-—_·•・⋯…,.!?！？]/g, "")
@@ -92,6 +114,9 @@ function normalizeSignalText(input: unknown): string {
     .toLowerCase();
 }
 
+/**
+ * 判断当前输入/输出信号是否命中某个 phase 的推进条件。
+ */
 function phaseSignalMatches(signalTexts: string[], phase: ChapterRuntimePhase | null): boolean {
   if (!phase) return false;
   const phaseSignals = Array.isArray(phase.advanceSignals) ? phase.advanceSignals : [];
@@ -101,29 +126,47 @@ function phaseSignalMatches(signalTexts: string[], phase: ChapterRuntimePhase | 
   return phaseSignals.some((item) => signalMatches(item, signalTexts));
 }
 
+/**
+ * 为用户节点生成统一的 completedEvents 标记。
+ */
 function getUserNodeMarker(userNodeId: string): string {
   return `user_node:${String(userNodeId || "").trim()}`;
 }
 
+/**
+ * 为 phase 生成统一的 completedEvents 标记。
+ */
 function getPhaseMarker(phaseId: string): string {
   return `phase:${String(phaseId || "").trim()}`;
 }
 
+/**
+ * 在章节编排图中找到下一个尚未完成的用户节点。
+ */
 function findNextPendingUserNode(outline: ChapterRuntimeOutline, completedEvents: string[]) {
   const done = new Set(completedEvents.map((item) => String(item || "").trim()).filter(Boolean));
   return outline.userNodes.find((item) => !done.has(getUserNodeMarker(item.id))) || null;
 }
 
+/**
+ * 判断某个用户节点是否已经完成。
+ */
 function isUserNodeCompleted(completedEvents: string[], userNodeId: string | null | undefined): boolean {
   if (!userNodeId) return false;
   return completedEvents.map((item) => String(item || "").trim()).includes(getUserNodeMarker(userNodeId));
 }
 
+/**
+ * 判断某个 phase 是否已经完成。
+ */
 function isPhaseCompleted(completedEvents: string[], phaseId: string | null | undefined): boolean {
   if (!phaseId) return false;
   return completedEvents.map((item) => String(item || "").trim()).includes(getPhaseMarker(phaseId));
 }
 
+/**
+ * 判断 phase 的前置 requiredEventIds 是否已经全部满足。
+ */
 function arePhaseRequirementsMet(completedEvents: string[], phase: ChapterRuntimePhase | null): boolean {
   if (!phase) return false;
   const requiredEventIds = Array.isArray(phase.requiredEventIds) ? phase.requiredEventIds : [];
@@ -132,6 +175,9 @@ function arePhaseRequirementsMet(completedEvents: string[], phase: ChapterRuntim
   return requiredEventIds.every((item) => completed.has(String(item || "").trim()));
 }
 
+/**
+ * 判断 phase 的 completionEventIds 是否被已完成事件或本轮 fixed event 命中。
+ */
 function arePhaseCompletionEventsMatched(
   completedEvents: string[],
   phase: ChapterRuntimePhase | null,
@@ -147,6 +193,9 @@ function arePhaseCompletionEventsMatched(
   return completionEventIds.some((item) => completed.has(String(item || "").trim()));
 }
 
+/**
+ * 根据当前 progress 解析“当前应处于哪个 phase”。
+ */
 function resolveCurrentOrInitialPhase(
   outline: ChapterRuntimeOutline,
   currentPhaseId: string,
@@ -164,6 +213,7 @@ function resolveCurrentOrInitialPhase(
       };
     }
   }
+  // 从前往后找到第一个“未完成且满足前置条件”的 phase，作为当前事件。
   for (let index = 0; index < outline.phases.length; index += 1) {
     const phase = outline.phases[index];
     if (isPhaseCompleted(completedEvents, phase.id)) {
@@ -185,6 +235,9 @@ function resolveCurrentOrInitialPhase(
   };
 }
 
+/**
+ * 根据用户节点反查所属 phase，用于用户输入后回到对应事件。
+ */
 function resolvePhaseForUserNode(
   outline: ChapterRuntimeOutline,
   userNodeId: string | null,
@@ -209,6 +262,9 @@ function resolvePhaseForUserNode(
   };
 }
 
+/**
+ * 返回章节编排图里的最后一个 phase。
+ */
 function resolveFinalPhase(outline: ChapterRuntimeOutline): { phase: ChapterRuntimePhase | null; phaseIndex: number } {
   if (!outline.phases.length) {
     return { phase: null, phaseIndex: 0 };
@@ -219,6 +275,9 @@ function resolveFinalPhase(outline: ChapterRuntimeOutline): { phase: ChapterRunt
   };
 }
 
+/**
+ * 判断 completionCondition / endingRules 是否包含有效结束规则。
+ */
 function hasEffectiveEndingRule(input: unknown): boolean {
   if (input == null) return false;
   if (typeof input === "string") return String(input).trim().length > 0;
@@ -227,22 +286,34 @@ function hasEffectiveEndingRule(input: unknown): boolean {
   return true;
 }
 
+/**
+ * 读取章节 completionCondition，并兼容对象与 JSON 字符串两种存储格式。
+ */
 function readCompletionCondition(chapter: any): unknown {
   return parseJsonSafe((chapter as any)?.completionCondition, (chapter as any)?.completionCondition);
 }
 
+/**
+ * 判断当前章节是否需要补一个“结束条件检查”事件。
+ */
 function hasChapterEndingEvent(chapter: any, outline: ChapterRuntimeOutline): boolean {
   return outline.endingRules.success.length > 0
     || outline.endingRules.failure.length > 0
     || hasEffectiveEndingRule(readCompletionCondition(chapter));
 }
 
+/**
+ * 对结束条件文本做截断，避免事件摘要过长。
+ */
 function shortEndingText(input: unknown, fallback: string): string {
   const text = String(input || "").replace(/\r\n/g, "\n").trim();
   if (!text) return fallback;
   return text.length > 72 ? `${text.slice(0, 72)}...` : text;
 }
 
+/**
+ * 构造结束条件检查事件的摘要文案。
+ */
 function buildEndingEventSummary(chapter: any, outline: ChapterRuntimeOutline): string {
   const condition = readCompletionCondition(chapter);
   if (typeof condition === "string" && condition.trim()) {
@@ -284,6 +355,9 @@ function buildEndingEventSummary(chapter: any, outline: ChapterRuntimeOutline): 
   return "结束条件判定";
 }
 
+/**
+ * 读取 endingRules 对应的 fixed event 标签，供 UI 和日志展示成功/失败条件。
+ */
 function readEndingRuleLabels(outline: ChapterRuntimeOutline): { success: string[]; failure: string[] } {
   const fixedEventMap = new Map(
     outline.fixedEvents
@@ -299,6 +373,9 @@ function readEndingRuleLabels(outline: ChapterRuntimeOutline): { success: string
   return { success, failure };
 }
 
+/**
+ * 构造结束条件检查事件的事实列表，说明已命中与未命中的条件。
+ */
 function buildEndingEventFacts(input: {
   chapter: any;
   outline: ChapterRuntimeOutline;
@@ -344,6 +421,9 @@ function buildEndingEventFacts(input: {
   return facts;
 }
 
+/**
+ * 将当前运行态切换到“章节结束条件检查事件”。
+ */
 function updateEndingState(
   chapter: any,
   outline: ChapterRuntimeOutline,
@@ -352,6 +432,7 @@ function updateEndingState(
 ) {
   const current = readChapterProgressState(state);
   const existingDynamicEvents = Array.isArray(state.dynamicEvents) ? state.dynamicEvents as RuntimeDynamicEventState[] : [];
+  // ending 事件必须排在最后一个内容事件后面，避免与章节内容共用 eventIndex。
   const highestContentEventIndex = Math.max(
     outline.phases.length,
     ...existingDynamicEvents
@@ -390,6 +471,7 @@ function updateEndingState(
     pendingGoal: endingSummary,
     ...extraPatch,
   });
+  // 运行态里只保留一个 ending 动态事件，避免重复生成多个“结束条件检查”卡片。
   const existingEnding = existingDynamicEvents
     .map((item) => normalizeRuntimeDynamicEventState(item))
     .find((item) => isEndingDynamicEvent(item)) || null;
@@ -416,6 +498,9 @@ function updateEndingState(
   syncRuntimeCurrentEventFromChapterProgress(state);
 }
 
+/**
+ * 主动把当前事件切到 ending 检查，并补充引导摘要/事实。
+ */
 export function activateChapterEndingCheckState(input: {
   chapter: any;
   state: JsonRecord;
@@ -463,6 +548,9 @@ export function activateChapterEndingCheckState(input: {
   });
 }
 
+/**
+ * 为自由模式章节生成/更新动态事件列表，不依赖固定的 runtimeOutline graph。
+ */
 function ensureFreeChapterDynamicEventState(
   chapter: any,
   state: JsonRecord,
@@ -507,6 +595,9 @@ function ensureFreeChapterDynamicEventState(
   syncRuntimeCurrentEventFromChapterProgress(state);
 }
 
+/**
+ * 生成当前阶段的 pendingGoal，作为当前要完成事项的简短提示。
+ */
 function resolvePendingGoal(phase: ChapterRuntimePhase | null, outline: ChapterRuntimeOutline, userNodeId: string | null): string {
   if (phase?.targetSummary) return phase.targetSummary;
   if (!userNodeId) return "";
@@ -516,6 +607,9 @@ function resolvePendingGoal(phase: ChapterRuntimePhase | null, outline: ChapterR
     : "";
 }
 
+/**
+ * 根据 phaseId 在编排图里查 phase，并返回其索引。
+ */
 function getPhaseById(outline: ChapterRuntimeOutline, phaseId: string | null | undefined): { phase: ChapterRuntimePhase | null; phaseIndex: number } {
   if (!phaseId) return { phase: null, phaseIndex: -1 };
   const phaseIndex = outline.phases.findIndex((item) => item.id === phaseId);
@@ -526,6 +620,9 @@ function getPhaseById(outline: ChapterRuntimeOutline, phaseId: string | null | u
   };
 }
 
+/**
+ * 解析当前 phase 的候选 nextPhaseIds，同时兜底串联顺序下一个 phase。
+ */
 function getPhaseCandidateNextIds(outline: ChapterRuntimeOutline, phaseId: string | null | undefined, fallbackIndex: number): string[] {
   const { phase } = getPhaseById(outline, phaseId);
   if (!phase) {
@@ -542,6 +639,9 @@ function getPhaseCandidateNextIds(outline: ChapterRuntimeOutline, phaseId: strin
   ]));
 }
 
+/**
+ * 按图结构解析当前 phase 完成后应进入的下一个 phase。
+ */
 function resolveNextPhaseFromGraph(
   outline: ChapterRuntimeOutline,
   currentPhaseId: string | null | undefined,
@@ -551,6 +651,7 @@ function resolveNextPhaseFromGraph(
   const visited = new Set<string>();
   const queue = getPhaseCandidateNextIds(outline, currentPhaseId, fallbackIndex);
   while (queue.length) {
+    // 使用候选队列逐个尝试下一个 phase，优先遵循图关系，再兜底顺序下一个节点。
     const phaseId = String(queue.shift() || "").trim();
     if (!phaseId || visited.has(phaseId)) continue;
     visited.add(phaseId);
@@ -568,6 +669,9 @@ function resolveNextPhaseFromGraph(
   return resolveCurrentOrInitialPhase(outline, "", completedEvents);
 }
 
+/**
+ * 把 chapterProgress/currentEvent/dynamicEvents 同步到指定 phase。
+ */
 function updatePhaseState(
   outline: ChapterRuntimeOutline,
   state: JsonRecord,
@@ -599,9 +703,13 @@ function updatePhaseState(
     pendingGoal: resolvePendingGoal(phase, outline, userNodeId),
     ...extraPatch,
   });
+  // phase 变更后立刻同步 dynamicEvents/currentEvent，避免 UI 和 AI 读取到不同步的事件状态。
   syncRuntimeDynamicEvents(state, outline);
 }
 
+/**
+ * 把 progress 状态映射成动态事件卡片使用的统一状态值。
+ */
 function resolveRuntimeDynamicEventStatus(input: {
   phase: ChapterRuntimePhase;
   phaseIndex: number;
@@ -622,6 +730,9 @@ function resolveRuntimeDynamicEventStatus(input: {
   return "idle";
 }
 
+/**
+ * 根据 runtimeOutline 与当前 progress 重建动态事件列表。
+ */
 function buildRuntimeDynamicEvents(
   outline: ChapterRuntimeOutline,
   current: ReturnType<typeof readChapterProgressState>,
@@ -678,6 +789,7 @@ function buildRuntimeDynamicEvents(
       .map((item) => Number(item.eventIndex || 0))
       .filter((item) => Number.isFinite(item) && item > 0),
   );
+  // ending 卡片只保留最新一条，并强制把索引放到最后一个内容事件后面。
   const normalizedEndingEvent = endingExtraEvents.length
     ? normalizeRuntimeDynamicEventState({
       ...endingExtraEvents
@@ -698,6 +810,9 @@ function buildRuntimeDynamicEvents(
   ].sort((a, b) => a.eventIndex - b.eventIndex);
 }
 
+/**
+ * 判断某个动态事件是否属于章节结束条件检查事件。
+ */
 function isEndingDynamicEvent(input: RuntimeDynamicEventState | null | undefined): boolean {
   if (!input) return false;
   const kind = String(input.kind || "").trim().toLowerCase();
@@ -705,12 +820,18 @@ function isEndingDynamicEvent(input: RuntimeDynamicEventState | null | undefined
   return kind === "ending" || flowType === "chapter_ending_check";
 }
 
+/**
+ * 统一重建运行态里的 dynamicEvents 列表。
+ */
 function syncRuntimeDynamicEvents(state: JsonRecord, outline: ChapterRuntimeOutline): RuntimeDynamicEventState[] {
   const current = readChapterProgressState(state);
   const existingDynamicEvents = Array.isArray(state.dynamicEvents) ? state.dynamicEvents as RuntimeDynamicEventState[] : [];
   return setRuntimeDynamicEventList(state, buildRuntimeDynamicEvents(outline, current, existingDynamicEvents));
 }
 
+/**
+ * 将指定 phase 追加到 completedEvents。
+ */
 function markPhaseCompleted(completedEvents: string[], phaseId: string | null | undefined): string[] {
   if (!phaseId) return normalizeCompletedEvents(completedEvents);
   const next = [...completedEvents];
@@ -721,12 +842,18 @@ function markPhaseCompleted(completedEvents: string[], phaseId: string | null | 
   return normalizeCompletedEvents(next);
 }
 
+/**
+ * 使用归一化文本做宽松信号匹配。
+ */
 function signalMatches(label: string, signalTexts: string[]): boolean {
   const normalizedLabel = normalizeSignalText(label);
   if (!normalizedLabel) return false;
   return signalTexts.some((item) => item.includes(normalizedLabel) || normalizedLabel.includes(item));
 }
 
+/**
+ * 收集宽松信号集，包含内容、角色、触发器、任务进度和 delta 等辅助信号。
+ */
 function collectSignalTexts(input: {
   messageContent?: string;
   messageRole?: string;
@@ -746,6 +873,9 @@ function collectSignalTexts(input: {
   return Array.from(new Set(texts.map((item) => normalizeSignalText(item)).filter(Boolean)));
 }
 
+/**
+ * 收集严格信号集，只保留适合直接命中 fixed event 的核心文本。
+ */
 function collectStrictSignalTexts(input: {
   messageContent?: string;
   triggered?: TriggerHit[];
@@ -761,6 +891,9 @@ function collectStrictSignalTexts(input: {
   return Array.from(new Set(texts.map((item) => normalizeSignalText(item)).filter(Boolean)));
 }
 
+/**
+ * 判断某个 fixed event 是否在本轮输入/输出中被命中。
+ */
 function fixedEventMatches(input: {
   label: string;
   id: string;
@@ -769,7 +902,7 @@ function fixedEventMatches(input: {
   ctx: ConditionContext;
 }): boolean {
   const normalizedId = normalizeSignalText(input.id);
-  // fixed event 只能被明确的 signal 或条件表达式命中，避免用户只输入 “2” 就误命中 “输入不符合要求2次”。
+  // fixed event 只能被明确 signal 或条件表达式命中，避免用户只输入“2”就误命中“输入不符合要求2次”。
   if (normalizedId && input.strictSignalTexts.some((item) => item === normalizedId)) {
     return true;
   }
@@ -784,12 +917,15 @@ function fixedEventMatches(input: {
   return input.strictSignalTexts.some((item) => item === normalizedLabel);
 }
 
+/**
+ * 初始化章节运行进度；章节切换时会重置完成标记，同章节重复进入时则做幂等同步。
+ */
 export function initializeChapterProgressForState(chapter: any, state: JsonRecord): void {
   const outline = readRuntimeOutline(chapter);
   const current = readChapterProgressState(state);
   const chapterId = Number(chapter?.id || 0);
   
-  // 检查是否切换了章节：如果chapterId变化，需要重置completedEvents
+  // 章节切换和同章节重复初始化不是一回事，这里先拆开，避免把上一章的完成标记带过来。
   const isChapterSwitched = current.chapterId > 0 && current.chapterId !== chapterId;
   
   if (isChapterSwitched) {
@@ -813,6 +949,7 @@ export function initializeChapterProgressForState(chapter: any, state: JsonRecor
         });
         return;
       }
+      // 没有可继续推进的内容事件时，如果章节有结束条件，则直接切到 ending 事件。
       if (hasChapterEndingEvent(chapter, outline)) {
         updateEndingState(chapter, outline, state, {
           completedEvents: freshCompletedEvents,
@@ -850,7 +987,7 @@ export function initializeChapterProgressForState(chapter: any, state: JsonRecor
     return;
   }
   
-  // 同一章节内的正常初始化逻辑
+  // 同一章节内的再次初始化，需要尽量复用当前已推进的 phase 和 completedEvents。
   if (isFreeChapterRuntimeMode(chapter)) {
     if (!outline.phases.length) {
       ensureFreeChapterDynamicEventState(chapter, state, current.eventIndex || 1, {
@@ -909,6 +1046,9 @@ export function initializeChapterProgressForState(chapter: any, state: JsonRecor
   );
 }
 
+/**
+ * 根据当前运行态重新同步 chapterProgress、dynamicEvents 与 currentEvent。
+ */
 export function syncChapterProgressWithRuntime(chapter: any, state: JsonRecord): void {
   const outline = readRuntimeOutline(chapter);
   const current = readChapterProgressState(state);
@@ -964,6 +1104,7 @@ export function syncChapterProgressWithRuntime(chapter: any, state: JsonRecord):
       );
       return;
     }
+    // 所有内容 phase 都结束后，如果章节存在结束条件，当前事件应切到 ending。
     if (hasChapterEndingEvent(chapter, outline)) {
       updateEndingState(chapter, outline, state, {
         completedEvents,
@@ -994,6 +1135,9 @@ export function syncChapterProgressWithRuntime(chapter: any, state: JsonRecord):
   );
 }
 
+/**
+ * 用户节点提交输入后，标记当前用户节点和必要的 phase 完成，并推进到下一个事件。
+ */
 export function markCurrentUserNodeCompleted(chapter: any, state: JsonRecord, messageId?: number | null): void {
   const outline = readRuntimeOutline(chapter);
   const current = readChapterProgressState(state);
@@ -1060,6 +1204,9 @@ export function markCurrentUserNodeCompleted(chapter: any, state: JsonRecord, me
   );
 }
 
+/**
+ * 旁白/NPC 发言后尝试推进章节内容事件。
+ */
 export function advanceChapterProgressAfterNarrative(chapter: any, state: JsonRecord, input?: {
   messageContent?: string;
   messageRole?: string;
@@ -1072,7 +1219,7 @@ export function advanceChapterProgressAfterNarrative(chapter: any, state: JsonRe
   const outline = readRuntimeOutline(chapter);
   const current = readChapterProgressState(state);
 
-  // 首先进行事件完整性验证
+  // 先做完整性校验，便于排查“为什么事件没推进”的问题。
   const validation = validateEventCompleteness(chapter, state);
   console.log("[event:completeness:check]", JSON.stringify({
     chapterId: Number(chapter?.id || 0),
@@ -1106,6 +1253,7 @@ export function advanceChapterProgressAfterNarrative(chapter: any, state: JsonRe
       matchedPhaseSignal: false,
     };
   }
+  // 旁白/NPC 的文本本身就是推进 scene 事件的主要信号来源。
   const signalTexts = collectSignalTexts({
     messageContent: input?.messageContent,
     messageRole: input?.messageRole,
@@ -1133,6 +1281,7 @@ export function advanceChapterProgressAfterNarrative(chapter: any, state: JsonRe
         matchedPhaseSignal,
       };
     }
+    // 内容 phase 走到末尾后，不直接判章结束，而是进入 ending 检查事件。
     if (hasChapterEndingEvent(chapter, outline)) {
       updateEndingState(chapter, outline, state, {
         completedEvents,
@@ -1177,6 +1326,9 @@ export function advanceChapterProgressAfterNarrative(chapter: any, state: JsonRe
   };
 }
 
+/**
+ * 将本轮输入/输出命中的 fixed event 写入 completedEvents。
+ */
 export function recordChapterProgressSignals(chapter: any, state: JsonRecord, input: {
   messageContent?: string;
   messageRole?: string;
@@ -1196,12 +1348,14 @@ export function recordChapterProgressSignals(chapter: any, state: JsonRecord, in
   }
   const strictSignalTexts = collectStrictSignalTexts(input);
   let completedEvents = normalizeCompletedEvents(Array.isArray(current.completedEvents) ? current.completedEvents : []);
+  // fixed event 是规则层识别事件的核心入口：内容、任务变化、delta 都会在这里被转成已完成事件。
   const matchedFixedEvents = outline.fixedEvents
     .filter((item) => fixedEventMatches({
       label: String(item.label || "").trim(),
       id: String(item.id || "").trim(),
       conditionExpr: (item as any)?.conditionExpr,
       strictSignalTexts,
+      // 条件表达式命中依赖当前 state 与本轮输入，而不是 AI 额外判断。
       ctx: {
         state,
         messageContent: String(input.messageContent || ""),
@@ -1263,8 +1417,7 @@ export interface EventCompletenessValidation {
 }
 
 /**
- * 验证当前事件的完整性
- * 检查事件是否经历了：开始 -> 经过 -> 结束 的完整生命周期
+ * 验证当前事件是否经历了“开始 -> 推进 -> 完成”的完整生命周期。
  */
 export function validateEventCompleteness(chapter: any, state: JsonRecord): EventCompletenessValidation {
   const outline = readRuntimeOutline(chapter);
@@ -1302,7 +1455,7 @@ export function validateEventCompleteness(chapter: any, state: JsonRecord): Even
     details.push(`[结束] 事件 ${current.eventIndex} 未完成`);
   }
 
-  // 4. 计算建议的下一个事件索引
+  // 计算建议的下一个事件索引，供日志和调试工具使用。
   let suggestedNextEventIndex = current.eventIndex;
   if (hasEnded) {
     // 如果当前事件已完成，建议进入下一个事件
@@ -1335,7 +1488,7 @@ export function validateEventCompleteness(chapter: any, state: JsonRecord): Even
 }
 
 /**
- * 判定是否可以进入下一个事件
+ * 下一事件推进判定结果。
  */
 export interface NextEventDecision {
   /** 是否可以进入下一个事件 */
@@ -1354,8 +1507,7 @@ export interface NextEventDecision {
 }
 
 /**
- * 判定是否可以进入下一个事件
- * 基于当前事件状态和章节编排图进行判定
+ * 基于当前事件状态和章节编排图，判定是否可以进入下一个事件。
  */
 export function canAdvanceToNextEvent(chapter: any, state: JsonRecord): NextEventDecision {
   const outline = readRuntimeOutline(chapter);
@@ -1418,7 +1570,7 @@ export function canAdvanceToNextEvent(chapter: any, state: JsonRecord): NextEven
 }
 
 /**
- * 记录事件推进判定日志
+ * 输出事件推进决策日志，便于排查为什么没有进入下一个事件。
  */
 export function logEventAdvanceDecision(chapter: any, state: JsonRecord, decision: NextEventDecision): void {
   const current = readChapterProgressState(state);
