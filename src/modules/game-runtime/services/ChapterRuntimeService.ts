@@ -17,6 +17,7 @@ export interface EvaluateRuntimeOutcomeInput {
   fallbackOutcome?: "continue" | "success" | "failed";
   fallbackNextChapterId?: number | null;
   applyToState?: boolean;
+  traceMeta?: JsonRecord;
 }
 
 export interface RuntimeOutcomeResolution {
@@ -84,6 +85,21 @@ function normalizeResultObject(input: unknown): Record<string, unknown> | null {
   } catch {
     return input as Record<string, unknown>;
   }
+}
+
+function normalizeTraceMeta(input: unknown): JsonRecord {
+  if (!input || typeof input !== "object") return {};
+  return input as JsonRecord;
+}
+
+// 用统一 tag 串起章节判定与编排请求，方便确认同一个 orchestration 请求里判章跑了几次。
+function logChapterEndingKeyNode(node: string, traceMeta: unknown, extra?: Record<string, unknown>) {
+  if (!isDebugLogEnabled()) return;
+  console.log("[game:orchestrator:key_nodes]", JSON.stringify({
+    node,
+    ...normalizeTraceMeta(traceMeta),
+    ...(extra || {}),
+  }));
 }
 
 function parseFieldMap(rawText: string): Record<string, string> {
@@ -255,12 +271,14 @@ function buildChapterJudgeStats(input: {
   buildMs?: number;
   invokeMs?: number;
   totalMs?: number;
+  traceMeta?: JsonRecord;
 }) {
   const totalRequestChars = input.systemPrompt.length + input.prompt.length;
   const runtimeLog = {
     manufacturer: input.manufacturer,
     model: input.model,
     reasoningEffort: input.reasoningEffort || "",
+    traceMeta: normalizeTraceMeta(input.traceMeta),
     requestChars: totalRequestChars,
     systemChars: input.systemPrompt.length,
     userChars: input.prompt.length,
@@ -334,6 +352,7 @@ async function evaluateChapterOutcomeByAi(input: EvaluateRuntimeOutcomeInput): P
       buildMs: 0,
       invokeMs: 0,
       totalMs: Date.now() - totalStartedAt,
+      traceMeta: input.traceMeta,
     });
     return fallback;
   }
@@ -348,6 +367,11 @@ async function evaluateChapterOutcomeByAi(input: EvaluateRuntimeOutcomeInput): P
     const modelConfig = await resolveChapterJudgeModel(input.userId);
     requestStage = "invoke_model";
     const invokeStartedAt = Date.now();
+    logChapterEndingKeyNode("storyChapterJudgeModel:invoke:start", input.traceMeta, {
+      chapterId: Number(input.chapter?.id || 0),
+      eventType: normalizeScalarText(input.eventType),
+      messageLength: normalizeScalarText(input.messageContent).length,
+    });
     const result = await u.ai.text.invoke(
       {
         usageType: "章节判定",
@@ -367,6 +391,9 @@ async function evaluateChapterOutcomeByAi(input: EvaluateRuntimeOutcomeInput): P
       modelConfig as any,
     );
     invokeMs = Date.now() - invokeStartedAt;
+    logChapterEndingKeyNode("storyChapterJudgeModel:invoke:done", input.traceMeta, {
+      invokeMs,
+    });
     // normalizeResultObject = 把“看起来像 object 的脏数据”修正成真正的 object
     const rawObject = (result as any)?.object ?? (typeof result === "object" ? result : null);
 
@@ -429,6 +456,7 @@ async function evaluateChapterOutcomeByAi(input: EvaluateRuntimeOutcomeInput): P
       buildMs,
       invokeMs,
       totalMs: Date.now() - totalStartedAt,
+      traceMeta: input.traceMeta,
     });
     return {
       hasRule: true,
@@ -453,10 +481,12 @@ async function evaluateChapterOutcomeByAi(input: EvaluateRuntimeOutcomeInput): P
       buildMs,
       invokeMs,
       totalMs: Date.now() - totalStartedAt,
+      traceMeta: input.traceMeta,
     });
     console.warn("[story:chapter_ending_check:error]", {
       chapterId: Number(input.chapter?.id || 0),
       chapterTitle: normalizeScalarText(input.chapter?.title),
+      traceMeta: normalizeTraceMeta(input.traceMeta),
       stage: requestStage,
       message: (err as any)?.message || String(err),
     });

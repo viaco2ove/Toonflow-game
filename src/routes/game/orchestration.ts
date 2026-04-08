@@ -85,11 +85,62 @@ type PlanLike = {
   };
 };
 
+type OrchestrationRequestTrace = {
+  requestId: string;
+  route: "/game/orchestration";
+  branch: "initial" | "player";
+  userId: number;
+  worldId: number;
+  chapterId: number;
+  sessionId: string;
+  debugRuntimeKey?: string;
+};
+
 // 统一把 unknown 转成可安全拼接日志/响应的短文本，避免出现 [object Object]。
 function asTrimmedText(value: unknown, fallback = "") {
   if (typeof value === "string") return value.trim();
   if (typeof value === "number" || typeof value === "boolean") return String(value).trim();
   return fallback;
+}
+
+function isDebugLogEnabled() {
+  return String(process.env.LOG_LEVEL || "").trim().toUpperCase() === "DEBUG";
+}
+
+// 给每次 /game/orchestration 请求生成稳定 trace，方便判断是否同一个请求重复触发 AI。
+function buildOrchestrationRequestTrace(params: {
+  userId: number;
+  worldId: number;
+  chapterId: number;
+  playerContent: string;
+  sessionId: string;
+}): OrchestrationRequestTrace {
+  return {
+    requestId: `orch_${params.userId}_${params.worldId}_${params.chapterId || 0}_${nowTs()}_${Math.random().toString(36).slice(2, 8)}`,
+    route: "/game/orchestration",
+    branch: params.playerContent ? "player" : "initial",
+    userId: params.userId,
+    worldId: params.worldId,
+    chapterId: params.chapterId,
+    sessionId: params.sessionId,
+  };
+}
+
+// 用统一 tag 打关键节点，方便把一次编排请求里的章节判定/编排模型调用串起来看。
+function logOrchestrationKeyNode(trace: OrchestrationRequestTrace, node: string, extra?: Record<string, unknown>) {
+  if (!isDebugLogEnabled()) return;
+  console.log("[game:orchestrator:key_nodes]", JSON.stringify({
+    requestId: trace.requestId,
+    route: trace.route,
+    branch: trace.branch,
+    userId: trace.userId,
+    worldId: trace.worldId,
+    chapterId: trace.chapterId,
+    sessionId: trace.sessionId || "",
+    debugRuntimeKey: trace.debugRuntimeKey || "",
+    node,
+    ...(extra || {}),
+  }));
 }
 
 // 统一 source 字段，避免前端再自己猜是 AI、规则还是兜底结果。
@@ -336,7 +387,12 @@ async function runAndApplyDebugNarrativePlan(params: {
   recentMessages: ReturnType<typeof buildDebugRecentMessages>;
   playerMessage: string;
   rolePair: ReturnType<typeof normalizeRolePair>;
+  requestTrace: OrchestrationRequestTrace;
 }) {
+  logOrchestrationKeyNode(params.requestTrace, "runNarrativePlan:start", {
+    playerMessageLength: params.playerMessage.length,
+    recentMessageCount: params.recentMessages.length,
+  });
   const plan = await runNarrativePlan({
     userId: params.userId,
     world: params.world,
@@ -347,6 +403,13 @@ async function runAndApplyDebugNarrativePlan(params: {
     maxRetries: 0,
     allowControlHints: false,
     allowStateDelta: false,
+    traceMeta: params.requestTrace,
+  });
+  logOrchestrationKeyNode(params.requestTrace, "runNarrativePlan:done", {
+    role: asTrimmedText(plan.role),
+    roleType: asTrimmedText(plan.roleType),
+    awaitUser: Boolean(plan.awaitUser),
+    source: asTrimmedText(plan.source),
   });
   applyOrchestratorResultToState(params.state, plan);
   applyNarrativeMemoryHintsToState(params.state, plan.memoryHints);
@@ -372,6 +435,7 @@ async function buildDebugChapterStartPlan(params: {
   rolePair: ReturnType<typeof normalizeRolePair>;
   recentMessages: ReturnType<typeof buildDebugRecentMessages>;
   debugFreePlotActive: boolean;
+  requestTrace: OrchestrationRequestTrace;
 }) {
   params.state.chapterId = Number(params.targetChapter.id || 0);
   const effectiveChapter = buildEffectiveDebugChapter(params.targetChapter, params.debugFreePlotActive);
@@ -391,6 +455,10 @@ async function buildDebugChapterStartPlan(params: {
 
   // 有显式章节开场词时，先把这一句完整返回给前端；没有时再直接跑一次编排器。
   if (String(openingMessage.content || "").trim()) {
+    logOrchestrationKeyNode(params.requestTrace, "chapter_start:opening_preset", {
+      targetChapterId: Number(params.targetChapter.id || 0),
+      contentLength: String(openingMessage.content || "").trim().length,
+    });
     return {
       chapterId: Number(params.targetChapter.id || 0),
       chapterTitle: String(params.targetChapter.title || ""),
@@ -411,6 +479,7 @@ async function buildDebugChapterStartPlan(params: {
     recentMessages: params.recentMessages,
     playerMessage: "",
     rolePair: params.rolePair,
+    requestTrace: params.requestTrace,
   });
   console.log(
     `[runNarrativePlan] userId=${params.userId} chapter=${effectiveChapter.id} 耗时=${Date.now() - startedAt}ms`,
@@ -513,6 +582,7 @@ async function handleInitialDebugTurn(params: {
   debugFreePlotActive: boolean;
   inputMessages: RuntimeMessageInput[];
   effectiveChapter: any;
+  requestTrace: OrchestrationRequestTrace;
 }) {
   const pendingChapterId = getPendingDebugChapterId(params.state);
   if (pendingChapterId) {
@@ -539,6 +609,7 @@ async function handleInitialDebugTurn(params: {
       rolePair: params.rolePair,
       recentMessages: params.recentMessages,
       debugFreePlotActive: params.debugFreePlotActive,
+      requestTrace: params.requestTrace,
     });
     return sendDebugSuccess(params.res, {
       userId: params.userId,
@@ -562,6 +633,7 @@ async function handleInitialDebugTurn(params: {
       rolePair: params.rolePair,
       recentMessages: params.recentMessages,
       debugFreePlotActive: params.debugFreePlotActive,
+      requestTrace: params.requestTrace,
     });
     return sendDebugSuccess(params.res, {
       userId: params.userId,
@@ -597,6 +669,7 @@ async function handleInitialDebugTurn(params: {
     chapter: params.effectiveChapter,
     playerMessage: "",
     rolePair: params.rolePair,
+    requestTrace: params.requestTrace,
   });
   return sendDebugSuccess(params.res, {
     userId: params.userId,
@@ -625,6 +698,7 @@ async function handleDebugPlayerTurn(params: {
   inputMessages: RuntimeMessageInput[];
   playerContent: string;
   effectiveChapter: any;
+  requestTrace: OrchestrationRequestTrace;
 }) {
   if (!canPlayerSpeakNow(params.state, params.world)) {
     return params.res.status(409).send(error("当前还没轮到用户发言"));
@@ -672,7 +746,11 @@ async function handleDebugPlayerTurn(params: {
     eventType: "on_message",
     meta: {},
   });
+  logOrchestrationKeyNode(params.requestTrace, "chapter_outcome:start", {
+    playerMessageLength: params.playerContent.length,
+  });
   const outcome = await evaluateDebugRuntimeOutcome({
+    userId: params.userId,
     chapter: params.chapter,
     state: params.state,
     messageContent: params.playerContent,
@@ -680,6 +758,11 @@ async function handleDebugPlayerTurn(params: {
     meta: {},
     recentMessages: params.recentMessages,
     debugFreePlotActive: params.debugFreePlotActive,
+    traceMeta: params.requestTrace,
+  });
+  logOrchestrationKeyNode(params.requestTrace, "chapter_outcome:done", {
+    outcome: asTrimmedText(outcome.result),
+    matchedRule: asTrimmedText(outcome.matchedRule),
   });
 
   if (outcome.result === "failed") {
@@ -748,6 +831,7 @@ async function handleDebugPlayerTurn(params: {
       rolePair: params.rolePair,
       recentMessages: params.recentMessages,
       debugFreePlotActive: params.debugFreePlotActive,
+      requestTrace: params.requestTrace,
     });
     return sendDebugSuccess(params.res, {
       userId: params.userId,
@@ -770,6 +854,7 @@ async function handleDebugPlayerTurn(params: {
     chapter: params.effectiveChapter,
     playerMessage: params.playerContent,
     rolePair: params.rolePair,
+    requestTrace: params.requestTrace,
   });
   return sendDebugSuccess(params.res, {
     userId: params.userId,
@@ -804,6 +889,17 @@ async function handleDebugOrchestrationRequest(req: express.Request, res: expres
   const chapterId = Number(req.body.chapterId || 0);
   const playerContent = asTrimmedText(req.body.playerContent);
   const inputMessages = (Array.isArray(req.body.messages) ? req.body.messages : []) as RuntimeMessageInput[];
+  const requestTrace = buildOrchestrationRequestTrace({
+    userId,
+    worldId,
+    chapterId,
+    playerContent,
+    sessionId,
+  });
+  logOrchestrationKeyNode(requestTrace, "request:accepted", {
+    inputMessageCount: inputMessages.length,
+    playerMessageLength: playerContent.length,
+  });
 
   let world: any;
   let chapter: any;
@@ -830,6 +926,12 @@ async function handleDebugOrchestrationRequest(req: express.Request, res: expres
     playerContent,
     inputMessages,
   });
+  requestTrace.debugRuntimeKey = asTrimmedText(runtimeContext.state?.debugRuntimeKey);
+  requestTrace.chapterId = Number(runtimeContext.effectiveChapter?.id || chapter.id || requestTrace.chapterId || 0);
+  logOrchestrationKeyNode(requestTrace, "runtime_context:ready", {
+    debugFreePlotActive: runtimeContext.debugFreePlotActive,
+    recentMessageCount: runtimeContext.recentMessages.length,
+  });
 
   if (!playerContent) {
     return handleInitialDebugTurn({
@@ -845,6 +947,7 @@ async function handleDebugOrchestrationRequest(req: express.Request, res: expres
       debugFreePlotActive: runtimeContext.debugFreePlotActive,
       inputMessages,
       effectiveChapter: runtimeContext.effectiveChapter,
+      requestTrace,
     });
   }
 
@@ -862,6 +965,7 @@ async function handleDebugOrchestrationRequest(req: express.Request, res: expres
     inputMessages,
     playerContent,
     effectiveChapter: runtimeContext.effectiveChapter,
+    requestTrace,
   });
 }
 

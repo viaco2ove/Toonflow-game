@@ -63,6 +63,7 @@ export interface OrchestratorInput {
   maxRetries?: number;
   allowControlHints?: boolean;
   allowStateDelta?: boolean;
+  traceMeta?: JsonRecord;
 }
 
 export interface NarrativePlanResult {
@@ -156,6 +157,7 @@ type OrchestratorPromptPayload = {
   phaseAllowedSpeakers: string[];
   recentDialogue: string;
   latestPlayerMessage: string;
+  traceMeta?: JsonRecord;
 };
 
 type PromptStatRow = {
@@ -174,6 +176,21 @@ function truncateErrorMessage(input: unknown, limit = 180): string {
 
 function isDebugLogEnabled(): boolean {
   return normalizeScalarText(process.env.LOG_LEVEL).toUpperCase() === "DEBUG";
+}
+
+function normalizeTraceMeta(input: unknown): JsonRecord {
+  if (!input || typeof input !== "object") return {};
+  return input as JsonRecord;
+}
+
+// 用统一 tag 串起编排请求和模型调用，方便定位同一个请求是否重复触发了 AI。
+function logOrchestratorKeyNode(node: string, traceMeta: unknown, extra?: Record<string, unknown>) {
+  if (!isDebugLogEnabled()) return;
+  console.log("[game:orchestrator:key_nodes]", JSON.stringify({
+    node,
+    ...normalizeTraceMeta(traceMeta),
+    ...(extra || {}),
+  }));
 }
 
 function estimatePromptTokens(text: string): number {
@@ -978,6 +995,7 @@ function logOrchestratorPromptStats(
   // 单次编排只保留一条 runtime 日志，避免同一轮配置/响应各打一条导致看起来像重复调用。
   const runtimeLog: Record<string, any> = {
     ...runtime,
+    traceMeta: normalizeTraceMeta(payload.traceMeta),
     requestChars: totalPromptChars,
     systemChars: systemPrompt.length,
     userChars: userPrompt.length,
@@ -2184,11 +2202,16 @@ function sanitizeNarrativeStateDelta(
 // 调用编排模型，决定本轮谁说话、为什么说、以及是否轮到用户。
 export async function runNarrativePlan(input: OrchestratorInput): Promise<NarrativePlanResult> {
   const start = Date.now();
+  logOrchestratorKeyNode("runNarrativePlan:enter", input.traceMeta, {
+    playerMessageLength: normalizeScalarText(input.playerMessage).length,
+    recentMessageCount: Array.isArray(input.recentMessages) ? input.recentMessages.length : 0,
+  });
   try {
     const result = await doRunNarrativePlan(input);
     return result;
   } finally {
     const cost = Date.now() - start;
+    logOrchestratorKeyNode("runNarrativePlan:exit", input.traceMeta, { totalMs: cost });
     console.log(`[runNarrativePlan] 耗时: ${cost}ms`);
   }
 }
@@ -2241,6 +2264,7 @@ async function doRunNarrativePlan(input: OrchestratorInput): Promise<NarrativePl
     phaseAllowedSpeakers: Array.isArray(currentPhase?.allowedSpeakers) ? currentPhase.allowedSpeakers : [],
     recentDialogue: compactMode ? recentDialogueText(input.recentMessages, 10, 900) : recentDialogueText(input.recentMessages),
     latestPlayerMessage: normalizeScalarText(input.playerMessage),
+    traceMeta: normalizeTraceMeta(input.traceMeta),
   };
   const hasPlayerInput = payload.latestPlayerMessage.length > 0;
   const isSkip = payload.latestPlayerMessage === ".";
@@ -2295,6 +2319,13 @@ async function doRunNarrativePlan(input: OrchestratorInput): Promise<NarrativePl
   try {
     // 发送请求 进行编排
     const invokeStartedAt = Date.now();
+    logOrchestratorKeyNode("storyOrchestratorModel:invoke:start", input.traceMeta, {
+      currentEventIndex: currentEvent.eventIndex,
+      currentEventKind: currentEvent.eventKind,
+      currentEventFlowType: currentEvent.eventFlowType,
+      currentEventStatus: currentEvent.eventStatus,
+      hasPlayerInput,
+    });
     const result = await u.ai.text.invoke(
       {
         plainTextOutput: true,
@@ -2322,6 +2353,9 @@ async function doRunNarrativePlan(input: OrchestratorInput): Promise<NarrativePl
       promptAiConfig as any,
     );
     orchestratorInvokeMs = Date.now() - invokeStartedAt;
+    logOrchestratorKeyNode("storyOrchestratorModel:invoke:done", input.traceMeta, {
+      invokeMs: orchestratorInvokeMs,
+    });
     const rawText = unwrapModelText((result as any)?.text || "");
     orchestratorRawText = rawText;
     orchestratorTokenUsage = (result as any)?.usage || null;

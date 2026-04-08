@@ -574,6 +574,7 @@ export async function evaluateDebugRuntimeOutcome(params: {
   meta?: Record<string, any>;
   recentMessages?: any[];
   debugFreePlotActive?: boolean;
+  traceMeta?: Record<string, any>;
 }) {
   if (!params.chapter || params.debugFreePlotActive) {
     return {
@@ -593,6 +594,7 @@ export async function evaluateDebugRuntimeOutcome(params: {
     meta: params.meta,
     recentMessages: params.recentMessages,
     applyToState: true,
+    traceMeta: params.traceMeta,
   });
   if (resolved.outcome !== "continue") {
     syncDebugChapterRuntime(params.chapter, params.state);
