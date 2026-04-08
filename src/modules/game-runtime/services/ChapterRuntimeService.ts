@@ -298,7 +298,9 @@ function buildChapterJudgeStats(input: {
   invokeMs?: number;
   totalMs?: number;
   traceMeta?: JsonRecord;
+  start: number;
 }) {
+  const cost = Date.now() - input.start;
   const totalRequestChars = input.systemPrompt.length + input.prompt.length;
   const runtimeLog = {
     manufacturer: input.manufacturer,
@@ -326,6 +328,7 @@ function buildChapterJudgeStats(input: {
   if (input.tokenUsage) {
     console.log(`[story:chapter_ending_check:stats] | 实际推理消耗 | input=${input.tokenUsage.inputTokens || 0}, output=${input.tokenUsage.outputTokens || 0}, reasoning=${input.tokenUsage.reasoningTokens || 0} | - | - |`);
   }
+  console.log(`[story:chapter_ending_check:stats] 耗时: ${cost}ms`);
 
 }
 
@@ -364,6 +367,7 @@ async function evaluateChapterOutcomeByAi(input: EvaluateRuntimeOutcomeInput): P
   if (!fallback.hasRule) {
     return fallback;
   }
+ const start = Date.now();
   const prompt = await loadChapterJudgePrompt();
   if (!prompt) {
     buildChapterJudgeStats({
@@ -379,6 +383,7 @@ async function evaluateChapterOutcomeByAi(input: EvaluateRuntimeOutcomeInput): P
       invokeMs: 0,
       totalMs: Date.now() - totalStartedAt,
       traceMeta: input.traceMeta,
+      start:start,
     });
     return fallback;
   }
@@ -483,6 +488,7 @@ async function evaluateChapterOutcomeByAi(input: EvaluateRuntimeOutcomeInput): P
       invokeMs,
       totalMs: Date.now() - totalStartedAt,
       traceMeta: input.traceMeta,
+      start:start,
     });
     return {
       hasRule: true,
@@ -508,8 +514,9 @@ async function evaluateChapterOutcomeByAi(input: EvaluateRuntimeOutcomeInput): P
       invokeMs,
       totalMs: Date.now() - totalStartedAt,
       traceMeta: input.traceMeta,
+      start:start,
     });
-    console.warn("[story:chapter_ending_check:error]", {
+    console.warn("[story:chapter_ending_check:runtime]error", {
       chapterId: Number(input.chapter?.id || 0),
       chapterTitle: normalizeScalarText(input.chapter?.title),
       traceMeta: normalizeTraceMeta(input.traceMeta),

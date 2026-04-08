@@ -342,11 +342,15 @@ export function buildDebugStateSnapshot(state: Record<string, any>, debugRuntime
     worldId: Number(state.worldId || 0) || undefined,
     chapterId: Number(state.chapterId || 0) || undefined,
     round: Number(state.round || 0) || 0,
+    chapterTitle: String(state.chapterTitle || "").trim() || undefined,
     turnState: cloneDebugRuntimeState(state.turnState || {}),
     currentEventDigest: cloneDebugRuntimeState(eventView.currentEventDigest),
     eventDigestWindow: cloneDebugRuntimeState(eventView.eventDigestWindow),
     eventDigestWindowText: eventView.eventDigestWindowText,
-    // 添加章节进度信息，包含 completedEvents 用于正确显示事件索引
+    currentEvent: cloneDebugRuntimeState(state.currentEvent || {}),
+    dynamicEvents: cloneDebugRuntimeState(Array.isArray(state.dynamicEvents) ? state.dynamicEvents : []),
+    // 调试回溯后的继续编排会直接使用前端回传的 snapshot，因此这里必须带完整章节运行态，
+    // 否则一旦缓存失效，就会出现“台词恢复了，但事件进度没有恢复”或“事件进度残留未来状态”的问题。
     chapterProgress: {
       chapterId: chapterProgress.chapterId,
       phaseId: chapterProgress.phaseId,
@@ -359,8 +363,21 @@ export function buildDebugStateSnapshot(state: Record<string, any>, debugRuntime
       userNodeId: chapterProgress.userNodeId,
       userNodeIndex: chapterProgress.userNodeIndex,
       userNodeStatus: chapterProgress.userNodeStatus,
+      pendingGoal: chapterProgress.pendingGoal,
+      fixedOutcomeLocked: chapterProgress.fixedOutcomeLocked,
+      lastEvaluatedMessageId: chapterProgress.lastEvaluatedMessageId,
     },
+    flags: cloneDebugRuntimeState(state.flags || {}),
+    vars: cloneDebugRuntimeState(state.vars || {}),
+    recentEvents: cloneDebugRuntimeState(Array.isArray(state.recentEvents) ? state.recentEvents : []),
+    inventory: cloneDebugRuntimeState(Array.isArray(state.inventory) ? state.inventory : []),
+    unlockedRoles: cloneDebugRuntimeState(Array.isArray(state.unlockedRoles) ? state.unlockedRoles : []),
+    npcs: cloneDebugRuntimeState(state.npcs || {}),
+    debugMessageCount: Math.max(0, Number(state.debugMessageCount || 0)),
   };
+  if (state.__pendingEndingGuide === true) {
+    snapshot.__pendingEndingGuide = true;
+  }
   if (state.player && typeof state.player === "object") {
     snapshot.player = cloneDebugRuntimeState(state.player);
   }

@@ -58,6 +58,7 @@ function buildDebugSuccessPayload(params: {
   endDialogDetail?: string | null;
   messages?: unknown[];
   allMessages?: RuntimeMessageInput[];
+  historyMessages?: RuntimeMessageInput[];
   saveRevisit?: boolean;
 }) {
   const rawMessages = params.messages || [];
@@ -80,9 +81,14 @@ function buildDebugSuccessPayload(params: {
 
   // 保存回溯点
   if (params.saveRevisit !== false && rawMessages.length > 0) {
+    // 调试回溯点必须绑定“截至当前响应为止”的完整消息列表，
+    // 不能只存本轮新增消息，否则回溯回来时消息历史会缺口，事件进度和消息就会错位。
     const revisitMessages = Array.isArray(params.allMessages) && params.allMessages.length
       ? params.allMessages
-      : rawMessages as RuntimeMessageInput[];
+      : [
+          ...(Array.isArray(params.historyMessages) ? params.historyMessages : []),
+          ...(rawMessages as RuntimeMessageInput[]),
+        ];
     params.state.debugMessageCount = messageCountOffset + rawMessages.length;
     saveDebugRevisitPoint(
       debugRuntimeKey,
@@ -192,6 +198,7 @@ export default router.post(
               chapterId: Number(chapter.id || 0),
               chapterTitle: String(chapter.title || ""),
               state,
+              historyMessages: messages,
               endDialog: null,
               messages: [],
             })));
@@ -212,6 +219,7 @@ export default router.post(
             chapterId: Number(nextChapter.id || 0),
             chapterTitle: String(nextChapter.title || ""),
             state,
+            historyMessages: messages,
             endDialog: null,
             messages: [asDebugMessage(nextOpeningRuntimeMessage)],
           })));
@@ -237,6 +245,7 @@ export default router.post(
               chapterId: Number(chapter.id || 0),
               chapterTitle: String(chapter.title || ""),
               state,
+              historyMessages: messages,
               endDialog: null,
               messages: [asDebugMessage(openingRuntimeMessage)],
               saveRevisit: true, // 保存回溯点
@@ -252,6 +261,7 @@ export default router.post(
             chapterId: Number(chapter.id || 0),
             chapterTitle: String(chapter.title || ""),
             state,
+            historyMessages: messages,
             endDialog: null,
             messages: [],
           })));
@@ -321,6 +331,7 @@ export default router.post(
             chapterId: Number(chapter.id || 0),
             chapterTitle: String(chapter.title || ""),
             state,
+            historyMessages: messages,
             endDialog: "已失败",
             endDialogDetail: buildDebugEndDialogDetail({
               endDialog: "已失败",
@@ -346,6 +357,7 @@ export default router.post(
               chapterId: Number(chapter.id || 0),
               chapterTitle: String(chapter.title || ""),
               state,
+              historyMessages: messages,
               endDialog: "进入自由剧情",
               messages: emittedMessage ? [emittedMessage] : [],
             })));
@@ -365,6 +377,7 @@ export default router.post(
               chapterId: Number(chapter.id || 0),
               chapterTitle: String(chapter.title || ""),
               state,
+              historyMessages: messages,
               endDialog: null,
               messages: [emittedMessage],
             })));
@@ -385,6 +398,7 @@ export default router.post(
             chapterId: Number(nextChapter.id || 0),
             chapterTitle: String(nextChapter.title || ""),
             state,
+            historyMessages: messages,
             endDialog: null,
             messages: [asDebugMessage(nextOpeningRuntimeMessage)],
           })));
@@ -410,6 +424,7 @@ export default router.post(
           chapterId: Number(chapter.id || 0),
           chapterTitle: String(chapter.title || ""),
           state,
+          historyMessages: messages,
           endDialog: null,
           messages: emittedMessage ? [emittedMessage] : [],
         })));
@@ -435,6 +450,7 @@ export default router.post(
           chapterId: Number(chapter.id || 0),
           chapterTitle: String(chapter.title || ""),
           state,
+          historyMessages: messages,
           endDialog: null,
           messages: miniGameResult.message ? [asDebugMessage({
             role: miniGameResult.message.role,
@@ -469,6 +485,7 @@ export default router.post(
           chapterId: Number(chapter.id || 0),
           chapterTitle: String(chapter.title || ""),
           state,
+          historyMessages: messages,
           endDialog: "已失败",
           endDialogDetail: buildDebugEndDialogDetail({
             endDialog: "已失败",
@@ -495,6 +512,7 @@ export default router.post(
             chapterId: Number(chapter.id || 0),
             chapterTitle: String(chapter.title || ""),
             state,
+            historyMessages: messages,
             endDialog: "进入自由剧情",
             messages: [buildDebugFreePlotMessage(String(rolePair.narratorRole.name || "旁白"), String(chapter.title || "当前章节"))],
           })));
@@ -515,6 +533,7 @@ export default router.post(
           chapterId: Number(nextChapter.id || 0),
           chapterTitle: String(nextChapter.title || ""),
           state,
+          historyMessages: messages,
           endDialog: null,
           messages: [asDebugMessage(nextOpeningRuntimeMessage)],
         })));
@@ -577,6 +596,7 @@ export default router.post(
           chapterId: Number(chapter.id || 0),
           chapterTitle: String(chapter.title || ""),
           state,
+          historyMessages: messages,
           endDialog: "已失败",
           endDialogDetail: buildDebugEndDialogDetail({
             endDialog: "已失败",
@@ -602,6 +622,7 @@ export default router.post(
             chapterId: Number(chapter.id || 0),
             chapterTitle: String(chapter.title || ""),
             state,
+            historyMessages: messages,
             endDialog: "进入自由剧情",
             messages: emittedMessage ? [emittedMessage] : [],
           })));
@@ -621,6 +642,7 @@ export default router.post(
             chapterId: Number(chapter.id || 0),
             chapterTitle: String(chapter.title || ""),
             state,
+            historyMessages: messages,
             endDialog: null,
             messages: [emittedMessage],
           })));
@@ -641,6 +663,7 @@ export default router.post(
           chapterId: Number(nextChapter.id || 0),
           chapterTitle: String(nextChapter.title || ""),
           state,
+          historyMessages: messages,
           endDialog: null,
           messages: [asDebugMessage(nextOpeningRuntimeMessage)],
         })));
@@ -667,6 +690,7 @@ export default router.post(
         chapterId: Number(chapter.id || 0),
         chapterTitle: String(chapter.title || ""),
         state,
+        historyMessages: messages,
         endDialog: null,
         messages: emittedMessage ? [emittedMessage] : [],
       })));

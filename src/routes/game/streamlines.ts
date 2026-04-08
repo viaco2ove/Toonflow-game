@@ -395,6 +395,7 @@ export default router.post(
           }
         }
 
+        const fullMessages = [...messages, emittedMessage];
         const debugMessageCount = Math.max(0, Number(state.debugMessageCount || 0)) + 1;
         state.debugMessageCount = debugMessageCount;
         const snapshot = cacheAndBuildDebugStateSnapshot({
@@ -402,11 +403,13 @@ export default router.post(
           worldId,
           state,
         });
-        // 调试回溯必须保存“截至当前台词”为止的完整消息列表，不能只存本轮新增的一句。
+        const debugRuntimeKey = String(snapshot.debugRuntimeKey || "");
+        // 调试台词一旦对用户可见，就必须把“这句台词说完后的完整消息历史 + 同刻 state”同时落盘，
+        // 否则回溯回来会出现消息停在开场白、事件却已经推进到 ending 的脏快照。
         saveDebugRevisitPoint(
-          String(snapshot.debugRuntimeKey || ""),
+          debugRuntimeKey,
           state,
-          [...messages, emittedMessage],
+          fullMessages,
           Number(chapter.id || 0) || null,
           debugMessageCount,
         );

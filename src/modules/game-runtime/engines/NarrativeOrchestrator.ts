@@ -973,6 +973,7 @@ function logOrchestratorPromptStats(
   tokenUsage?: { inputTokens?: number; outputTokens?: number; reasoningTokens?: number } | null,
   rawResponse?: string | null,
   timing?: { buildMs?: number; invokeMs?: number; totalMs?: number } | null,
+  start: number
 ) {
   const rows: PromptStatRow[] = [
     {
@@ -1011,26 +1012,25 @@ function logOrchestratorPromptStats(
     runtimeLog.error = normalizePromptStatContent((runtimeError as any)?.message || String(runtimeError));
   }
 
-  console.log("[story:orchestrator:runtime]", JSON.stringify(runtimeLog));
-  console.log(`[story:orchestrator:stats] request_chars=${totalPromptChars} estimated_tokens=${totalPromptTokens} system_chars=${systemPrompt.length} user_chars=${userPrompt.length} build_ms=${Number(timing?.buildMs || 0)} invoke_ms=${Number(timing?.invokeMs || 0)} total_ms=${Number(timing?.totalMs || 0)}`);
-
-  if (tokenUsage) {
-    console.log(`[story:orchestrator:stats] actual_input_tokens=${tokenUsage.inputTokens || 0} actual_output_tokens=${tokenUsage.outputTokens || 0} actual_reasoning_tokens=${tokenUsage.reasoningTokens || 0}`);
-  }
-
-  const responseText = String(rawResponse || "").trim();
-  if (responseText) {
-    console.log(`[story:orchestrator:stats] response_chars=${responseText.length}`);
-    console.log(`[story:orchestrator:stats] response_preview=${normalizePromptStatContent(responseText)}`);
-  }
-
-  if (runtimeError) {
-    console.log(`[story:orchestrator:stats] request_status=fallback reason=${normalizePromptStatContent((runtimeError as any)?.message || String(runtimeError))}`);
-  } else {
-    console.log("[story:orchestrator:stats] request_status=success");
-  }
-  
   if (isDebugLogEnabled()) {
+    console.log("[story:orchestrator:runtime]", JSON.stringify(runtimeLog));
+    console.log(`[story:orchestrator:stats] request_chars=${totalPromptChars} estimated_tokens=${totalPromptTokens} system_chars=${systemPrompt.length} user_chars=${userPrompt.length} build_ms=${Number(timing?.buildMs || 0)} invoke_ms=${Number(timing?.invokeMs || 0)} total_ms=${Number(timing?.totalMs || 0)}`);
+
+    if (tokenUsage) {
+      console.log(`[story:orchestrator:stats] actual_input_tokens=${tokenUsage.inputTokens || 0} actual_output_tokens=${tokenUsage.outputTokens || 0} actual_reasoning_tokens=${tokenUsage.reasoningTokens || 0}`);
+    }
+
+    const responseText = String(rawResponse || "").trim();
+    if (responseText) {
+      console.log(`[story:orchestrator:stats] response_chars=${responseText.length}`);
+      console.log(`[story:orchestrator:stats] response_preview=${normalizePromptStatContent(responseText)}`);
+    }
+
+    if (runtimeError) {
+      console.log(`[story:orchestrator:stats] request_status=fallback reason=${normalizePromptStatContent((runtimeError as any)?.message || String(runtimeError))}`);
+    } else {
+      console.log("[story:orchestrator:stats] request_status=success");
+    }
     console.log("[story:orchestrator:stats] 以下为 prompt 体积估算，不等于模型真实 usage。");
     console.log("[story:orchestrator:stats] | 区块 | 实际内容 | 字符数 | 估算 Prompt Tokens |");
     console.log("[story:orchestrator:stats] |---|---|---:|---:|");
@@ -1043,6 +1043,8 @@ function logOrchestratorPromptStats(
     if (tokenUsage) {
       console.log(`[story:orchestrator:stats] | 实际推理消耗 | input=${tokenUsage.inputTokens || 0}, output=${tokenUsage.outputTokens || 0}, reasoning=${tokenUsage.reasoningTokens || 0} | - | - |`);
     }
+    const cost = Date.now() - start;
+    console.log(`[story:orchestrator:stats] 耗时: ${cost}ms`);
   }
 }
 
@@ -2331,7 +2333,9 @@ async function doRunNarrativePlan(input: OrchestratorInput): Promise<NarrativePl
   let orchestratorRawText = "";
   let orchestratorTokenUsage: { inputTokens?: number; outputTokens?: number; reasoningTokens?: number } | null = null;
   let orchestratorInvokeMs = 0;
+  const start = Date.now();
   try {
+
     // 发送请求 进行编排
     const invokeStartedAt = Date.now();
     logOrchestratorKeyNode("storyOrchestratorModel:invoke:start", input.traceMeta, {
@@ -2625,7 +2629,7 @@ async function doRunNarrativePlan(input: OrchestratorInput): Promise<NarrativePl
         buildMs: promptBuildMs,
         invokeMs: orchestratorInvokeMs,
         totalMs: Date.now() - totalStartedAt,
-      },
+      },start
     );
   }
 }
