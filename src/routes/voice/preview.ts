@@ -174,6 +174,30 @@ function buildProxyAudioUrl(req: express.Request, configId: number | null | unde
   return `${publicBase}/voice/audioProxy?${params.toString()}`;
 }
 
+/**
+ * 混合音色只有本地/代理语音网关才需要通过 `/voices` 推断 provider。
+ * 阿里云直连没有这个预设列表接口，不能再去请求 `${baseUrl}/voices`。
+ */
+async function resolveMixProviderForPreview(options: {
+  directAliyun: boolean;
+  mixVoiceIds: string[];
+  baseUrl: string;
+  headers: Record<string, string>;
+  manufacturer: string;
+}): Promise<string> {
+  if (options.directAliyun || !options.mixVoiceIds.length) {
+    return "";
+  }
+  const mixProviders = Array.from(
+    new Set(
+      filterVoicePresetsByManufacturer(await fetchVoicePresets(options.baseUrl, options.headers), options.manufacturer)
+        .filter((item: { voiceId: string; provider: string }) => options.mixVoiceIds.includes(item.voiceId) && item.provider)
+        .map((item: { provider: string }) => item.provider),
+    ),
+  );
+  return mixProviders.length === 1 ? String(mixProviders[0] || "").trim() : "";
+}
+
 function normalizeBase64(input?: string | null): string {
   if (!input) return "";
   const match = input.match(/^data:([^;]+);base64,(.+)$/);
@@ -1150,19 +1174,15 @@ export default router.post(
           return res.status(400).send(error("混合模式需要选择音色"));
         }
         const mixIds = mixList.map((item: { voice_id: string }) => String(item.voice_id || "").trim()).filter(Boolean);
-        if (mixIds.length) {
-          const mixProviders = Array.from(
-            new Set(
-              filterVoicePresetsByManufacturer(await fetchVoicePresets(baseUrl, headers), manufacturer)
-                .filter((item: { voiceId: string; provider: string }) => mixIds.includes(item.voiceId) && item.provider)
-                .map((item: { provider: string }) => item.provider),
-            ),
-          );
-          if (mixProviders.length === 1) {
-            if (!directAliyun) {
-              payload.provider = mixProviders[0];
-            }
-          }
+        const mixProvider = await resolveMixProviderForPreview({
+          directAliyun,
+          mixVoiceIds: mixIds,
+          baseUrl,
+          headers,
+          manufacturer,
+        });
+        if (mixProvider) {
+          payload.provider = mixProvider;
         }
         const generatedReferencePath = await synthesizeReferenceAudioFromMode({
           config,

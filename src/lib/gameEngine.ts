@@ -89,6 +89,8 @@ export interface RuntimeEventViewState {
   eventDigestWindowText: string;
 }
 
+// 根据事件类型和 phase 信息推断运行时事件所属的流程类型，
+// 供事件窗口、编排输入和日志展示统一使用。
 function resolveRuntimeEventFlowType(input: {
   eventKind: RuntimeCurrentEventState["kind"];
   phaseId?: string | null;
@@ -184,10 +186,14 @@ const DEFAULT_NARRATOR_ROLE: JsonRecord = {
   attributes: {},
 };
 
+// 判断任意 unknown 是否可以安全当作普通对象使用，
+// 这是整份文件里所有 JSON 归一化的基础保护。
 function isRecord(input: unknown): input is JsonRecord {
   return typeof input === "object" && input !== null && !Array.isArray(input);
 }
 
+// 将编辑器里可能出现的 string/number/boolean/object 统一压成可比较文本，
+// 避免后续章节解析因为输入类型飘忽而出现 undefined/null 干扰。
 function normalizeEditorText(input: unknown): string {
   if (input === null || input === undefined) return "";
   if (typeof input === "string") return input.replace(/\r\n/g, "\n").trim();
@@ -199,11 +205,15 @@ function normalizeEditorText(input: unknown): string {
   }
 }
 
+// 判断一个字符串是否只是 null/undefined 这类“空值文本”，
+// 用于区分“真的填了内容”和“只是字符串化的空值”。
 function isNullLikeText(input: string): boolean {
   const text = String(input || "").trim().toLowerCase();
   return !text || text === "null" || text === "undefined";
 }
 
+// 从章节正文里提取“开场白：角色：台词”结构，
+// 兼容编辑器里把开场白直接写在 content 顶部的旧数据。
 export function extractOpeningContentParts(input: unknown): ChapterOpeningParts | null {
   const text = normalizeEditorText(input);
   if (!text) return null;
@@ -216,6 +226,8 @@ export function extractOpeningContentParts(input: unknown): ChapterOpeningParts 
   return { role, line, body };
 }
 
+// 提取正文里第一条 `@角色: 台词` 结构化对白，
+// 主要用于章节解析和自动补齐运行时首个对白事件。
 export function extractFirstChapterDialogueLine(input: unknown): ChapterDialogueLine | null {
   const text = normalizeEditorText(input);
   if (!text) return null;
@@ -241,6 +253,8 @@ export function extractFirstChapterDialogueLine(input: unknown): ChapterDialogue
   return null;
 }
 
+// 将长文本按空行切成逻辑段落，
+// 后续章节提纲、开场白清洗、运行时 section 提取都复用它。
 function splitParagraphs(input: string): string[] {
   return String(input || "")
     .replace(/\r\n/g, "\n")
@@ -249,6 +263,8 @@ function splitParagraphs(input: string): string[] {
     .filter(Boolean);
 }
 
+// 把任意标题/标签压成稳定 runtime key，
+// 便于生成 phase/userNode/fixedEvent 等可复用 ID。
 function slugifyRuntimeKey(input: unknown, fallback: string): string {
   const text = normalizeEditorText(input)
     .toLowerCase()
@@ -257,6 +273,7 @@ function slugifyRuntimeKey(input: unknown, fallback: string): string {
   return text || fallback;
 }
 
+// 解析正文里 `- 建议项` 列表，提取为用户建议数组。
 function normalizeSuggestionList(input: string): string[] {
   return String(input || "")
     .replace(/\r\n/g, "\n")
@@ -267,6 +284,8 @@ function normalizeSuggestionList(input: string): string[] {
     .filter(Boolean);
 }
 
+// 将一段正文压缩成适合事件摘要展示的短文本，
+// 会移除 `@角色:` 和列表前缀，避免摘要里噪声过多。
 function normalizeRuntimeSummary(input: string, fallback: string): string {
   const text = String(input || "")
     .replace(/\r\n/g, "\n")
@@ -278,6 +297,8 @@ function normalizeRuntimeSummary(input: string, fallback: string): string {
   return text.slice(0, 80) || fallback;
 }
 
+// 去重并截断 phase 的推进信号，
+// 防止正文太长时把 advanceSignals 塞爆。
 function normalizePhaseSignalList(input: unknown[]): string[] {
   return Array.from(new Set(
     (Array.isArray(input) ? input : [])
@@ -287,6 +308,8 @@ function normalizePhaseSignalList(input: unknown[]): string[] {
   ));
 }
 
+// 将指令参数按换行、逗号、分号等分隔成数组，
+// 供 `@phase_next`、`@allowed_speakers` 这类行内 DSL 复用。
 function splitRuntimeDirectiveItems(input: string): string[] {
   return String(input || "")
     .replace(/\r\n/g, "\n")
@@ -295,18 +318,32 @@ function splitRuntimeDirectiveItems(input: string): string[] {
     .filter(Boolean);
 }
 
+// 为用户节点生成统一的运行时完成标记。
 function getUserNodeRuntimeMarker(userNodeId: string): string {
   return `user_node:${String(userNodeId || "").trim()}`;
 }
 
+// 为 phase 生成统一的运行时完成标记。
 function getPhaseRuntimeMarker(phaseId: string): string {
   return `phase:${String(phaseId || "").trim()}`;
 }
 
+// 判断 section 标题是否是“用户行动/用户节点”一类交互段，
+// 决定该段在运行时应转成 user phase。
 function isUserNodeHeading(input: string): boolean {
   return /用户行动|用户交互|用户节点|唯一干预机会/u.test(String(input || ""));
 }
 
+// 判断 section 标题是否显式声明为“非事件”说明块。
+// 这类块允许作者写补充说明、任务备注或编写提示，但不能进入运行时事件系统。
+function isNonEventHeading(input: string): boolean {
+  const heading = String(input || "").trim();
+  if (!heading) return false;
+  return /^非事件(?:\s*[:：].*)?$/u.test(heading);
+}
+
+// 将 markdown 风格的 `## 标题` 正文切成运行时 section，
+// 章节运行时提纲解析完全依赖这个分段结果。
 function extractRuntimeSections(input: unknown): Array<{ heading: string; body: string }> {
   const text = normalizeEditorText(input);
   if (!text) return [];
@@ -326,6 +363,8 @@ function extractRuntimeSections(input: unknown): Array<{ heading: string; body: 
   return sections;
 }
 
+// 解析 section 正文里的运行时指令行，
+// 把允许角色、下一阶段、阶段信号等 DSL 从正文里剥离出来。
 function parsePhaseDirectiveLines(input: string): {
   cleanedBody: string;
   allowedSpeakers: string[];
@@ -400,6 +439,8 @@ function parsePhaseDirectiveLines(input: string): {
   };
 }
 
+// 将“阶段标题/slug/id”这类引用解析成真实 phaseId，
+// 让正文里写的人类可读名称能正确指向运行时 phase。
 function resolvePhaseReference(
   input: unknown,
   phases: Array<{ id: string; label: string }>,
@@ -420,8 +461,12 @@ function resolvePhaseReference(
   return matched?.id || null;
 }
 
+// 从正文 section 中抽取用户节点定义，
+// 用户节点会被挂到对应 user phase，用于后续等待输入和完成判定。
 function extractRuntimeUserNodesFromContent(input: unknown): ChapterRuntimeUserNode[] {
   return extractRuntimeSections(input)
+    // `## 非事件` 只作为章节编写说明存在，不能被识别成可交互用户节点。
+    .filter((section) => !isNonEventHeading(section.heading))
     .filter((section) => isUserNodeHeading(section.heading))
     .map((section, index) => {
       const phaseDirectives = parsePhaseDirectiveLines(section.body);
@@ -437,6 +482,8 @@ function extractRuntimeUserNodesFromContent(input: unknown): ChapterRuntimeUserN
     });
 }
 
+// 从正文 section 的对白里提取角色和短句信号，
+// 用于自动补足 phase 的推进信号，减少章节作者显式配置成本。
 function extractDialogueSignalsFromSectionBody(input: string): string[] {
   const lines = String(input || "")
     .replace(/\r\n/g, "\n")
@@ -455,6 +502,8 @@ function extractDialogueSignalsFromSectionBody(input: string): string[] {
   return normalizePhaseSignalList(signals);
 }
 
+// 用 section 文本去猜测和哪些固定结果事件相关，
+// 这是旧章节没有显式 `relatedFixedEventIds` 时的兜底关联策略。
 function collectRelatedFixedEventIds(
   section: { heading: string; body: string },
   fixedEvents: ChapterRuntimeOutline["fixedEvents"],
@@ -469,12 +518,16 @@ function collectRelatedFixedEventIds(
     .map((item) => item.id);
 }
 
+// 将章节正文解析成运行时 phase 列表。
+// 如果章节作者没有显式写 runtimeOutline.phases，这里会根据 section 自动生成。
 function extractRuntimePhasesFromContent(
   input: unknown,
   userNodes: ChapterRuntimeUserNode[],
   fixedEvents: ChapterRuntimeOutline["fixedEvents"],
 ): ChapterRuntimePhase[] {
-  const sections = extractRuntimeSections(input);
+  const sections = extractRuntimeSections(input)
+    // `## 非事件` 是纯说明块，不参与 phase 生成，也不应该进入事件推进链。
+    .filter((section) => !isNonEventHeading(section.heading));
   if (!sections.length) return [];
   const phaseDrafts: Array<ChapterRuntimePhase & {
     nextPhaseRefs: string[];
@@ -508,9 +561,12 @@ function extractRuntimePhasesFromContent(
       ].filter(Boolean))),
       nextPhaseIds: [],
       defaultNextPhaseId: null,
+    // 没有显式前置时，默认顺序串联上一个 phase，
+    // 这样普通章节只写正文也能形成线性推进链。
       requiredEventIds: phaseDirectives.requiredEventIds.length
         ? phaseDirectives.requiredEventIds
         : (previousPhaseId ? [getPhaseRuntimeMarker(previousPhaseId)] : []),
+      // user phase 默认由对应 userNode 完成；scene phase 默认由关联 fixedEvent/信号推进。
       completionEventIds: phaseDirectives.completionEventIds.length
         ? phaseDirectives.completionEventIds
         : (isUserPhase
@@ -533,6 +589,7 @@ function extractRuntimePhasesFromContent(
     const nextPhaseIds = draft.nextPhaseRefs
       .map((item) => resolvePhaseReference(item, phaseDrafts))
       .filter((item): item is string => Boolean(item));
+    // 没写下一阶段时，按正文顺序串成默认流程，保证运行时不会断链。
     const defaultNextPhaseId = resolvePhaseReference(draft.defaultNextPhaseRef, phaseDrafts)
       || nextPhaseIds[0]
       || sequentialNextId;
@@ -559,6 +616,8 @@ interface CompletionConditionArtifacts {
   failureEventIds: string[];
 }
 
+// 将“成功条件（失败条件）”这种一行写法拆成 success/failure 两段，
+// 兼容编辑器里常见的自然语言配置。
 function splitCompletionConditionText(input: string): {
   successText: string;
   failureText: string;
@@ -591,6 +650,8 @@ function splitCompletionConditionText(input: string): {
   };
 }
 
+// 将中文数字/阿拉伯数字的“几次”解析成 number，
+// 主要服务于“输入不符合要求 3 次即失败”这类章节规则。
 function parseChineseCountToken(input: string): number | null {
   const text = String(input || "").trim();
   if (!text) return null;
@@ -625,6 +686,8 @@ function parseChineseCountToken(input: string): number | null {
   return digits[text] ?? null;
 }
 
+// 从自然语言结束条件中推断出隐式结构化条件表达式，
+// 让“姓名/性别/年龄输入完成”与“失败 N 次”能落到状态字段上，而不是纯文本猜测。
 function buildImplicitConditionExprFromText(input: unknown): unknown | null {
   const normalized = normalizeConditionText(input);
   if (!normalized) return null;
@@ -665,6 +728,8 @@ function buildImplicitConditionExprFromText(input: unknown): unknown | null {
   return null;
 }
 
+// 把 completionCondition 归一化成 fixedEvents + success/failure 事件集合，
+// 这是把自然语言章节结局桥接到运行时事件系统的关键入口。
 function normalizeCompletionConditionArtifacts(input: unknown): CompletionConditionArtifacts {
   const condition = tryParseCondition(input);
   const fixedEvents: ChapterRuntimeOutline["fixedEvents"] = [];
@@ -678,6 +743,8 @@ function normalizeCompletionConditionArtifacts(input: unknown): CompletionCondit
     if (!bucket.includes(id)) {
       bucket.push(id);
     }
+    // 每条自然语言结束条件都会转成固定事件，
+    // 后续运行时只需要判断 fixedEvent 是否命中即可。
     if (!fixedEvents.some((item) => item.id === id)) {
       fixedEvents.push({
         id,
@@ -719,10 +786,14 @@ function normalizeCompletionConditionArtifacts(input: unknown): CompletionCondit
   };
 }
 
+// 从 completionCondition 直接生成固定事件列表，
+// 供旧代码需要 fixedEvents 但不关心 success/failure 细节时使用。
 function buildFixedEventsFromCompletionCondition(input: unknown): ChapterRuntimeOutline["fixedEvents"] {
   return normalizeCompletionConditionArtifacts(input).fixedEvents;
 }
 
+// 合并章节已有 fixedEvents 与 completionCondition 推导出的 fixedEvents，
+// 既保留作者手写配置，也补齐自然语言转换出的规则。
 function mergeRuntimeFixedEvents(
   existingFixedEvents: ChapterRuntimeOutline["fixedEvents"],
   generatedFixedEvents: ChapterRuntimeOutline["fixedEvents"],
@@ -753,6 +824,8 @@ function mergeRuntimeFixedEvents(
   return merged;
 }
 
+// 将任意 runtimeOutline 输入压成标准运行时结构，
+// 供数据库读取、接口输出、章节初始化统一复用。
 export function normalizeChapterRuntimeOutline(input: unknown): ChapterRuntimeOutline {
   const base = parseJsonSafe<JsonRecord>(input, {});
   const openingMessages = Array.isArray(base.openingMessages)
@@ -855,6 +928,8 @@ export function isFreeChapterRuntimeMode(chapter: any): boolean {
   return !hasCompletionCondition && !hasEndingRules;
 }
 
+// 组合章节运行时提纲。
+// 优先使用作者显式配置的 runtimeOutline；缺失时再从章节字段自动补全 opening/userNodes/phases/fixedEvents。
 export function buildChapterRuntimeOutline(input: {
   openingRole?: unknown;
   openingText?: unknown;
@@ -886,6 +961,8 @@ export function buildChapterRuntimeOutline(input: {
   const phases = normalizedExisting.phases.length
     ? normalizedExisting.phases
     : extractRuntimePhasesFromContent(input.content, userNodes, fixedEvents);
+  // success 事件默认会并入 requiredBeforeFinish 的 fixedEvents，
+  // 保证“必须先完成的固定条件”能自动反映到 endingRules.success。
   const normalizedSuccessIds = Array.from(new Set([
     ...normalizedExisting.endingRules.success,
     ...completionArtifacts.successEventIds,
@@ -908,6 +985,7 @@ export function buildChapterRuntimeOutline(input: {
   };
 }
 
+// 章节标题归一化：优先保留用户可读标题，兜底按 sort 生成“第 N 章”。
 function normalizeChapterTitle(input: unknown, sort: unknown): string {
   const raw = normalizeEditorText(input);
   if (raw && !/^章节\s*\d{10,}$/u.test(raw)) {
@@ -920,10 +998,12 @@ function normalizeChapterTitle(input: unknown, sort: unknown): string {
   return raw;
 }
 
+// 正则转义工具，供开场白头部清洗构造动态正则时使用。
 function escapeRegExp(input: string): string {
   return String(input || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+// 去除正文前缀中的“开场白: ...”头部。
 function stripOpeningHeader(input: string, openingRole?: unknown): string {
   const text = String(input || "").trimStart();
   if (!text) return "";
@@ -934,6 +1014,8 @@ function stripOpeningHeader(input: string, openingRole?: unknown): string {
   return text.replace(header, "").replace(/^\s*[\r\n]+/, "");
 }
 
+// 从正文头部剔除已经抽到 openingText 里的段落，
+// 防止开场白既显示在 opening，又重复残留在正文 content。
 function stripLeadingOpeningParagraphs(input: string, openingText: string): string {
   const openingParagraphs = splitParagraphs(openingText);
   if (!openingParagraphs.length) {
@@ -947,6 +1029,8 @@ function stripLeadingOpeningParagraphs(input: string, openingText: string): stri
   return contentParagraphs.join("\n\n").trim();
 }
 
+// 清洗章节正文里前置的开场白痕迹，
+// 兼容多轮编辑后正文/开场字段混写的旧数据。
 export function stripLeadingOpeningArtifacts(input: unknown, openingRole?: unknown, openingText?: unknown): string {
   let text = normalizeEditorText(input);
   if (!text) return "";
@@ -954,6 +1038,8 @@ export function stripLeadingOpeningArtifacts(input: unknown, openingRole?: unkno
   const expectedText = normalizeEditorText(openingText);
   const expectedParagraphs = splitParagraphs(expectedText).sort((a, b) => b.length - a.length);
 
+// 这里循环多次是为了兼容“开场白头 + 开场白段落 + 提取后的残留空行”多种混合情况，
+// 每轮都尝试剥离一层，直到文本稳定为止。
   for (let i = 0; i < 64; i += 1) {
     const before = text;
     text = stripOpeningHeader(text, expectedRole);
@@ -980,6 +1066,8 @@ export function stripLeadingOpeningArtifacts(input: unknown, openingRole?: unkno
   return text.trim();
 }
 
+// 将章节字段压成编辑器/运行时都能接受的标准结构，
+// 包括开场白剥离、entry/completionCondition 的 JSON/文本兼容解析。
 export function normalizeChapterFields(input: {
   content?: unknown;
   openingRole?: unknown;
@@ -1023,10 +1111,13 @@ export function normalizeChapterFields(input: {
   };
 }
 
+// 获取游戏库实例，统一收敛对 `u.db` 的访问入口。
 export function getGameDb(): any {
   return u.db as any;
 }
 
+// 安全 JSON 解析。
+// 字符串会尝试 JSON.parse，对象直接透传，其他类型返回 fallback。
 export function parseJsonSafe<T>(input: unknown, fallback: T): T {
   if (input === null || input === undefined) return fallback;
   if (typeof input === "string") {
@@ -1044,6 +1135,8 @@ export function parseJsonSafe<T>(input: unknown, fallback: T): T {
   return fallback;
 }
 
+// 将任意值稳定序列化成 JSON 文本，
+// 失败时退回 fallback，避免接口输出直接炸掉。
 export function toJsonText(input: unknown, fallback: unknown = {}): string {
   try {
     return JSON.stringify(input ?? fallback);
@@ -1052,6 +1145,7 @@ export function toJsonText(input: unknown, fallback: unknown = {}): string {
   }
 }
 
+// 解析可选数字字段，仅接受有限数字或纯数字文本。
 function normalizeOptionalNumber(input: unknown): number | null {
   if (typeof input === "number" && Number.isFinite(input)) return input;
   const text = normalizeEditorText(input);
@@ -1062,6 +1156,7 @@ function normalizeOptionalNumber(input: unknown): number | null {
   return Number.isFinite(value) ? value : null;
 }
 
+// 将数组压成非空字符串列表，并限制长度，避免角色参数卡过大。
 function normalizeStringList(input: unknown): string[] {
   if (!Array.isArray(input)) return [];
   return input
@@ -1070,6 +1165,7 @@ function normalizeStringList(input: unknown): string[] {
     .slice(0, 64);
 }
 
+// 从角色描述中按正则提取参数卡字段文本。
 function extractParameterCardText(source: string, patterns: RegExp[]): string {
   for (const pattern of patterns) {
     const matched = source.match(pattern);
@@ -1079,6 +1175,7 @@ function extractParameterCardText(source: string, patterns: RegExp[]): string {
   return "";
 }
 
+// 从自然语言描述里推断性别，供缺省参数卡补全。
 function inferGenderFromText(source: string): string {
   const explicit = extractParameterCardText(source, [
     /性别\s*[:：]\s*(男|女)/i,
@@ -1089,6 +1186,7 @@ function inferGenderFromText(source: string): string {
   return "";
 }
 
+// 从自然语言描述里推断年龄，供缺省参数卡补全。
 function inferAgeFromText(source: string): number | null {
   const matched = source.match(/(\d{1,3})\s*岁/);
   if (!matched) return null;
@@ -1096,6 +1194,8 @@ function inferAgeFromText(source: string): number | null {
   return Number.isFinite(value) ? value : null;
 }
 
+// 为缺省角色生成最基础的参数卡。
+// 这层不是为了精确建模，而是保证后续展示/语音/编排输入至少有稳定字段。
 function createBasicParameterCard(input: {
   existing?: unknown;
   name?: unknown;
@@ -1149,6 +1249,7 @@ function createBasicParameterCard(input: {
   return next;
 }
 
+// 将 story role 归一化成运行时可直接使用的角色对象。
 function normalizeStoryRole(roleRaw: unknown, defaults: JsonRecord): JsonRecord {
   const raw = parseJsonSafe<JsonRecord>(roleRaw, {});
   const normalized: JsonRecord = {
@@ -1169,6 +1270,7 @@ function normalizeStoryRole(roleRaw: unknown, defaults: JsonRecord): JsonRecord 
   return normalized;
 }
 
+// 判断参数卡是否真的包含有效信息，而不是空壳对象。
 function hasUsableParameterCard(input: unknown): boolean {
   if (!isRecord(input)) return false;
   return Object.values(input).some((value) => {
@@ -1178,6 +1280,8 @@ function hasUsableParameterCard(input: unknown): boolean {
   });
 }
 
+// 合并故事静态角色与运行时角色覆盖层，
+// 保证运行态能继承到静态角色的完整描述和参数卡。
 function mergeRuntimeRoleWithStoryRole(storyRole: JsonRecord, runtimeRoleRaw: unknown, fallbackName?: string): JsonRecord {
   const runtimeRole = parseJsonSafe<JsonRecord>(runtimeRoleRaw, {});
   const runtimeAttributes = parseJsonSafe<JsonRecord>(runtimeRole.attributes, {});
@@ -1197,6 +1301,7 @@ function mergeRuntimeRoleWithStoryRole(storyRole: JsonRecord, runtimeRoleRaw: un
   return merged;
 }
 
+// 归一化 settings.roles，确保每个角色都有稳定 id/roleType/name。
 function normalizeSettingsRoles(input: unknown): JsonRecord[] {
   if (!Array.isArray(input)) return [];
   return input
@@ -1210,6 +1315,7 @@ function normalizeSettingsRoles(input: unknown): JsonRecord[] {
     }));
 }
 
+// 统一获取故事里的“用户/旁白”角色对。
 export function normalizeRolePair(playerRoleRaw: unknown, narratorRoleRaw: unknown): RolePair {
   return {
     playerRole: normalizeStoryRole(playerRoleRaw, DEFAULT_PLAYER_ROLE),
@@ -1217,6 +1323,7 @@ export function normalizeRolePair(playerRoleRaw: unknown, narratorRoleRaw: unkno
   };
 }
 
+// 从运行时 npc 覆盖层里找到与静态角色对应的覆盖对象。
 function findNpcRuntimeOverlay(source: JsonRecord, role: JsonRecord): JsonRecord {
   const candidates = [
     source[String(role.id || "").trim()],
@@ -1233,6 +1340,8 @@ function findNpcRuntimeOverlay(source: JsonRecord, role: JsonRecord): JsonRecord
   return isRecord(matchedEntry) ? matchedEntry : {};
 }
 
+// 合并运行时 NPC Map 与世界静态角色列表，
+// 既支持已有静态角色，也兼容运行时新增/补录的 NPC。
 function normalizeRuntimeNpcMap(rawNpcs: unknown, npcRolesRaw: unknown): JsonRecord {
   const source = parseJsonSafe<JsonRecord>(rawNpcs, {});
   const defaults = normalizeSettingsRoles(npcRolesRaw).filter((item) => item.roleType === "npc");
@@ -1309,6 +1418,7 @@ const DEFAULT_RUNTIME_DYNAMIC_EVENT_STATE: RuntimeDynamicEventState = {
   userNodeId: "",
 };
 
+// 将章节里的用户节点状态归一化成有限枚举。
 function normalizeChapterProgressStatus(input: unknown): ChapterProgressState["userNodeStatus"] {
   const status = String(input || "").trim().toLowerCase();
   if (status === "waiting_input") return "waiting_input";
@@ -1317,6 +1427,7 @@ function normalizeChapterProgressStatus(input: unknown): ChapterProgressState["u
   return "idle";
 }
 
+// 将章节事件状态归一化成有限枚举。
 function normalizeChapterEventStatus(input: unknown): ChapterProgressState["eventStatus"] {
   const status = String(input || "").trim().toLowerCase();
   if (status === "active") return "active";
@@ -1325,6 +1436,7 @@ function normalizeChapterEventStatus(input: unknown): ChapterProgressState["even
   return "idle";
 }
 
+// 将运行时事件 kind 归一化成受控枚举。
 function normalizeRuntimeEventKind(input: unknown): RuntimeCurrentEventState["kind"] {
   const kind = String(input || "").trim();
   if (kind === "opening" || kind === "scene" || kind === "user" || kind === "fixed" || kind === "ending") {
@@ -1333,6 +1445,7 @@ function normalizeRuntimeEventKind(input: unknown): RuntimeCurrentEventState["ki
   return DEFAULT_RUNTIME_CURRENT_EVENT_STATE.kind;
 }
 
+// 归一化 `currentEvent`，并在缺字段时用 fallback 兜底。
 export function normalizeRuntimeCurrentEventState(
   raw: unknown,
   fallback?: Partial<RuntimeCurrentEventState> | null,
@@ -1355,6 +1468,8 @@ export function normalizeRuntimeCurrentEventState(
   };
 }
 
+// 归一化动态事件对象。
+// flowType 会优先尊重已有值，否则按 eventKind + phaseId 自动推断。
 export function normalizeRuntimeDynamicEventState(raw: unknown): RuntimeDynamicEventState {
   const base = parseJsonSafe<JsonRecord>(raw, {});
   const phaseId = String(base.phaseId || "").trim();
@@ -1394,6 +1509,7 @@ export function normalizeRuntimeDynamicEventState(raw: unknown): RuntimeDynamicE
   };
 }
 
+// 归一化动态事件列表，并过滤掉完全没有信息的空事件。
 export function normalizeRuntimeDynamicEventList(raw: unknown): RuntimeDynamicEventState[] {
   if (!Array.isArray(raw)) return [];
   return raw
@@ -1401,6 +1517,7 @@ export function normalizeRuntimeDynamicEventList(raw: unknown): RuntimeDynamicEv
     .filter((item) => item.phaseId || item.summary);
 }
 
+// 按 eventIndex 读取指定动态事件。
 export function readRuntimeDynamicEventByIndex(state: unknown, eventIndex: number): RuntimeDynamicEventState | null {
   if (!isRecord(state)) return null;
   const normalizedEventIndex = Number.isFinite(Number(eventIndex)) ? Math.max(1, Number(eventIndex)) : 0;
@@ -1409,12 +1526,15 @@ export function readRuntimeDynamicEventByIndex(state: unknown, eventIndex: numbe
   return dynamicEvents.find((item) => item.eventIndex === normalizedEventIndex) || null;
 }
 
+// 读取当前 chapterProgress 指向的动态事件。
 export function readRuntimeCurrentDynamicEventState(state: unknown): RuntimeDynamicEventState | null {
   if (!isRecord(state)) return null;
   const progress = readChapterProgressState(state);
   return readRuntimeDynamicEventByIndex(state, progress.eventIndex);
 }
 
+// 将动态事件/当前事件信息映射成 digest 结构，
+// 供 UI 事件窗口、编排输入和日志视图复用。
 function buildRuntimeEventDigestState(input: {
   eventIndex: number;
   eventKind: RuntimeCurrentEventState["kind"];
@@ -1451,6 +1571,8 @@ function buildRuntimeEventDigestState(input: {
   };
 }
 
+// 读取指定索引的事件 digest。
+// 优先使用动态事件；没有时再退到 currentEvent + chapterProgress。
 export function readRuntimeEventDigestByIndexState(state: unknown, eventIndex: number): RuntimeEventDigestState | null {
   if (!isRecord(state)) return null;
   const normalizedEventIndex = Number.isFinite(Number(eventIndex)) ? Math.max(1, Number(eventIndex)) : 0;
@@ -1489,6 +1611,7 @@ export function readRuntimeEventDigestByIndexState(state: unknown, eventIndex: n
   });
 }
 
+// 读取当前事件 digest。
 export function readRuntimeCurrentEventDigestState(state: unknown): RuntimeEventDigestState {
   const currentEvent = readRuntimeCurrentEventState(state);
   return readRuntimeEventDigestByIndexState(state, currentEvent.index)
@@ -1505,6 +1628,8 @@ export function readRuntimeCurrentEventDigestState(state: unknown): RuntimeEvent
     });
 }
 
+// 读取当前事件附近的事件窗口。
+// 这是事件时间线视图的核心数据源。
 export function readRuntimeEventDigestWindowState(state: unknown, windowSize = 10): RuntimeEventDigestState[] {
   if (!isRecord(state)) return [];
   const currentEvent = readRuntimeCurrentEventState(state);
@@ -1529,6 +1654,8 @@ export function readRuntimeEventDigestWindowState(state: unknown, windowSize = 1
     .filter((item): item is RuntimeEventDigestState => Boolean(item));
 }
 
+// 将事件窗口压成文本摘要，
+// 供提示词、日志、兜底展示等文本场景复用。
 export function readRuntimeEventDigestWindowTextState(state: unknown, options?: RuntimeEventViewOptions): string {
   const windowSize = Number.isFinite(Number(options?.windowSize))
     ? Math.max(1, Number(options?.windowSize))
@@ -1586,6 +1713,7 @@ export function readRuntimeEventDigestWindowTextState(state: unknown, options?: 
     .join("\n");
 }
 
+// 构造完整的事件视图对象。
 export function readRuntimeEventViewState(state: unknown, options?: RuntimeEventViewOptions): RuntimeEventViewState {
   return {
     currentEventDigest: readRuntimeCurrentEventDigestState(state),
@@ -1599,14 +1727,17 @@ export function readRuntimeEventViewState(state: unknown, options?: RuntimeEvent
   };
 }
 
+// 使用默认窗口配置读取事件视图。
 export function readDefaultRuntimeEventViewState(state: unknown): RuntimeEventViewState {
   return readRuntimeEventViewState(state, DEFAULT_RUNTIME_EVENT_VIEW_OPTIONS);
 }
 
+// 使用默认窗口配置读取事件窗口文本。
 export function readDefaultRuntimeEventDigestWindowTextState(state: unknown): string {
   return readRuntimeEventDigestWindowTextState(state, DEFAULT_RUNTIME_EVENT_VIEW_OPTIONS);
 }
 
+// 归一化 chapterProgress，保证运行态状态字段始终可读。
 export function normalizeChapterProgressState(raw: unknown): ChapterProgressState {
   const base = parseJsonSafe<JsonRecord>(raw, {});
   const completedEvents = Array.isArray(base.completedEvents)
@@ -1634,11 +1765,14 @@ export function normalizeChapterProgressState(raw: unknown): ChapterProgressStat
   };
 }
 
+// 从 state 中安全读取 chapterProgress。
 export function readChapterProgressState(state: unknown): ChapterProgressState {
   if (!isRecord(state)) return normalizeChapterProgressState(undefined);
   return normalizeChapterProgressState(state.chapterProgress);
 }
 
+// 从 state 中读取当前事件，
+// 并优先用当前 eventIndex 命中的动态事件来补足 summary/facts/status。
 export function readRuntimeCurrentEventState(state: unknown): RuntimeCurrentEventState {
   if (!isRecord(state)) {
     return normalizeRuntimeCurrentEventState(undefined);
@@ -1655,6 +1789,8 @@ export function readRuntimeCurrentEventState(state: unknown): RuntimeCurrentEven
   });
 }
 
+// 将 chapterProgress 当前指向的事件同步回 `state.currentEvent`，
+// 避免 UI/提示词继续读取到过期 currentEvent。
 export function syncRuntimeCurrentEventFromChapterProgress(state: JsonRecord): RuntimeCurrentEventState {
   const progress = readChapterProgressState(state);
   const dynamicEvents = normalizeRuntimeDynamicEventList(state.dynamicEvents);
@@ -1670,12 +1806,15 @@ export function syncRuntimeCurrentEventFromChapterProgress(state: JsonRecord): R
   return next;
 }
 
+// 整体覆盖动态事件列表，同时统一做归一化。
 export function setRuntimeDynamicEventList(state: JsonRecord, list: RuntimeDynamicEventState[]): RuntimeDynamicEventState[] {
   const next = normalizeRuntimeDynamicEventList(list);
   state.dynamicEvents = next;
   return next;
 }
 
+// 按 eventIndex 插入或更新一条动态事件，
+// 并在更新当前事件时同步刷新 `state.currentEvent`。
 export function upsertRuntimeDynamicEventState(
   state: JsonRecord,
   patch: Partial<RuntimeDynamicEventState> & { eventIndex: number },
@@ -1685,6 +1824,8 @@ export function upsertRuntimeDynamicEventState(
   const currentEvent = readRuntimeCurrentEventState(state);
   const dynamicEvents = normalizeRuntimeDynamicEventList(state.dynamicEvents);
   const matchedIndex = dynamicEvents.findIndex((item) => item.eventIndex === eventIndex);
+  // 新建事件时优先继承当前 chapterProgress 指向的 phase/kind/summary，
+  // 这样调用方只传少数字段也能得到完整事件对象。
   const base = matchedIndex >= 0
     ? dynamicEvents[matchedIndex]
     : normalizeRuntimeDynamicEventState({
@@ -1764,6 +1905,7 @@ export function upsertRuntimeEventDigestState(
   return readRuntimeEventDigestByIndexState(state, targetEventIndex) || baseDigest;
 }
 
+// 更新 chapterProgress，并同步刷新 `currentEvent` 的基础索引/摘要/状态。
 export function setChapterProgressState(state: JsonRecord, patch: Partial<ChapterProgressState>): ChapterProgressState {
   const current = readChapterProgressState(state);
   const next = normalizeChapterProgressState({
@@ -1780,14 +1922,18 @@ export function setChapterProgressState(state: JsonRecord, patch: Partial<Chapte
   return next;
 }
 
+// 生成正式会话 id。
 export function createGameSessionId(): string {
   return `gs_${Date.now()}_${u.uuid().replace(/-/g, "").slice(0, 10)}`;
 }
 
+// 统一当前时间戳入口，便于后续替换或 mock。
 export function nowTs(): number {
   return Date.now();
 }
 
+// 归一化整份 session state。
+// 这里会把 world/chapter/player/narrator/npcs/chapterProgress/currentEvent 全部补齐成运行态标准格式。
 export function normalizeSessionState(
   raw: unknown,
   worldId: number,
@@ -1845,6 +1991,7 @@ export function normalizeSessionState(
     chapterProgress,
     currentEvent,
     dynamicEvents,
+    // turnState 默认交给用户发言；如果已有明确 expectedRoleType，则保留原状态。
     turnState: {
       canPlayerSpeak: typeof rawTurnState.canPlayerSpeak === "boolean" ? rawTurnState.canPlayerSpeak : true,
       expectedRoleType,
@@ -1857,6 +2004,8 @@ export function normalizeSessionState(
   };
 }
 
+// 将 `a.b.c` 这类路径切成键数组，
+// 供通用状态访问/写入函数复用。
 function splitPath(path: string): string[] {
   return String(path || "")
     .trim()
@@ -1865,6 +2014,7 @@ function splitPath(path: string): string[] {
     .filter(Boolean);
 }
 
+// 通过点路径读取嵌套值。
 export function getValueByPath(source: unknown, path: string): unknown {
   if (!path) return source;
   const keys = splitPath(path);
@@ -1876,6 +2026,7 @@ export function getValueByPath(source: unknown, path: string): unknown {
   return current;
 }
 
+// 通过点路径写入嵌套值；中间节点不存在时自动补对象。
 export function setValueByPath(target: JsonRecord, path: string, value: unknown): void {
   const keys = splitPath(path);
   if (!keys.length) return;
@@ -1892,6 +2043,7 @@ export function setValueByPath(target: JsonRecord, path: string, value: unknown)
   current[keys[keys.length - 1]] = value;
 }
 
+// 条件表达式允许直接传 JSON 文本，因此这里先做一次轻量解析。
 function tryParseCondition(input: unknown): unknown {
   if (typeof input !== "string") return input;
   const text = input.trim();
@@ -1903,6 +2055,7 @@ function tryParseCondition(input: unknown): unknown {
   }
 }
 
+// 比较两个值，支持 equals/contains/in/gt/gte/lt/lte 等基础操作。
 function compareValue(left: unknown, right: unknown, op: string): boolean {
   if (op === "equals") return left === right;
   if (op === "filled" || op === "present") {
@@ -1931,6 +2084,7 @@ function compareValue(left: unknown, right: unknown, op: string): boolean {
   return false;
 }
 
+// 将自然语言条件文本清洗成便于模糊匹配的规范文本。
 function normalizeConditionText(input: unknown): string {
   return String(input || "")
     .replace(/[\s，。、“”"'‘’：:；;（）()【】\[\]\-—_·•・⋯…,.!?！？]/g, "")
@@ -1938,6 +2092,8 @@ function normalizeConditionText(input: unknown): string {
     .toLowerCase();
 }
 
+// 收集 state 中会影响自然语言条件判定的文本池，
+// 包括 memory/currentEvent/chapterProgress/dynamicEvents 等摘要与事实。
 function collectStateConditionTexts(state: JsonRecord): string[] {
   const currentEvent = isRecord(state.currentEvent) ? state.currentEvent : {};
   const currentEventDigest = isRecord(state.currentEventDigest) ? state.currentEventDigest : {};
@@ -1968,6 +2124,8 @@ function collectStateConditionTexts(state: JsonRecord): string[] {
     .filter(Boolean);
 }
 
+// 用自然语言做一次“软判定”。
+// 命中时直接返回 true；无法确定时返回 null，交由结构化条件或 message includes 继续处理。
 function evaluateNaturalLanguageCondition(text: string, ctx: ConditionContext): boolean | null {
   const normalized = normalizeConditionText(text);
   if (!normalized) return true;
@@ -1978,6 +2136,8 @@ function evaluateNaturalLanguageCondition(text: string, ctx: ConditionContext): 
   return null;
 }
 
+// 从 ConditionContext 里读取 left operand，
+// 支持 `state.xxx`、`meta.xxx`、`message.content`、`eventType` 等路径。
 function readContextValue(ctx: ConditionContext, fieldRaw: unknown): unknown {
   const field = String(fieldRaw || "").trim();
   if (!field) return undefined;
@@ -1990,6 +2150,12 @@ function readContextValue(ctx: ConditionContext, fieldRaw: unknown): unknown {
   return getValueByPath(ctx.state, field);
 }
 
+// 通用条件引擎。
+// 支持：
+// - 字符串自然语言条件
+// - 结构化条件对象
+// - and/or/not 组合条件
+// - state_text_contains_all 等运行时扩展操作符
 export function evaluateCondition(input: unknown, ctx: ConditionContext): boolean {
   const condition = tryParseCondition(input);
 
@@ -1998,6 +2164,8 @@ export function evaluateCondition(input: unknown, ctx: ConditionContext): boolea
   if (typeof condition === "string") {
     const text = condition.trim();
     if (!text) return true;
+    // 先尝试自然语言软判定，
+    // 失败后再退回最原始的 messageContent includes。
     const semanticMatched = evaluateNaturalLanguageCondition(text, ctx);
     if (semanticMatched !== null) {
       return semanticMatched;
@@ -2026,6 +2194,8 @@ export function evaluateCondition(input: unknown, ctx: ConditionContext): boolea
     const child = condition.condition ?? (Array.isArray(condition.conditions) ? condition.conditions[0] : null);
     return !evaluateCondition(child, ctx);
   }
+  // 这个操作符会在整个运行态文本池里查找多个关键 token，
+  // 适合“已累计 3 次失败”“已绑定姓名+性别+年龄”这类隐式状态判断。
   if (op === "state_text_contains_all") {
     const values = Array.isArray(condition.value)
       ? condition.value
@@ -2047,6 +2217,7 @@ export function evaluateCondition(input: unknown, ctx: ConditionContext): boolea
   return false;
 }
 
+// 将 action 列表统一归一化成对象数组。
 export function normalizeActionList(input: unknown): JsonRecord[] {
   const raw = tryParseCondition(input);
   if (!raw) return [];
@@ -2060,6 +2231,7 @@ export function normalizeActionList(input: unknown): JsonRecord[] {
   return [];
 }
 
+// 归一化世界 settings，顺手把顶层封面/发布状态并回 settings，便于前端直接消费。
 export function normalizeWorldSettings(settingsRaw: unknown, topLevel: { coverPath?: unknown; publishStatus?: unknown }): JsonRecord {
   const settings = parseJsonSafe<JsonRecord>(settingsRaw, {});
   const coverPath = String(topLevel.coverPath || "").trim();
@@ -2074,6 +2246,7 @@ export function normalizeWorldSettings(settingsRaw: unknown, topLevel: { coverPa
   return settings;
 }
 
+// 归一化世界输出，补齐 settings / 用户角色 / 旁白角色。
 export function normalizeWorldOutput(row: any): JsonRecord | null {
   if (!row) return null;
   const rolePair = normalizeRolePair(row.playerRole, row.narratorRole);
@@ -2094,6 +2267,7 @@ export function normalizeWorldOutput(row: any): JsonRecord | null {
   };
 }
 
+// 归一化章节输出，并同步构建 runtimeOutline。
 export function normalizeChapterOutput(row: any): JsonRecord | null {
   if (!row) return null;
   const normalized = normalizeChapterFields({
@@ -2123,6 +2297,7 @@ export function normalizeChapterOutput(row: any): JsonRecord | null {
   };
 }
 
+// 归一化任务输出，把条件和奖励动作转成对象。
 export function normalizeTaskOutput(row: any): JsonRecord | null {
   if (!row) return null;
   return {
@@ -2133,6 +2308,7 @@ export function normalizeTaskOutput(row: any): JsonRecord | null {
   };
 }
 
+// 归一化触发器输出，把条件和动作表达式转成对象。
 export function normalizeTriggerOutput(row: any): JsonRecord | null {
   if (!row) return null;
   return {
@@ -2142,6 +2318,7 @@ export function normalizeTriggerOutput(row: any): JsonRecord | null {
   };
 }
 
+// 归一化消息输出，把 meta / revisitData 从 JSON 文本转成对象。
 export function normalizeMessageOutput(row: any): JsonRecord | null {
   if (!row) return null;
   return {
