@@ -410,6 +410,7 @@ export default async (knex: Knex): Promise<void> => {
   await addColumn("t_storyChapter", "openingRole", "text");
   await addColumn("t_storyChapter", "openingText", "text");
   await addColumn("t_storyChapter", "bgmPath", "text");
+  await addColumn("t_storyChapter", "bgmAutoPlay", "integer");
   await addColumn("t_storyChapter", "showCompletionCondition", "integer");
   await addColumn("t_storyChapter", "runtimeOutline", "text");
 

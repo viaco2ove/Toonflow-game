@@ -24,6 +24,26 @@ function resolveSafeLocalPath(userPath: string, rootDir: string): string {
   return absPath;
 }
 
+/**
+ * 把临时文件服务返回的页面地址修正成原始文件直链。
+ * 阿里 clone 拉取参考音频时必须拿到真实音频二进制，不能是网页落地页。
+ */
+function normalizeTempOssPublicUrl(provider: string, rawUrl: string): string {
+  const url = String(rawUrl || "").trim();
+  if (!url) return "";
+
+  // tmpfiles 有两种常见返回：
+  // 1. http://tmpfiles.org/<id>/<name>
+  // 2. https://tmpfiles.org/<id>/<name>
+  // 这两种都是展示页，不是原始音频直链。这里统一强制改成 https + /dl/ 版本，
+  // 避免阿里云拉取到 HTML 页面后报 Audio.DecoderError。
+  if (provider.includes("tmpfiles")) {
+    return url.replace(/^https?:\/\/tmpfiles\.org\/(?!dl\/)/i, "https://tmpfiles.org/dl/");
+  }
+
+  return url;
+}
+
 class OSS {
   private rootDir: string;
   private initPromise: Promise<void>;
@@ -103,7 +123,7 @@ class OSS {
         const res = await axios.post("https://tmpfiles.org/api/v1/upload", form, { headers: form.getHeaders() });
         const url = res.data?.data?.url || res.data?.data?.link || res.data?.url || res.data?.link;
         if (typeof url === "string" && url.trim()) {
-          return url.trim();
+          return normalizeTempOssPublicUrl(provider, url);
         }
       }
 
@@ -113,7 +133,7 @@ class OSS {
         const res = await axios.post("https://file.io", form, { headers: form.getHeaders() });
         const url = res.data?.link || res.data?.url;
         if (typeof url === "string" && url.trim()) {
-          return url.trim();
+          return normalizeTempOssPublicUrl(provider, url);
         }
       }
 
@@ -122,7 +142,7 @@ class OSS {
         const endpoint = `${base.replace(/\/+$/, "")}/${encodeURIComponent(filename)}`;
         const res = await axios.put(endpoint, buffer, { headers: { "Content-Type": "application/octet-stream" } });
         if (typeof res.data === "string" && res.data.trim()) {
-          return res.data.trim();
+          return normalizeTempOssPublicUrl(provider, res.data);
         }
       }
     } catch (err) {

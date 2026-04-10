@@ -1,4 +1,4 @@
-// @db-hash 28e0cff19964d2a5dd5332f14ab4d572
+// @db-hash de02a273b10804022172080963e3fa16
 //该文件由脚本自动生成，请勿手动修改
 
 export interface t_aiModelMap {
@@ -238,6 +238,7 @@ export interface t_setting {
 }
 export interface t_storyChapter {
   'backgroundPath'?: string | null;
+  'bgmAutoPlay'?: number | null;
   'bgmPath'?: string | null;
   'chapterKey'?: string | null;
   'completionCondition'?: string | null;

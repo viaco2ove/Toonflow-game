@@ -15,6 +15,7 @@ const NON_PROJECT_SCOPED_PATHS = new Set<string>([
   "/voice/getVoices",
   "/voice/audioProxy",
   "/voice/preview",
+  "/voice/generateBindingVoice",
   "/voice/transcribe",
   "/voice/polishPrompt",
   "/voice/uploadAudio",

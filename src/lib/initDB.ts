@@ -1675,6 +1675,7 @@ result=continue:
         table.text("openingRole");
         table.text("openingText");
         table.text("bgmPath");
+        table.integer("bgmAutoPlay");
         table.integer("showCompletionCondition");
         table.text("title");
         table.text("content");

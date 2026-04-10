@@ -1037,14 +1037,19 @@ function logOrchestratorPromptStats(
     rows.forEach((row) => {
       console.log(`[story:orchestrator:stats] | ${row.block} | ${normalizePromptStatContent(row.content)} | ${row.chars} | ${row.estimatedTokens} |`);
     });
+
     if (responseText) {
       console.log(`[story:orchestrator:stats] | 返回内容 | ${normalizePromptStatContent(responseText)} | ${responseText.length} | - |`);
     }
     if (tokenUsage) {
       console.log(`[story:orchestrator:stats] | 实际推理消耗 | input=${tokenUsage.inputTokens || 0}, output=${tokenUsage.outputTokens || 0}, reasoning=${tokenUsage.reasoningTokens || 0} | - | - |`);
     }
+    console.log(`[story:orchestrator:stats] System Prompt`);
+    console.log(systemPrompt +"\n"+userPrompt);
     const cost = Date.now() - start;
     console.log(`[story:orchestrator:stats] 耗时: ${cost}ms`);
+
+
   }
 }
 

@@ -2290,6 +2290,10 @@ export function normalizeChapterOutput(row: any): JsonRecord | null {
     content: normalized.content,
     openingRole: normalized.openingRole,
     openingText: normalized.openingText,
+    // 老章节没有显式配置该字段时仍然默认播放背景音乐。
+    bgmAutoPlay: row.bgmAutoPlay === undefined || row.bgmAutoPlay === null
+      ? true
+      : Number(row.bgmAutoPlay) !== 0,
     showCompletionCondition: Boolean(Number(row.showCompletionCondition || 0)),
     entryCondition: normalized.entryCondition,
     completionCondition: normalized.completionCondition,

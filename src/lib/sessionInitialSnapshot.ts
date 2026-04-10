@@ -68,6 +68,10 @@ export function buildChapterInitialSnapshotVersion(world: unknown, chapter: unkn
     openingText: String(chapterRecord.openingText || ""),
     backgroundPath: String(chapterRecord.backgroundPath || ""),
     bgmPath: String(chapterRecord.bgmPath || ""),
+    // 老章节没有显式字段时默认播放，避免历史数据升级后全部静音。
+    bgmAutoPlay: chapterRecord.bgmAutoPlay === undefined || chapterRecord.bgmAutoPlay === null
+      ? true
+      : Number(chapterRecord.bgmAutoPlay) !== 0,
     showCompletionCondition: Boolean(chapterRecord.showCompletionCondition),
     completionCondition: chapterRecord.completionCondition || null,
     entryCondition: chapterRecord.entryCondition || null,
