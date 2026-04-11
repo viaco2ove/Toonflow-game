@@ -31,6 +31,8 @@ const NON_PROJECT_SCOPED_PATHS = new Set<string>([
   "/game/streamvoice",
   "/game/initDebug",
   "/game/initStory",
+  "/game/listImportableRoles",
+  "/game/importWorldRole",
   "/game/debugRuntimeShared/revisit",
   "/game/debugRuntimeShared/revisit/history",
 ]);
@@ -101,6 +103,16 @@ async function projectIdFromChapterTrigger(triggerId: number): Promise<number | 
 async function projectIdFromSession(sessionId: string): Promise<number | null> {
   const row = await u.db("t_gameSession").where({ sessionId }).first("projectId");
   return toPositiveInt(row?.projectId);
+}
+
+/**
+ * 正式游玩会话属于当前登录用户的私有资源。
+ * 故事大厅允许游玩其他用户发布的故事，因此进入会话后不应该再按源故事项目归属拦截，
+ * 而应该直接校验 session 是否归当前用户所有。
+ */
+async function ensureSessionOwned(sessionId: string, userId: number): Promise<boolean> {
+  const row = await u.db("t_gameSession").where({ sessionId, userId }).first("id");
+  return !!row;
 }
 
 async function projectIdFromAsset(assetId: number): Promise<number | null> {
@@ -207,7 +219,17 @@ async function collectProjectIds(req: Request): Promise<number[]> {
     if (p) projectIds.add(p);
   }
 
-  const worldId = toPositiveInt(body.worldId ?? query.worldId);
+  // 游戏侧有些请求不会直接传 worldId，而是用 sourceWorldId / excludeWorldId
+  // 表示“来源故事”或“当前草稿故事”。这里统一折叠成同一条资源归属解析链，
+  // 避免新接口虽然访问的是故事资源，却因为字段名不同被误判成“无法确认资源归属项目”。
+  const worldId = toPositiveInt(
+    body.worldId
+    ?? query.worldId
+    ?? body.sourceWorldId
+    ?? query.sourceWorldId
+    ?? body.excludeWorldId
+    ?? query.excludeWorldId,
+  );
   if (worldId) {
     const p = await projectIdFromStoryWorld(worldId);
     if (p) projectIds.add(p);
@@ -371,7 +393,8 @@ async function collectProjectIds(req: Request): Promise<number[]> {
 export async function enforceResourceIsolation(req: Request, res: Response, next: NextFunction) {
   try {
     const path = String(req.path || "");
-    if (path === "/other/login") {
+    // 登录 / 注册属于公开入口，资源隔离不应再要求已有登录态。
+    if (path === "/other/login" || path === "/other/register") {
       return next();
     }
     const userId = toPositiveInt((req as any)?.user?.id);
@@ -399,6 +422,32 @@ export async function enforceResourceIsolation(req: Request, res: Response, next
       if (configId && !(await ensureConfigOwned(configId, userId, "voice"))) {
         return res.status(403).send({ message: "无权访问该语音模型配置" });
       }
+    }
+
+    /**
+     * 这些接口是围绕正式会话读写的，会话创建成功后应只按 session.userId 校验。
+     * 否则故事大厅里“别人已发布但当前用户已打开的故事”会在 introduction /
+     * orchestration / streamlines 阶段再次被误判成“无权访问源项目”。
+     */
+    const sessionScopedGamePaths = new Set<string>([
+      "/game/getSession",
+      "/game/getMessage",
+      "/game/addMessage",
+      "/game/deleteMessage",
+      "/game/deleteSession",
+      "/game/commitNarrativeTurn",
+      "/game/continueSession",
+      "/game/revisitMessage",
+      "/game/introduction",
+      "/game/orchestration",
+      "/game/streamlines",
+    ]);
+    const sessionId = String((req.body || {}).sessionId ?? (req.query || {}).sessionId ?? "").trim();
+    if (sessionId && sessionScopedGamePaths.has(path)) {
+      if (!(await ensureSessionOwned(sessionId, userId))) {
+        return res.status(403).send({ message: "无权访问该会话" });
+      }
+      return next();
     }
 
     // 视频模型配置引用按 userId 隔离
