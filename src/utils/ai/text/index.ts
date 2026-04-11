@@ -246,6 +246,17 @@ function createDebugFetch(label: string): typeof fetch {
   };
 }
 
+/**
+ * 判断当前厂商是否走 OpenAI 兼容聊天接口。
+ * 这类厂商最终都会复用 @ai-sdk/openai 的 chat 实现，因此 providerOptions 必须挂在 openai 键下。
+ */
+function isOpenAICompatibleManufacturer(manufacturer?: string): boolean {
+  const normalizedManufacturer = String(manufacturer || "").trim();
+  return ["volcengine", "doubao", "other", "openai", "modelScope", "grsai", "t8star", "lmstudio", "autodl_chat", "autodl"].includes(
+    normalizedManufacturer,
+  );
+}
+
 const buildOptions = async (input: AIInput<any>, config: AIConfig = {}) => {
   if (!config || !config?.model || !config?.apiKey || !config?.manufacturer) throw new Error("请检查模型配置是否正确");
   const { apiKey, baseURL, manufacturer } = { ...config };
@@ -275,7 +286,7 @@ const buildOptions = async (input: AIInput<any>, config: AIConfig = {}) => {
     }
   }
 
-  const openAICompatible = ["volcengine", "doubao", "other", "openai", "modelScope", "grsai", "t8star", "lmstudio", "autodl_chat", "autodl"].includes(owned.manufacturer);
+  const openAICompatible = isOpenAICompatibleManufacturer(owned.manufacturer);
   const modelInstance = owned.instance({
     apiKey,
     baseURL: baseURL!,
@@ -349,7 +360,16 @@ const buildOptions = async (input: AIInput<any>, config: AIConfig = {}) => {
       ...(output && { output }),
       ...(
         config?.reasoningEffort && openAICompatible
-          ? { providerOptions: { openaiCompatible: { reasoningEffort: config.reasoningEffort } } }
+          ? {
+            // 这里必须使用 openai 键，而不是自定义的 openaiCompatible。
+            // @ai-sdk/openai 的 chat provider 会把 reasoningEffort 映射成请求体里的 reasoning_effort。
+            // 之前写成 openaiCompatible 后，SDK 会直接忽略这段配置，最终不会把参数发给火山/豆包。
+            providerOptions: {
+              openai: {
+                reasoningEffort: config.reasoningEffort,
+              },
+            },
+          }
           : {}
       ),
     },
