@@ -770,8 +770,14 @@ event_facts:`,
             name: "AI故事-角色发言",
             type: "subAgent",
             parentCode: "story-main",
-            defaultValue:
-              "你是角色发言器。你只根据既定的 speaker、motive、最近对话和精炼上下文，生成当前这一轮真正展示给用户看的台词或旁白。你不能改变说话人，不能泄漏内部编排内容。",
+          defaultValue:
+          "你是角色发言器。根据当前事件，当前章节说出符合设定的台词。\n" +
+            "你只根据既定的 speaker、motive、最近对话和精炼上下文，生成当前这一轮真正展示给用户看的台词或旁白。" +
+            "# 角色发言" +
+            "你不能改变说话人，不能泄漏内部编排内容。" +
+            "# 旁白发言" +
+            "如果当前发言角色是旁白，你要引导故事继续，说明场景情况，人物行为，引导角色发言等。提示用户可以做什么。 " +
+            "如果存在万能角色如万能角色，某男子，某女子你应该让他们说话而不是帮他们说话。",
             customValue: null,
           },
           {
@@ -817,6 +823,50 @@ event_facts:`,
 
 result=continue:
 {"result":"continue","matched_rule":null,"reason":"用户尚未输入名称、性别、年龄，未满足结束条件","next_chapter_id":null,"guide_summary":"需要引导用户输入角色名称、性别和年龄","guide_facts":["用户尚未提供角色基本信息","需要询问用户角色名称","需要询问用户角色性别和年龄"]}
+`,
+            customValue: null,
+          },
+          {
+            id: 32,
+            code: "story-event-progress",
+            name: "AI故事-事件进度检测",
+            type: "subAgent",
+            parentCode: "story-main",
+            defaultValue:
+              `你是事件进度检测器。你只判断“当前事件是否结束、现在进行到哪一步”，不判断章节是否成功或失败。
+
+## 任务
+根据当前事件、当前进度和最近 10 条台词，判断：
+- 当前事件是否已经结束
+- 当前事件当前应处于什么状态
+- 当前事件应该如何总结当前进度
+
+## 约束
+1. 只判断当前事件，不判断章节整体成败
+2. 不要自己编造新剧情
+3. recent_dialogue 里的“用户”才代表真实用户发言
+4. 不能把单个数字误判成“输入了多次”
+5. 如果事件还没达成，只能 ended=false
+
+## 输出格式
+必须只输出一个 JSON 对象，不要解释，不要代码块。
+
+字段固定为：
+- ended: boolean
+- event_status: "active" | "waiting_input" | "completed"
+- progress_summary: string
+- progress_facts: string[]
+- reason: string
+
+## 判定规则
+- ended=true：代表当前事件已经完成，系统应切到下一个事件
+- ended=false：代表当前事件仍未完成，系统继续停留在当前事件
+- event_status=waiting_input：代表当前事件还需要用户输入
+- event_status=active：代表当前事件仍在推进，但还没轮到用户
+- event_status=completed：只在 ended=true 时使用
+
+## 输出示例
+{"ended":false,"event_status":"waiting_input","progress_summary":"当前事件仍在等待用户补充角色名称、性别和年龄","progress_facts":["用户尚未提供完整角色信息","当前仅完成开场引导","需要继续等待用户输入"],"reason":"当前事件目标尚未完成，仍需用户继续提供信息"}
 `,
             customValue: null,
           },
@@ -872,6 +922,7 @@ result=continue:
           { id: 14, configId: null, name: "AI故事-语音生成", key: "storyVoiceModel" },
           { id: 15, configId: null, name: "AI故事-语音识别", key: "storyAsrModel" },
           { id: 16, configId: null, name: "AI故事-语音设计", key: "storyVoiceDesignModel" },
+          { id: 19, configId: null, name: "AI故事-事件进度检测", key: "storyEventProgressModel" },
         ]);
       },
     },

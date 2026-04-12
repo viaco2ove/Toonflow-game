@@ -316,12 +316,15 @@ export default router.post(
         // 否则回溯到“开场白”时，后端保存下来的 state 会已经跳到章节内容/结束条件，导致回溯快照脏掉。
         const phaseAdvance = isOpeningMessage
           ? { enteredUserPhase: false }
-          : applyDebugNarrativeMessageProgress({
+          : await applyDebugNarrativeMessageProgress({
             chapter,
             state,
             role: String(emittedMessage.role || ""),
             roleType: String(emittedMessage.roleType || ""),
+            eventType: String(emittedMessage.eventType || ""),
             content: String(emittedMessage.content || ""),
+            recentMessages: [...recentMessages, emittedMessage],
+            userId,
           });
         const debugFreePlotActive = isDebugFreePlotActive(state);
         const outcome = isOpeningMessage

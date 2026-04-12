@@ -76,6 +76,14 @@ function isTextInputMiniGame(gameType: string) {
   return TEXT_INPUT_GAME_TYPES.has(scalarText(gameType));
 }
 
+/**
+ * 判断当前小游戏是否是战斗玩法。
+ * 这样可以在多个展示和状态同步函数里统一走战斗专用分支。
+ */
+function isBattleMiniGame(gameType: string) {
+  return scalarText(gameType) === "battle";
+}
+
 function uniqueTexts(items: string[]) {
   return Array.from(new Set(items.map((item) => scalarText(item)).filter(Boolean)));
 }
@@ -249,6 +257,17 @@ function summarizePublicState(publicState: JsonRecord): string {
 
 function buildMiniGameUiStateItems(session: JsonRecord, rulebook: MiniGameRulebook): JsonRecord[] {
   const publicState = asRecord(session.public_state);
+  if (rulebook.gameType === "battle") {
+    const enemyList = asArray<JsonRecord>(publicState.enemy_list)
+      .map((item) => asRecord(item))
+      .filter((item) => Number(item.hp || 0) > 0);
+    return [
+      { key: "当前目标", value: scalarText(publicState.current_target_name) || "待确认" },
+      { key: "用户状态", value: `HP ${Number(publicState.user_hp || 0)}/${Number(publicState.user_max_hp || 0)} · MP ${Number(publicState.user_mp || 0)}/${Number(publicState.user_max_mp || 0)}` },
+      { key: "敌人数量", value: `${enemyList.length}` },
+      { key: "最近战报", value: scalarText(publicState.last_result) || "战斗尚未开始" },
+    ].filter((item) => scalarText(item.value));
+  }
   if (rulebook.gameType === "fishing") {
     return [
       { key: "当前水域", value: scalarText(publicState.site_name) || "当前水域" },
@@ -289,6 +308,10 @@ function buildMiniGameUiStateItems(session: JsonRecord, rulebook: MiniGameRulebo
 
 function buildMiniGamePhaseLabel(session: JsonRecord, rulebook: MiniGameRulebook): string {
   const phase = scalarText(session.phase);
+  if (rulebook.gameType === "battle") {
+    if (phase === "encounter") return "交战中";
+    if (phase === "settling") return "已结算";
+  }
   if (rulebook.gameType === "fishing") {
     if (phase === "prepare") return "准备中";
     if (phase === "waiting") return "等待结果";
@@ -304,6 +327,9 @@ function buildMiniGamePhaseLabel(session: JsonRecord, rulebook: MiniGameRulebook
 }
 
 function buildMiniGameInputHint(rulebook: MiniGameRulebook): string {
+  if (rulebook.gameType === "battle") {
+    return "可点击攻击、技能、防御、回气等操作继续战斗";
+  }
   if (rulebook.gameType === "research_skill") {
     return "输入技能名称、思路或调整方案";
   }
@@ -450,6 +476,362 @@ function buildTextMiniGameAdvice(gameType: string, text: string): string {
     hints.push("说明加热、锻打或注灵等强化步骤");
   }
   return hints.length ? `建议你${hints.join("，")}。` : "建议你把资源、步骤和风险控制说得更完整一些。";
+}
+
+/**
+ * 从角色参数卡或属性里读取数值型等级。
+ * 战斗小游戏需要统一读取角色等级、血量、蓝量作为初始战斗数据。
+ */
+function roleNumericStat(role: JsonRecord, key: "level" | "hp" | "mp" | "money", fallback: number): number {
+  const card = asRecord(role.parameterCardJson);
+  const attrs = asRecord(role.attributes);
+  const raw = Number(card[key] ?? attrs[key] ?? fallback);
+  return Number.isFinite(raw) ? raw : fallback;
+}
+
+/**
+ * 解析 `#对战 xxx` 里的敌人名称列表。
+ * 支持单个名称，也支持用顿号、逗号、“和/与”分隔多个敌人。
+ */
+function parseBattleTargetNames(input: string): string[] {
+  const text = normalizeInlineText(input);
+  const withoutTrigger = text.replace(/^#对战/u, "").trim();
+  if (!withoutTrigger) {
+    return ["野怪"];
+  }
+  return withoutTrigger
+    .split(/[，,、/]|(?:\s+和\s+)|(?:\s+与\s+)/u)
+    .map((item) => scalarText(item))
+    .filter(Boolean);
+}
+
+/**
+ * 从世界角色里按名称匹配敌人来源角色。
+ * 如果能匹配到现有角色，就复用其头像、简介和参数卡。
+ */
+function resolveWorldRoleByName(ctx: MiniGameControllerInput, name: string): JsonRecord | null {
+  const normalized = scalarText(name);
+  if (!normalized) return null;
+  const matched = worldRoles(ctx.world).find((item) => {
+    const roleName = scalarText(item.name);
+    return roleName === normalized || roleName.includes(normalized) || normalized.includes(roleName);
+  });
+  return matched ? asRecord(matched) : null;
+}
+
+/**
+ * 为野怪或未命中世界角色的名称生成一份默认敌人简介。
+ * 这样在敌人状态面板里不会只看到一个空名字。
+ */
+function defaultEnemyDescription(name: string): string {
+  const normalized = scalarText(name) || "野怪";
+  if (normalized.includes("狼")) return `${normalized}盘踞在周围，行动迅捷，擅长撕咬与突袭。`;
+  if (normalized.includes("魔")) return `${normalized}散发着危险气息，力量强横，擅长正面压制。`;
+  if (normalized.includes("怪")) return `${normalized}正盘踞在前方，已经摆出攻击姿态。`;
+  return `${normalized}已经出现在你面前，正准备与你展开一场正面对战。`;
+}
+
+/**
+ * 把世界角色或临时敌人统一映射成战斗敌人快照。
+ * 这个快照会写进 public_state.enemy_list，供 Web/安卓直接展示。
+ */
+function buildBattleEnemy(ctx: MiniGameControllerInput, name: string, index: number): JsonRecord {
+  const role = resolveWorldRoleByName(ctx, name);
+  if (role) {
+    return {
+      enemy_id: scalarText(role.id) || `enemy_role_${index + 1}`,
+      role_id: scalarText(role.id),
+      name: scalarText(role.name) || `敌人${index + 1}`,
+      description: scalarText(role.description) || defaultEnemyDescription(scalarText(role.name)),
+      level: roleNumericStat(role, "level", 1),
+      hp: Math.max(1, roleNumericStat(role, "hp", 100)),
+      max_hp: Math.max(1, roleNumericStat(role, "hp", 100)),
+      mp: Math.max(0, roleNumericStat(role, "mp", 0)),
+      max_mp: Math.max(0, roleNumericStat(role, "mp", 0)),
+      avatar_path: scalarText(role.avatarPath),
+      avatar_bg_path: scalarText(role.avatarBgPath),
+      is_role_enemy: true,
+      reward_money: clamp(roleNumericStat(role, "level", 1) * 12 + 16, 12, 320),
+      reward_items: [],
+    };
+  }
+  const normalized = scalarText(name) || `野怪${index + 1}`;
+  const isWolf = normalized.includes("狼");
+  const isMonster = normalized.includes("魔") || normalized.includes("兽");
+  const level = isWolf ? 6 : isMonster ? 8 : 4;
+  const hp = isWolf ? 95 : isMonster ? 140 : 80;
+  const mp = isMonster ? 36 : 12;
+  return {
+    enemy_id: `enemy_temp_${simpleSlug(normalized) || index + 1}_${index + 1}`,
+    role_id: "",
+    name: normalized,
+    description: defaultEnemyDescription(normalized),
+    level,
+    hp,
+    max_hp: hp,
+    mp,
+    max_mp: mp,
+    avatar_path: "",
+    avatar_bg_path: "",
+    is_role_enemy: false,
+    reward_money: clamp(level * 10 + 10, 10, 260),
+    reward_items: normalized.includes("狼") ? ["狼牙", "狼皮"] : isMonster ? ["魔核"] : ["战利品"],
+  };
+}
+
+/**
+ * 读取当前战斗里的存活敌人列表。
+ * 所有战斗结算、按钮生成和 UI 同步都依赖这个函数。
+ */
+function aliveBattleEnemies(session: JsonRecord): JsonRecord[] {
+  const publicState = asRecord(session.public_state);
+  return asArray<JsonRecord>(publicState.enemy_list)
+    .map((item) => asRecord(item))
+    .filter((item) => Number(item.hp || 0) > 0);
+}
+
+/**
+ * 让战斗 public_state 和 hidden_state 保持一致。
+ * 每回合动作后都要刷新当前目标、敌人数、最近战报等可见信息。
+ */
+function syncBattlePublicState(session: JsonRecord) {
+  const publicState = asRecord(session.public_state);
+  const aliveEnemies = aliveBattleEnemies(session);
+  const currentTargetId = scalarText(publicState.current_target_id);
+  const currentTarget = aliveEnemies.find((item) => scalarText(item.enemy_id) === currentTargetId) || aliveEnemies[0] || null;
+  publicState.enemy_list = asArray<JsonRecord>(publicState.enemy_list).map((item) => asRecord(item));
+  publicState.alive_enemy_count = aliveEnemies.length;
+  publicState.current_target_id = scalarText(currentTarget?.enemy_id);
+  publicState.current_target_name = scalarText(currentTarget?.name);
+  publicState.user_hp = clamp(Number(publicState.user_hp || 0), 0, Math.max(1, Number(publicState.user_max_hp || 1)));
+  publicState.user_mp = clamp(Number(publicState.user_mp || 0), 0, Math.max(0, Number(publicState.user_max_mp || 0)));
+  session.public_state = publicState;
+}
+
+/**
+ * 生成战斗小游戏的操作按钮。
+ * 当前所有存活敌人都可以作为攻击或技能目标。
+ */
+function battleOptions(session: JsonRecord): MiniGameActionOption[] {
+  const aliveEnemies = aliveBattleEnemies(session);
+  const targetActions = aliveEnemies.flatMap((enemy) => {
+    const enemyId = scalarText(enemy.enemy_id);
+    const name = scalarText(enemy.name) || "敌人";
+    return [
+      { action_id: `attack:${enemyId}`, label: `攻击${name}`, desc: `对 ${name} 发起普通攻击` },
+      { action_id: `skill:${enemyId}`, label: `技能${name}`, desc: `消耗法力对 ${name} 发动技能` },
+    ];
+  });
+  return [
+    ...targetActions,
+    { action_id: "guard", label: "防御", desc: "降低下一轮受到的伤害" },
+    { action_id: "recover", label: "回气", desc: "恢复少量法力并稳住气息" },
+    { action_id: "view_status", label: "查看状态", desc: "查看当前敌我状态" },
+  ];
+}
+
+/**
+ * 根据战斗 public_state 生成一段可直接展示的状态摘要。
+ * 这段文字会喂给状态查看和回合结算 narration。
+ */
+function battleStatusSummary(session: JsonRecord): string {
+  const publicState = asRecord(session.public_state);
+  const aliveEnemies = aliveBattleEnemies(session);
+  const enemySummary = aliveEnemies.length
+    ? aliveEnemies.map((enemy) => `${scalarText(enemy.name)}(HP ${Number(enemy.hp || 0)})`).join("、")
+    : "无存活敌人";
+  return `用户 HP ${Number(publicState.user_hp || 0)}/${Number(publicState.user_max_hp || 0)}，MP ${Number(publicState.user_mp || 0)}/${Number(publicState.user_max_mp || 0)}；敌人：${enemySummary}。`;
+}
+
+/**
+ * 解析攻击动作里的目标 enemy_id。
+ * 这样 battleStep 不需要自己反复处理 action_id 的字符串拆分。
+ */
+function battleActionTargetId(actionId: string): string {
+  return scalarText(actionId.split(":")[1]);
+}
+
+/**
+ * 为战斗胜利生成写回补丁。
+ * 这里统一处理奖励金钱、物品、升级概率，以及战后回满血蓝。
+ */
+function buildBattleVictoryWriteback(session: JsonRecord, levelUp: boolean): JsonRecord {
+  const publicState = asRecord(session.public_state);
+  const allEnemies = asArray<JsonRecord>(publicState.enemy_list).map((item) => asRecord(item));
+  const totalMoney = allEnemies.reduce((sum, enemy) => sum + Number(enemy.reward_money || 0), 0);
+  const rewardItems = uniqueTexts(
+    allEnemies.flatMap((enemy) => asArray<string>(enemy.reward_items).map((item) => scalarText(item)).filter(Boolean)),
+  );
+  return {
+    inventoryAdd: rewardItems.map((item) => ({ kind: "loot", name: item })),
+    playerParameterPatch: {
+      money: totalMoney,
+      hp: Number(publicState.user_max_hp || 0),
+      mp: Number(publicState.user_max_mp || 0),
+      level: levelUp ? 1 : 0,
+    },
+    memoryAdd: [
+      `完成战斗：${allEnemies.map((enemy) => scalarText(enemy.name)).filter(Boolean).join("、")}`,
+      ...(rewardItems.length ? [`获得战利品：${rewardItems.join("、")}`] : []),
+      ...(levelUp ? ["战斗结束后完成了一次升级"] : []),
+    ],
+  };
+}
+
+/**
+ * 统一生成战斗胜利结算。
+ * 当所有敌人的血量都归零后，战斗会立即结束并播报战报。
+ */
+function finalizeBattleVictory(session: JsonRecord): MiniGameStepResult {
+  const publicState = asRecord(session.public_state);
+  const levelUp = takeRng(session, 0, 99) < 35;
+  const allEnemies = asArray<JsonRecord>(publicState.enemy_list).map((item) => asRecord(item));
+  const totalMoney = allEnemies.reduce((sum, enemy) => sum + Number(enemy.reward_money || 0), 0);
+  const rewardItems = uniqueTexts(
+    allEnemies.flatMap((enemy) => asArray<string>(enemy.reward_items).map((item) => scalarText(item)).filter(Boolean)),
+  );
+  session.status = "finished";
+  session.phase = "settling";
+  session.result = "success";
+  session.finish_reason = "全部敌人已被击败";
+  publicState.user_hp = Number(publicState.user_max_hp || 0);
+  publicState.user_mp = Number(publicState.user_max_mp || 0);
+  publicState.last_result = `战斗结束，已击败全部敌人，获得 ${totalMoney} 金钱${rewardItems.length ? ` 与 ${rewardItems.join("、")}` : ""}${levelUp ? "，并触发升级。" : "。"} `;
+  session.public_state = publicState;
+  return {
+    narration: `旁白播报战报：你已经击败全部敌人。${rewardItems.length ? `本次战利品为 ${rewardItems.join("、")}。` : ""}获得 ${totalMoney} 金钱。${levelUp ? "同时，你在战斗中突破瓶颈，等级提升了一级。" : ""}战斗结束后，你的气血与法力都已经恢复到最佳状态。`,
+    resultTags: ["success", "battle_victory"],
+    rewardSummary: { money: totalMoney, items: rewardItems, levelUp },
+    writeback: buildBattleVictoryWriteback(session, levelUp),
+    memorySummary: `战斗胜利：击败 ${allEnemies.map((enemy) => scalarText(enemy.name)).filter(Boolean).join("、")}`,
+  };
+}
+
+/**
+ * 统一生成战斗失败结算。
+ * 为避免主线直接卡死，战败后会按败退处理，并把用户血蓝恢复到可继续剧情的安全值。
+ */
+function finalizeBattleDefeat(session: JsonRecord): MiniGameStepResult {
+  const publicState = asRecord(session.public_state);
+  const safeHp = Math.max(1, Math.floor(Number(publicState.user_max_hp || 100) * 0.4));
+  const safeMp = Math.max(0, Math.floor(Number(publicState.user_max_mp || 0) * 0.4));
+  session.status = "finished";
+  session.phase = "settling";
+  session.result = "failed";
+  session.finish_reason = "用户在战斗中败退";
+  publicState.user_hp = safeHp;
+  publicState.user_mp = safeMp;
+  publicState.last_result = "战斗失利，已暂时撤退。";
+  session.public_state = publicState;
+  return {
+    narration: "旁白播报战报：你在这场战斗中被彻底压制，只能暂时撤退。为了避免主线中断，你已经强行调息，恢复了部分气血与法力，随时可以重新规划下一步行动。",
+    resultTags: ["failed", "battle_defeat"],
+    rewardSummary: { retreat: true },
+    writeback: {
+      playerParameterPatch: { hp: safeHp, mp: safeMp },
+      memoryAdd: ["一次战斗失利后被迫撤退"],
+    },
+    memorySummary: "战斗失利，暂时撤退",
+  };
+}
+
+/**
+ * 执行一轮战斗动作。
+ * 用户动作和敌人反击都会在这一轮内完成，并同步写回敌我血蓝状态。
+ */
+function battleStep(session: JsonRecord, actionId: string, ctx: MiniGameControllerInput): MiniGameStepResult {
+  const publicState = asRecord(session.public_state);
+  const enemyList = asArray<JsonRecord>(publicState.enemy_list).map((item) => asRecord(item));
+  const aliveEnemies = enemyList.filter((enemy) => Number(enemy.hp || 0) > 0);
+  if (!aliveEnemies.length) {
+    return finalizeBattleVictory(session);
+  }
+  const userName = scalarText(publicState.user_name) || "用户";
+  const userMaxHp = Math.max(1, Number(publicState.user_max_hp || 100));
+  const userMaxMp = Math.max(0, Number(publicState.user_max_mp || 0));
+  let userHp = clamp(Number(publicState.user_hp || userMaxHp), 0, userMaxHp);
+  let userMp = clamp(Number(publicState.user_mp || userMaxMp), 0, userMaxMp);
+  let guarding = false;
+  const narrations: string[] = [];
+  if (actionId === "recover") {
+    const recoverMp = clamp(12 + takeRng(session, 0, 10), 8, 24);
+    userMp = clamp(userMp + recoverMp, 0, userMaxMp);
+    const recoverHp = clamp(6 + takeRng(session, 0, 6), 4, 18);
+    userHp = clamp(userHp + recoverHp, 0, userMaxHp);
+    narrations.push(`${userName}稳住呼吸，快速回气，恢复了 ${recoverHp} 点气血与 ${recoverMp} 点法力。`);
+  } else if (actionId === "guard") {
+    guarding = true;
+    narrations.push(`${userName}沉下重心展开防御，准备硬接敌人的下一轮攻击。`);
+  } else {
+    const targetId = battleActionTargetId(actionId);
+    const target = enemyList.find((enemy) => scalarText(enemy.enemy_id) === targetId) || aliveEnemies[0];
+    if (!target) {
+      return {
+        narration: "当前没有可攻击的敌人，战斗会自动转入结算。",
+        resultTags: ["invalid"],
+      };
+    }
+    const targetName = scalarText(target.name) || "敌人";
+    const userLevel = Math.max(1, Number(publicState.user_level || 1));
+    const isSkill = actionId.startsWith("skill:");
+    const requiredMp = isSkill ? 18 : 0;
+    if (isSkill && userMp < requiredMp) {
+      narrations.push(`${userName}想要施展技能攻击 ${targetName}，但法力不足，只能仓促改为普通攻击。`);
+    }
+    const useSkill = isSkill && userMp >= requiredMp;
+    if (useSkill) {
+      userMp = clamp(userMp - requiredMp, 0, userMaxMp);
+    }
+    const baseDamage = useSkill
+      ? 18 + userLevel * 3 + takeRng(session, 6, 18)
+      : 10 + userLevel * 2 + takeRng(session, 2, 12);
+    target.hp = clamp(Number(target.hp || 0) - baseDamage, 0, Number(target.max_hp || 0));
+    publicState.current_target_id = scalarText(target.enemy_id);
+    publicState.current_target_name = targetName;
+    narrations.push(`${userName}${useSkill ? "施展技能" : "挥出攻击"}命中 ${targetName}，造成了 ${baseDamage} 点伤害。`);
+    if (Number(target.hp || 0) <= 0) {
+      narrations.push(`${targetName}当场倒下，已经失去战斗能力。`);
+    }
+  }
+  publicState.enemy_list = enemyList;
+  syncBattlePublicState(session);
+  if (!aliveBattleEnemies(session).length) {
+    publicState.user_hp = userHp;
+    publicState.user_mp = userMp;
+    session.public_state = publicState;
+    const victory = finalizeBattleVictory(session);
+    victory.narration = `${narrations.join("")}${victory.narration}`;
+    return victory;
+  }
+  const counterAttackLines: string[] = [];
+  aliveBattleEnemies(session).forEach((enemy) => {
+    const name = scalarText(enemy.name) || "敌人";
+    const level = Math.max(1, Number(enemy.level || 1));
+    let damage = 6 + level * 2 + takeRng(session, 0, 10);
+    if (guarding) {
+      damage = Math.max(1, Math.floor(damage * 0.45));
+    }
+    userHp = clamp(userHp - damage, 0, userMaxHp);
+    counterAttackLines.push(`${name}趁势反击，打掉了你 ${damage} 点气血。`);
+  });
+  publicState.user_hp = userHp;
+  publicState.user_mp = userMp;
+  publicState.last_result = `${narrations.join("")}${counterAttackLines.join("")}`.trim();
+  session.round = Number(session.round || 1) + 1;
+  session.phase = "encounter";
+  session.public_state = publicState;
+  if (userHp <= 0) {
+    const defeat = finalizeBattleDefeat(session);
+    defeat.narration = `${narrations.join("")}${counterAttackLines.join("")}${defeat.narration}`;
+    return defeat;
+  }
+  syncBattlePublicState(session);
+  return {
+    narration: `${narrations.join("")}${counterAttackLines.join("")}当前战斗仍在继续，${battleStatusSummary(session)}`,
+    resultTags: ["ongoing", "battle_round"],
+    rewardSummary: {},
+    memorySummary: `战斗推进一轮：${scalarText(publicState.current_target_name) || "敌人"}`,
+  };
 }
 
 function evaluateResearchSkillInput(session: JsonRecord, input: MiniGameControllerInput): MiniGameStepResult {
@@ -1880,6 +2262,72 @@ const RULEBOOKS: Record<string, MiniGameRulebook> = {
     options: miningOptions,
     applyAction: miningStep,
   },
+  battle: {
+    gameType: "battle",
+    displayName: "对战",
+    version: "1.0",
+    goal: "击败当前全部敌人，并结算战利品、金钱与升级收益",
+    phaseOrder: ["encounter", "settling"],
+    triggerTags: ["#对战"],
+    passivePatterns: [/对战/, /战斗/, /迎战/, /开打/, /交手/],
+    ruleSummary: "通过攻击、技能、防御和回气推进战斗。敌人会在每轮后反击；击败全部敌人后自动结算战利品和恢复状态。",
+    setup: (ctx, sessionId, entrySource) => {
+      const targetNames = parseBattleTargetNames(ctx.playerMessage);
+      const enemyList = targetNames.map((name, index) => buildBattleEnemy(ctx, name, index));
+      const userCard = asRecord(asRecord(ctx.state.player).parameterCardJson);
+      const userLevel = Math.max(1, Number(userCard.level ?? 1));
+      const userHp = Math.max(1, Number(userCard.hp ?? 100));
+      const userMp = Math.max(0, Number(userCard.mp ?? 0));
+      const session: JsonRecord = {
+        session_id: sessionId,
+        game_type: "battle",
+        rulebook_version: "1.0",
+        status: "active",
+        phase: "encounter",
+        round: 1,
+        sub_turn: 0,
+        entry_source: entrySource,
+        chapter_id: Number(ctx.chapter?.id || 0) || null,
+        scene_id: scalarText(ctx.chapter?.title) || "battlefield",
+        participants: buildParticipants(ctx, 1),
+        public_state: buildSimplePublicState({
+          battle_title: enemyList.length > 1 ? `对战 ${enemyList.length} 名敌人` : `对战 ${scalarText(enemyList[0]?.name) || "敌人"}`,
+          enemy_list: enemyList,
+          alive_enemy_count: enemyList.length,
+          current_target_id: scalarText(enemyList[0]?.enemy_id),
+          current_target_name: scalarText(enemyList[0]?.name),
+          user_name: scalarText(asRecord(ctx.state.player).name) || "用户",
+          user_level: userLevel,
+          user_hp: userHp,
+          user_max_hp: userHp,
+          user_mp: userMp,
+          user_max_mp: userMp,
+          last_result: enemyList.length > 1
+            ? `你已经被 ${enemyList.map((enemy) => scalarText(enemy.name)).filter(Boolean).join("、")} 包围，准备开始战斗。`
+            : `你已经锁定敌人 ${scalarText(enemyList[0]?.name) || "敌人"}，准备开始战斗。`,
+        }),
+        hidden_state: {},
+        resource_state: {},
+        rng_state: {
+          seed: `${ctx.world?.id || 0}:${ctx.chapter?.id || 0}:battle:${sessionId}`,
+          cursor: 0,
+          queue: buildRngQueue(`${ctx.world?.id || 0}:${ctx.chapter?.id || 0}:battle:${sessionId}`),
+        },
+        action_log_ids: [],
+        result: "ongoing",
+        finish_reason: "",
+        reward_preview: {},
+        writeback_whitelist: ["player_state.parameter_card", "player_state.inventory", "memory_state.mid_term"],
+        can_suspend: true,
+        can_quit: true,
+        resume_token: `resume_${sessionId}`,
+      };
+      syncBattlePublicState(session);
+      return session;
+    },
+    options: battleOptions,
+    applyAction: battleStep,
+  },
   upgrade_equipment: {
     gameType: "upgrade_equipment",
     displayName: "升级装备",
@@ -1951,6 +2399,20 @@ function applyMiniGameWriteback(state: JsonRecord, writeback: JsonRecord) {
         replaceParameterCardEquipment(state, fromName, toName);
       }
     });
+  }
+  const playerParameterPatch = asRecord(writeback.playerParameterPatch);
+  if (Object.keys(playerParameterPatch).length && allow("player_state.parameter_card")) {
+    const player = asRecord(state.player);
+    const card = createPlayerParameterCard(state);
+    Object.entries(playerParameterPatch).forEach(([key, value]) => {
+      const current = Number(card[key] ?? 0);
+      const next = typeof value === "number" && ["money", "level"].includes(key)
+        ? current + Number(value)
+        : value;
+      card[key] = next;
+    });
+    player.parameterCardJson = card;
+    state.player = player;
   }
   const playerAttributePatch = asRecord(writeback.playerAttributePatch);
   if (Object.keys(playerAttributePatch).length && allow("player_state.resources")) {
@@ -2047,6 +2509,12 @@ function buildStartNarration(rulebook: MiniGameRulebook, session: JsonRecord): s
   if (rulebook.gameType === "upgrade_equipment") {
     return "升级装备开始了。直接输入你要强化的装备和方案，我会立即检查这次强化是否成功。";
   }
+  if (rulebook.gameType === "battle") {
+    const publicState = asRecord(session.public_state);
+    const aliveEnemies = aliveBattleEnemies(session);
+    const enemyNames = aliveEnemies.map((enemy) => scalarText(enemy.name)).filter(Boolean).join("、") || "敌人";
+    return `战斗已经开始。旁白提示：你当前要对战的目标是 ${enemyNames}。先观察敌人的状态，再选择攻击、技能、防御或回气来推进战斗。`;
+  }
   return `小游戏已开始：${rulebook.displayName}。当前阶段：${scalarText(session.phase)}。可见状态：${summarizePublicState(publicState) || "暂无"}。`;
 }
 
@@ -2081,6 +2549,9 @@ function buildStatusNarration(root: JsonRecord, rulebook: MiniGameRulebook): str
   if (rulebook.gameType === "upgrade_equipment") {
     return `强化状态：${scalarText(publicState.last_result) || "等待方案"}。${scalarText(publicState.last_advice) || "直接输入装备名称以及加热、锻打、注灵方案。"}。`;
   }
+  if (rulebook.gameType === "battle") {
+    return `战斗状态：${scalarText(publicState.last_result) || "双方已经进入交战状态。"}${battleStatusSummary(session)}`;
+  }
   return `${rulebook.displayName}当前处于 ${scalarText(session.phase)}，第 ${Number(session.round || 1)} 轮。公开状态：${summarizePublicState(publicState) || "暂无"}。`;
 }
 
@@ -2096,6 +2567,9 @@ function buildRuleNarration(rulebook: MiniGameRulebook): string {
   }
   if (rulebook.gameType === "upgrade_equipment") {
     return "升级装备规则：直接输入目标装备和强化方案。我会判断升级结果，并把新装备名称或失败记录写回角色参数。";
+  }
+  if (rulebook.gameType === "battle") {
+    return "战斗规则：通过攻击、技能、防御和回气推进战斗。系统会实时更新敌我血量与法力；击败全部敌人后会结算战利品、金钱、升级概率，并在战后恢复用户血量与法力。";
   }
   return `${rulebook.displayName}规则：${rulebook.ruleSummary}`;
 }

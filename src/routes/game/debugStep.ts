@@ -299,12 +299,15 @@ export default router.post(
           });
         }
         const phaseAdvance = emittedMessage
-          ? applyDebugNarrativeMessageProgress({
+          ? await applyDebugNarrativeMessageProgress({
             chapter,
             state,
             role: emittedMessage.role,
             roleType: emittedMessage.roleType,
+            eventType: emittedMessage.eventType,
             content: emittedMessage.content,
+            recentMessages: emittedMessage ? [...recentMessages, emittedMessage] : recentMessages,
+            userId,
           })
           : { enteredUserPhase: false };
         const outcome = await evaluateDebugRuntimeOutcome({
@@ -462,12 +465,14 @@ export default router.post(
         })));
       }
 
-      applyDebugUserMessageProgress({
+      await applyDebugUserMessageProgress({
         chapter,
         state,
         messageContent: playerContent,
         eventType: "on_message",
         meta: {},
+        recentMessages,
+        userId,
       });
       const outcome = await evaluateDebugRuntimeOutcome({
         chapter,
@@ -571,12 +576,15 @@ export default router.post(
         });
       }
       const phaseAdvance = emittedMessage
-        ? applyDebugNarrativeMessageProgress({
+        ? await applyDebugNarrativeMessageProgress({
           chapter,
           state,
           role: emittedMessage.role,
           roleType: emittedMessage.roleType,
+          eventType: emittedMessage.eventType,
           content: emittedMessage.content,
+          recentMessages: emittedMessage ? [...recentMessages, emittedMessage] : recentMessages,
+          userId,
         })
         : { enteredUserPhase: false };
       const narratedOutcome = await evaluateDebugRuntimeOutcome({

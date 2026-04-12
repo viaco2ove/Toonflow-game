@@ -1507,6 +1507,184 @@ export interface NextEventDecision {
 }
 
 /**
+ * AI 事件进度检测结果。
+ *
+ * 用途：
+ * - 让 AI 只回答“当前事件是否结束、当前摘要/事实是什么”
+ * - 事件切换仍然复用本文件已有的 phase graph 推进逻辑
+ */
+export interface AiEventProgressResolution {
+  /** 当前事件是否已经结束。 */
+  ended: boolean;
+  /** 当前事件的新状态。 */
+  eventStatus: "active" | "waiting_input" | "completed";
+  /** AI 归纳的当前事件摘要。 */
+  progressSummary?: string | null;
+  /** AI 归纳的当前事件事实。 */
+  progressFacts?: string[] | null;
+  /** AI 为什么这样判断。 */
+  reason?: string | null;
+}
+
+/**
+ * 合并已有事件事实、AI 归纳事实和 AI 判定说明。
+ */
+function mergeAiProgressFacts(
+  existingFacts: string[],
+  progressFacts: string[] | null | undefined,
+  reason: string | null | undefined,
+): string[] {
+  const merged = Array.isArray(existingFacts)
+    ? existingFacts.map((item) => String(item || "").trim()).filter(Boolean)
+    : [];
+  const normalizedProgressFacts = Array.isArray(progressFacts)
+    ? progressFacts.map((item) => String(item || "").trim()).filter(Boolean)
+    : [];
+  for (const fact of normalizedProgressFacts) {
+    if (!merged.includes(fact)) {
+      merged.push(fact);
+    }
+  }
+  const normalizedReason = String(reason || "").trim();
+  if (normalizedReason) {
+    const reasonFact = `进度判定：${normalizedReason}`;
+    if (!merged.includes(reasonFact)) {
+      merged.push(reasonFact);
+    }
+  }
+  return merged;
+}
+
+/**
+ * 将 AI 的事件进度检测结果应用到运行态。
+ *
+ * 说明：
+ * - 未结束：只更新当前事件摘要、事实和状态
+ * - 已结束：将当前 phase 标记完成，并按 phase graph 切到下一事件
+ */
+export function applyAiEventProgressResolution(input: {
+  chapter: any;
+  state: JsonRecord;
+  resolution: AiEventProgressResolution;
+}): {
+  phaseChanged: boolean;
+  enteredUserPhase: boolean;
+} {
+  const outline = readRuntimeOutline(input.chapter);
+  const current = readChapterProgressState(input.state);
+  const currentEvent = readRuntimeCurrentEventState(input.state);
+  const nextSummary = String(input.resolution.progressSummary || "").trim()
+    || current.eventSummary
+    || currentEvent.summary;
+  const nextFacts = mergeAiProgressFacts(
+    Array.isArray(currentEvent.facts) ? currentEvent.facts : [],
+    input.resolution.progressFacts,
+    input.resolution.reason,
+  );
+
+  // 先把 AI 归纳结果回写到当前事件卡片，确保旧事件即使后续推进也保留完整事实。
+  upsertRuntimeEventDigestState(input.state, {
+    eventIndex: current.eventIndex,
+    eventKind: current.eventKind,
+    eventSummary: nextSummary,
+    eventFacts: nextFacts,
+    eventStatus: input.resolution.ended ? "completed" : input.resolution.eventStatus,
+    summarySource: "ai",
+  });
+
+  if (!input.resolution.ended) {
+    setChapterProgressState(input.state, {
+      eventSummary: nextSummary,
+      eventStatus: input.resolution.eventStatus,
+    });
+    syncRuntimeCurrentEventFromChapterProgress(input.state);
+    return {
+      phaseChanged: false,
+      enteredUserPhase: input.resolution.eventStatus === "waiting_input",
+    };
+  }
+
+  if (!outline.phases.length) {
+    setChapterProgressState(input.state, {
+      eventSummary: nextSummary,
+      eventStatus: "completed",
+    });
+    syncRuntimeCurrentEventFromChapterProgress(input.state);
+    return {
+      phaseChanged: false,
+      enteredUserPhase: false,
+    };
+  }
+
+  const completedEvents = markPhaseCompleted(
+    normalizeCompletedEvents(Array.isArray(current.completedEvents) ? current.completedEvents : []),
+    current.phaseId,
+  );
+  const currentPhaseIndex = outline.phases.findIndex((item) => item.id === current.phaseId);
+  const nextPhaseInfo = resolveNextPhaseFromGraph(outline, current.phaseId, completedEvents, currentPhaseIndex);
+  const nextPhase = nextPhaseInfo.phase;
+  if (!nextPhase) {
+    if (isFreeChapterRuntimeMode(input.chapter)) {
+      ensureFreeChapterDynamicEventState(
+        input.chapter,
+        input.state,
+        Math.max(outline.phases.length + 1, current.eventIndex + 1),
+        { completedEvents },
+      );
+      return {
+        phaseChanged: true,
+        enteredUserPhase: false,
+      };
+    }
+    if (hasChapterEndingEvent(input.chapter, outline)) {
+      updateEndingState(input.chapter, outline, input.state, {
+        completedEvents,
+        eventStatus: "active",
+      });
+      return {
+        phaseChanged: true,
+        enteredUserPhase: false,
+      };
+    }
+    setChapterProgressState(input.state, {
+      completedEvents,
+      eventSummary: nextSummary,
+      eventStatus: "completed",
+    });
+    syncRuntimeCurrentEventFromChapterProgress(input.state);
+    return {
+      phaseChanged: false,
+      enteredUserPhase: false,
+    };
+  }
+
+  const nextUserNodeId = nextPhase.kind === "user"
+    ? (nextPhase.userNodeId || current.userNodeId || null)
+    : (current.userNodeId || null);
+  const nextUserNodeIndex = nextUserNodeId
+    ? outline.userNodes.findIndex((item) => item.id === nextUserNodeId)
+    : -1;
+  const enteredUserPhase = nextPhase.kind === "user";
+  updatePhaseState(
+    outline,
+    input.state,
+    nextPhase,
+    nextPhaseInfo.phaseIndex,
+    nextUserNodeId,
+    nextUserNodeIndex,
+    enteredUserPhase ? "waiting_input" : "idle",
+    {
+      completedEvents,
+      eventStatus: enteredUserPhase ? "waiting_input" : "active",
+    },
+  );
+  return {
+    phaseChanged: true,
+    enteredUserPhase,
+  };
+}
+
+/**
  * 基于当前事件状态和章节编排图，判定是否可以进入下一个事件。
  */
 export function canAdvanceToNextEvent(chapter: any, state: JsonRecord): NextEventDecision {

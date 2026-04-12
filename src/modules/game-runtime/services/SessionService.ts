@@ -33,6 +33,7 @@ import {
   triggerStoryMemoryRefreshInBackground,
 } from "@/modules/game-runtime/engines/NarrativeOrchestrator";
 import {
+  applyAiEventProgressResolution,
   recordChapterProgressSignals,
   initializeChapterProgressForState,
   markCurrentUserNodeCompleted,
@@ -45,6 +46,7 @@ import {
   runTriggerEngine,
 } from "@/modules/game-runtime/engines/TriggerEngine";
 import { evaluateRuntimeOutcome } from "@/modules/game-runtime/services/ChapterRuntimeService";
+import { evaluateEventProgressByAi } from "@/modules/game-runtime/services/EventProgressRuntimeService";
 import { persistSnapshotIfNeeded } from "@/modules/game-runtime/services/SnapshotService";
 import {
   AppliedDelta,
@@ -367,6 +369,65 @@ function buildRecentMessages(rows: any[]): RuntimeMessageInput[] {
       content: String(item.content || ""),
       createTime: Number(item.createTime || 0),
     }));
+}
+
+/**
+ * 将“正式会话里的用户发言”应用到当前事件进度。
+ *
+ * 用途：
+ * - 先把 trigger / task / delta 等规则信号写进运行态
+ * - 再让 AI 判断当前事件到底推进到了哪一步、是否已经结束
+ * - 只有 AI 不可用时，才回退到旧的用户节点完成逻辑
+ */
+async function applySessionUserEventProgress(params: {
+  userId?: number;
+  chapter: any;
+  state: Record<string, any>;
+  messageId?: number | null;
+  messageContent: string;
+  eventType?: string;
+  triggered?: TriggerHit[];
+  taskProgress?: TaskProgressChange[];
+  deltas?: AppliedDelta[];
+  recentMessages?: RuntimeMessageInput[];
+  traceMeta?: Record<string, any>;
+}): Promise<void> {
+  if (!params.chapter) {
+    return;
+  }
+  initializeChapterProgressForState(params.chapter, params.state);
+  syncChapterProgressWithRuntime(params.chapter, params.state);
+  recordChapterProgressSignals(params.chapter, params.state, {
+    messageContent: params.messageContent,
+    messageRole: String(params.state.player?.name || "用户"),
+    messageRoleType: "player",
+    triggered: params.triggered,
+    taskProgress: params.taskProgress,
+    deltas: params.deltas,
+  });
+  syncChapterProgressWithRuntime(params.chapter, params.state);
+  const resolution = await evaluateEventProgressByAi({
+    userId: params.userId,
+    chapter: params.chapter,
+    state: params.state,
+    messageContent: params.messageContent,
+    messageRole: String(params.state.player?.name || "用户"),
+    messageRoleType: "player",
+    eventType: params.eventType,
+    recentMessages: params.recentMessages,
+    traceMeta: params.traceMeta,
+  });
+  if (resolution) {
+    applyAiEventProgressResolution({
+      chapter: params.chapter,
+      state: params.state,
+      resolution,
+    });
+    syncChapterProgressWithRuntime(params.chapter, params.state);
+    return;
+  }
+  markCurrentUserNodeCompleted(params.chapter, params.state, params.messageId ?? null);
+  syncChapterProgressWithRuntime(params.chapter, params.state);
 }
 
 function readMemoryCursorMessageId(state: Record<string, any>): number {
@@ -1081,9 +1142,6 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
   });
 
   if (roleTypeValue === "player" && eventTypeValue === "on_message" && messageContent.trim()) {
-    if (currentChapter) {
-      markCurrentUserNodeCompleted(currentChapter, state, messageId);
-    }
     const rawRecentMessages = await db("t_sessionMessage").where({ sessionId }).orderBy("id", "desc").limit(20);
     const recentMessages = buildRecentMessages(rawRecentMessages);
     const miniGameResult = await handleMiniGameTurn({
@@ -1221,13 +1279,36 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
   let nextChapterId = taskResult.nextChapterId;
   let sessionStatus = taskResult.sessionStatus;
   if (currentChapter) {
-    recordChapterProgressSignals(currentChapter, state, {
-      messageContent,
-      triggered,
-      taskProgress: taskResult.taskProgressChanges,
-      deltas: appliedDeltas,
-    });
-    syncChapterProgressWithRuntime(currentChapter, state);
+    if (roleTypeValue === "player" && eventTypeValue === "on_message" && messageContent.trim()) {
+      const rawRecentMessagesForProgress = await db("t_sessionMessage").where({ sessionId }).orderBy("id", "desc").limit(20);
+      const recentMessagesForProgress = buildRecentMessages(rawRecentMessagesForProgress);
+      await applySessionUserEventProgress({
+        userId: currentUserId,
+        chapter: currentChapter,
+        state,
+        messageId,
+        messageContent,
+        eventType: eventTypeValue,
+        triggered,
+        taskProgress: taskResult.taskProgressChanges,
+        deltas: appliedDeltas,
+        recentMessages: recentMessagesForProgress,
+        traceMeta: {
+          route: "/game/addMessage",
+          sessionId,
+          chapterId: Number(currentChapter.id || 0),
+          userId: currentUserId,
+        },
+      });
+    } else {
+      recordChapterProgressSignals(currentChapter, state, {
+        messageContent,
+        triggered,
+        taskProgress: taskResult.taskProgressChanges,
+        deltas: appliedDeltas,
+      });
+      syncChapterProgressWithRuntime(currentChapter, state);
+    }
   }
   if (currentChapter) {
     const recentMessagesForOutcome = roleTypeValue === "player" && eventTypeValue === "on_message"

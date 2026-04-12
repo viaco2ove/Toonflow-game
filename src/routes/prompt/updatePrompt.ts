@@ -24,6 +24,7 @@ export default router.post(
       "story-speaker",
       "story-memory",
       "story-chapter",
+      "story-event-progress",
       "story-mini-game",
       "story-safety",
     ]);

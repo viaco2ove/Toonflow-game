@@ -11,6 +11,8 @@
 [story:chapter_ending_check:stats]: I故事-章节判定日志 token 统计
 [game:orchestrator:key_nodes]:game/orchestration 请求的关键节点打印,记录编排流程的日志
 [orchestration] 打印编排请求关键节点日志
+[story:streamlines:runtime] 角色发言器日志
+[story:streamlines:stats]: 角色发言器 token 统计
 
 ## 后端通用tag
 [debug:revisit:not_found]: 回溯失败

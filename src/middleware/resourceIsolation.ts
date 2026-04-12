@@ -425,6 +425,21 @@ export async function enforceResourceIsolation(req: Request, res: Response, next
     }
 
     /**
+     * 这批接口虽然挂在 /game 下，但它们本身不是“按项目资源直接读写”的接口：
+     * - initStory：允许从故事大厅进入其他用户已发布的故事
+     * - listSession：只列当前用户自己的正式会话
+     * - listWorlds：大厅数据混合“自己的故事 + 他人已发布故事”
+     * - import/listImportableRoles：路由内部已按当前用户做来源故事校验
+     * - initDebug：路由内部会再次按当前用户校验故事所有权
+     *
+     * 这些接口如果在这里继续按 projectId/worldId 做统一项目归属判断，
+     * 会把“公开可游玩故事”或“未保存草稿的导入弹窗”误拦成 403。
+     */
+    if (NON_PROJECT_SCOPED_PATHS.has(path)) {
+      return next();
+    }
+
+    /**
      * 这些接口是围绕正式会话读写的，会话创建成功后应只按 session.userId 校验。
      * 否则故事大厅里“别人已发布但当前用户已打开的故事”会在 introduction /
      * orchestration / streamlines 阶段再次被误判成“无权访问源项目”。

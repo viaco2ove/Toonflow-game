@@ -894,12 +894,15 @@ async function handleDebugPlayerTurn(params: {
   }
 
   // 先把用户这句输入应用到调试态，再进入章节结束判定。
-  applyDebugUserMessageProgress({
+  await applyDebugUserMessageProgress({
     chapter: params.chapter,
     state: params.state,
     messageContent: params.playerContent,
     eventType: "on_message",
     meta: {},
+    recentMessages: params.recentMessages,
+    userId: params.userId,
+    traceMeta: params.requestTrace,
   });
   const arbitration = await runConcurrentDebugJudgeAndNarrative({
     userId: params.userId,

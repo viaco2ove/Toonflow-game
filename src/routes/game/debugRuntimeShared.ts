@@ -15,6 +15,7 @@ import {
 } from "@/lib/gameEngine";
 import {
   advanceChapterProgressAfterNarrative,
+  applyAiEventProgressResolution,
   initializeChapterProgressForState,
   markCurrentUserNodeCompleted,
   recordChapterProgressSignals,
@@ -26,6 +27,7 @@ import {
   setRuntimeTurnState,
 } from "@/modules/game-runtime/engines/NarrativeOrchestrator";
 import { evaluateRuntimeOutcome } from "@/modules/game-runtime/services/ChapterRuntimeService";
+import { evaluateEventProgressByAi } from "@/modules/game-runtime/services/EventProgressRuntimeService";
 import {
   AppliedDelta,
   TaskProgressChange,
@@ -554,7 +556,7 @@ export function syncDebugChapterRuntime(chapter: any, state: Record<string, any>
   syncChapterProgressWithRuntime(chapter, state);
 }
 
-export function applyDebugUserMessageProgress(params: {
+export async function applyDebugUserMessageProgress(params: {
   chapter: any;
   state: Record<string, any>;
   messageContent: string;
@@ -564,12 +566,14 @@ export function applyDebugUserMessageProgress(params: {
   triggered?: TriggerHit[];
   taskProgress?: TaskProgressChange[];
   deltas?: AppliedDelta[];
+  recentMessages?: RuntimeMessageInput[];
+  userId?: number;
+  traceMeta?: Record<string, any>;
 }) {
   if (!params.chapter) {
     return;
   }
   syncDebugChapterRuntime(params.chapter, params.state);
-  markCurrentUserNodeCompleted(params.chapter, params.state, params.messageId ?? null);
   recordChapterProgressSignals(params.chapter, params.state, {
     messageContent: params.messageContent,
     messageRole: String(params.state.player?.name || "用户"),
@@ -579,27 +583,50 @@ export function applyDebugUserMessageProgress(params: {
     deltas: params.deltas,
   });
   syncDebugChapterRuntime(params.chapter, params.state);
+  // 用户输入后优先让 AI 判断“当前事件是否完成/推进到哪一步”，
+  // 只有 AI 不可用或未返回结果时，才回退到旧的“用户节点完成”规则。
+  const resolution = await evaluateEventProgressByAi({
+    userId: params.userId,
+    chapter: params.chapter,
+    state: params.state,
+    messageContent: params.messageContent,
+    messageRole: String(params.state.player?.name || "用户"),
+    messageRoleType: "player",
+    eventType: params.eventType,
+    recentMessages: params.recentMessages,
+    traceMeta: params.traceMeta,
+  });
+  if (resolution) {
+    applyAiEventProgressResolution({
+      chapter: params.chapter,
+      state: params.state,
+      resolution,
+    });
+    syncDebugChapterRuntime(params.chapter, params.state);
+    return;
+  }
+  markCurrentUserNodeCompleted(params.chapter, params.state, params.messageId ?? null);
+  syncDebugChapterRuntime(params.chapter, params.state);
 }
 
-export function applyDebugNarrativeMessageProgress(params: {
+export async function applyDebugNarrativeMessageProgress(params: {
   chapter: any;
   state: Record<string, any>;
   role?: string;
   roleType?: string;
   content?: string;
+  eventType?: string;
   triggered?: TriggerHit[];
   taskProgress?: TaskProgressChange[];
   deltas?: AppliedDelta[];
+  recentMessages?: RuntimeMessageInput[];
+  userId?: number;
+  traceMeta?: Record<string, any>;
 }) {
   if (!params.chapter) {
     return { enteredUserPhase: false };
   }
   syncDebugChapterRuntime(params.chapter, params.state);
-  const phaseAdvance = advanceChapterProgressAfterNarrative(params.chapter, params.state, {
-    messageContent: params.content,
-    messageRole: params.role,
-    messageRoleType: params.roleType,
-  });
   recordChapterProgressSignals(params.chapter, params.state, {
     messageContent: params.content,
     messageRole: params.role,
@@ -607,6 +634,35 @@ export function applyDebugNarrativeMessageProgress(params: {
     triggered: params.triggered,
     taskProgress: params.taskProgress,
     deltas: params.deltas,
+  });
+  syncDebugChapterRuntime(params.chapter, params.state);
+  // 旁白/NPC 发言后同样先让 AI 判断当前事件进度；只有 AI 不可用时才回退旧规则推进。
+  const resolution = await evaluateEventProgressByAi({
+    userId: params.userId,
+    chapter: params.chapter,
+    state: params.state,
+    messageContent: params.content,
+    messageRole: params.role,
+    messageRoleType: params.roleType,
+    eventType: params.eventType,
+    recentMessages: params.recentMessages,
+    traceMeta: params.traceMeta,
+  });
+  if (resolution) {
+    const applied = applyAiEventProgressResolution({
+      chapter: params.chapter,
+      state: params.state,
+      resolution,
+    });
+    syncDebugChapterRuntime(params.chapter, params.state);
+    return {
+      enteredUserPhase: applied.enteredUserPhase,
+    };
+  }
+  const phaseAdvance = advanceChapterProgressAfterNarrative(params.chapter, params.state, {
+    messageContent: params.content,
+    messageRole: params.role,
+    messageRoleType: params.roleType,
   });
   syncDebugChapterRuntime(params.chapter, params.state);
   return {

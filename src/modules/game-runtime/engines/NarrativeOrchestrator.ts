@@ -19,9 +19,12 @@ import {
 } from "@/lib/gameEngine";
 import {
   advanceChapterProgressAfterNarrative,
+  applyAiEventProgressResolution,
+  recordChapterProgressSignals,
   syncChapterProgressWithRuntime,
 } from "@/modules/game-runtime/engines/ChapterProgressEngine";
 import { resolveRuleNarrativePlan } from "@/modules/game-runtime/engines/RuleOrchestrator";
+import { evaluateEventProgressByAi } from "@/modules/game-runtime/services/EventProgressRuntimeService";
 import {
   buildTemplateSpeakerContent,
   resolveSpeakerModeDecision,
@@ -157,6 +160,31 @@ type OrchestratorPromptPayload = {
   phaseAllowedSpeakers: string[];
   recentDialogue: string;
   latestPlayerMessage: string;
+  traceMeta?: JsonRecord;
+};
+
+type SpeakerPromptPayload = {
+  worldName: string;
+  worldIntro: string;
+  chapterTitle: string;
+  currentPhaseLabel: string;
+  currentEventWindow?: string;
+  currentEventIndex: number;
+  currentEventKind: string;
+  currentEventFlowType?: string;
+  currentEventStatus?: string;
+  currentEventSummary: string;
+  currentEventFacts: string[];
+  currentEventMemorySummary: string;
+  currentEventMemoryFacts: string[];
+  speakerName: string;
+  speakerRoleType: string;
+  speakerProfile: string;
+  motive: string;
+  storyState: string;
+  latestPlayerMessage: string;
+  recentDialogue: string;
+  otherRoles: string[];
   traceMeta?: JsonRecord;
 };
 
@@ -963,6 +991,30 @@ function buildOrchestratorPromptStats(payload: OrchestratorPromptPayload, compac
   });
 }
 
+// 把角色发言链路里的上下文拆成可读统计块，方便直接对比快路由和标准路由的 prompt 体积。
+function buildSpeakerPromptStats(payload: SpeakerPromptPayload, compactMode: boolean): PromptStatRow[] {
+  const sections = [
+    { title: "世界", content: [payload.worldName ? `名称:${payload.worldName}` : "", payload.worldIntro ? `简介:${payload.worldIntro}` : ""].filter(Boolean).join("\n") || "无" },
+    { title: "章节", content: [payload.chapterTitle ? `标题:${payload.chapterTitle}` : "", payload.currentPhaseLabel ? `阶段:${payload.currentPhaseLabel}` : ""].filter(Boolean).join("\n") || "无" },
+    { title: "当前事件", content: [payload.currentEventIndex != null ? `index:${payload.currentEventIndex}` : "", `kind:${payload.currentEventKind || "scene"}`, payload.currentEventFlowType ? `flow:${payload.currentEventFlowType}` : "", payload.currentEventStatus ? `status:${payload.currentEventStatus}` : "", `summary:${payload.currentEventSummary || "当前事件未命名"}`, payload.currentEventFacts.length ? `facts:${payload.currentEventFacts.join("；")}` : "", payload.currentEventMemorySummary ? `memory_summary:${payload.currentEventMemorySummary}` : "", payload.currentEventMemoryFacts.length ? `memory_facts:${payload.currentEventMemoryFacts.join("；")}` : ""].filter(Boolean).join("\n") || "无" },
+    { title: "当前说话人", content: [`name:${payload.speakerName || "未命名角色"}`, `role_type:${payload.speakerRoleType || "unknown"}`, payload.speakerProfile || ""].filter(Boolean).join("\n") || "无" },
+    { title: "本轮动机", content: payload.motive || "无" },
+    ...(!compactMode ? [{ title: "剧情摘要", content: payload.storyState || "无" }] : []),
+    { title: "最近对话", content: payload.recentDialogue || "无" },
+    { title: "用户最近输入", content: payload.latestPlayerMessage || "无" },
+    ...(!compactMode ? [{ title: "其他可见角色", content: payload.otherRoles.length ? payload.otherRoles.join("、") : "无" }] : []),
+  ];
+  return sections.map((section) => {
+    const content = section.content || "无";
+    return {
+      block: section.title,
+      content,
+      chars: content.length,
+      estimatedTokens: estimatePromptTokens(content),
+    };
+  });
+}
+
 function logOrchestratorPromptStats(
   payload: OrchestratorPromptPayload,
   compactMode: boolean,
@@ -973,7 +1025,6 @@ function logOrchestratorPromptStats(
   tokenUsage?: { inputTokens?: number; outputTokens?: number; reasoningTokens?: number } | null,
   rawResponse?: string | null,
   timing?: { buildMs?: number; invokeMs?: number; totalMs?: number } | null,
-  start: number
 ) {
   const rows: PromptStatRow[] = [
     {
@@ -1045,12 +1096,96 @@ function logOrchestratorPromptStats(
       console.log(`[story:orchestrator:stats] | 实际推理消耗 | input=${tokenUsage.inputTokens || 0}, output=${tokenUsage.outputTokens || 0}, reasoning=${tokenUsage.reasoningTokens || 0} | - | - |`);
     }
     console.log(`[story:orchestrator:stats] System Prompt`);
-    console.log(systemPrompt +"\n"+userPrompt);
-    const cost = Date.now() - start;
-    console.log(`[story:orchestrator:stats] 耗时: ${cost}ms`);
+    console.log(systemPrompt +"\n \n userPrompt:\n"+userPrompt);
+    console.log(`[story:orchestrator:stats] 耗时: ${Number(timing?.totalMs || 0)}ms`);
 
 
   }
+}
+
+// 统一输出角色发言器的 runtime/stats 日志，避免后续排查时还要反查到底走了哪条 speaker 路由。
+function logSpeakerPromptStats(input: {
+  payload: SpeakerPromptPayload;
+  compactMode: boolean;
+  speakerMode: string;
+  speakerModelKey: string;
+  runtime: NarrativeRuntimeMeta;
+  systemPrompt: string;
+  userPrompt: string;
+  runtimeError: unknown;
+  tokenUsage?: { inputTokens?: number; outputTokens?: number; reasoningTokens?: number } | null;
+  rawResponse?: string | null;
+  timing?: { buildMs?: number; invokeMs?: number; totalMs?: number } | null;
+}) {
+  const rows: PromptStatRow[] = [
+    {
+      block: "系统提示词",
+      content: input.systemPrompt || "无",
+      chars: input.systemPrompt.length,
+      estimatedTokens: estimatePromptTokens(input.systemPrompt),
+    },
+    ...buildSpeakerPromptStats(input.payload, input.compactMode),
+    {
+      block: "用户提示词",
+      content: input.userPrompt || "无",
+      chars: input.userPrompt.length,
+      estimatedTokens: estimatePromptTokens(input.userPrompt),
+    },
+  ];
+  const totalPromptChars = input.systemPrompt.length + input.userPrompt.length;
+  const totalPromptTokens = estimatePromptTokens(`${input.systemPrompt}\n${input.userPrompt}`.trim());
+  const runtimeLog: Record<string, any> = {
+    ...input.runtime,
+    traceMeta: normalizeTraceMeta(input.payload.traceMeta),
+    speakerMode: input.speakerMode,
+    speakerModelKey: input.speakerModelKey,
+    requestChars: totalPromptChars,
+    systemChars: input.systemPrompt.length,
+    userChars: input.userPrompt.length,
+    requestStatus: input.runtimeError ? "fallback" : "success",
+    responseTextLength: input.rawResponse ? input.rawResponse.length : 0,
+    responseText: input.rawResponse ? input.rawResponse.slice(0, 500) : "",
+    tokenUsage: input.tokenUsage || null,
+    buildMs: Number(input.timing?.buildMs || 0),
+    invokeMs: Number(input.timing?.invokeMs || 0),
+    totalMs: Number(input.timing?.totalMs || 0),
+  };
+  if (input.runtimeError) {
+    runtimeLog.error = normalizePromptStatContent((input.runtimeError as any)?.message || String(input.runtimeError));
+  }
+  if (!isDebugLogEnabled()) {
+    return;
+  }
+  console.log("[story:streamlines:runtime]", JSON.stringify(runtimeLog));
+  console.log(`[story:streamlines:stats] speaker_mode=${input.speakerMode} speaker_model_key=${input.speakerModelKey} request_chars=${totalPromptChars} estimated_tokens=${totalPromptTokens} system_chars=${input.systemPrompt.length} user_chars=${input.userPrompt.length} build_ms=${Number(input.timing?.buildMs || 0)} invoke_ms=${Number(input.timing?.invokeMs || 0)} total_ms=${Number(input.timing?.totalMs || 0)}`);
+  if (input.tokenUsage) {
+    console.log(`[story:streamlines:stats] actual_input_tokens=${input.tokenUsage.inputTokens || 0} actual_output_tokens=${input.tokenUsage.outputTokens || 0} actual_reasoning_tokens=${input.tokenUsage.reasoningTokens || 0}`);
+  }
+  const responseText = String(input.rawResponse || "").trim();
+  if (responseText) {
+    console.log(`[story:streamlines:stats] response_chars=${responseText.length}`);
+    console.log(`[story:streamlines:stats] response_preview=${normalizePromptStatContent(responseText)}`);
+  }
+  if (input.runtimeError) {
+    console.log(`[story:streamlines:stats] request_status=fallback reason=${normalizePromptStatContent((input.runtimeError as any)?.message || String(input.runtimeError))}`);
+  } else {
+    console.log("[story:streamlines:stats] request_status=success");
+  }
+  console.log("[story:streamlines:stats] 以下为 prompt 体积估算，不等于模型真实 usage。");
+  console.log("[story:streamlines:stats] | 区块 | 实际内容 | 字符数 | 估算 Prompt Tokens |");
+  console.log("[story:streamlines:stats] |---|---|---:|---:|");
+  rows.forEach((row) => {
+    console.log(`[story:streamlines:stats] | ${row.block} | ${normalizePromptStatContent(row.content)} | ${row.chars} | ${row.estimatedTokens} |`);
+  });
+  if (responseText) {
+    console.log(`[story:streamlines:stats] | 返回内容 | ${normalizePromptStatContent(responseText)} | ${responseText.length} | - |`);
+  }
+  if (input.tokenUsage) {
+    console.log(`[story:streamlines:stats] | 实际推理消耗 | input=${input.tokenUsage.inputTokens || 0}, output=${input.tokenUsage.outputTokens || 0}, reasoning=${input.tokenUsage.reasoningTokens || 0} | - | - |`);
+  }
+
+  console.log(`[story:streamlines:stats] System Prompt`);
+  console.log(input.systemPrompt +"\n \n userPrompt:\n"+input.userPrompt);
 }
 
 function buildOrchestratorInputSnapshot(payload: OrchestratorPromptPayload, compactMode = false): JsonRecord {
@@ -1104,7 +1239,9 @@ function buildOrchestratorInputSnapshot(payload: OrchestratorPromptPayload, comp
     latest_player_message: payload.latestPlayerMessage || "",
   };
   if (compactMode) {
+    //如果 compactMode 为真，就把 snapshot.current_event.window 这个字段删掉。
     delete (snapshot.current_event as JsonRecord).window;
+    delete (snapshot as JsonRecord).world;
     if (!payload.currentEventSummary && !payload.currentEventFacts.length) {
       (snapshot as JsonRecord).event_seed = shortText(
         [
@@ -2043,6 +2180,8 @@ export async function runStorySpeakerContent(input: {
   currentRole: RuntimeStoryRole;
   motive: string;
 }): Promise<string> {
+  // 角色发言链和编排链一样，保留 build/invoke/total 三段耗时，方便直接对照慢点到底出在哪。
+  const totalStartedAt = Date.now();
   const currentPhase = readCurrentChapterPhase(input.chapter, input.state);
   const currentEvent = readCurrentRuntimeEventContext(input.chapter, input.state);
   const roles = filterRolesForPhase(runtimeStoryRoles(input.world, input.state), currentPhase);
@@ -2078,7 +2217,7 @@ export async function runStorySpeakerContent(input: {
     directive: chapterDirectiveText(input.chapter),
     directiveExcerpt: directiveExcerpt(chapterDirectiveText(input.chapter)),
   };
-  const payload = {
+  const payload: SpeakerPromptPayload = {
     worldName: normalizeScalarText(input.world?.name),
     worldIntro: useFastSpeakerPrompt ? "" : shortText(input.world?.intro, compactMode ? 48 : 72),
     chapterTitle: currentChapter.title,
@@ -2102,9 +2241,42 @@ export async function runStorySpeakerContent(input: {
         .filter((item) => item.name !== input.currentRole.name)
         .map((item) => `${item.name}(${sanitizeRoleType(item.roleType)})`)
         .slice(0, compactMode ? 3 : 4),
+    traceMeta: {
+      worldId: Number(input.world?.id || 0),
+      chapterId: Number(input.chapter?.id || 0),
+      role: normalizeScalarText(input.currentRole.name),
+      speakerMode: speakerMode.mode,
+      speakerModelKey,
+    },
   };
+  const systemPrompt = buildSpeakerSystemPrompt(prompts.storySpeaker || prompts.storyOrchestrator, useFastSpeakerPrompt || compactMode);
+  const userPrompt = useFastSpeakerPrompt
+    ? buildFastSpeakerUserPrompt({
+      speakerName: payload.speakerName,
+      speakerRoleType: payload.speakerRoleType,
+      speakerProfileLite: payload.speakerProfile,
+      currentPhaseLabel: payload.currentPhaseLabel,
+      currentEventIndex: payload.currentEventIndex,
+      currentEventKind: payload.currentEventKind,
+      currentEventFlowType: payload.currentEventFlowType,
+      currentEventStatus: payload.currentEventStatus,
+      currentEventSummary: payload.currentEventSummary,
+      currentEventFacts: payload.currentEventFacts,
+      currentEventMemorySummary: payload.currentEventMemorySummary,
+      currentEventMemoryFacts: payload.currentEventMemoryFacts,
+      motive: payload.motive,
+      recentDialogue: payload.recentDialogue,
+      latestPlayerMessage: payload.latestPlayerMessage,
+    })
+    : buildSpeakerUserPrompt(payload);
+  const buildMs = Date.now() - totalStartedAt;
+  let invokeMs = 0;
+  let rawResponse = "";
+  let runtimeError: unknown = null;
+  let tokenUsage: { inputTokens?: number; outputTokens?: number; reasoningTokens?: number } | null = null;
 
   try {
+    const invokeStartedAt = Date.now();
     const result = await u.ai.text.invoke(
       {
         plainTextOutput: true,
@@ -2121,36 +2293,25 @@ export async function runStorySpeakerContent(input: {
         messages: [
           {
             role: "system",
-            content: buildSpeakerSystemPrompt(prompts.storySpeaker || prompts.storyOrchestrator, useFastSpeakerPrompt || compactMode),
+            content: systemPrompt,
           },
           {
             role: "user",
-            content: useFastSpeakerPrompt
-              ? buildFastSpeakerUserPrompt({
-                speakerName: payload.speakerName,
-                speakerRoleType: payload.speakerRoleType,
-                speakerProfileLite: payload.speakerProfile,
-                currentPhaseLabel: payload.currentPhaseLabel,
-                currentEventIndex: payload.currentEventIndex,
-                currentEventKind: payload.currentEventKind,
-                currentEventFlowType: payload.currentEventFlowType,
-                currentEventStatus: payload.currentEventStatus,
-                currentEventSummary: payload.currentEventSummary,
-                currentEventFacts: payload.currentEventFacts,
-                currentEventMemorySummary: payload.currentEventMemorySummary,
-                currentEventMemoryFacts: payload.currentEventMemoryFacts,
-                motive: payload.motive,
-                recentDialogue: payload.recentDialogue,
-                latestPlayerMessage: payload.latestPlayerMessage,
-              })
-              : buildSpeakerUserPrompt(payload),
+            content: userPrompt,
           },
         ],
         maxRetries: 0,
       },
       promptAiConfig as any,
     );
-    const rawText = unwrapModelText((result as any)?.text || "");
+    invokeMs = Date.now() - invokeStartedAt;
+    rawResponse = unwrapModelText((result as any)?.text || "");
+    tokenUsage = {
+      inputTokens: Number((result as any)?.usage?.inputTokens || 0),
+      outputTokens: Number((result as any)?.usage?.outputTokens || 0),
+      reasoningTokens: Number((result as any)?.usage?.outputTokenDetails?.reasoningTokens || (result as any)?.usage?.reasoningTokens || 0),
+    };
+    const rawText = rawResponse;
     const objectLike = parseJsonSafe<Record<string, unknown>>(rawText, {});
     const fieldMap = parseFieldMap(rawText);
     const rawContent = normalizeGeneratedLine(
@@ -2166,13 +2327,68 @@ export async function runStorySpeakerContent(input: {
     if (looksLikeDirectiveLeak(content, currentChapter.directive, input.chapter?.openingText)) {
       throw createRuntimeModelError("speaker", "模型返回了内部编排内容");
     }
+    logSpeakerPromptStats({
+      payload,
+      compactMode: useFastSpeakerPrompt || compactMode,
+      speakerMode: speakerMode.mode,
+      speakerModelKey,
+      runtime: {
+        modelKey: speakerModelKey,
+        manufacturer: normalizeScalarText((promptAiConfig as any)?.manufacturer),
+        model: normalizeScalarText((promptAiConfig as any)?.model),
+        reasoningEffort: (() => {
+          const value = normalizeScalarText((promptAiConfig as any)?.reasoningEffort).toLowerCase();
+          return value === "minimal" || value === "low" || value === "medium" || value === "high" ? value : "";
+        })(),
+        payloadMode: useFastSpeakerPrompt || compactMode ? "compact" : "advanced",
+        payloadModeSource: useFastSpeakerPrompt ? "explicit" : "inferred",
+      },
+      systemPrompt,
+      userPrompt,
+      runtimeError: null,
+      tokenUsage,
+      rawResponse,
+      timing: {
+        buildMs,
+        invokeMs,
+        totalMs: Date.now() - totalStartedAt,
+      },
+    });
     return content;
   } catch (err) {
+    runtimeError = err;
     console.warn("[story:speaker] error", {
       manufacturer: (promptAiConfig as any)?.manufacturer || "",
       model: (promptAiConfig as any)?.model || "",
       role: normalizeScalarText(input.currentRole.name),
       message: (err as any)?.message || String(err),
+    });
+    logSpeakerPromptStats({
+      payload,
+      compactMode: useFastSpeakerPrompt || compactMode,
+      speakerMode: speakerMode.mode,
+      speakerModelKey,
+      runtime: {
+        modelKey: speakerModelKey,
+        manufacturer: normalizeScalarText((promptAiConfig as any)?.manufacturer),
+        model: normalizeScalarText((promptAiConfig as any)?.model),
+        reasoningEffort: (() => {
+          const value = normalizeScalarText((promptAiConfig as any)?.reasoningEffort).toLowerCase();
+          return value === "minimal" || value === "low" || value === "medium" || value === "high" ? value : "";
+        })(),
+        payloadMode: useFastSpeakerPrompt || compactMode ? "compact" : "advanced",
+        payloadModeSource: useFastSpeakerPrompt ? "explicit" : "inferred",
+      },
+      systemPrompt,
+      userPrompt,
+      runtimeError,
+      tokenUsage,
+      rawResponse,
+      timing: {
+        buildMs,
+        invokeMs,
+        totalMs: Date.now() - totalStartedAt,
+      },
     });
     if (isProviderBalanceOrQuotaError(err)) {
       throw createRuntimeModelError("speaker", "当前角色发言模型余额不足，请充值或切换模型后重试");
@@ -2634,7 +2850,7 @@ async function doRunNarrativePlan(input: OrchestratorInput): Promise<NarrativePl
         buildMs: promptBuildMs,
         invokeMs: orchestratorInvokeMs,
         totalMs: Date.now() - totalStartedAt,
-      },start
+      },
     );
   }
 }
@@ -2991,6 +3207,68 @@ export function applyOrchestratorResultToState(state: JsonRecord, result: Narrat
   syncRuntimeCurrentEventFromChapterProgress(state);
 }
 
+/**
+ * 将“自动编排产出的旁白/NPC 台词”应用到当前事件进度。
+ *
+ * 用途：
+ * - 先把这句台词携带的规则信号写进当前章节运行态
+ * - 再让 AI 判断当前事件是否已经完成，以及摘要/事实需要如何更新
+ * - AI 不可用时，再回退到旧的 `advanceChapterProgressAfterNarrative` 规则推进
+ */
+async function applyNarrativeEventProgress(params: {
+  userId?: number;
+  chapter: any;
+  state: JsonRecord;
+  role?: string;
+  roleType?: string;
+  eventType?: string;
+  content?: string;
+  recentMessages?: RuntimeMessageInput[];
+  traceMeta?: JsonRecord;
+}): Promise<{ enteredUserPhase: boolean }> {
+  if (!params.chapter) {
+    return { enteredUserPhase: false };
+  }
+  syncChapterProgressWithRuntime(params.chapter, params.state);
+  recordChapterProgressSignals(params.chapter, params.state, {
+    messageContent: params.content,
+    messageRole: params.role,
+    messageRoleType: params.roleType,
+  });
+  syncChapterProgressWithRuntime(params.chapter, params.state);
+  const resolution = await evaluateEventProgressByAi({
+    userId: params.userId,
+    chapter: params.chapter,
+    state: params.state,
+    messageContent: params.content,
+    messageRole: params.role,
+    messageRoleType: params.roleType,
+    eventType: params.eventType,
+    recentMessages: params.recentMessages,
+    traceMeta: params.traceMeta,
+  });
+  if (resolution) {
+    const applied = applyAiEventProgressResolution({
+      chapter: params.chapter,
+      state: params.state,
+      resolution,
+    });
+    syncChapterProgressWithRuntime(params.chapter, params.state);
+    return {
+      enteredUserPhase: applied.enteredUserPhase,
+    };
+  }
+  const phaseAdvance = advanceChapterProgressAfterNarrative(params.chapter, params.state, {
+    messageContent: params.content,
+    messageRole: params.role,
+    messageRoleType: params.roleType,
+  });
+  syncChapterProgressWithRuntime(params.chapter, params.state);
+  return {
+    enteredUserPhase: phaseAdvance.enteredUserPhase,
+  };
+}
+
 // 自动连续推进剧情，直到轮到用户发言或章节结束。
 export async function advanceNarrativeUntilPlayerTurn(input: OrchestratorInput & {
   initialResult: OrchestratorResult;
@@ -3025,10 +3303,16 @@ export async function advanceNarrativeUntilPlayerTurn(input: OrchestratorInput &
     }
 
     if (current.role && current.content) {
-      const phaseAdvance = advanceChapterProgressAfterNarrative(input.chapter, input.state, {
-        messageContent: current.content,
-        messageRole: current.role,
-        messageRoleType: current.roleType,
+      const phaseAdvance = await applyNarrativeEventProgress({
+        userId: input.userId,
+        chapter: input.chapter,
+        state: input.state,
+        role: current.role,
+        roleType: current.roleType,
+        eventType: "on_orchestrated_reply",
+        content: current.content,
+        recentMessages,
+        traceMeta: input.traceMeta,
       });
       if (phaseAdvance.enteredUserPhase) {
         allowPlayerTurn(input.state, input.world, sanitizeRoleType(current.roleType), normalizeScalarText(current.role));
