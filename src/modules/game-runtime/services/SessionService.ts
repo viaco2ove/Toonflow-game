@@ -691,6 +691,22 @@ function buildSessionPlanResult(plan: ({
   };
 }
 
+/**
+ * 对外返回正式会话编排结果时，隐藏“下一个是谁”字段。
+ *
+ * 用途：
+ * - 后端内部仍然需要 nextRole/nextRoleType 来维护 turnState；
+ * - 但接口返回给前端时，只允许暴露“当前谁说、为什么说”，禁止前端消费下一位角色。
+ */
+function buildPublicSessionPlanResult(plan: SessionNarrativePlanResult | null): SessionNarrativePlanResult | null {
+  if (!plan) return null;
+  return {
+    ...plan,
+    nextRole: "",
+    nextRoleType: "",
+  };
+}
+
 function buildEventView(state: Record<string, any>) {
   return readDefaultRuntimeEventViewState(state);
 }
@@ -1076,7 +1092,9 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
   if (!sessionId) {
     throw new SessionServiceError(400, "sessionId 不能为空");
   }
-
+  if (!isDebugLogEnabled()) {
+    console.log(`[story:streamlines:stats] sesionid=${sessionId}`);
+  }
   const sessionRow = await db("t_gameSession").where({ sessionId }).first();
   if (!sessionRow) {
     throw new SessionServiceError(404, "会话不存在");
@@ -1894,6 +1912,7 @@ export async function orchestrateSessionTurn(sessionIdInput: string): Promise<Se
       currentEventDigest: eventView.currentEventDigest,
       eventDigestWindow: eventView.eventDigestWindow,
       eventDigestWindowText: eventView.eventDigestWindowText,
+      plan: buildPublicSessionPlanResult(result.plan),
     };
   };
 

@@ -159,21 +159,29 @@ function buildOrchestrationPayload(params: {
     console.log("[story:introduction:plan]", JSON.stringify({
       planSource: String(params.plan?.planSource || "").trim(),
       awaitUser: Boolean(params.plan?.awaitUser),
-      nextRoleType: String(params.plan?.nextRoleType || "").trim(),
       roleType: String(params.plan?.roleType || "").trim(),
-      nextRole: String(params.plan?.nextRole || "").trim(),
       role: String(params.plan?.role || "").trim(),
     }));
   }
   return {
     chapterId: params.chapterId,
     chapterTitle: params.chapterTitle,
-    state: stateSnapshot,
+    // 开场编排和正式编排一致，只回调试缓存锚点，不返回整份运行态。
+    state: {
+      debugRuntimeKey: String(stateSnapshot.debugRuntimeKey || ""),
+    },
     currentEventDigest: stateSnapshot.currentEventDigest || null,
     eventDigestWindow: Array.isArray(stateSnapshot.eventDigestWindow) ? stateSnapshot.eventDigestWindow : [],
     eventDigestWindowText: String(stateSnapshot.eventDigestWindowText || ""),
     endDialog: params.endDialog || null,
-    plan: params.plan || null,
+    // 开场编排也不携带“下一位是谁”，避免前端提前切换回合。
+    plan: params.plan
+      ? {
+        ...params.plan,
+        nextRole: "",
+        nextRoleType: "",
+      }
+      : null,
   };
 }
 

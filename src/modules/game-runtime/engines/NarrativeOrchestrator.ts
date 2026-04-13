@@ -802,6 +802,113 @@ function buildPromptEventContextTextPayload(currentEvent: {
   };
 }
 
+// 判断一段文本是否仍然保留了章节正文的结构化痕迹，避免把提纲原样塞回模型。
+function looksLikeDirectiveStructure(input: unknown): boolean {
+  const text = normalizeScalarText(input);
+  if (!text) return false;
+  return /^##+\s+/.test(text)
+    || /^@[^：:\n]{1,24}[：:]/.test(text)
+    || /（饰演[^）]{0,24}）/.test(text)
+    || /请输入.{0,16}(姓名|名称|性别|年龄)/.test(text);
+}
+
+// 将章节正文类文本压缩成事件摘要，去掉标题、角色标记和长段物品描述。
+function summarizeDirectiveLikeText(input: unknown, limit = 72): string {
+  const paragraphs = directiveParagraphs(input)
+    .map((item) => item.replace(/^##+\s+/, "").trim())
+    .map((item) => item.replace(/^@[^：:\n]{1,24}[：:]\s*/, "").trim())
+    .map((item) => item.replace(/^[（(][^）)]{0,24}[）)]\s*/, "").trim())
+    .filter(Boolean);
+  if (!paragraphs.length) return "";
+  const summary = paragraphs
+    .join("；")
+    .replace(/[：:]\s*/g, "，")
+    .replace(/\s+/g, " ")
+    .replace(/；{2,}/g, "；");
+  return shortText(summary, limit);
+}
+
+// 只为 prompt 生成“当前事件摘要”，避免直接把章节正文或动机模板原文交给模型。
+function buildPromptSafeEventSummary(input: {
+  currentEventSummary: string;
+  currentPhaseLabel: string;
+  chapterDirective: string;
+  limit: number;
+}): string {
+  const rawSummary = normalizeScalarText(input.currentEventSummary);
+  if (!rawSummary) {
+    const fallbackSummary = summarizeDirectiveLikeText(input.chapterDirective, input.limit);
+    return fallbackSummary || normalizeScalarText(input.currentPhaseLabel) || "当前事件未命名";
+  }
+  if (!looksLikeDirectiveStructure(rawSummary) && !looksLikeDirectiveLeak(rawSummary, input.chapterDirective, "")) {
+    return shortText(rawSummary, input.limit) || normalizeScalarText(input.currentPhaseLabel) || "当前事件未命名";
+  }
+  const directiveSummary = summarizeDirectiveLikeText(rawSummary, input.limit)
+    || summarizeDirectiveLikeText(input.chapterDirective, input.limit);
+  return directiveSummary || normalizeScalarText(input.currentPhaseLabel) || "当前事件未命名";
+}
+
+// 过滤当前事件事实里的正文残留，只保留真正的阶段进度和状态事实。
+function buildPromptSafeEventFacts(input: {
+  currentEventFacts: string[];
+  chapterDirective: string;
+  limit: number;
+}): string[] {
+  return uniqueTextList(input.currentEventFacts || [], input.limit)
+    .map((item) => normalizeScalarText(item))
+    .filter(Boolean)
+    .filter((item) => !looksLikeDirectiveStructure(item))
+    .filter((item) => !looksLikeDirectiveLeak(item, input.chapterDirective, ""))
+    .map((item) => shortText(item, 48));
+}
+
+// 生成 prompt 专用的阶段目标，章节正文阶段只保留一句用途说明，避免整段剧情正文泄漏。
+function buildPromptSafePhaseGoal(input: {
+  currentPhaseLabel: string;
+  currentEventSummary: string;
+  chapterDirective: string;
+  limit: number;
+}): string {
+  const summary = buildPromptSafeEventSummary({
+    currentEventSummary: input.currentEventSummary,
+    currentPhaseLabel: input.currentPhaseLabel,
+    chapterDirective: input.chapterDirective,
+    limit: input.limit,
+  });
+  const phaseLabel = normalizeScalarText(input.currentPhaseLabel);
+  if (phaseLabel && summary && !summary.includes(phaseLabel)) {
+    return `${phaseLabel}：${summary}`;
+  }
+  return summary || phaseLabel;
+}
+
+// 编排 prompt 不再直接带整段章节正文，只保留用户交互节点和开场白等结构化输入。
+function buildPromptSafeChapterDirective(_input: {
+  chapterDirective: string;
+  currentEventFlowType: string;
+}): string {
+  return "";
+}
+
+// 压缩事件窗口，避免历史事件摘要继续把整段章节正文带回编排和角色发言链。
+function buildPromptSafeEventWindow(input: {
+  currentEventWindow: string;
+  chapterDirective: string;
+  currentEventFlowType?: string;
+  limit: number;
+}): string {
+  if (input.currentEventFlowType === "chapter_content") return "";
+  const rawWindow = normalizeScalarText(input.currentEventWindow);
+  if (!rawWindow) return "";
+  const lines = rawWindow
+    .split(/\r?\n+/)
+    .map((item) => normalizeScalarText(item))
+    .filter(Boolean)
+    .filter((item) => !looksLikeDirectiveStructure(item))
+    .filter((item) => !looksLikeDirectiveLeak(item, input.chapterDirective, ""));
+  return shortText(lines.join(" | "), input.limit);
+}
+
 // 清洗模型返回的普通文本行，去掉多余引号和超长内容。
 function normalizeGeneratedLine(input: unknown, limit = 220): string {
   const text = normalizeScalarText(input)
@@ -2217,13 +2324,29 @@ export async function runStorySpeakerContent(input: {
     directive: chapterDirectiveText(input.chapter),
     directiveExcerpt: directiveExcerpt(chapterDirectiveText(input.chapter)),
   };
+  const promptEventSummary = buildPromptSafeEventSummary({
+    currentEventSummary: currentEvent.eventSummary,
+    currentPhaseLabel: normalizeScalarText(currentPhase?.label),
+    chapterDirective: currentChapter.directive,
+    limit: useFastSpeakerPrompt ? 56 : compactMode ? 72 : 96,
+  });
+  const promptEventFacts = buildPromptSafeEventFacts({
+    currentEventFacts: currentEvent.eventFacts,
+    chapterDirective: currentChapter.directive,
+    limit: useFastSpeakerPrompt ? 2 : compactMode ? 3 : 4,
+  });
   const payload: SpeakerPromptPayload = {
     worldName: normalizeScalarText(input.world?.name),
     worldIntro: useFastSpeakerPrompt ? "" : shortText(input.world?.intro, compactMode ? 48 : 72),
     chapterTitle: currentChapter.title,
     currentPhaseLabel: normalizeScalarText(currentPhase?.label),
     ...buildPromptEventContextPayload(currentEvent),
-    currentEventWindow: readDefaultRuntimeEventDigestWindowTextState(input.state),
+    currentEventWindow: buildPromptSafeEventWindow({
+      currentEventWindow: readDefaultRuntimeEventDigestWindowTextState(input.state),
+      chapterDirective: currentChapter.directive,
+      currentEventFlowType: currentEvent.eventFlowType,
+      limit: compactMode ? 80 : 140,
+    }),
     speakerName: normalizeScalarText(input.currentRole.name),
     speakerRoleType: sanitizeRoleType(input.currentRole.roleType),
     speakerProfile: useFastSpeakerPrompt ? describeRoleLite(input.currentRole) : describeRole(input.currentRole, true),
@@ -2249,6 +2372,9 @@ export async function runStorySpeakerContent(input: {
       speakerModelKey,
     },
   };
+  // 只在 prompt payload 层替换为精简摘要，不改运行态原始事件信息，避免 UI 和回溯链失真。
+  payload.currentEventSummary = promptEventSummary;
+  payload.currentEventFacts = promptEventFacts;
   const systemPrompt = buildSpeakerSystemPrompt(prompts.storySpeaker || prompts.storyOrchestrator, useFastSpeakerPrompt || compactMode);
   const userPrompt = useFastSpeakerPrompt
     ? buildFastSpeakerUserPrompt({
@@ -2479,11 +2605,25 @@ async function doRunNarrativePlan(input: OrchestratorInput): Promise<NarrativePl
     backgroundPath: normalizeScalarText(input.chapter?.backgroundPath),
     bgmPath: normalizeScalarText(input.chapter?.bgmPath),
   };
+  const promptEventSummary = buildPromptSafeEventSummary({
+    currentEventSummary: currentEvent.eventSummary,
+    currentPhaseLabel: normalizeScalarText(currentPhase?.label),
+    chapterDirective: currentChapter.directive,
+    limit: compactMode ? 72 : 96,
+  });
+  const promptEventFacts = buildPromptSafeEventFacts({
+    currentEventFacts: currentEvent.eventFacts,
+    chapterDirective: currentChapter.directive,
+    limit: compactMode ? 3 : 4,
+  });
   const payload = {
     worldName: normalizeScalarText(input.world?.name),
     worldIntro: shortText(input.world?.intro, compactMode ? 120 : 240),
     chapterTitle: currentChapter.title,
-    chapterDirective: compactMode ? directiveExcerpt(shortText(currentChapter.directive, 220)) : shortText(currentChapter.directive, 360),
+    chapterDirective: buildPromptSafeChapterDirective({
+      chapterDirective: currentChapter.directive,
+      currentEventFlowType: currentEvent.eventFlowType,
+    }),
     chapterUserTurns: shortText(extractChapterUserInteractionText(currentChapter.directive), compactMode ? 180 : 880),
     chapterOpening: compactMode ? normalizeScalarText(currentChapter.openingText).slice(0, 80) : shortText(currentChapter.openingText, 180),
     roles,
@@ -2494,16 +2634,29 @@ async function doRunNarrativePlan(input: OrchestratorInput): Promise<NarrativePl
     storyState: compactMode ? shortText(summarizeStoryState(input.state), 180) : summarizeStoryState(input.state),
     turnState,
     currentPhaseLabel: normalizeScalarText(currentPhase?.label),
-    currentPhaseGoal: normalizeScalarText(currentPhase?.targetSummary),
+    currentPhaseGoal: buildPromptSafePhaseGoal({
+      currentPhaseLabel: normalizeScalarText(currentPhase?.label),
+      currentEventSummary: currentEvent.eventSummary,
+      chapterDirective: currentChapter.directive,
+      limit: compactMode ? 72 : 96,
+    }),
     ...buildPromptEventContextPayload(currentEvent),
-    currentEventWindow: compactMode
-      ? readRuntimeEventDigestWindowTextState(input.state, { windowSize: 3, includeMemory: false, summaryLimit: 40, factLimit: 1 })
-      : readDefaultRuntimeEventDigestWindowTextState(input.state),
+    currentEventWindow: buildPromptSafeEventWindow({
+      currentEventWindow: compactMode
+        ? readRuntimeEventDigestWindowTextState(input.state, { windowSize: 3, includeMemory: false, summaryLimit: 40, factLimit: 1 })
+        : readDefaultRuntimeEventDigestWindowTextState(input.state),
+      chapterDirective: currentChapter.directive,
+      currentEventFlowType: currentEvent.eventFlowType,
+      limit: compactMode ? 80 : 140,
+    }),
     phaseAllowedSpeakers: Array.isArray(currentPhase?.allowedSpeakers) ? currentPhase.allowedSpeakers : [],
     recentDialogue: compactMode ? recentDialogueText(input.recentMessages, 10, 900) : recentDialogueText(input.recentMessages),
     latestPlayerMessage: normalizeScalarText(input.playerMessage),
     traceMeta: normalizeTraceMeta(input.traceMeta),
   };
+  // 编排 prompt 只读取精简后的事件摘要与事实，避免把章节正文当成“当前事件”再次送进模型。
+  payload.currentEventSummary = promptEventSummary;
+  payload.currentEventFacts = promptEventFacts;
   const hasPlayerInput = payload.latestPlayerMessage.length > 0;
   const isSkip = payload.latestPlayerMessage === ".";
   const ruleDecision = resolveRuleNarrativePlan({
@@ -3230,12 +3383,7 @@ async function applyNarrativeEventProgress(params: {
     return { enteredUserPhase: false };
   }
   syncChapterProgressWithRuntime(params.chapter, params.state);
-  recordChapterProgressSignals(params.chapter, params.state, {
-    messageContent: params.content,
-    messageRole: params.role,
-    messageRoleType: params.roleType,
-  });
-  syncChapterProgressWithRuntime(params.chapter, params.state);
+  // 先把“当前事件”交给 AI 判断，避免规则信号先把 phase 错切到下一事件。
   const resolution = await evaluateEventProgressByAi({
     userId: params.userId,
     chapter: params.chapter,
@@ -3258,6 +3406,13 @@ async function applyNarrativeEventProgress(params: {
       enteredUserPhase: applied.enteredUserPhase,
     };
   }
+  // 只有 AI 无法提供事件进度结果时，才回退到旧的规则推进链。
+  recordChapterProgressSignals(params.chapter, params.state, {
+    messageContent: params.content,
+    messageRole: params.role,
+    messageRoleType: params.roleType,
+  });
+  syncChapterProgressWithRuntime(params.chapter, params.state);
   const phaseAdvance = advanceChapterProgressAfterNarrative(params.chapter, params.state, {
     messageContent: params.content,
     messageRole: params.role,

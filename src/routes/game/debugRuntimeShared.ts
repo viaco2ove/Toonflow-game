@@ -574,17 +574,7 @@ export async function applyDebugUserMessageProgress(params: {
     return;
   }
   syncDebugChapterRuntime(params.chapter, params.state);
-  recordChapterProgressSignals(params.chapter, params.state, {
-    messageContent: params.messageContent,
-    messageRole: String(params.state.player?.name || "用户"),
-    messageRoleType: "player",
-    triggered: params.triggered,
-    taskProgress: params.taskProgress,
-    deltas: params.deltas,
-  });
-  syncDebugChapterRuntime(params.chapter, params.state);
-  // 用户输入后优先让 AI 判断“当前事件是否完成/推进到哪一步”，
-  // 只有 AI 不可用或未返回结果时，才回退到旧的“用户节点完成”规则。
+  // 先把原始当前事件送给 AI 判断，避免旧规则先根据宽信号把 phase 提前切到下一事件。
   const resolution = await evaluateEventProgressByAi({
     userId: params.userId,
     chapter: params.chapter,
@@ -605,6 +595,16 @@ export async function applyDebugUserMessageProgress(params: {
     syncDebugChapterRuntime(params.chapter, params.state);
     return;
   }
+  // 只有 AI 不可用时，才回退到旧规则推进；此时规则命中的副作用是可接受的兜底行为。
+  recordChapterProgressSignals(params.chapter, params.state, {
+    messageContent: params.messageContent,
+    messageRole: String(params.state.player?.name || "用户"),
+    messageRoleType: "player",
+    triggered: params.triggered,
+    taskProgress: params.taskProgress,
+    deltas: params.deltas,
+  });
+  syncDebugChapterRuntime(params.chapter, params.state);
   markCurrentUserNodeCompleted(params.chapter, params.state, params.messageId ?? null);
   syncDebugChapterRuntime(params.chapter, params.state);
 }
@@ -627,16 +627,8 @@ export async function applyDebugNarrativeMessageProgress(params: {
     return { enteredUserPhase: false };
   }
   syncDebugChapterRuntime(params.chapter, params.state);
-  recordChapterProgressSignals(params.chapter, params.state, {
-    messageContent: params.content,
-    messageRole: params.role,
-    messageRoleType: params.roleType,
-    triggered: params.triggered,
-    taskProgress: params.taskProgress,
-    deltas: params.deltas,
-  });
-  syncDebugChapterRuntime(params.chapter, params.state);
-  // 旁白/NPC 发言后同样先让 AI 判断当前事件进度；只有 AI 不可用时才回退旧规则推进。
+  // 旁白/NPC 发言后也先让 AI 看“当前事件是什么、是否结束”，
+  // 避免规则层基于宽 advanceSignals 先把当前事件切成下一个事件。
   const resolution = await evaluateEventProgressByAi({
     userId: params.userId,
     chapter: params.chapter,
@@ -659,6 +651,15 @@ export async function applyDebugNarrativeMessageProgress(params: {
       enteredUserPhase: applied.enteredUserPhase,
     };
   }
+  recordChapterProgressSignals(params.chapter, params.state, {
+    messageContent: params.content,
+    messageRole: params.role,
+    messageRoleType: params.roleType,
+    triggered: params.triggered,
+    taskProgress: params.taskProgress,
+    deltas: params.deltas,
+  });
+  syncDebugChapterRuntime(params.chapter, params.state);
   const phaseAdvance = advanceChapterProgressAfterNarrative(params.chapter, params.state, {
     messageContent: params.content,
     messageRole: params.role,

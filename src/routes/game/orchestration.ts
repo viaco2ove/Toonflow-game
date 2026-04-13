@@ -250,7 +250,8 @@ function buildPlanResult(plan: PlanLike | null) {
   };
 }
 
-// 调试态不落库，前端每轮都回传 state，这里把快照重新缓存并回填给客户端。
+// 调试编排接口只允许把“当前谁说、为什么说”回给前端。
+// 最新运行态已经缓存在服务端，后续 /game/streamlines 会按 debugRuntimeKey 取回。
 function buildOrchestrationPayload(params: {
   userId: number;
   worldId: number;
@@ -262,14 +263,13 @@ function buildOrchestrationPayload(params: {
   plan?: ReturnType<typeof buildPlanResult>;
   messages?: RuntimeMessageInput[];
 }) {
-  const stateSnapshot = cacheAndBuildDebugStateSnapshot({
+  cacheAndBuildDebugStateSnapshot({
     userId: params.userId,
     worldId: params.worldId,
     state: params.state,
   });
-  // /game/orchestration 只返回“计划”和最新状态，不直接产出新的可见台词。
-  // 回溯点只能在真正生成出可见消息时保存（例如 streamlines/debugStep），
-  // 否则会把整段历史错误地重复累加到 debugMessageCount，导致 messageCount 漂移。
+  // /game/orchestration 不能再返回整份 state，也不能泄露“下一位是谁”。
+  // 这里只把当前说话角色和动机发给前端，后续是否继续、轮到谁，再由下一轮编排决定。
 
   if (String(process.env.LOG_LEVEL || "").trim().toUpperCase() === "DEBUG") {
     const planSource = asTrimmedText(params.plan?.planSource);
@@ -279,24 +279,15 @@ function buildOrchestrationPayload(params: {
     console.log(`[${tag}]`, JSON.stringify({
       planSource,
       awaitUser: Boolean(params.plan?.awaitUser),
-      nextRoleType: asTrimmedText(params.plan?.nextRoleType),
       roleType: asTrimmedText(params.plan?.roleType),
-      nextRole: asTrimmedText(params.plan?.nextRole),
       role: asTrimmedText(params.plan?.role),
     }));
   }
+
+  const shouldYieldToUser = Boolean(params.plan?.awaitUser);
   return {
-    chapterId: params.chapterId,
-    chapterTitle: params.chapterTitle,
-    state: stateSnapshot,
-    // 调试快照本身已经携带裁剪后的事件视图，不能再按缺失 chapterProgress 的精简快照重新计算，
-    // 否则顶层会退回默认的 scene/idle，并把真正的当前事件覆盖掉。
-    currentEventDigest: stateSnapshot.currentEventDigest || null,
-    eventDigestWindow: Array.isArray(stateSnapshot.eventDigestWindow) ? stateSnapshot.eventDigestWindow : [],
-    eventDigestWindowText: String(stateSnapshot.eventDigestWindowText || ""),
-    endDialog: params.endDialog || null,
-    endDialogDetail: String(params.endDialogDetail || "").trim() || null,
-    plan: params.plan || null,
+    role: shouldYieldToUser ? "" : asTrimmedText(params.plan?.role),
+    motive: shouldYieldToUser ? "" : asTrimmedText(params.plan?.motive),
   };
 }
 
@@ -1107,6 +1098,11 @@ async function handleDebugOrchestrationRequest(req: express.Request, res: expres
   });
 }
 
+/**
+ * 只允许返回 谁说法，动机是什么，禁止进行大杂烩接口，禁止进行编排下一个角色是谁！！！！
+ * （第一章节的话有开场白）->编排接口-> 台词接口（steam 形式返回）->语音接口 和编排接口 同时发送->语音播放完毕（错误or 静音）-》台词接口（steam 形式返回）
+ * 其他信息只能通过 storyInfo 接口返回!!!!
+ */
 export default router.post(
   "/",
   validateFields({

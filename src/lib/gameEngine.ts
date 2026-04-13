@@ -304,8 +304,25 @@ function normalizePhaseSignalList(input: unknown[]): string[] {
     (Array.isArray(input) ? input : [])
       .map((item) => normalizeEditorText(item))
       .filter(Boolean)
+      // 纯“旁白/用户/系统”这类角色占位词过宽，
+      // 一旦被塞进 advanceSignals，就会在任意发言时误触发 phase 推进。
+      .filter((item) => !isOverBroadPhaseSignal(item))
       .map((item) => item.slice(0, 80)),
   ));
+}
+
+// 过滤过宽的通用角色名信号，避免“只要旁白说话就进入下一事件”这类误推进。
+function isOverBroadPhaseSignal(input: string): boolean {
+  const text = normalizeEditorText(input).toLowerCase();
+  if (!text) return false;
+  return [
+    "旁白",
+    "用户",
+    "系统",
+    "narrator",
+    "player",
+    "system",
+  ].includes(text);
 }
 
 // 将指令参数按换行、逗号、分号等分隔成数组，
@@ -494,9 +511,9 @@ function extractDialogueSignalsFromSectionBody(input: string): string[] {
   for (const line of lines) {
     const matched = line.match(/^@([^:\n：]+)\s*[:：]\s*(.+)$/);
     if (!matched) continue;
-    const role = String(matched[1] || "").trim();
     const content = String(matched[2] || "").trim();
-    if (role) signals.push(role);
+    // 这里只保留台词正文，不再把“旁白/用户”等角色名自动当作推进信号，
+    // 否则同一角色任意开口都会把当前事件错误推进到下一阶段。
     if (content) signals.push(content.slice(0, 80));
   }
   return normalizePhaseSignalList(signals);
