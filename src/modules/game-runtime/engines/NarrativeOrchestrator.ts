@@ -812,19 +812,55 @@ function looksLikeDirectiveStructure(input: unknown): boolean {
     || /请输入.{0,16}(姓名|名称|性别|年龄)/.test(text);
 }
 
-// 将章节正文类文本压缩成事件摘要，去掉标题、角色标记和长段物品描述。
+// 解析章节正文行里的“谁在说 / 以谁身份说”信息。
+// 用途：
+// - 章节正文里的 `@旁白：...`、`（饰演日程空间戒指）...` 不能被当成脏结构全部删掉；
+// - 编排师需要这些身份线索来判断当前事件到底应该由谁发声。
+function extractDirectiveSpeechIdentity(input: string): { speaker: string; actedRole: string; body: string } {
+  let text = normalizeScalarText(input).replace(/^##+\s+/, "").trim();
+  let speaker = "";
+  let actedRole = "";
+  const speakerMatched = text.match(/^@([^：:\n]{1,24})\s*[：:]\s*(.+)$/);
+  if (speakerMatched) {
+    speaker = normalizeScalarText(speakerMatched[1]);
+    text = normalizeScalarText(speakerMatched[2]);
+  }
+  const actedRoleMatched = text.match(/^[（(]\s*饰演([^）)]{1,24})\s*[）)]\s*(.+)$/);
+  if (actedRoleMatched) {
+    actedRole = normalizeScalarText(actedRoleMatched[1]);
+    text = normalizeScalarText(actedRoleMatched[2]);
+  }
+  return {
+    speaker,
+    actedRole,
+    body: text,
+  };
+}
+
+// 将章节正文类文本压缩成事件摘要，同时保留“谁在说 / 以谁身份说”的关键约束。
 function summarizeDirectiveLikeText(input: unknown, limit = 72): string {
   const paragraphs = directiveParagraphs(input)
-    .map((item) => item.replace(/^##+\s+/, "").trim())
-    .map((item) => item.replace(/^@[^：:\n]{1,24}[：:]\s*/, "").trim())
-    .map((item) => item.replace(/^[（(][^）)]{0,24}[）)]\s*/, "").trim())
+    .map((item) => extractDirectiveSpeechIdentity(item))
+    .map(({ speaker, actedRole, body }) => {
+      const normalizedBody = normalizeScalarText(body)
+        .replace(/\s+/g, " ")
+        .replace(/[：:]\s*/g, "，")
+        .trim();
+      const identityParts = [
+        speaker ? `${speaker}` : "",
+        actedRole ? `饰演${actedRole}` : "",
+      ].filter(Boolean);
+      const identityText = identityParts.join("，");
+      if (identityText && normalizedBody) return `${identityText}：${normalizedBody}`;
+      return identityText || normalizedBody;
+    })
     .filter(Boolean);
   if (!paragraphs.length) return "";
   const summary = paragraphs
     .join("；")
-    .replace(/[：:]\s*/g, "，")
+    .replace(/；{2,}/g, "；")
     .replace(/\s+/g, " ")
-    .replace(/；{2,}/g, "；");
+    .trim();
   return shortText(summary, limit);
 }
 
@@ -848,7 +884,7 @@ function buildPromptSafeEventSummary(input: {
   return directiveSummary || normalizeScalarText(input.currentPhaseLabel) || "当前事件未命名";
 }
 
-// 过滤当前事件事实里的正文残留，只保留真正的阶段进度和状态事实。
+// 过滤当前事件事实里的正文残留，同时保留必要的“说话者/饰演者”身份线索。
 function buildPromptSafeEventFacts(input: {
   currentEventFacts: string[];
   chapterDirective: string;
@@ -857,9 +893,14 @@ function buildPromptSafeEventFacts(input: {
   return uniqueTextList(input.currentEventFacts || [], input.limit)
     .map((item) => normalizeScalarText(item))
     .filter(Boolean)
-    .filter((item) => !looksLikeDirectiveStructure(item))
-    .filter((item) => !looksLikeDirectiveLeak(item, input.chapterDirective, ""))
-    .map((item) => shortText(item, 48));
+    .map((item) => {
+      if (!looksLikeDirectiveStructure(item) && !looksLikeDirectiveLeak(item, input.chapterDirective, "")) {
+        return shortText(item, 48);
+      }
+      // 结构化正文行不直接丢弃，而是压成摘要后保留给模型，避免“谁在说”被误删。
+      return shortText(summarizeDirectiveLikeText(item, 48), 48);
+    })
+    .filter(Boolean);
 }
 
 // 生成 prompt 专用的阶段目标，章节正文阶段只保留一句用途说明，避免整段剧情正文泄漏。
