@@ -43,6 +43,7 @@ import {
   buildDebugEndDialogDetail,
 } from "./debugRuntimeShared";
 import u from "@/utils";
+import { DebugLogUtil } from "@/utils/debugLogUtil";
 
 const router = express.Router();
 
@@ -104,10 +105,6 @@ function asTrimmedText(value: unknown, fallback = "") {
   return fallback;
 }
 
-function isDebugLogEnabled() {
-  return String(process.env.LOG_LEVEL || "").trim().toUpperCase() === "DEBUG";
-}
-
 // 给每次 /game/orchestration 请求生成稳定 trace，方便判断是否同一个请求重复触发 AI。
 function buildOrchestrationRequestTrace(params: {
   userId: number;
@@ -129,7 +126,7 @@ function buildOrchestrationRequestTrace(params: {
 
 // 用统一 tag 打关键节点，方便把一次编排请求里的章节判定/编排模型调用串起来看。
 function logOrchestrationKeyNode(trace: OrchestrationRequestTrace, node: string, extra?: Record<string, unknown>) {
-  if (!isDebugLogEnabled()) return;
+  if (!DebugLogUtil.isDebugLogEnabled()) return;
   console.log("[game:orchestrator:key_nodes]", JSON.stringify({
     requestId: trace.requestId,
     route: trace.route,
@@ -271,7 +268,7 @@ function buildOrchestrationPayload(params: {
   // /game/orchestration 不能再返回整份 state，也不能泄露“下一位是谁”。
   // 这里只把当前说话角色和动机发给前端，后续是否继续、轮到谁，再由下一轮编排决定。
 
-  if (String(process.env.LOG_LEVEL || "").trim().toUpperCase() === "DEBUG") {
+  if (DebugLogUtil.isDebugLogEnabled()) {
     const planSource = asTrimmedText(params.plan?.planSource);
     const tag = planSource === "opening_preset"
       ? "story:introduction:plan"

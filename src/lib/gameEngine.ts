@@ -284,14 +284,24 @@ function normalizeSuggestionList(input: string): string[] {
     .filter(Boolean);
 }
 
-// 将一段正文压缩成适合事件摘要展示的短文本，
-// 会移除 `@角色:` 和列表前缀，避免摘要里噪声过多。
+// 将一段正文压缩成适合事件摘要展示的短文本。
+// 这里不能再把 `@旁白：` 这类显式说话者标记直接删掉，否则运行时 phase/事件摘要会丢失“谁在说”的关键信息。
 function normalizeRuntimeSummary(input: string, fallback: string): string {
   const text = String(input || "")
     .replace(/\r\n/g, "\n")
-    .replace(/^@([^:\n：]+)\s*[:：]\s*/gm, "")
-    .replace(/^[-*]\s+/gm, "")
-    .replace(/\n+/g, " ")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const dialogueMatched = line.match(/^@([^:\n：]+)\s*[:：]\s*(.+)$/);
+      if (dialogueMatched) {
+        const speaker = String(dialogueMatched[1] || "").trim();
+        const content = String(dialogueMatched[2] || "").trim();
+        return speaker && content ? `@${speaker}：${content}` : line;
+      }
+      return line.replace(/^[-*]\s+/, "").trim();
+    })
+    .join(" ")
     .replace(/\s+/g, " ")
     .trim();
   return text.slice(0, 80) || fallback;

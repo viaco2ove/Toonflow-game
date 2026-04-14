@@ -2,6 +2,7 @@ import u from "@/utils";
 import { JsonRecord } from "@/lib/gameEngine";
 import { applyChapterOutcomeToState, ChapterOutcomeResult, evaluateChapterOutcome } from "@/modules/game-runtime/engines/ChapterOutcomeEngine";
 import { activateChapterEndingCheckState } from "@/modules/game-runtime/engines/ChapterProgressEngine";
+import { DebugLogUtil } from "@/utils/debugLogUtil";
 import { z } from "zod";
 
 export interface EvaluateRuntimeOutcomeInput {
@@ -41,10 +42,6 @@ const chapterJudgeOutputSchema = {
   guide_summary: z.string().nullable().optional(),
   guide_facts: z.array(z.string()).optional(),
 };
-
-function isDebugLogEnabled(): boolean {
-  return String(process.env.LOG_LEVEL || "").trim().toUpperCase() === "DEBUG";
-}
 
 function normalizeScalarText(input: unknown): string {
   const text = String(input ?? "").trim();
@@ -94,7 +91,7 @@ function normalizeTraceMeta(input: unknown): JsonRecord {
 
 // 用统一 tag 串起章节判定与编排请求，方便确认同一个 orchestration 请求里判章跑了几次。
 function logChapterEndingKeyNode(node: string, traceMeta: unknown, extra?: Record<string, unknown>) {
-  if (!isDebugLogEnabled()) return;
+  if (!DebugLogUtil.isDebugLogEnabled()) return;
   console.log("[game:orchestrator:key_nodes]", JSON.stringify({
     node,
     ...normalizeTraceMeta(traceMeta),
@@ -319,7 +316,7 @@ function buildChapterJudgeStats(input: {
     totalMs: Number(input.totalMs || 0),
   };
   console.log("[story:chapter_ending_check:runtime]", JSON.stringify(runtimeLog));
-  if (!isDebugLogEnabled()) return;
+  if (!DebugLogUtil.isDebugLogEnabled()) return;
   console.log(`[story:chapter_ending_check:stats] request_chars=${totalRequestChars} system_chars=${input.systemPrompt.length} user_chars=${input.prompt.length} request_status=${input.requestStatus} build_ms=${Number(input.buildMs || 0)} invoke_ms=${Number(input.invokeMs || 0)} total_ms=${Number(input.totalMs || 0)}`);
   console.log(`[story:chapter_ending_check:stats] | 区块 | 实际内容 | 字符数 | 估算 Tokens |`);
   console.log(`[story:chapter_ending_check:stats] | System Prompt | ${shortText(input.systemPrompt, 240000) || "无"} | ${input.systemPrompt.length} | ${Math.max(input.systemPrompt ? 1 : 0, Math.ceil(input.systemPrompt.length / 4))} |`);
@@ -591,7 +588,7 @@ export async function evaluateRuntimeOutcome(input: EvaluateRuntimeOutcomeInput)
       : "当前章节没有有效结束条件，跳过AI章节判定并沿用fallbackOutcome",
   }));
 
-  if (!evaluation.hasRule && isDebugLogEnabled()) {
+  if (!evaluation.hasRule && DebugLogUtil.isDebugLogEnabled()) {
     console.log("[story:chapter_ending_check:skip]", JSON.stringify({
       chapterId: Number(input.chapter?.id || 0),
       chapterTitle: String(input.chapter?.title || "").trim(),

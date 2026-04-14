@@ -1,6 +1,7 @@
 import u from "@/utils";
 import { JsonRecord } from "@/lib/gameEngine";
 import { AiEventProgressResolution } from "@/modules/game-runtime/engines/ChapterProgressEngine";
+import { DebugLogUtil } from "@/utils/debugLogUtil";
 import { z } from "zod";
 
 /**
@@ -35,13 +36,6 @@ const eventProgressOutputSchema = {
   progress_facts: z.array(z.string()).optional(),
   reason: z.string().nullable().optional(),
 };
-
-/**
- * 仅在 DEBUG 模式打印详细日志，避免常规运行被大段 prompt 污染。
- */
-function isDebugLogEnabled(): boolean {
-  return String(process.env.LOG_LEVEL || "").trim().toUpperCase() === "DEBUG";
-}
 
 /**
  * 归一化单值文本，过滤 null/undefined/空串。
@@ -101,7 +95,7 @@ function normalizeResultObject(input: unknown): Record<string, unknown> | null {
  * 同一 orchestration 请求下，记录事件进度检测关键节点，方便核对是否重复调用。
  */
 function logEventProgressKeyNode(node: string, traceMeta: unknown, extra?: Record<string, unknown>) {
-  if (!isDebugLogEnabled()) return;
+  if (!DebugLogUtil.isDebugLogEnabled()) return;
   console.log("[game:orchestrator:key_nodes]", JSON.stringify({
     node,
     ...normalizeTraceMeta(traceMeta),
@@ -250,6 +244,66 @@ function buildEventProgressInputSnapshot(input: EvaluateEventProgressInput): Jso
 }
 
 /**
+ * 把事件进度检测输入快照压成更适合 debug 日志阅读的结构。
+ *
+ * 用途：
+ * - 快速确认发给 agent 的到底是不是当前事件
+ * - 直接看到 latest_message / recent_dialogue 是否把无关内容混进去了
+ */
+function buildEventProgressDebugSnapshot(snapshot: JsonRecord): JsonRecord {
+  const currentEvent =
+    typeof snapshot.current_event === "object" && snapshot.current_event !== null
+      ? snapshot.current_event as Record<string, unknown>
+      : {};
+  const currentProgress =
+    typeof snapshot.current_progress === "object" && snapshot.current_progress !== null
+      ? snapshot.current_progress as Record<string, unknown>
+      : {};
+  const latestMessage =
+    typeof snapshot.latest_message === "object" && snapshot.latest_message !== null
+      ? snapshot.latest_message as Record<string, unknown>
+      : {};
+  const recentDialogue = Array.isArray(snapshot.recent_dialogue)
+    ? snapshot.recent_dialogue as Array<Record<string, unknown>>
+    : [];
+  return {
+    currentEvent: {
+      index: Number(currentEvent.index || 0),
+      kind: normalizeScalarText(currentEvent.kind),
+      flow: normalizeScalarText(currentEvent.flow),
+      status: normalizeScalarText(currentEvent.status),
+      summary: normalizeScalarText(currentEvent.summary),
+      facts: Array.isArray(currentEvent.facts)
+        ? currentEvent.facts.map((item) => normalizeScalarText(item)).filter(Boolean)
+        : [],
+    },
+    currentProgress: {
+      phaseId: normalizeScalarText(currentProgress.phase_id),
+      phaseIndex: Number(currentProgress.phase_index || 0),
+      userNodeStatus: normalizeScalarText(currentProgress.user_node_status),
+      pendingGoal: normalizeScalarText(currentProgress.pending_goal),
+      completedEvents: Array.isArray(currentProgress.completed_events)
+        ? currentProgress.completed_events.map((item) => normalizeScalarText(item)).filter(Boolean)
+        : [],
+    },
+    latestMessage: {
+      role: normalizeScalarText(latestMessage.role),
+      roleType: normalizeScalarText(latestMessage.role_type),
+      eventType: normalizeScalarText(latestMessage.event_type),
+      content: normalizeScalarText(latestMessage.content),
+      contentLength: normalizeScalarText(latestMessage.content).length,
+    },
+    recentDialogueCount: recentDialogue.length,
+    recentDialogue: recentDialogue.map((item) => ({
+      role: normalizeScalarText(item.role),
+      roleType: normalizeScalarText(item.role_type),
+      eventType: normalizeScalarText(item.event_type),
+      content: normalizeScalarText(item.content),
+    })),
+  };
+}
+
+/**
  * 构造最终发送给模型的用户 prompt。
  */
 function buildEventProgressPrompt(input: EvaluateEventProgressInput): string {
@@ -262,7 +316,9 @@ function buildEventProgressPrompt(input: EvaluateEventProgressInput): string {
 function buildEventProgressStats(input: {
   systemPrompt: string;
   prompt: string;
+  inputSnapshot: JsonRecord;
   responseText: string;
+  parsedResolution?: AiEventProgressResolution | null;
   tokenUsage?: EventProgressTokenUsage | null;
   requestStatus: "success" | "fallback" | "skip_no_prompt";
   manufacturer: string;
@@ -274,25 +330,30 @@ function buildEventProgressStats(input: {
   traceMeta?: JsonRecord;
   start: number;
 }) {
+  const inputDebugSnapshot = buildEventProgressDebugSnapshot(input.inputSnapshot);
   const runtimeLog = {
     manufacturer: input.manufacturer,
     model: input.model,
     reasoningEffort: input.reasoningEffort || "",
     traceMeta: normalizeTraceMeta(input.traceMeta),
+    inputSnapshot: inputDebugSnapshot,
     requestChars: input.systemPrompt.length + input.prompt.length,
     systemChars: input.systemPrompt.length,
     userChars: input.prompt.length,
     requestStatus: input.requestStatus,
     responseText: input.responseText,
     responseTextLength: input.responseText.length,
+    parsedResolution: input.parsedResolution || null,
     tokenUsage: input.tokenUsage || null,
     buildMs: Number(input.buildMs || 0),
     invokeMs: Number(input.invokeMs || 0),
     totalMs: Number(input.totalMs || 0),
   };
   console.log("[story:event_progress:runtime]", JSON.stringify(runtimeLog));
-  if (!isDebugLogEnabled()) return;
+  if (!DebugLogUtil.isDebugLogEnabled()) return;
   console.log(`[story:event_progress:stats] request_chars=${runtimeLog.requestChars} system_chars=${runtimeLog.systemChars} user_chars=${runtimeLog.userChars} request_status=${input.requestStatus} build_ms=${runtimeLog.buildMs} invoke_ms=${runtimeLog.invokeMs} total_ms=${runtimeLog.totalMs}`);
+  console.log(`[story:event_progress:stats] | 输入摘要 | current_event=${inputDebugSnapshot.currentEvent?.index || 0}/${inputDebugSnapshot.currentEvent?.status || ""} ↩ phase=${inputDebugSnapshot.currentProgress?.phaseId || ""} ↩ latest_role=${inputDebugSnapshot.latestMessage?.role || ""}/${inputDebugSnapshot.latestMessage?.eventType || ""} ↩ recent_dialogue_count=${inputDebugSnapshot.recentDialogueCount || 0} | - | - |`);
+  console.log(`[story:event_progress:stats] | 解析结果 | ended=${String(input.parsedResolution?.ended ?? "")} ↩ event_status=${normalizeScalarText(input.parsedResolution?.eventStatus)} ↩ progress_summary=${shortText(input.parsedResolution?.progressSummary, 240000)} ↩ reason=${shortText(input.parsedResolution?.reason, 240000)} | - | - |`);
   console.log(`[story:event_progress:stats] | 区块 | 实际内容 | 字符数 | 估算 Tokens |`);
   console.log(`[story:event_progress:stats] | System Prompt | ${shortText(input.systemPrompt, 240000) || "无"} | ${input.systemPrompt.length} | ${Math.max(input.systemPrompt ? 1 : 0, Math.ceil(input.systemPrompt.length / 4))} |`);
   console.log(`[story:event_progress:stats] | 用户提示词 | ${shortText(input.prompt, 240000) || "无"} | ${input.prompt.length} | ${Math.max(input.prompt ? 1 : 0, Math.ceil(input.prompt.length / 4))} |`);
@@ -319,12 +380,15 @@ export async function evaluateEventProgressByAi(
   const totalStartedAt = Date.now();
   const start = Date.now();
   const systemPrompt = await loadEventProgressPrompt();
-  const userPrompt = buildEventProgressPrompt(input);
+  const inputSnapshot = buildEventProgressInputSnapshot(input);
+  const userPrompt = JSON.stringify(inputSnapshot, null, 2);
   if (!systemPrompt) {
     buildEventProgressStats({
       systemPrompt: "",
       prompt: userPrompt,
+      inputSnapshot,
       responseText: "未加载到 AI故事-事件进度检测 Prompt，已回退到规则推进。",
+      parsedResolution: null,
       tokenUsage: null,
       requestStatus: "skip_no_prompt",
       manufacturer: "",
@@ -339,7 +403,7 @@ export async function evaluateEventProgressByAi(
     return null;
   }
   const buildStartedAt = Date.now();
-  const prompt = buildEventProgressPrompt(input);
+  const prompt = JSON.stringify(inputSnapshot, null, 2);
   const buildMs = Date.now() - buildStartedAt;
   let rawText = "";
   let tokenUsage: EventProgressTokenUsage | null = null;
@@ -412,7 +476,9 @@ export async function evaluateEventProgressByAi(
     buildEventProgressStats({
       systemPrompt,
       prompt,
+      inputSnapshot,
       responseText: rawText,
+      parsedResolution: resolution,
       tokenUsage,
       requestStatus: "success",
       manufacturer: normalizeScalarText((modelConfig as any)?.manufacturer),
@@ -429,7 +495,9 @@ export async function evaluateEventProgressByAi(
     buildEventProgressStats({
       systemPrompt,
       prompt,
+      inputSnapshot,
       responseText: rawText || `事件进度检测未拿到模型返回内容（阶段: ${requestStage}）`,
+      parsedResolution: null,
       tokenUsage,
       requestStatus: "fallback",
       manufacturer: "",

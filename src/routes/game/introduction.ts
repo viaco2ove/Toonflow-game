@@ -21,6 +21,7 @@ import {
   syncDebugChapterRuntime,
   isDebugFreePlotActive,
 } from "./debugRuntimeShared";
+import { DebugLogUtil } from "@/utils/debugLogUtil";
 
 const router = express.Router();
 
@@ -155,7 +156,7 @@ function buildOrchestrationPayload(params: {
     worldId: params.worldId,
     state: params.state,
   });
-  if (String(process.env.LOG_LEVEL || "").trim().toUpperCase() === "DEBUG") {
+  if (DebugLogUtil.isDebugLogEnabled()) {
     console.log("[story:introduction:plan]", JSON.stringify({
       planSource: String(params.plan?.planSource || "").trim(),
       awaitUser: Boolean(params.plan?.awaitUser),

@@ -14,6 +14,8 @@
 [story:streamlines:runtime] 角色发言器日志。当前会打印 speakerMode、speakerModelKey、requestChars、tokenUsage、buildMs/invokeMs/totalMs
 [story:streamlines:stats]: 角色发言器 token 统计。当前会打印 speaker_mode、speaker_model_key、prompt 体积估算、返回内容摘要、实际推理消耗
 [speaker:route] 角色发言路由选择日志。用于判断当前这轮走 fast / standard / template 哪条角色发言路径
+[story:event_progress:runtime]:AI故事-事件进度检测日志
+[story:event_progress:stats]: AI故事-事件进度检测 token 统计
 
 ## 后端通用tag
 [debug:revisit:not_found]: 回溯失败
@@ -31,3 +33,4 @@
   - 台词： (月白锦裙的少女立在坊市檐下，墨发束起，眉梢带着与生俱来的傲气，目光遥遥落在萧炎指尖那枚漆黑戒指上)这偏远乌坦城，怎会有这般品级的空间储物戒？真是奇怪。 
   - 事件阶段：已经发送了什么，接下来做什么，是否已完结
 ```
+编排流程文件生成命令： yarn debug:event-chain logs/app-2026-04-13.log 

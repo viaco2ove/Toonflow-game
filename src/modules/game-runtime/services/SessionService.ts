@@ -54,6 +54,7 @@ import {
   TaskProgressChange,
   TriggerHit,
 } from "@/modules/game-runtime/types/runtime";
+import { DebugLogUtil } from "@/utils/debugLogUtil";
 
 // ==================== 游玩模式回溯功能内存缓存 ====================
 //
@@ -736,10 +737,6 @@ function setPendingSessionNarrativePlan(state: Record<string, any>, plan: Sessio
   delete state.pendingNarrativePlan;
 }
 
-function isDebugLogEnabled(): boolean {
-  return String(process.env.LOG_LEVEL || "").trim().toUpperCase() === "DEBUG";
-}
-
 function cloneSessionRuntimeValue<T>(input: T): T {
   try {
     return JSON.parse(JSON.stringify(input ?? null)) as T;
@@ -750,7 +747,7 @@ function cloneSessionRuntimeValue<T>(input: T): T {
 
 // 正式会话也用统一 tag 串起请求链路，方便和调试态一起比对重复调用。
 function logSessionOrchestrationKeyNode(node: string, traceMeta: Record<string, unknown>, extra?: Record<string, unknown>) {
-  if (!isDebugLogEnabled()) return;
+  if (!DebugLogUtil.isDebugLogEnabled()) return;
   console.log("[game:orchestrator:key_nodes]", JSON.stringify({
     node,
     ...traceMeta,
@@ -1092,7 +1089,7 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
   if (!sessionId) {
     throw new SessionServiceError(400, "sessionId 不能为空");
   }
-  if (!isDebugLogEnabled()) {
+  if (!DebugLogUtil.isDebugLogEnabled()) {
     console.log(`[story:streamlines:stats] sesionid=${sessionId}`);
   }
   const sessionRow = await db("t_gameSession").where({ sessionId }).first();

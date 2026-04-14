@@ -60,6 +60,7 @@
     "docker:local": "docker-compose -f docker/docker-compose.local.yml up -d --build",
     "docker:autodl": "docker compose --env-file docker/.env.autodl -f docker/docker-compose.autodl.yml up -d --build",
     "debug:ai": "npx @ai-sdk/devtools",
+    "debug:event-chain": "node scripts/generateEventChainSummary.js",
     "license": "bun run scripts/license.ts",
     "voice:regen:presets": "tsx scripts/regenerateStoryVoicePresets.ts"
   },

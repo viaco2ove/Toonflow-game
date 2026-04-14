@@ -29,6 +29,7 @@ import {
   buildTemplateSpeakerContent,
   resolveSpeakerModeDecision,
 } from "@/modules/game-runtime/engines/SpeakerRouteEngine";
+import { DebugLogUtil } from "@/utils/debugLogUtil";
 
 export interface RuntimeMessageInput {
   messageId?: number | null;
@@ -202,10 +203,6 @@ function truncateErrorMessage(input: unknown, limit = 180): string {
   return text.length > limit ? `${text.slice(0, limit)}...` : text;
 }
 
-function isDebugLogEnabled(): boolean {
-  return normalizeScalarText(process.env.LOG_LEVEL).toUpperCase() === "DEBUG";
-}
-
 function normalizeTraceMeta(input: unknown): JsonRecord {
   if (!input || typeof input !== "object") return {};
   return input as JsonRecord;
@@ -213,7 +210,7 @@ function normalizeTraceMeta(input: unknown): JsonRecord {
 
 // 用统一 tag 串起编排请求和模型调用，方便定位同一个请求是否重复触发了 AI。
 function logOrchestratorKeyNode(node: string, traceMeta: unknown, extra?: Record<string, unknown>) {
-  if (!isDebugLogEnabled()) return;
+  if (!DebugLogUtil.isDebugLogEnabled()) return;
   console.log("[game:orchestrator:key_nodes]", JSON.stringify({
     node,
     ...normalizeTraceMeta(traceMeta),
@@ -847,7 +844,7 @@ function summarizeDirectiveLikeText(input: unknown, limit = 72): string {
         .replace(/[：:]\s*/g, "，")
         .trim();
       const identityParts = [
-        speaker ? `${speaker}` : "",
+        speaker ? `@${speaker}` : "",
         actedRole ? `饰演${actedRole}` : "",
       ].filter(Boolean);
       const identityText = identityParts.join("，");
@@ -864,6 +861,34 @@ function summarizeDirectiveLikeText(input: unknown, limit = 72): string {
   return shortText(summary, limit);
 }
 
+// 生成保留完整细节的结构化正文摘要。
+// 用途：
+// - 编排师的当前事件/阶段目标不能再被省略号截断，否则会丢掉事件内的关键事实与话术约束；
+// - 这里仍然保留“谁在说 / 以谁身份说”，但不再做长度裁剪。
+function summarizeDirectiveLikeTextFull(input: unknown): string {
+  const paragraphs = directiveParagraphs(input)
+    .map((item) => extractDirectiveSpeechIdentity(item))
+    .map(({ speaker, actedRole, body }) => {
+      const normalizedBody = normalizeScalarText(body)
+        .replace(/\s+/g, " ")
+        .replace(/[：:]\s*/g, "，")
+        .trim();
+      const identityParts = [
+        speaker ? `@${speaker}` : "",
+        actedRole ? `饰演${actedRole}` : "",
+      ].filter(Boolean);
+      const identityText = identityParts.join("，");
+      if (identityText && normalizedBody) return `${identityText}：${normalizedBody}`;
+      return identityText || normalizedBody;
+    })
+    .filter(Boolean);
+  return paragraphs
+    .join("；")
+    .replace(/；{2,}/g, "；")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 // 只为 prompt 生成“当前事件摘要”，避免直接把章节正文或动机模板原文交给模型。
 function buildPromptSafeEventSummary(input: {
   currentEventSummary: string;
@@ -873,14 +898,14 @@ function buildPromptSafeEventSummary(input: {
 }): string {
   const rawSummary = normalizeScalarText(input.currentEventSummary);
   if (!rawSummary) {
-    const fallbackSummary = summarizeDirectiveLikeText(input.chapterDirective, input.limit);
+    const fallbackSummary = summarizeDirectiveLikeTextFull(input.chapterDirective);
     return fallbackSummary || normalizeScalarText(input.currentPhaseLabel) || "当前事件未命名";
   }
   if (!looksLikeDirectiveStructure(rawSummary) && !looksLikeDirectiveLeak(rawSummary, input.chapterDirective, "")) {
-    return shortText(rawSummary, input.limit) || normalizeScalarText(input.currentPhaseLabel) || "当前事件未命名";
+    return rawSummary || normalizeScalarText(input.currentPhaseLabel) || "当前事件未命名";
   }
-  const directiveSummary = summarizeDirectiveLikeText(rawSummary, input.limit)
-    || summarizeDirectiveLikeText(input.chapterDirective, input.limit);
+  const directiveSummary = summarizeDirectiveLikeTextFull(rawSummary)
+    || summarizeDirectiveLikeTextFull(input.chapterDirective);
   return directiveSummary || normalizeScalarText(input.currentPhaseLabel) || "当前事件未命名";
 }
 
@@ -1211,7 +1236,7 @@ function logOrchestratorPromptStats(
     runtimeLog.error = normalizePromptStatContent((runtimeError as any)?.message || String(runtimeError));
   }
 
-  if (isDebugLogEnabled()) {
+  if (DebugLogUtil.isDebugLogEnabled()) {
     console.log("[story:orchestrator:runtime]", JSON.stringify(runtimeLog));
     console.log(`[story:orchestrator:stats] request_chars=${totalPromptChars} estimated_tokens=${totalPromptTokens} system_chars=${systemPrompt.length} user_chars=${userPrompt.length} build_ms=${Number(timing?.buildMs || 0)} invoke_ms=${Number(timing?.invokeMs || 0)} total_ms=${Number(timing?.totalMs || 0)}`);
 
@@ -1301,7 +1326,7 @@ function logSpeakerPromptStats(input: {
   if (input.runtimeError) {
     runtimeLog.error = normalizePromptStatContent((input.runtimeError as any)?.message || String(input.runtimeError));
   }
-  if (!isDebugLogEnabled()) {
+  if (!DebugLogUtil.isDebugLogEnabled()) {
     return;
   }
   console.log("[story:streamlines:runtime]", JSON.stringify(runtimeLog));
@@ -3103,7 +3128,7 @@ export async function runNarrativeOrchestrator(input: OrchestratorInput): Promis
   };
 
   // DEBUG 日志：记录 orchestrator 返回内容
-  if (isDebugLogEnabled()) {
+  if (DebugLogUtil.isDebugLogEnabled()) {
     console.log("[story:orchestrator:result]", JSON.stringify({
       role: result.role,
       roleType: result.roleType,
@@ -3477,7 +3502,7 @@ export async function advanceNarrativeUntilPlayerTurn(input: OrchestratorInput &
   const emitted: RuntimeMessageInput[] = [];
   const recentMessages = [...input.recentMessages];
   const maxAutoTurns = Math.max(1, Math.min(Number(input.maxAutoTurns || 3), 5));
-  if(isDebugLogEnabled()){
+  if (DebugLogUtil.isDebugLogEnabled()) {
     console.log(`[orchestration] maxAutoTurns:`,maxAutoTurns);
   }
   let current = input.initialResult;
