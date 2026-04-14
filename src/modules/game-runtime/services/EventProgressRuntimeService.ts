@@ -1,6 +1,9 @@
 import u from "@/utils";
 import { JsonRecord } from "@/lib/gameEngine";
-import { AiEventProgressResolution } from "@/modules/game-runtime/engines/ChapterProgressEngine";
+import {
+  AiEventProgressResolution,
+  readNextEventProgressHint,
+} from "@/modules/game-runtime/engines/ChapterProgressEngine";
 import { DebugLogUtil } from "@/utils/debugLogUtil";
 import { z } from "zod";
 
@@ -10,6 +13,7 @@ import { z } from "zod";
  * 用途：
  * - 给 AI 提供当前事件、当前进度和最近 10 条对话
  * - 只判断“当前事件是否结束、现在进行到哪一步”
+ * - 明确告诉 AI：当前事件完成后应切到哪个下一事件，减少它在边界上的猜测
  */
 export interface EvaluateEventProgressInput {
   userId?: number;
@@ -209,6 +213,7 @@ function buildEventProgressInputSnapshot(input: EvaluateEventProgressInput): Jso
         }))
         .filter((item) => item.content)
     : [];
+  const nextEvent = readNextEventProgressHint(input.chapter, input.state);
   return {
     chapter: {
       id: Number(input.chapter?.id || 0),
@@ -233,6 +238,16 @@ function buildEventProgressInputSnapshot(input: EvaluateEventProgressInput): Jso
         ? chapterProgress.completedEvents.map((item) => normalizeScalarText(item)).filter(Boolean)
         : [],
     },
+    next_event: nextEvent
+      ? {
+        index: Number(nextEvent.index || 0),
+        kind: normalizeScalarText(nextEvent.kind) || "scene",
+        phase_id: normalizeScalarText(nextEvent.phaseId),
+        label: normalizeScalarText(nextEvent.label),
+        summary: normalizeScalarText(nextEvent.summary),
+      }
+      : null,
+    phase_transition_hint: nextEvent?.transitionHint || "",
     latest_message: {
       role: normalizeScalarText(input.messageRole) || "",
       role_type: normalizeScalarText(input.messageRoleType) || "",
@@ -263,6 +278,10 @@ function buildEventProgressDebugSnapshot(snapshot: JsonRecord): JsonRecord {
     typeof snapshot.latest_message === "object" && snapshot.latest_message !== null
       ? snapshot.latest_message as Record<string, unknown>
       : {};
+  const nextEvent =
+    typeof snapshot.next_event === "object" && snapshot.next_event !== null
+      ? snapshot.next_event as Record<string, unknown>
+      : {};
   const recentDialogue = Array.isArray(snapshot.recent_dialogue)
     ? snapshot.recent_dialogue as Array<Record<string, unknown>>
     : [];
@@ -285,6 +304,14 @@ function buildEventProgressDebugSnapshot(snapshot: JsonRecord): JsonRecord {
       completedEvents: Array.isArray(currentProgress.completed_events)
         ? currentProgress.completed_events.map((item) => normalizeScalarText(item)).filter(Boolean)
         : [],
+    },
+    nextEvent: {
+      index: Number(nextEvent.index || 0),
+      kind: normalizeScalarText(nextEvent.kind),
+      phaseId: normalizeScalarText(nextEvent.phase_id),
+      label: normalizeScalarText(nextEvent.label),
+      summary: normalizeScalarText(nextEvent.summary),
+      transitionHint: normalizeScalarText(snapshot.phase_transition_hint),
     },
     latestMessage: {
       role: normalizeScalarText(latestMessage.role),
@@ -352,7 +379,7 @@ function buildEventProgressStats(input: {
   console.log("[story:event_progress:runtime]", JSON.stringify(runtimeLog));
   if (!DebugLogUtil.isDebugLogEnabled()) return;
   console.log(`[story:event_progress:stats] request_chars=${runtimeLog.requestChars} system_chars=${runtimeLog.systemChars} user_chars=${runtimeLog.userChars} request_status=${input.requestStatus} build_ms=${runtimeLog.buildMs} invoke_ms=${runtimeLog.invokeMs} total_ms=${runtimeLog.totalMs}`);
-  console.log(`[story:event_progress:stats] | 输入摘要 | current_event=${inputDebugSnapshot.currentEvent?.index || 0}/${inputDebugSnapshot.currentEvent?.status || ""} ↩ phase=${inputDebugSnapshot.currentProgress?.phaseId || ""} ↩ latest_role=${inputDebugSnapshot.latestMessage?.role || ""}/${inputDebugSnapshot.latestMessage?.eventType || ""} ↩ recent_dialogue_count=${inputDebugSnapshot.recentDialogueCount || 0} | - | - |`);
+  console.log(`[story:event_progress:stats] | 输入摘要 | current_event=${inputDebugSnapshot.currentEvent?.index || 0}/${inputDebugSnapshot.currentEvent?.status || ""} ↩ phase=${inputDebugSnapshot.currentProgress?.phaseId || ""} ↩ next_event=${inputDebugSnapshot.nextEvent?.index || 0}/${inputDebugSnapshot.nextEvent?.label || ""} ↩ latest_role=${inputDebugSnapshot.latestMessage?.role || ""}/${inputDebugSnapshot.latestMessage?.eventType || ""} ↩ recent_dialogue_count=${inputDebugSnapshot.recentDialogueCount || 0} | - | - |`);
   console.log(`[story:event_progress:stats] | 解析结果 | ended=${String(input.parsedResolution?.ended ?? "")} ↩ event_status=${normalizeScalarText(input.parsedResolution?.eventStatus)} ↩ progress_summary=${shortText(input.parsedResolution?.progressSummary, 240000)} ↩ reason=${shortText(input.parsedResolution?.reason, 240000)} | - | - |`);
   console.log(`[story:event_progress:stats] | 区块 | 实际内容 | 字符数 | 估算 Tokens |`);
   console.log(`[story:event_progress:stats] | System Prompt | ${shortText(input.systemPrompt, 240000) || "无"} | ${input.systemPrompt.length} | ${Math.max(input.systemPrompt ? 1 : 0, Math.ceil(input.systemPrompt.length / 4))} |`);

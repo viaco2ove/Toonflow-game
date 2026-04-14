@@ -1502,57 +1502,6 @@ function buildSpeakerUserPrompt(payload: {
   ].filter(Boolean).join("\n");
 }
 
-// fast speaker 只吃极简上下文，优先用更低 token 写出一句自然台词。
-function buildFastSpeakerUserPrompt(payload: {
-  speakerName: string;
-  speakerRoleType: string;
-  speakerProfileLite: string;
-  currentPhaseLabel: string;
-  currentEventIndex: number;
-  currentEventKind: string;
-  currentEventFlowType?: string;
-  currentEventStatus?: string;
-  currentEventSummary: string;
-  currentEventFacts: string[];
-  currentEventMemorySummary: string;
-  currentEventMemoryFacts: string[];
-  motive: string;
-  recentDialogue: string;
-  latestPlayerMessage: string;
-}): string {
-  return [
-    "[当前说话人]",
-    `name: ${payload.speakerName}`,
-    `role_type: ${payload.speakerRoleType}`,
-    payload.speakerProfileLite || "",
-    "",
-    "[当前阶段]",
-    `label: ${payload.currentPhaseLabel || "未命名阶段"}`,
-    "",
-    "[当前事件]",
-    `index: ${payload.currentEventIndex || 1}`,
-    `kind: ${payload.currentEventKind || "scene"}`,
-    payload.currentEventFlowType ? `flow: ${payload.currentEventFlowType}` : "",
-    payload.currentEventStatus ? `status: ${payload.currentEventStatus}` : "",
-    `summary: ${payload.currentEventSummary || "当前事件未命名"}`,
-    payload.currentEventFacts.length ? `facts: ${payload.currentEventFacts.join("；")}` : "",
-    payload.currentEventMemorySummary ? `memory_summary: ${payload.currentEventMemorySummary}` : "",
-    payload.currentEventMemoryFacts.length ? `memory_facts: ${payload.currentEventMemoryFacts.join("；")}` : "",
-    "",
-    "[本轮动机]",
-    payload.motive,
-    "",
-    "[最近对话]",
-    payload.recentDialogue || "无",
-    "",
-    "[用户最近输入]",
-    payload.latestPlayerMessage || "无",
-    "",
-    "[输出要求]",
-    "直接输出本轮真正展示给用户的一段正文，不要 JSON，不要字段名，不要代码块。",
-  ].filter(Boolean).join("\n");
-}
-
 // 把最近对话和现有记忆拼成记忆管理提示词。
 function buildMemoryUserPrompt(payload: {
   worldName: string;
@@ -2442,25 +2391,9 @@ export async function runStorySpeakerContent(input: {
   payload.currentEventSummary = promptEventSummary;
   payload.currentEventFacts = promptEventFacts;
   const systemPrompt = buildSpeakerSystemPrompt(prompts.storySpeaker || prompts.storyOrchestrator, useFastSpeakerPrompt || compactMode);
-  const userPrompt = useFastSpeakerPrompt
-    ? buildFastSpeakerUserPrompt({
-      speakerName: payload.speakerName,
-      speakerRoleType: payload.speakerRoleType,
-      speakerProfileLite: payload.speakerProfile,
-      currentPhaseLabel: payload.currentPhaseLabel,
-      currentEventIndex: payload.currentEventIndex,
-      currentEventKind: payload.currentEventKind,
-      currentEventFlowType: payload.currentEventFlowType,
-      currentEventStatus: payload.currentEventStatus,
-      currentEventSummary: payload.currentEventSummary,
-      currentEventFacts: payload.currentEventFacts,
-      currentEventMemorySummary: payload.currentEventMemorySummary,
-      currentEventMemoryFacts: payload.currentEventMemoryFacts,
-      motive: payload.motive,
-      recentDialogue: payload.recentDialogue,
-      latestPlayerMessage: payload.latestPlayerMessage,
-    })
-    : buildSpeakerUserPrompt(payload);
+  // 无论快路由还是标准路由，都统一使用完整版 speaker prompt。
+  // 区别只保留在模型槽位和上下文裁剪，不再分裂成另一套缺少章节/事件信息的 prompt 结构。
+  const userPrompt = buildSpeakerUserPrompt(payload);
   const buildMs = Date.now() - totalStartedAt;
   let invokeMs = 0;
   let rawResponse = "";

@@ -670,6 +670,65 @@ function resolveNextPhaseFromGraph(
 }
 
 /**
+ * 读取“当前事件完成后将进入哪个事件”的提示信息。
+ *
+ * 用途：
+ * - 给事件进度检测 agent 明确补充“切换边界”
+ * - 避免 agent 只能看到当前事件内容，却不知道完成后应该转入哪一个下一事件
+ */
+export function readNextEventProgressHint(chapter: any, state: JsonRecord): {
+  index: number;
+  kind: string;
+  phaseId: string;
+  label: string;
+  summary: string;
+  transitionHint: string;
+} | null {
+  const outline = readRuntimeOutline(chapter);
+  const current = readChapterProgressState(state);
+  if (!outline.phases.length || !current.phaseId) {
+    return null;
+  }
+  // 这里模拟“当前事件已完成”后的 completedEvents，再解析下一事件，
+  // 目的是告诉 agent 当前事件结束后该切到谁，而不是让它自己猜 phase graph。
+  const simulatedCompletedEvents = markPhaseCompleted(
+    normalizeCompletedEvents(Array.isArray(current.completedEvents) ? current.completedEvents : []),
+    current.phaseId,
+  );
+  const nextPhaseInfo = resolveNextPhaseFromGraph(
+    outline,
+    current.phaseId,
+    simulatedCompletedEvents,
+    current.phaseIndex,
+  );
+  const nextPhase = nextPhaseInfo.phase;
+  if (!nextPhase) {
+    if (hasChapterEndingEvent(chapter, outline)) {
+      const endingSummary = buildEndingEventSummary(chapter, outline);
+      return {
+        index: Math.max(outline.phases.length + 1, current.eventIndex + 1),
+        kind: "ending",
+        phaseId: "",
+        label: "结束条件检查",
+        summary: endingSummary,
+        transitionHint: `当前事件完成后应进入结束条件检查：${endingSummary}`,
+      };
+    }
+    return null;
+  }
+  const nextLabel = String(nextPhase.label || "").trim();
+  const nextSummary = String(nextPhase.targetSummary || nextLabel || "").trim();
+  return {
+    index: Math.max(1, nextPhaseInfo.phaseIndex + 1),
+    kind: String(nextPhase.kind || "scene").trim() || "scene",
+    phaseId: String(nextPhase.id || "").trim(),
+    label: nextLabel,
+    summary: nextSummary,
+    transitionHint: `当前事件完成后应进入事件${Math.max(1, nextPhaseInfo.phaseIndex + 1)}：${nextSummary || nextLabel || "未命名事件"}`,
+  };
+}
+
+/**
  * 把 chapterProgress/currentEvent/dynamicEvents 同步到指定 phase。
  */
 function updatePhaseState(
@@ -1573,20 +1632,20 @@ export function applyAiEventProgressResolution(input: {
   const outline = readRuntimeOutline(input.chapter);
   const current = readChapterProgressState(input.state);
   const currentEvent = readRuntimeCurrentEventState(input.state);
-  const nextSummary = String(input.resolution.progressSummary || "").trim()
-    || current.eventSummary
-    || currentEvent.summary;
+  const stableSummary = String(current.eventSummary || currentEvent.summary || "").trim();
+  const progressSummary = String(input.resolution.progressSummary || "").trim();
   const nextFacts = mergeAiProgressFacts(
     Array.isArray(currentEvent.facts) ? currentEvent.facts : [],
     input.resolution.progressFacts,
     input.resolution.reason,
   );
 
-  // 先把 AI 归纳结果回写到当前事件卡片，确保旧事件即使后续推进也保留完整事实。
+  // AI 的 progress_summary 只代表“运行态进度归纳”，不能覆盖 phase graph 里的原始事件定义。
+  // 否则下一轮编排读到的就会是泛化描述，而不是章节作者真正写的事件摘要。
   upsertRuntimeEventDigestState(input.state, {
     eventIndex: current.eventIndex,
     eventKind: current.eventKind,
-    eventSummary: nextSummary,
+    eventSummary: stableSummary,
     eventFacts: nextFacts,
     eventStatus: input.resolution.ended ? "completed" : input.resolution.eventStatus,
     summarySource: "ai",
@@ -1594,7 +1653,6 @@ export function applyAiEventProgressResolution(input: {
 
   if (!input.resolution.ended) {
     setChapterProgressState(input.state, {
-      eventSummary: nextSummary,
       eventStatus: input.resolution.eventStatus,
     });
     syncRuntimeCurrentEventFromChapterProgress(input.state);
@@ -1606,7 +1664,6 @@ export function applyAiEventProgressResolution(input: {
 
   if (!outline.phases.length) {
     setChapterProgressState(input.state, {
-      eventSummary: nextSummary,
       eventStatus: "completed",
     });
     syncRuntimeCurrentEventFromChapterProgress(input.state);
@@ -1648,7 +1705,6 @@ export function applyAiEventProgressResolution(input: {
     }
     setChapterProgressState(input.state, {
       completedEvents,
-      eventSummary: nextSummary,
       eventStatus: "completed",
     });
     syncRuntimeCurrentEventFromChapterProgress(input.state);
