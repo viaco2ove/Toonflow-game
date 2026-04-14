@@ -317,6 +317,36 @@ function buildPresetPlan(message: {
   });
 }
 
+/**
+ * 在调试态命中章节成功后，构造“当前章节收口确认”的最小编排结果。
+ *
+ * 用途：
+ * - /game/orchestration 成功分支不能直接切到下一章，否则 storyInfo 和调试面板会提前显示下一章状态；
+ * - 当前这轮只需要告诉前端“这句应该由谁说、为什么说”，真正的章节切换延后到 /game/streamlines 落完这句台词后；
+ * - 这样可以恢复“编排 -> 台词流 -> 再进入下一章”的原始链路。
+ */
+function buildDebugSuccessFollowUpPlan(params: {
+  state: Record<string, any>;
+  rolePair: ReturnType<typeof normalizeRolePair>;
+}) {
+  const playerName = asTrimmedText(params.state.player?.name, "用户") || "用户";
+  return buildPlanResult({
+    role: asTrimmedText(params.rolePair.narratorRole.name, "旁白") || "旁白",
+    roleType: "narrator",
+    motive: `确认${playerName}的角色信息并完成角色绑定`,
+    awaitUser: false,
+    nextRole: "",
+    nextRoleType: "",
+    source: "rule",
+    triggerMemoryAgent: false,
+    eventType: "on_orchestrated_reply",
+    presetContent: "",
+    eventAdjustMode: "completed",
+    eventStatus: "completed",
+    planSource: "chapter_success_followup",
+  });
+}
+
 // 调试态统一成功返回入口，避免每个分支都重复拼 payload + success envelope。
 function sendDebugSuccess(
   res: express.Response,
@@ -957,25 +987,28 @@ async function handleDebugPlayerTurn(params: {
       });
     }
 
-    // 命中成功后直接串起下一章开场，避免前端自己补章节切换逻辑。
-    const nextChapterStart = await buildDebugChapterStartPlan({
-      userId: params.userId,
-      world: params.world,
-      targetChapter: nextChapter,
-      state: params.state,
-      rolePair: params.rolePair,
-      recentMessages: params.recentMessages,
-      debugFreePlotActive: params.debugFreePlotActive,
-      requestTrace: params.requestTrace,
+    // 这里只登记“待进入下一章”，但不能在编排接口里直接切下一章。
+    // 真正的章节切换要等当前确认台词经 /game/streamlines 落地后再发生，
+    // 否则前端会在台词还没生成时就拿到下一章的 storyInfo，造成 phase / 下一位 / 事件列表全部串章。
+    setPendingDebugChapterId(params.state, Number(nextChapter.id || 0));
+    setRuntimeTurnState(params.state, params.world, {
+      canPlayerSpeak: false,
+      expectedRoleType: "narrator",
+      expectedRole: asTrimmedText(params.rolePair.narratorRole.name, "旁白") || "旁白",
+      lastSpeakerRoleType: "player",
+      lastSpeaker: asTrimmedText(params.state.player?.name, "用户") || "用户",
     });
     return sendDebugSuccess(params.res, {
       userId: params.userId,
       worldId: params.worldId,
-      chapterId: nextChapterStart.chapterId,
-      chapterTitle: nextChapterStart.chapterTitle,
+      chapterId: Number(params.chapter.id || 0),
+      chapterTitle: asTrimmedText(params.chapter.title),
       state: params.state,
       endDialog: null,
-      plan: nextChapterStart.plan,
+      plan: buildDebugSuccessFollowUpPlan({
+        state: params.state,
+        rolePair: params.rolePair,
+      }),
       messages: params.inputMessages,
     });
   }
