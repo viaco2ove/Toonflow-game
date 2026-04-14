@@ -1036,16 +1036,38 @@ function unwrapModelText(input: unknown): string {
 }
 
 // 从纯文本中解析 key:value 形式的字段。
+// 兼容两种常见返回：
+// 1. `key: value`
+// 2. `key:` 下一行才是真正的 value
+// 这样可以容忍模型把字段值拆到下一行，而不会把 role/motive 解析丢掉。
 function parseFieldMap(rawText: string): Record<string, string> {
   const lines = unwrapModelText(rawText)
     .split(/\r?\n+/)
     .map((item) => item.trim())
     .filter(Boolean);
   const result: Record<string, string> = {};
+  let pendingKey = "";
   for (const line of lines) {
     const matched = line.match(/^[-*]?\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*[:：=]\s*(.*)$/);
-    if (!matched) continue;
-    result[matched[1].toLowerCase()] = matched[2].trim();
+    if (matched) {
+      const key = matched[1].toLowerCase();
+      const value = matched[2].trim();
+      if (value) {
+        result[key] = value;
+        pendingKey = "";
+      } else {
+        // 模型有时会输出：
+        // motive:
+        // 展示空间戒指内的具体存放物品情况
+        // 这里先记住 key，下一行再吃 value。
+        pendingKey = key;
+      }
+      continue;
+    }
+    if (pendingKey) {
+      result[pendingKey] = line;
+      pendingKey = "";
+    }
   }
   return result;
 }
