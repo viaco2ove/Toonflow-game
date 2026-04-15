@@ -329,7 +329,6 @@ function buildChapterJudgeStats(input: {
     console.log(`[story:chapter_ending_check:stats] | 实际推理消耗 | input=${input.tokenUsage.inputTokens || 0}, output=${input.tokenUsage.outputTokens || 0}, reasoning=${input.tokenUsage.reasoningTokens || 0} | - | - |`);
   }
   console.log(`[story:chapter_ending_check:stats] 耗时: ${cost}ms`);
-
 }
 
 function normalizeGuideSummary(reason: string, rawGuideSummary: unknown): string {
@@ -565,6 +564,12 @@ export async function evaluateRuntimeOutcome(input: EvaluateRuntimeOutcomeInput)
     ? (evaluation.nextChapterId || input.fallbackChapterId || null)
     : (input.fallbackNextChapterId || input.fallbackChapterId || null);
   const sessionStatus = resolveSessionStatusByOutcome(String(input.fallbackStatus || "active"), outcome);
+  if (DebugLogUtil.isDebugLogEnabled()) {
+    DebugLogUtil.logCurrentChapter("story:chapter_ending_check:stats", input.chapter);
+    console.log(`[story:chapter_ending_check:stats] sessionStatus: ${sessionStatus}`);
+    console.log(`[story:chapter_ending_check:stats] outcome: ${outcome}`);
+    console.log(`[story:chapter_ending_check:stats] nextChapterId: ${nextChapterId == null ? "" : String(nextChapterId)}`);
+  }
   if (DebugLogUtil.isDebugLogEnabled()) {
     console.log("[tag_end_chapter]", JSON.stringify({
     chapterId: Number(input.chapter?.id || 0),

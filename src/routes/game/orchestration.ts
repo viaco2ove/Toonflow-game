@@ -999,6 +999,12 @@ async function handleDebugPlayerTurn(params: {
     const nextChapter = normalizeChapterOutput(
       await resolveNextChapter(params.db, params.worldId, params.chapter, outcome.nextChapterId),
     );
+    if (DebugLogUtil.isDebugLogEnabled()) {
+      // 判章模型可能不给 next_chapter_id，这里记录“排序兜底后真正将要进入的下一章”。
+      console.log(`[story:chapter_ending_check:stats] sessionStatus: chapter_completed`);
+      console.log(`[story:chapter_ending_check:stats] outcome: success`);
+      console.log(`[story:chapter_ending_check:stats] nextChapterId: ${nextChapter ? String(nextChapter.id || "") : ""}`);
+    }
     if (!nextChapter) {
       // 没有下一章时，调试态自动转入自由剧情，方便继续压编排与角色发言。
       (params.state as any).debugFreePlot = {

@@ -33,6 +33,7 @@ import {
   syncDebugChapterRuntime,
 } from "./debugRuntimeShared";
 import u from "@/utils";
+import { DebugLogUtil } from "@/utils/debugLogUtil";
 
 const router = express.Router();
 
@@ -367,6 +368,12 @@ export default router.post(
           });
         } else if (outcome.result === "success") {
           const nextChapter = await resolveNextChapter(db, worldId, chapter, outcome.nextChapterId);
+          if (DebugLogUtil.isDebugLogEnabled()) {
+            // 这里记录当前台词落地后真正解析出来的下一章，避免摘要里只看到模型返回的空 nextChapterId。
+            console.log(`[story:chapter_ending_check:stats] sessionStatus: chapter_completed`);
+            console.log(`[story:chapter_ending_check:stats] outcome: success`);
+            console.log(`[story:chapter_ending_check:stats] nextChapterId: ${nextChapter ? String(nextChapter.id || "") : ""}`);
+          }
           if (!nextChapter) {
             (state as any).debugFreePlot = {
               active: true,

@@ -32,11 +32,14 @@
 把日志里的编排流程过滤出来生成下面模版格式的md 文件，放到：logs/event_log/
 日志过滤后模版如下
 ```
-- 编排,current_event: 1 ,旁白以日程空间戒指的身份呼唤有缘人，展示内部空间储物
-  - sesesion_id: xxxx
-  - 返回了，role_type: npc ↩ speaker: 药老（药尘） ↩ motive: 感知到空间探查，出声回应探查的萧炎 ↩ await_user: false ↩ next_role_type: player ↩ next_speaker: 用户 ↩ trigger_memory_agent: false ↩ event_adjust_mode: keep ↩ event_status: active ↩ event_summary: 萧炎探查日程空间戒指，发现内部存放的物品 ↩ event_facts: ["日程空间戒指存炼炎决、灭魔尺等少量物品", "萧炎已用斗之气探查戒指内部"] 
-  - 本轮动机，顺着当前局势接住用户输入并继续推进剧情。 
-  - 台词： (月白锦裙的少女立在坊市檐下，墨发束起，眉梢带着与生俱来的傲气，目光遥遥落在萧炎指尖那枚漆黑戒指上)这偏远乌坦城，怎会有这般品级的空间储物戒？真是奇怪。 
-  - 事件阶段：已经发送了什么，接下来做什么，是否已完结
+- 编排,current_event: 1 ,@旁白，饰演日程空间戒指：戒指内部空间辽阔，但是目前基本啥也没有，只有炼炎决（炎帝的早期功法），一把灭魔尺，一本灭魔尺法，灭魔步，10颗五行回复丹。100个斗
+  - sesesion_id: dbg_1776231669453_925mbed7
+  - chapterTitle: 第 2 章
+  - 本轮动机，带异天前往萧家大厅，途中介绍萧家情况 | 18
+  - 台词： (抬步转过雕花影壁，远处朱红大门已经隐约可见，他侧过头看向身侧的你，声音依旧平稳)萧家上下三百余口，族中子弟大多修习斗气，接下来你便先在族中落脚，有什么需要都可以先和我说。
+  - 事件阶段：event_status=completed，ended=true，progress_summary=异天完成角色绑定后，萧炎已带领异天前往萧家大厅，当前事件目标已完成
+  - 章节判定：result=success，reason=用户已提供完整的姓名、性别、年龄信息，满足本章完成条件，成功达成事件目标，guide_summary=
+  sessionStatus：
+  nextChapterId：
 ```
 编排流程文件生成命令： yarn debug:event-chain logs/app-2026-04-13.log 

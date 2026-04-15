@@ -552,9 +552,24 @@ export function buildDebugRecentMessages(
 
 export function syncDebugChapterRuntime(chapter: any, state: Record<string, any>) {
   if (!chapter) return;
+  const nextChapterId = Number(chapter.id || 0) || 0;
+  const previousChapterId = Number(state.chapterId || 0) || 0;
+  const chapterSwitched = nextChapterId > 0 && previousChapterId > 0 && nextChapterId !== previousChapterId;
+  if (chapterSwitched) {
+    // 切换章节时必须先清掉上一章遗留的运行态事件缓存。
+    // 否则新章节同样从 eventIndex=1 开始时，会把旧章节的 dynamicEvents/currentEventDigest
+    // 误当成当前章节的事件1继续复用，最终出现“标题是第2章，但 current_event 仍是第1章内容”的混态。
+    delete state.currentEvent;
+    delete state.currentEventDigest;
+    delete state.eventDigestWindow;
+    delete state.eventDigestWindowText;
+    delete state.dynamicEvents;
+    delete state.chapterProgress;
+    delete state.__pendingEndingGuide;
+  }
   // 调试态每次绑定章节时，都必须把运行态的章节主键和标题强制校正为当前章节。
   // 否则旧快照里的 chapterTitle / chapterId 会继续污染 storyInfo、编排输入和调试面板。
-  state.chapterId = Number(chapter.id || 0) || Number(state.chapterId || 0) || 0;
+  state.chapterId = nextChapterId || previousChapterId || 0;
   state.chapterTitle = String(chapter.title || "").trim() || String(state.chapterTitle || "").trim();
   initializeChapterProgressForState(chapter, state);
   syncChapterProgressWithRuntime(chapter, state);

@@ -13,6 +13,7 @@ import {
 import {
   buildEffectiveDebugChapter,
   cacheAndBuildDebugStateSnapshot,
+  getPendingDebugChapterId,
   isDebugFreePlotActive,
   loadCachedDebugRuntimeState,
   syncDebugChapterRuntime,
@@ -121,13 +122,16 @@ export default router.post(
         rolePair,
         world,
       );
-      // 调试 storyInfo 必须优先信运行态里的真实 chapterId。
-      // 否则前端在“旧章刚完成、下一章已切入”的过渡帧里仍带着旧 chapterId 请求时，
-      // 服务端会把已经切到新章节的 state 又强行按旧章节同步一遍，最终形成标题/事件面板/编排 trace 串章。
+      // 调试 storyInfo 必须优先信“待进入下一章”的运行态标记。
+      // 当上一章刚成功、下一句确认台词已经落地，但前端仍带着旧 chapterId 拉取 storyInfo 时，
+      // 如果继续只信旧请求参数，就会让标题和事件面板永远停在上一章。
+      const pendingChapterId = getPendingDebugChapterId(activeState);
       const runtimeChapterId = Number(activeState.chapterId || 0);
-      const effectiveChapterId = Number.isFinite(runtimeChapterId) && runtimeChapterId > 0
-        ? runtimeChapterId
-        : Number(chapter.id || 0);
+      const effectiveChapterId = Number.isFinite(pendingChapterId || 0) && Number(pendingChapterId || 0) > 0
+        ? Number(pendingChapterId || 0)
+        : Number.isFinite(runtimeChapterId) && runtimeChapterId > 0
+          ? runtimeChapterId
+          : Number(chapter.id || 0);
       if (effectiveChapterId > 0 && effectiveChapterId !== Number(chapter.id || 0)) {
         const runtimeChapterRow = await db("t_storyChapter").where({ id: effectiveChapterId, worldId }).first();
         if (runtimeChapterRow) {
