@@ -1992,13 +1992,27 @@ export function normalizeSessionState(
   const mergedNarrator = mergeRuntimeRoleWithStoryRole(rolePair.narratorRole, narrator, "旁白");
   const normalizedPlayerName = String(mergedPlayer.name || rolePair.playerRole.name || "用户").trim() || "用户";
   const expectedRoleType = String(rawTurnState.expectedRoleType || "player").trim() || "player";
+  const normalizedChapterId = Number.isFinite(Number(chapterId)) ? Math.max(0, Number(chapterId || 0)) : 0;
+  const normalizedBaseChapterId = Number.isFinite(Number(base.chapterId || base.chapterProgress?.chapterId || 0))
+    ? Math.max(0, Number(base.chapterId || base.chapterProgress?.chapterId || 0))
+    : 0;
+  const normalizedChapterTitle = normalizedChapterId > 0 && normalizedBaseChapterId !== normalizedChapterId
+    ? ""
+    : String(base.chapterTitle || "").trim();
 
   return {
+    ...base,
+    // 运行态归一化要以本次调用显式传入的世界/章节为准。
+    // 旧快照里的 version/worldId/round/chapterId 只能当补充，不能反向覆盖这次请求的权威值。
     version: 1,
     worldId,
-    chapterId,
     round: Number.isFinite(Number(base.round)) ? Number(base.round) : 0,
-    ...base,
+    // 外部已经明确传入当前章节时，运行态必须强制对齐这次请求的章节，
+    // 不能再让旧快照里的 chapterId 反向覆盖回来，否则会把别的章节状态串进当前链路。
+    chapterId: normalizedChapterId,
+    // 章节标题只在章节 ID 未发生冲突时才允许沿用旧值；
+    // 一旦旧快照里的章节 ID 和当前章节不一致，这里先清空，后续由章节行数据回填权威标题。
+    chapterTitle: normalizedChapterTitle,
     player: {
       ...mergedPlayer,
       roleType: "player",

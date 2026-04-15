@@ -11,8 +11,11 @@ import {
   readDefaultRuntimeEventViewState,
 } from "@/lib/gameEngine";
 import {
+  buildEffectiveDebugChapter,
   cacheAndBuildDebugStateSnapshot,
+  isDebugFreePlotActive,
   loadCachedDebugRuntimeState,
+  syncDebugChapterRuntime,
 } from "./debugRuntimeShared";
 import u from "@/utils";
 
@@ -65,11 +68,15 @@ export default router.post(
         const chapter = activeChapterId
           ? await db("t_storyChapter").where({ id: activeChapterId }).first()
           : null;
+        // storyInfo 是前端故事设定/事件面板的权威来源。
+        // 这里必须用章节行数据回填标题，防止旧 state.chapterTitle 残留为别的章节名。
+        activeState.chapterId = activeChapterId || 0;
+        activeState.chapterTitle = String(chapter?.title || "").trim() || String(activeState.chapterTitle || "").trim();
         const eventView = readDefaultRuntimeEventViewState(activeState);
         return res.status(200).send(success({
           worldId: Number(sessionRow.worldId || 0),
           chapterId: activeChapterId,
-          chapterTitle: String(activeState.chapterTitle || chapter?.title || ""),
+          chapterTitle: String(chapter?.title || activeState.chapterTitle || ""),
           state: activeState,
           world: normalizeWorldOutput(world),
           chapter: normalizeChapterOutput(chapter),
@@ -114,6 +121,28 @@ export default router.post(
         rolePair,
         world,
       );
+      // 调试 storyInfo 必须优先信运行态里的真实 chapterId。
+      // 否则前端在“旧章刚完成、下一章已切入”的过渡帧里仍带着旧 chapterId 请求时，
+      // 服务端会把已经切到新章节的 state 又强行按旧章节同步一遍，最终形成标题/事件面板/编排 trace 串章。
+      const runtimeChapterId = Number(activeState.chapterId || 0);
+      const effectiveChapterId = Number.isFinite(runtimeChapterId) && runtimeChapterId > 0
+        ? runtimeChapterId
+        : Number(chapter.id || 0);
+      if (effectiveChapterId > 0 && effectiveChapterId !== Number(chapter.id || 0)) {
+        const runtimeChapterRow = await db("t_storyChapter").where({ id: effectiveChapterId, worldId }).first();
+        if (runtimeChapterRow) {
+          chapter = normalizeChapterOutput(runtimeChapterRow);
+        }
+      }
+      if (!chapter) {
+        return res.status(404).send(error("当前没有章节可调试"));
+      }
+      const effectiveChapter = buildEffectiveDebugChapter(chapter, isDebugFreePlotActive(activeState));
+      // 调试 storyInfo 返回前，必须先把缓存态同步回当前章节。
+      // 否则前端会读到旧章节遗留的 phase/title，出现“标题还是第1章，面板像第2章”的混合态。
+      syncDebugChapterRuntime(effectiveChapter, activeState);
+      activeState.chapterId = Number(chapter.id || 0) || 0;
+      activeState.chapterTitle = String(chapter.title || "").trim() || String(activeState.chapterTitle || "").trim();
       const snapshot = cacheAndBuildDebugStateSnapshot({
         userId,
         worldId,
@@ -123,7 +152,7 @@ export default router.post(
       return res.status(200).send(success({
         worldId,
         chapterId: Number(chapter.id || 0),
-        chapterTitle: String(activeState.chapterTitle || chapter.title || ""),
+        chapterTitle: String(chapter.title || activeState.chapterTitle || ""),
         state: snapshot,
         world: normalizeWorldOutput(world),
         chapter,

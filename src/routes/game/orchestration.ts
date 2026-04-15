@@ -281,10 +281,39 @@ function buildOrchestrationPayload(params: {
     }));
   }
 
+  // awaitUser 只表示“当前这句落地后，下一轮轮到用户继续输入”，
+  // 不能因此把本轮仍然需要生成的旁白/NPC 引导台词清空。
+  // 否则像“请输入姓名、性别、年龄”这类收口引导会被接口直接吞掉，
+  // 前端拿到空 role/motive 后就不会继续走 /game/streamlines。
   const shouldYieldToUser = Boolean(params.plan?.awaitUser);
   return {
-    role: shouldYieldToUser ? "" : asTrimmedText(params.plan?.role),
-    motive: shouldYieldToUser ? "" : asTrimmedText(params.plan?.motive),
+    role: asTrimmedText(params.plan?.role),
+    motive: asTrimmedText(params.plan?.motive),
+  };
+}
+
+/**
+ * 解析调试编排接口当前真正生效的章节元信息。
+ *
+ * 用途：
+ * - 调试态会在 state 内部先登记或切换章节，`params.chapter` 可能仍是旧章节；
+ * - 如果接口继续把旧章节 id/title 回给前端，标题、事件面板和编排 trace 就会串章；
+ * - 这里统一优先信运行态，再回退到 effectiveChapter 和请求章节，保证返回口径与服务端真实章节一致。
+ */
+function resolveDebugResponseChapterMeta(params: {
+  chapter?: any;
+  effectiveChapter?: any;
+  state?: Record<string, any> | null;
+}) {
+  const stateChapterId = Number(params.state?.chapterId || 0);
+  const effectiveChapterId = Number(params.effectiveChapter?.id || 0);
+  const requestChapterId = Number(params.chapter?.id || 0);
+  return {
+    chapterId: stateChapterId || effectiveChapterId || requestChapterId || 0,
+    chapterTitle: asTrimmedText(
+      params.state?.chapterTitle,
+      asTrimmedText(params.effectiveChapter?.title, asTrimmedText(params.chapter?.title)),
+    ),
   };
 }
 
@@ -625,6 +654,11 @@ async function handleInitialDebugTurn(params: {
   effectiveChapter: any;
   requestTrace: OrchestrationRequestTrace;
 }) {
+  const responseChapterMeta = resolveDebugResponseChapterMeta({
+    chapter: params.chapter,
+    effectiveChapter: params.effectiveChapter,
+    state: params.state,
+  });
   const pendingChapterId = getPendingDebugChapterId(params.state);
   if (pendingChapterId) {
     // 上一轮已经宣告章节完成，但前端还没请求下一轮时，用 pending 标记串起新章节开场。
@@ -634,8 +668,8 @@ async function handleInitialDebugTurn(params: {
       return sendDebugSuccess(params.res, {
         userId: params.userId,
         worldId: params.worldId,
-        chapterId: Number(params.chapter.id || 0),
-        chapterTitle: asTrimmedText(params.chapter.title),
+        chapterId: responseChapterMeta.chapterId,
+        chapterTitle: responseChapterMeta.chapterTitle,
         state: params.state,
         endDialog: null,
         plan: null,
@@ -692,8 +726,8 @@ async function handleInitialDebugTurn(params: {
     return sendDebugSuccess(params.res, {
       userId: params.userId,
       worldId: params.worldId,
-      chapterId: Number(params.chapter.id || 0),
-      chapterTitle: asTrimmedText(params.chapter.title),
+      chapterId: responseChapterMeta.chapterId,
+      chapterTitle: responseChapterMeta.chapterTitle,
       state: params.state,
       endDialog: null,
       plan: null,
@@ -715,8 +749,8 @@ async function handleInitialDebugTurn(params: {
   return sendDebugSuccess(params.res, {
     userId: params.userId,
     worldId: params.worldId,
-    chapterId: Number(params.chapter.id || 0),
-    chapterTitle: asTrimmedText(params.chapter.title),
+    chapterId: responseChapterMeta.chapterId,
+    chapterTitle: responseChapterMeta.chapterTitle,
     state: params.state,
     endDialog: null,
     plan,
@@ -873,6 +907,11 @@ async function handleDebugPlayerTurn(params: {
   effectiveChapter: any;
   requestTrace: OrchestrationRequestTrace;
 }) {
+  const responseChapterMeta = resolveDebugResponseChapterMeta({
+    chapter: params.chapter,
+    effectiveChapter: params.effectiveChapter,
+    state: params.state,
+  });
   if (!canPlayerSpeakNow(params.state, params.world)) {
     return params.res.status(409).send(error("当前还没轮到用户发言"));
   }
@@ -900,8 +939,8 @@ async function handleDebugPlayerTurn(params: {
     return sendDebugSuccess(params.res, {
       userId: params.userId,
       worldId: params.worldId,
-      chapterId: Number(params.chapter.id || 0),
-      chapterTitle: asTrimmedText(params.chapter.title),
+      chapterId: responseChapterMeta.chapterId,
+      chapterTitle: responseChapterMeta.chapterTitle,
       state: params.state,
       endDialog: null,
       plan: presetMessage
@@ -941,8 +980,8 @@ async function handleDebugPlayerTurn(params: {
     return sendDebugSuccess(params.res, {
       userId: params.userId,
       worldId: params.worldId,
-      chapterId: Number(params.chapter.id || 0),
-      chapterTitle: asTrimmedText(params.chapter.title),
+      chapterId: responseChapterMeta.chapterId,
+      chapterTitle: responseChapterMeta.chapterTitle,
       state: params.state,
       endDialog: "已失败",
       plan: null,
@@ -974,8 +1013,8 @@ async function handleDebugPlayerTurn(params: {
       return sendDebugSuccess(params.res, {
         userId: params.userId,
         worldId: params.worldId,
-        chapterId: Number(params.chapter.id || 0),
-        chapterTitle: asTrimmedText(params.chapter.title),
+        chapterId: responseChapterMeta.chapterId,
+        chapterTitle: responseChapterMeta.chapterTitle,
         state: params.state,
         endDialog: null,
         plan: buildPresetPlan(freePlotMessage, {
@@ -1001,8 +1040,8 @@ async function handleDebugPlayerTurn(params: {
     return sendDebugSuccess(params.res, {
       userId: params.userId,
       worldId: params.worldId,
-      chapterId: Number(params.chapter.id || 0),
-      chapterTitle: asTrimmedText(params.chapter.title),
+      chapterId: Number(nextChapter.id || 0),
+      chapterTitle: asTrimmedText(nextChapter.title),
       state: params.state,
       endDialog: null,
       plan: buildDebugSuccessFollowUpPlan({
@@ -1018,8 +1057,8 @@ async function handleDebugPlayerTurn(params: {
   return sendDebugSuccess(params.res, {
     userId: params.userId,
     worldId: params.worldId,
-    chapterId: Number(params.chapter.id || 0),
-    chapterTitle: asTrimmedText(params.chapter.title),
+    chapterId: responseChapterMeta.chapterId,
+    chapterTitle: responseChapterMeta.chapterTitle,
     state: params.state,
     endDialog: null,
     plan,

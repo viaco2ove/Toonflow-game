@@ -141,6 +141,14 @@ function generateEventChainSummaryMarkdown(logFilePath, outputMarkdownPath) {
       };
       continue;
     }
+    if (line.includes("[story:orchestrator:stats] current_chapter=")) {
+      const payload = parseJsonFromLogLine(line.replace("[story:orchestrator:stats] current_chapter=", ""));
+      if (payload) {
+        currentEntry = currentEntry || { ...currentContext };
+        currentEntry.chapterTitle = readString(payload.title);
+      }
+      continue;
+    }
     if (!currentEntry) continue;
     if (line.includes("[story:orchestrator:stats] response_preview=")) {
       currentEntry.orchestratorResponse = extractAfter(line, "response_preview=");
@@ -166,16 +174,29 @@ function generateEventChainSummaryMarkdown(logFilePath, outputMarkdownPath) {
       }
       continue;
     }
+    if (line.includes("[story:event_progress:stats] resolution=")) {
+      currentEntry.eventProgressResolution = extractAfter(line, "resolution=");
+      continue;
+    }
     if (line.includes("[story:chapter_ending_check:runtime]")) {
       const payload = parseJsonFromLogLine(line);
       if (payload) {
         const responseText = readString(payload.responseText);
+        currentEntry.chapterTitle = extractJsonTextField(responseText, "chapter_title") || currentEntry.chapterTitle;
         currentEntry.chapterJudge = [
           `result=${extractJsonTextField(responseText, "result")}`,
           `reason=${extractJsonTextField(responseText, "reason")}`,
           `guide_summary=${extractJsonTextField(responseText, "guide_summary")}`,
         ].join("，");
       }
+      continue;
+    }
+    if (line.includes("[story:chapter_ending_check:stats] sessionStatus:")) {
+      currentEntry.sessionStatus = extractAfter(line, "sessionStatus:");
+      continue;
+    }
+    if (line.includes("[story:chapter_ending_check:stats] nextChapterId:")) {
+      currentEntry.nextChapterId = extractAfter(line, "nextChapterId:");
     }
   }
 
@@ -188,15 +209,26 @@ function generateEventChainSummaryMarkdown(logFilePath, outputMarkdownPath) {
       const summary = entry.currentEventSummary || "无";
       const currentEventIndex = entry.currentEventIndex || "0";
       const sessionLikeId = entry.sessionId || entry.debugRuntimeKey || entry.requestId || "未知";
+      const chapterTitle = entry.chapterTitle || "未知";
       const linesForEntry = [
         `- 编排,current_event: ${currentEventIndex} ,${summary}`,
         `  - sesesion_id: ${sessionLikeId}`,
+        `  - chapterTitle: ${chapterTitle}`,
       ];
       if (entry.orchestratorResponse) linesForEntry.push(`  - 返回了，${entry.orchestratorResponse}`);
       if (entry.motive) linesForEntry.push(`  - 本轮动机，${entry.motive}`);
       if (entry.speech) linesForEntry.push(`  - 台词： ${entry.speech}`);
-      if (entry.eventStage) linesForEntry.push(`  - 事件阶段：${entry.eventStage}`);
-      if (entry.chapterJudge) linesForEntry.push(`  - 章节判定：${entry.chapterJudge}`);
+      if (entry.eventStage) {
+        linesForEntry.push(`  - 事件阶段：${entry.eventStage}`);
+        if (entry.eventProgressResolution) {
+          linesForEntry.push(`  - 事件进度处理结果：${entry.eventProgressResolution}`);
+        }
+      }
+      if (entry.chapterJudge) {
+        linesForEntry.push(`  - 章节判定：${entry.chapterJudge}`);
+        linesForEntry.push(`  sessionStatus：${entry.sessionStatus || ""}`);
+        linesForEntry.push(`  nextChapterId：${entry.nextChapterId || ""}`);
+      }
       linesForEntry.push("");
       return linesForEntry;
     }),

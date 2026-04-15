@@ -21,6 +21,7 @@ import {
   advanceChapterProgressAfterNarrative,
   applyAiEventProgressResolution,
   recordChapterProgressSignals,
+  readNextEventProgressHint,
   syncChapterProgressWithRuntime,
 } from "@/modules/game-runtime/engines/ChapterProgressEngine";
 import { resolveRuleNarrativePlan } from "@/modules/game-runtime/engines/RuleOrchestrator";
@@ -168,6 +169,8 @@ type SpeakerPromptPayload = {
   worldName: string;
   worldIntro: string;
   chapterTitle: string;
+  chapterContentHint?: string;
+  chapterEndingConditionHint?: string;
   currentPhaseLabel: string;
   currentEventWindow?: string;
   currentEventIndex: number;
@@ -178,6 +181,13 @@ type SpeakerPromptPayload = {
   currentEventFacts: string[];
   currentEventMemorySummary: string;
   currentEventMemoryFacts: string[];
+  nextEventIndex?: number;
+  nextEventKind?: string;
+  nextEventFlowType?: string;
+  nextEventStatus?: string;
+  nextEventSummary?: string;
+  nextEventFacts: string[];
+  nextEventTransitionHint?: string;
   speakerName: string;
   speakerRoleType: string;
   speakerProfile: string;
@@ -1190,8 +1200,9 @@ function buildOrchestratorPromptStats(payload: OrchestratorPromptPayload, compac
 function buildSpeakerPromptStats(payload: SpeakerPromptPayload, compactMode: boolean): PromptStatRow[] {
   const sections = [
     { title: "世界", content: [payload.worldName ? `名称:${payload.worldName}` : "", payload.worldIntro ? `简介:${payload.worldIntro}` : ""].filter(Boolean).join("\n") || "无" },
-    { title: "章节", content: [payload.chapterTitle ? `标题:${payload.chapterTitle}` : "", payload.currentPhaseLabel ? `阶段:${payload.currentPhaseLabel}` : ""].filter(Boolean).join("\n") || "无" },
-    { title: "当前事件", content: [payload.currentEventIndex != null ? `index:${payload.currentEventIndex}` : "", `kind:${payload.currentEventKind || "scene"}`, payload.currentEventFlowType ? `flow:${payload.currentEventFlowType}` : "", payload.currentEventStatus ? `status:${payload.currentEventStatus}` : "", `summary:${payload.currentEventSummary || "当前事件未命名"}`, payload.currentEventFacts.length ? `facts:${payload.currentEventFacts.join("；")}` : "", payload.currentEventMemorySummary ? `memory_summary:${payload.currentEventMemorySummary}` : "", payload.currentEventMemoryFacts.length ? `memory_facts:${payload.currentEventMemoryFacts.join("；")}` : ""].filter(Boolean).join("\n") || "无" },
+    { title: "章节", content: [payload.chapterTitle ? `标题:${payload.chapterTitle}` : "", payload.chapterContentHint ? `章节内容:${payload.chapterContentHint}` : "", payload.chapterEndingConditionHint ? `章节结束条件:${payload.chapterEndingConditionHint}` : "", payload.currentPhaseLabel ? `阶段:${payload.currentPhaseLabel}` : ""].filter(Boolean).join("\n") || "无" },
+    { title: "当前事件", content: [payload.currentEventIndex != null ? `index:${payload.currentEventIndex}` : "", `kind:${payload.currentEventKind || "scene"}`, payload.currentEventFlowType ? `flow:${payload.currentEventFlowType}` : "", payload.currentEventStatus ? `status:${payload.currentEventStatus}` : "", `summary:${payload.currentEventSummary || "当前事件未命名"}`, payload.currentEventFacts.length ? `facts:${payload.currentEventFacts.join("；")}` : "", payload.currentEventMemorySummary ? `memory_summary:${payload.currentEventMemorySummary}` : "", payload.currentEventMemoryFacts.length ? `memory_facts:${payload.currentEventMemoryFacts.join("；")}` : "", payload.currentEventWindow ? `window:${payload.currentEventWindow}` : ""].filter(Boolean).join("\n") || "无" },
+    { title: "下一事件", content: [payload.nextEventIndex != null ? `index:${payload.nextEventIndex}` : "", payload.nextEventKind ? `kind:${payload.nextEventKind}` : "", payload.nextEventFlowType ? `flow:${payload.nextEventFlowType}` : "", payload.nextEventStatus ? `status:${payload.nextEventStatus}` : "", payload.nextEventSummary ? `summary:${payload.nextEventSummary}` : "", payload.nextEventFacts.length ? `facts:${payload.nextEventFacts.join("；")}` : "", payload.nextEventTransitionHint ? `transition_hint:${payload.nextEventTransitionHint}` : ""].filter(Boolean).join("\n") || "无" },
     { title: "当前说话人", content: [`name:${payload.speakerName || "未命名角色"}`, `role_type:${payload.speakerRoleType || "unknown"}`, payload.speakerProfile || ""].filter(Boolean).join("\n") || "无" },
     { title: "本轮动机", content: payload.motive || "无" },
     ...(!compactMode ? [{ title: "剧情摘要", content: payload.storyState || "无" }] : []),
@@ -1260,6 +1271,12 @@ function logOrchestratorPromptStats(
 
   if (DebugLogUtil.isDebugLogEnabled()) {
     console.log("[story:orchestrator:runtime]", JSON.stringify(runtimeLog));
+    // [story:chapter_ending_check:stats] current_chapter
+    DebugLogUtil.logCurrentChapter("story:orchestrator:stats", {
+      id: payload.traceMeta?.chapterId,
+      title: payload.chapterTitle || payload.traceMeta?.chapterTitle,
+      sort: payload.traceMeta?.chapterSort,
+    });
     console.log(`[story:orchestrator:stats] request_chars=${totalPromptChars} estimated_tokens=${totalPromptTokens} system_chars=${systemPrompt.length} user_chars=${userPrompt.length} build_ms=${Number(timing?.buildMs || 0)} invoke_ms=${Number(timing?.invokeMs || 0)} total_ms=${Number(timing?.totalMs || 0)}`);
 
     if (tokenUsage) {
@@ -1293,6 +1310,8 @@ function logOrchestratorPromptStats(
     console.log(`[story:orchestrator:stats] System Prompt`);
     console.log(systemPrompt +"\n \n userPrompt:\n"+userPrompt);
     console.log(`[story:orchestrator:stats] 耗时: ${Number(timing?.totalMs || 0)}ms`);
+
+
 
 
   }
@@ -1460,7 +1479,10 @@ function buildSpeakerUserPrompt(payload: {
   worldName: string;
   worldIntro: string;
   chapterTitle: string;
+  chapterContentHint?: string;
+  chapterEndingConditionHint?: string;
   currentPhaseLabel: string;
+  currentEventWindow?: string;
   currentEventIndex: number;
   currentEventKind: string;
   currentEventFlowType?: string;
@@ -1469,6 +1491,13 @@ function buildSpeakerUserPrompt(payload: {
   currentEventFacts: string[];
   currentEventMemorySummary: string;
   currentEventMemoryFacts: string[];
+  nextEventIndex?: number;
+  nextEventKind?: string;
+  nextEventFlowType?: string;
+  nextEventStatus?: string;
+  nextEventSummary?: string;
+  nextEventFacts: string[];
+  nextEventTransitionHint?: string;
   speakerName: string;
   speakerRoleType: string;
   speakerProfile: string;
@@ -1485,6 +1514,8 @@ function buildSpeakerUserPrompt(payload: {
     "",
     "[章节]",
     `标题: ${payload.chapterTitle || "未命名章节"}`,
+    payload.chapterContentHint ? `章节内容: ${payload.chapterContentHint}` : "",
+    payload.chapterEndingConditionHint ? `章节结束条件: ${payload.chapterEndingConditionHint}` : "",
     "",
     "[当前阶段]",
     `label: ${payload.currentPhaseLabel || "未命名阶段"}`,
@@ -1498,6 +1529,16 @@ function buildSpeakerUserPrompt(payload: {
     payload.currentEventFacts.length ? `facts: ${payload.currentEventFacts.join("；")}` : "",
     payload.currentEventMemorySummary ? `memory_summary: ${payload.currentEventMemorySummary}` : "",
     payload.currentEventMemoryFacts.length ? `memory_facts: ${payload.currentEventMemoryFacts.join("；")}` : "",
+    payload.currentEventWindow ? `window: ${payload.currentEventWindow}` : "",
+    "",
+    "[下一事件]",
+    payload.nextEventIndex != null ? `index: ${payload.nextEventIndex}` : "",
+    payload.nextEventKind ? `kind: ${payload.nextEventKind}` : "",
+    payload.nextEventFlowType ? `flow: ${payload.nextEventFlowType}` : "",
+    payload.nextEventStatus ? `status: ${payload.nextEventStatus}` : "",
+    payload.nextEventSummary ? `summary: ${payload.nextEventSummary}` : "",
+    payload.nextEventFacts.length ? `facts: ${payload.nextEventFacts.join("；")}` : "",
+    payload.nextEventTransitionHint ? `transition_hint: ${payload.nextEventTransitionHint}` : "",
     "",
     "[当前说话人]",
     `name: ${payload.speakerName}`,
@@ -2372,18 +2413,78 @@ export async function runStorySpeakerContent(input: {
     chapterDirective: currentChapter.directive,
     limit: useFastSpeakerPrompt ? 2 : compactMode ? 3 : 4,
   });
+  // 当前事件已经完成时，角色发言器应该面向下一事件继续生成，而不是围绕已完成事件原地打转。
+  // 这里复用事件进度检测同一份“下一事件提示”，让角色发言器和事件进度检测看到一致的阶段边界。
+  const nextEventHint = readNextEventProgressHint(input.chapter, input.state);
+  const nextEventFlowType = nextEventHint
+    ? (nextEventHint.kind === "ending" ? "chapter_ending_check" : "chapter_content")
+    : undefined;
+  // 章节内容和章节结束条件单独显式喂给角色发言器，避免模型只能从事件窗口里间接猜边界。
+  const chapterContentHint = shortText(
+    currentChapter.directiveExcerpt || currentChapter.directive,
+    compactMode ? 120 : 220,
+  );
+  const chapterEndingConditionHint = shortText(
+    nextEventFlowType === "chapter_ending_check"
+      ? normalizeScalarText(nextEventHint?.summary || nextEventHint?.transitionHint)
+      : extractChapterUserInteractionText(currentChapter.directive),
+    compactMode ? 100 : 180,
+  );
+  const promptCurrentEventIndex = currentEvent.eventStatus === "completed" && nextEventHint
+    ? nextEventHint.index
+    : currentEvent.eventIndex;
+  const promptCurrentEventKind: RuntimeCurrentEventState["kind"] = currentEvent.eventStatus === "completed" && nextEventHint
+    ? ((["opening", "scene", "user", "fixed", "ending"].includes(nextEventHint.kind)
+      ? nextEventHint.kind
+      : "scene") as RuntimeCurrentEventState["kind"])
+    : currentEvent.eventKind;
+  const promptCurrentEventFlowType = currentEvent.eventStatus === "completed" && nextEventHint
+    ? (nextEventFlowType || currentEvent.eventFlowType)
+    : currentEvent.eventFlowType;
+  const promptCurrentEventStatus = currentEvent.eventStatus === "completed" && nextEventHint
+    ? "active"
+    : currentEvent.eventStatus;
+  const promptCurrentEventSummary = currentEvent.eventStatus === "completed" && nextEventHint
+    ? normalizeScalarText(nextEventHint.summary || nextEventHint.label)
+    : promptEventSummary;
+  const promptCurrentEventFacts = currentEvent.eventStatus === "completed" && nextEventHint
+    ? uniqueTextList([
+      normalizeScalarText(nextEventHint.summary),
+      normalizeScalarText(nextEventHint.transitionHint),
+    ], compactMode ? 2 : 3)
+    : promptEventFacts;
   const payload: SpeakerPromptPayload = {
     worldName: normalizeScalarText(input.world?.name),
     worldIntro: useFastSpeakerPrompt ? "" : shortText(input.world?.intro, compactMode ? 48 : 72),
     chapterTitle: currentChapter.title,
+    chapterContentHint,
+    chapterEndingConditionHint,
     currentPhaseLabel: normalizeScalarText(currentPhase?.label),
-    ...buildPromptEventContextPayload(currentEvent),
+    ...buildPromptEventContextPayload({
+      ...currentEvent,
+      eventIndex: promptCurrentEventIndex,
+      eventKind: promptCurrentEventKind,
+      eventFlowType: promptCurrentEventFlowType,
+      eventStatus: promptCurrentEventStatus,
+      eventSummary: promptCurrentEventSummary,
+      eventFacts: promptCurrentEventFacts,
+    }),
     currentEventWindow: buildPromptSafeEventWindow({
       currentEventWindow: readDefaultRuntimeEventDigestWindowTextState(input.state),
       chapterDirective: currentChapter.directive,
       currentEventFlowType: currentEvent.eventFlowType,
       limit: compactMode ? 80 : 140,
     }),
+    nextEventIndex: nextEventHint?.index,
+    nextEventKind: nextEventHint?.kind,
+    nextEventFlowType,
+    nextEventStatus: nextEventHint ? "active" : "",
+    nextEventSummary: normalizeScalarText(nextEventHint?.summary || nextEventHint?.label),
+    nextEventFacts: uniqueTextList([
+      normalizeScalarText(nextEventHint?.summary),
+      normalizeScalarText(nextEventHint?.transitionHint),
+    ], compactMode ? 2 : 3),
+    nextEventTransitionHint: normalizeScalarText(nextEventHint?.transitionHint),
     speakerName: normalizeScalarText(input.currentRole.name),
     speakerRoleType: sanitizeRoleType(input.currentRole.roleType),
     speakerProfile: useFastSpeakerPrompt ? describeRoleLite(input.currentRole) : describeRole(input.currentRole, true),
@@ -2409,9 +2510,7 @@ export async function runStorySpeakerContent(input: {
       speakerModelKey,
     },
   };
-  // 只在 prompt payload 层替换为精简摘要，不改运行态原始事件信息，避免 UI 和回溯链失真。
-  payload.currentEventSummary = promptEventSummary;
-  payload.currentEventFacts = promptEventFacts;
+  // 只在 prompt payload 层切换当前/下一事件上下文，不改运行态原始事件信息，避免 UI 和回溯链失真。
   const systemPrompt = buildSpeakerSystemPrompt(prompts.storySpeaker || prompts.storyOrchestrator, useFastSpeakerPrompt || compactMode);
   // 无论快路由还是标准路由，都统一使用完整版 speaker prompt。
   // 区别只保留在模型槽位和上下文裁剪，不再分裂成另一套缺少章节/事件信息的 prompt 结构。
@@ -3416,6 +3515,20 @@ async function applyNarrativeEventProgress(params: {
     recentMessages: params.recentMessages,
     traceMeta: params.traceMeta,
   });
+  if (DebugLogUtil.isDebugLogEnabled()) {
+    const nextEvent = readNextEventProgressHint(params.chapter, params.state);
+    // [story:streamlines:stats] resolution
+    DebugLogUtil.logEventProgressResolution("story:streamlines:stats", {
+      chapter: params.chapter,
+      currentEventIndex: Number(params.state?.chapterProgress?.eventIndex || params.state?.currentEventDigest?.eventIndex || 0),
+      currentPhaseId: params.state?.chapterProgress?.phaseId,
+      currentPhaseLabel: params.state?.chapterProgress?.phaseId,
+      ended: resolution?.ended,
+      eventStatus: resolution?.eventStatus,
+      nextEventIndex: Number(nextEvent?.index || 0),
+      nextEventSummary: nextEvent?.summary,
+    });
+  }
   if (resolution) {
     const applied = applyAiEventProgressResolution({
       chapter: params.chapter,

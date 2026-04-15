@@ -17,6 +17,56 @@ export class DebugLogUtil {
   }
 
   /**
+   * 统一打印“当前章节”调试日志。
+   *
+   * 用途：
+   * - 各条运行链都能用同一格式输出当前章节；
+   * - 避免日志里只看到 current_event，却看不到它属于哪一章。
+   */
+  static logCurrentChapter(tag: string, chapter: {
+    id?: unknown;
+    title?: unknown;
+    sort?: unknown;
+  } | null | undefined): void {
+    if (!DebugLogUtil.isDebugLogEnabled()) return;
+    console.log(`[${tag}] current_chapter=${JSON.stringify({
+      id: Number(chapter?.id || 0) || 0,
+      title: String(chapter?.title || "").trim() || "未知",
+      sort: Number(chapter?.sort || 0) || 0,
+    })}`);
+  }
+
+  /**
+   * 统一打印“事件进度处理结果”调试日志。
+   *
+   * 用途：
+   * - 把 AI 事件进度检测最终如何判断当前事件、当前阶段、下一事件明确打出来；
+   * - 便于定位“为什么 current_event 还停留在 1”。
+   */
+  static logEventProgressResolution(tag: string, payload: {
+    chapter?: { id?: unknown; title?: unknown; sort?: unknown } | null;
+    currentEventIndex?: unknown;
+    currentPhaseId?: unknown;
+    currentPhaseLabel?: unknown;
+    ended?: unknown;
+    eventStatus?: unknown;
+    nextEventIndex?: unknown;
+    nextEventSummary?: unknown;
+  }): void {
+    if (!DebugLogUtil.isDebugLogEnabled()) return;
+    DebugLogUtil.logCurrentChapter(tag, payload.chapter || null);
+    console.log(`[${tag}] resolution=${JSON.stringify({
+      currentEventIndex: Number(payload.currentEventIndex || 0) || 0,
+      currentPhaseId: String(payload.currentPhaseId || "").trim(),
+      currentPhaseLabel: String(payload.currentPhaseLabel || "").trim(),
+      ended: Boolean(payload.ended),
+      eventStatus: String(payload.eventStatus || "").trim(),
+      nextEventIndex: Number(payload.nextEventIndex || 0) || 0,
+      nextEventSummary: String(payload.nextEventSummary || "").trim(),
+    })}`);
+  }
+
+  /**
    * 根据日志行里的 tag，抽取单轮编排链摘要并写成 markdown 文件。
    *
    * 输入：
@@ -29,6 +79,9 @@ export class DebugLogUtil {
    * 说明：
    * - 该函数只依赖日志文本，不依赖运行时上下文
    * - 输出格式按 `md/code/日志tag.md` 里的模板组织
+   *
+   * 编排流程文件生成命令： yarn debug:event-chain logs/app-2026-04-13.log
+   * 核心脚本：scripts/generateEventChainSummary.ts
    */
   static generateEventChainSummaryMarkdown(logFilePath: string, outputMarkdownPath: string): {
     outputPath: string;
@@ -86,6 +139,15 @@ export class DebugLogUtil {
         continue;
       }
 
+      if (line.includes("[story:orchestrator:stats] current_chapter=")) {
+        const payload = parseJsonFromLogLine(line.replace("[story:orchestrator:stats] current_chapter=", ""));
+        if (payload) {
+          currentEntry = currentEntry || { ...currentContext };
+          currentEntry.chapterTitle = readString(payload.title);
+        }
+        continue;
+      }
+
       if (!currentEntry) continue;
 
       if (line.includes("[story:orchestrator:stats] response_preview=")) {
@@ -115,16 +177,35 @@ export class DebugLogUtil {
         continue;
       }
 
+      if (line.includes("[story:event_progress:stats] resolution=")) {
+        currentEntry.eventProgressResolution = extractAfter(line, "resolution=");
+        continue;
+      }
+
       if (line.includes("[story:chapter_ending_check:runtime]")) {
         const payload = parseJsonFromLogLine(line);
         if (payload) {
           const responseText = readString(payload.responseText);
+          currentEntry.chapterTitle = extractJsonTextField(responseText, "chapter_title") || currentEntry.chapterTitle;
           currentEntry.chapterJudge = [
             `result=${extractJsonTextField(responseText, "result")}`,
             `reason=${extractJsonTextField(responseText, "reason")}`,
             `guide_summary=${extractJsonTextField(responseText, "guide_summary")}`,
           ].join("，");
         }
+        continue;
+      }
+
+      if (line.includes("[story:chapter_ending_check:stats] sessionStatus:")) {
+        currentEntry.sessionStatus = extractAfter(line, "sessionStatus:");
+      }
+
+      if (line.includes("[story:chapter_ending_check:stats] outcome:")) {
+        currentEntry.outcome = extractAfter(line, "outcome:");
+      }
+
+      if (line.includes("[story:chapter_ending_check:stats] nextChapterId:")) {
+        currentEntry.nextChapterId = extractAfter(line, "nextChapterId:");
       }
     }
 
@@ -137,9 +218,11 @@ export class DebugLogUtil {
         const summary = entry.currentEventSummary || "无";
         const currentEventIndex = entry.currentEventIndex || "0";
         const sessionLikeId = entry.sessionId || entry.debugRuntimeKey || entry.requestId || "未知";
+        const chapterTitle = entry.chapterTitle || "未知";
         const linesForEntry = [
           `- 编排,current_event: ${currentEventIndex} ,${summary}`,
           `  - sesesion_id: ${sessionLikeId}`,
+          `  - chapterTitle: ${chapterTitle}`,
         ];
         if (entry.orchestratorResponse) {
           linesForEntry.push(`  - 返回了，${entry.orchestratorResponse}`);
@@ -152,10 +235,17 @@ export class DebugLogUtil {
         }
         if (entry.eventStage) {
           linesForEntry.push(`  - 事件阶段：${entry.eventStage}`);
+          if (entry.eventProgressResolution) {
+            linesForEntry.push(`  - 事件进度处理结果：${entry.eventProgressResolution}`);
+          }
         }
         if (entry.chapterJudge) {
           linesForEntry.push(`  - 章节判定：${entry.chapterJudge}`);
+          linesForEntry.push(`  会话层面的状态：${entry.sessionStatus}`);
+          linesForEntry.push(`  当前章节判定出来的结果：${entry.outcome}`);
+          linesForEntry.push(`  nextChapterId：${entry.nextChapterId}`);
         }
+
         linesForEntry.push("");
         return linesForEntry;
       }),
@@ -177,6 +267,7 @@ type EventChainContext = {
 };
 
 type EventChainSummaryEntry = EventChainContext & {
+  chapterTitle?: string;
   currentEventIndex?: string;
   currentEventSummary?: string;
   currentEventRaw?: string;
@@ -184,7 +275,11 @@ type EventChainSummaryEntry = EventChainContext & {
   motive?: string;
   speech?: string;
   eventStage?: string;
+  eventProgressResolution?: string;
   chapterJudge?: string;
+  sessionStatus?: string;
+  nextChapterId?: string;
+  outcome?: string;
 };
 
 /**

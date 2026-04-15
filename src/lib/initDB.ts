@@ -655,6 +655,7 @@ export default async (knex: Knex, forceInit: boolean = false): Promise<void> => 
 2. 若用户未发言，先安排一轮非用户推进
 3. motive 用一句短话（10~25字）说明本轮要做什么
 4. 不输出解释或多余内容
+5. 编排用户要返回"role":"用户" 而不是用户的具体名称
 
 事件：
 - 若 event_summary 为空 → 必须补一句 summary + 1~2条 facts

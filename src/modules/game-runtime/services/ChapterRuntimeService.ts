@@ -562,8 +562,8 @@ export async function evaluateRuntimeOutcome(input: EvaluateRuntimeOutcomeInput)
     ? (evaluation.nextChapterId || input.fallbackChapterId || null)
     : (input.fallbackNextChapterId || input.fallbackChapterId || null);
   const sessionStatus = resolveSessionStatusByOutcome(String(input.fallbackStatus || "active"), outcome);
-
-  console.log("[tag_end_chapter]", JSON.stringify({
+  if (DebugLogUtil.isDebugLogEnabled()) {
+    console.log("[tag_end_chapter]", JSON.stringify({
     chapterId: Number(input.chapter?.id || 0),
     chapterTitle: String(input.chapter?.title || "").trim(),
     outcome,
@@ -586,16 +586,19 @@ export async function evaluateRuntimeOutcome(input: EvaluateRuntimeOutcomeInput)
         ? "章节结束条件未命中"
         : `命中${evaluation.matchedBy === "runtime_outline" ? "运行时事件规则" : "章节判定"}:${evaluation.matchedRule || "未命名规则"}`)
       : "当前章节没有有效结束条件，跳过AI章节判定并沿用fallbackOutcome",
-  }));
-
-  if (!evaluation.hasRule && DebugLogUtil.isDebugLogEnabled()) {
-    console.log("[story:chapter_ending_check:skip]", JSON.stringify({
-      chapterId: Number(input.chapter?.id || 0),
-      chapterTitle: String(input.chapter?.title || "").trim(),
-      reason: "skip_no_rule",
-      traceMeta: normalizeTraceMeta(input.traceMeta),
     }));
+    if (!evaluation.hasRule && DebugLogUtil.isDebugLogEnabled()) {
+      console.log("[story:chapter_ending_check:skip]", JSON.stringify({
+        chapterId: Number(input.chapter?.id || 0),
+        chapterTitle: String(input.chapter?.title || "").trim(),
+        reason: "skip_no_rule",
+        traceMeta: normalizeTraceMeta(input.traceMeta),
+      }));
+    }
   }
+
+
+
 
   if (evaluation.hasRule && outcome === "continue") {
     input.state.__pendingEndingGuide = true;

@@ -552,6 +552,10 @@ export function buildDebugRecentMessages(
 
 export function syncDebugChapterRuntime(chapter: any, state: Record<string, any>) {
   if (!chapter) return;
+  // 调试态每次绑定章节时，都必须把运行态的章节主键和标题强制校正为当前章节。
+  // 否则旧快照里的 chapterTitle / chapterId 会继续污染 storyInfo、编排输入和调试面板。
+  state.chapterId = Number(chapter.id || 0) || Number(state.chapterId || 0) || 0;
+  state.chapterTitle = String(chapter.title || "").trim() || String(state.chapterTitle || "").trim();
   initializeChapterProgressForState(chapter, state);
   syncChapterProgressWithRuntime(chapter, state);
 }

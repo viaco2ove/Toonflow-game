@@ -37,6 +37,7 @@ import {
   recordChapterProgressSignals,
   initializeChapterProgressForState,
   markCurrentUserNodeCompleted,
+  readNextEventProgressHint,
   syncChapterProgressWithRuntime,
 } from "@/modules/game-runtime/engines/ChapterProgressEngine";
 import { handleMiniGameTurn } from "@/modules/game-runtime/engines/MiniGameController";
@@ -418,6 +419,19 @@ async function applySessionUserEventProgress(params: {
     recentMessages: params.recentMessages,
     traceMeta: params.traceMeta,
   });
+  if (DebugLogUtil.isDebugLogEnabled()) {
+    // [story:streamlines:stats] resolution
+    DebugLogUtil.logEventProgressResolution("story:streamlines:stats", {
+      chapter: params.chapter,
+      currentEventIndex: Number(params.state?.chapterProgress?.eventIndex || params.state?.currentEventDigest?.eventIndex || 0),
+      currentPhaseId: params.state?.chapterProgress?.phaseId,
+      currentPhaseLabel: params.state?.chapterProgress?.phaseId,
+      ended: resolution?.ended,
+      eventStatus: resolution?.eventStatus,
+      nextEventIndex: Number(readNextEventProgressHint(params.chapter, params.state)?.index || 0),
+      nextEventSummary: readNextEventProgressHint(params.chapter, params.state)?.summary,
+    });
+  }
   if (resolution) {
     applyAiEventProgressResolution({
       chapter: params.chapter,
@@ -2146,6 +2160,16 @@ export async function commitSessionNarrativeTurn(input: CommitSessionNarrativeTu
     });
     sessionStatus = mergedOutcome.sessionStatus;
     nextChapterId = mergedOutcome.nextChapterId;
+    let outcome = mergedOutcome.outcome;
+    if (DebugLogUtil.isDebugLogEnabled()) {
+      // [story:chapter_ending_check:stats] current_chapter
+      DebugLogUtil.logCurrentChapter("story:chapter_ending_check:stats", chapter);
+      console.log(`[story:chapter_ending_check:stats] sessionStatus: ${sessionStatus}`);
+      console.log(`[story:chapter_ending_check:stats] outcome: ${outcome}`);
+
+      console.log(`[story:chapter_ending_check:stats] nextChapterId: ${nextChapterId}`);
+
+    }
     if (sessionStatus === "chapter_completed" && (!nextChapterId || nextChapterId === prevChapterId)) {
       const resolvedNextChapterId = await resolveNextChapterIdByOrder(db, Number(sessionRow.worldId || 0), prevChapterId);
       if (resolvedNextChapterId && resolvedNextChapterId !== prevChapterId) {
