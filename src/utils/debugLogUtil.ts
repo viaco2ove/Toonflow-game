@@ -164,7 +164,9 @@ export class DebugLogUtil {
         if (payload) {
           currentContext.chapterTitle = readString(payload.title);
           currentEntry = applyContextToEntry(currentEntry || { ...currentContext });
-          currentEntry.chapterTitle = currentContext.chapterTitle;
+          if (currentEntry) {
+            currentEntry.chapterTitle = currentContext.chapterTitle;
+          }
         }
         continue;
       }
@@ -289,6 +291,10 @@ type EventChainContext = {
   requestId?: string;
   sessionId?: string;
   debugRuntimeKey?: string;
+  chapterTitle?: string;
+  sessionStatus?: string;
+  outcome?: string;
+  nextChapterId?: string;
 };
 
 type EventChainSummaryEntry = EventChainContext & {

@@ -1655,6 +1655,68 @@ export function readRuntimeCurrentEventDigestState(state: unknown): RuntimeEvent
     });
 }
 
+// 按当前章节 phaseId 校正“当前事件”的读取结果。
+//
+// 用途：
+// 1. 事件进度检测已经把 phase 从事件1推进到事件2，但旧 digest 仍残留事件1时，
+//    不能再让后续编排/判章继续读取到旧事件。
+// 2. 当 chapterProgress.eventIndex 与 phaseId 暂时不一致时，优先相信 phaseId，
+//    因为 phaseId 才是章节状态机真正切换成功后的稳定锚点。
+export function readPhaseAwareRuntimeCurrentEventDigestState(chapter: any, state: unknown): RuntimeEventDigestState {
+  const progress = readChapterProgressState(state);
+  const currentEvent = readRuntimeCurrentEventState(state);
+  const currentDigest = readRuntimeCurrentEventDigestState(state);
+  const outline = normalizeChapterRuntimeOutline(chapter?.runtimeOutline);
+  const phases = Array.isArray(outline.phases) ? outline.phases : [];
+  const phaseIndex = progress.phaseId
+    ? phases.findIndex((item) => item.id === progress.phaseId)
+    : -1;
+  const phaseDerivedEventIndex = phaseIndex >= 0 ? phaseIndex + 1 : 0;
+  const effectiveEventIndex = phaseDerivedEventIndex
+    || Number(currentEvent.index || progress.eventIndex || currentDigest.eventIndex || 1)
+    || 1;
+  const exactDigest = readRuntimeEventDigestByIndexState(state, effectiveEventIndex);
+  if (exactDigest) return exactDigest;
+
+  const phase = phaseIndex >= 0 ? phases[phaseIndex] : null;
+  const dynamicEvent = readRuntimeDynamicEventByIndex(state, effectiveEventIndex);
+  const eventKind = dynamicEvent?.kind
+    || phase?.kind
+    || progress.eventKind
+    || currentEvent.kind;
+  const fallbackDigest = buildRuntimeEventDigestState({
+    eventIndex: effectiveEventIndex,
+    eventKind,
+    eventFlowType: dynamicEvent?.flowType || resolveRuntimeEventFlowType({
+      eventKind,
+      phaseId: dynamicEvent?.phaseId || progress.phaseId,
+    }),
+    eventSummary: dynamicEvent?.summary
+      || currentEvent.summary
+      || progress.eventSummary
+      || phase?.targetSummary
+      || phase?.label
+      || currentDigest.eventSummary,
+    eventFacts: dynamicEvent?.runtimeFacts?.length
+      ? dynamicEvent.runtimeFacts
+      : Array.isArray(currentEvent.facts) && currentEvent.facts.length
+        ? currentEvent.facts
+        : currentDigest.eventFacts,
+    eventStatus: dynamicEvent?.status
+      || progress.eventStatus
+      || currentEvent.status,
+  });
+  return {
+    ...fallbackDigest,
+    summarySource: dynamicEvent?.summarySource || currentDigest.summarySource,
+    memorySummary: dynamicEvent?.memorySummary || currentDigest.memorySummary,
+    memoryFacts: dynamicEvent?.memoryFacts?.length ? dynamicEvent.memoryFacts : currentDigest.memoryFacts,
+    updateTime: dynamicEvent?.updateTime || currentDigest.updateTime,
+    allowedRoles: dynamicEvent?.allowedRoles?.length ? dynamicEvent.allowedRoles : currentDigest.allowedRoles,
+    userNodeId: dynamicEvent?.userNodeId || currentDigest.userNodeId,
+  };
+}
+
 // 读取当前事件附近的事件窗口。
 // 这是事件时间线视图的核心数据源。
 export function readRuntimeEventDigestWindowState(state: unknown, windowSize = 10): RuntimeEventDigestState[] {

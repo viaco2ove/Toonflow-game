@@ -1,5 +1,8 @@
 import u from "@/utils";
-import { JsonRecord } from "@/lib/gameEngine";
+import {
+  JsonRecord,
+  readPhaseAwareRuntimeCurrentEventDigestState,
+} from "@/lib/gameEngine";
 import { applyChapterOutcomeToState, ChapterOutcomeResult, evaluateChapterOutcome } from "@/modules/game-runtime/engines/ChapterOutcomeEngine";
 import { activateChapterEndingCheckState } from "@/modules/game-runtime/engines/ChapterProgressEngine";
 import { DebugLogUtil } from "@/utils/debugLogUtil";
@@ -205,10 +208,10 @@ function buildChapterJudgeInputSnapshot({
       ? (runtimeOutline as any).endingRules ?? null
       : null;
 
-  const currentEvent =
-    typeof state.currentEventDigest === "object" && state.currentEventDigest !== null
-      ? (state.currentEventDigest as Record<string, unknown>)
-      : {};
+  // 判章时必须读取“按 phaseId 校正后的当前事件”。
+  // 否则 chapterProgress 已经切到事件2，但旧 digest 还停在事件1时，
+  // 判章 prompt 会错误读到 eventIndex=0/1，和真实运行态脱节。
+  const currentEvent = readPhaseAwareRuntimeCurrentEventDigestState(chapter, state);
 
   const recentDialogue = Array.isArray(recentMessages)
     ? recentMessages
@@ -234,8 +237,8 @@ function buildChapterJudgeInputSnapshot({
       flow: normalizeScalarText(currentEvent.eventFlowType) || "chapter_content",
       status: normalizeScalarText(currentEvent.eventStatus) || "idle",
       summary: shortText(currentEvent.eventSummary, 120) || "",
-      facts: Array.isArray((currentEvent as any).eventFacts)
-        ? (currentEvent as any).eventFacts
+      facts: Array.isArray(currentEvent.eventFacts)
+        ? currentEvent.eventFacts
             .map((item: unknown) => normalizeScalarText(item))
             .filter(Boolean)
         : [],

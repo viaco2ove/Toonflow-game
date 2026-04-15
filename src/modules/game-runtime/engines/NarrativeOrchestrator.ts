@@ -8,6 +8,7 @@ import {
   readRuntimeEventDigestWindowTextState,
   normalizeChapterRuntimeOutline,
   readRuntimeCurrentEventDigestState,
+  readPhaseAwareRuntimeCurrentEventDigestState,
   upsertRuntimeEventDigestState,
   normalizeRolePair,
   nowTs,
@@ -682,8 +683,22 @@ function readCurrentRuntimeEventContext(chapter: any, state: JsonRecord): {
   eventMemoryFacts: string[];
   eventStatus: RuntimeCurrentEventState["status"];
 } {
-  const runtimeEventDigest = readRuntimeCurrentEventDigestState(state);
-  if (runtimeEventDigest.eventSummary) {
+  const runtimeEvent = readRuntimeCurrentEventState(state);
+  const outline = normalizeChapterRuntimeOutline(chapter?.runtimeOutline);
+  const progress = readChapterProgressState(state);
+  const phases = Array.isArray(outline.phases) ? outline.phases : [];
+  const currentPhase = progress.phaseId
+    ? phases.find((item) => item.id === progress.phaseId) || null
+    : phases[0] || null;
+  const phaseIndex = currentPhase ? phases.findIndex((item) => item.id === currentPhase.id) : -1;
+  const phaseDerivedEventIndex = phaseIndex >= 0 ? phaseIndex + 1 : 0;
+  const runtimeEventDigest = readPhaseAwareRuntimeCurrentEventDigestState(chapter, state);
+  // 当前章节 phaseId 是真实状态机的锚点。
+  // 只要 phaseId 已经推进到新事件，就不能让旧 digest 再把编排上下文拉回旧事件。
+  const digestMatchesCurrentEvent = Number(runtimeEventDigest.eventIndex || 0) === Number(
+    phaseDerivedEventIndex || runtimeEvent.index || progress.eventIndex || 0,
+  );
+  if (runtimeEventDigest.eventSummary && digestMatchesCurrentEvent) {
     return {
       eventIndex: runtimeEventDigest.eventIndex,
       eventKind: runtimeEventDigest.eventKind,
@@ -695,13 +710,6 @@ function readCurrentRuntimeEventContext(chapter: any, state: JsonRecord): {
       eventStatus: runtimeEventDigest.eventStatus,
     };
   }
-  const runtimeEvent = readRuntimeCurrentEventState(state);
-  const outline = normalizeChapterRuntimeOutline(chapter?.runtimeOutline);
-  const progress = readChapterProgressState(state);
-  const phases = Array.isArray(outline.phases) ? outline.phases : [];
-  const currentPhase = progress.phaseId
-    ? phases.find((item) => item.id === progress.phaseId) || null
-    : phases[0] || null;
   if (isFreeChapterRuntimeMode(chapter)) {
     return {
       eventIndex: runtimeEvent.index,
@@ -711,13 +719,15 @@ function readCurrentRuntimeEventContext(chapter: any, state: JsonRecord): {
         : runtimeEvent.kind === "fixed" || runtimeEvent.kind === "ending"
           ? "chapter_ending_check"
           : "free_runtime",
-      eventSummary: normalizeScalarText(runtimeEventDigest.eventSummary || runtimeEvent.summary),
-      eventFacts: Array.isArray(runtimeEventDigest.eventFacts) && runtimeEventDigest.eventFacts.length
+      eventSummary: normalizeScalarText(
+        digestMatchesCurrentEvent ? (runtimeEventDigest.eventSummary || runtimeEvent.summary) : runtimeEvent.summary,
+      ),
+      eventFacts: digestMatchesCurrentEvent && Array.isArray(runtimeEventDigest.eventFacts) && runtimeEventDigest.eventFacts.length
         ? runtimeEventDigest.eventFacts
         : runtimeEvent.facts,
-      eventMemorySummary: normalizeScalarText(runtimeEventDigest.memorySummary),
-      eventMemoryFacts: Array.isArray(runtimeEventDigest.memoryFacts) ? runtimeEventDigest.memoryFacts : [],
-      eventStatus: runtimeEventDigest.eventStatus || runtimeEvent.status || "active",
+      eventMemorySummary: normalizeScalarText(digestMatchesCurrentEvent ? runtimeEventDigest.memorySummary : ""),
+      eventMemoryFacts: digestMatchesCurrentEvent && Array.isArray(runtimeEventDigest.memoryFacts) ? runtimeEventDigest.memoryFacts : [],
+      eventStatus: (digestMatchesCurrentEvent ? runtimeEventDigest.eventStatus : runtimeEvent.status) || runtimeEvent.status || "active",
     };
   }
   if (!currentPhase) {
@@ -738,7 +748,6 @@ function readCurrentRuntimeEventContext(chapter: any, state: JsonRecord): {
       eventStatus: progress.eventStatus || runtimeEvent.status || "idle",
     };
   }
-  const phaseIndex = phases.findIndex((item) => item.id === currentPhase.id);
   const userNode = currentPhase.userNodeId
     ? (outline.userNodes || []).find((item) => item.id === currentPhase.userNodeId) || null
     : null;
@@ -754,7 +763,7 @@ function readCurrentRuntimeEventContext(chapter: any, state: JsonRecord): {
     120,
   ) || "当前事件未命名";
   return {
-    eventIndex: phaseIndex >= 0 ? phaseIndex + 1 : Math.max(1, Number(progress.phaseIndex || 0) + 1),
+    eventIndex: phaseDerivedEventIndex || Math.max(1, Number(progress.phaseIndex || 0) + 1),
     eventKind: currentPhase.kind || "scene",
     eventFlowType: currentPhase.kind === "opening" ? "introduction" : "chapter_content",
     eventSummary,

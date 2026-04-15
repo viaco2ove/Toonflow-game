@@ -1,5 +1,9 @@
 import u from "@/utils";
-import { JsonRecord } from "@/lib/gameEngine";
+import {
+  JsonRecord,
+  readChapterProgressState,
+  readPhaseAwareRuntimeCurrentEventDigestState,
+} from "@/lib/gameEngine";
 import {
   AiEventProgressResolution,
   readNextEventProgressHint,
@@ -194,14 +198,10 @@ async function resolveEventProgressModel(userId?: number) {
  * 组装给事件进度检测 agent 的最小输入快照。
  */
 function buildEventProgressInputSnapshot(input: EvaluateEventProgressInput): JsonRecord {
-  const chapterProgress =
-    typeof input.state.chapterProgress === "object" && input.state.chapterProgress !== null
-      ? (input.state.chapterProgress as Record<string, unknown>)
-      : {};
-  const currentEvent =
-    typeof input.state.currentEventDigest === "object" && input.state.currentEventDigest !== null
-      ? (input.state.currentEventDigest as Record<string, unknown>)
-      : {};
+  // 事件进度检测和编排、判章必须使用同一套“phase 感知事件读取逻辑”，
+  // 否则 phaseId 已经进到事件2，但这里仍按旧 digest 读到事件1，就会出现 1/2/0 混乱。
+  const chapterProgress = readChapterProgressState(input.state) as unknown as Record<string, unknown>;
+  const currentEvent = readPhaseAwareRuntimeCurrentEventDigestState(input.chapter, input.state);
   const recentDialogue = Array.isArray(input.recentMessages)
     ? input.recentMessages
         .slice(-10)
@@ -220,11 +220,11 @@ function buildEventProgressInputSnapshot(input: EvaluateEventProgressInput): Jso
       title: normalizeScalarText(input.chapter?.title) || "未命名章节",
     },
     current_event: {
-      index: Number(chapterProgress.eventIndex || currentEvent.eventIndex || 0),
-      kind: normalizeScalarText(chapterProgress.eventKind || currentEvent.eventKind) || "scene",
+      index: Number(currentEvent.eventIndex || chapterProgress.eventIndex || 0),
+      kind: normalizeScalarText(currentEvent.eventKind || chapterProgress.eventKind) || "scene",
       flow: normalizeScalarText(currentEvent.eventFlowType) || "chapter_content",
-      status: normalizeEventStatus(chapterProgress.eventStatus || currentEvent.eventStatus),
-      summary: normalizeScalarText(chapterProgress.eventSummary || currentEvent.eventSummary),
+      status: normalizeEventStatus(currentEvent.eventStatus || chapterProgress.eventStatus),
+      summary: normalizeScalarText(currentEvent.eventSummary || chapterProgress.eventSummary),
       facts: Array.isArray(currentEvent.eventFacts)
         ? currentEvent.eventFacts.map((item) => normalizeScalarText(item)).filter(Boolean)
         : [],
