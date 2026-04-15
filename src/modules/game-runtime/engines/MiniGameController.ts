@@ -70,7 +70,7 @@ const CONTROL_ALIASES: Record<string, string[]> = {
   suspend: ["暂停", "暂停小游戏", "先暂停"],
 };
 
-const TEXT_INPUT_GAME_TYPES = new Set(["research_skill", "alchemy", "upgrade_equipment"]);
+const TEXT_INPUT_GAME_TYPES = new Set(["research_skill", "alchemy", "upgrade_equipment", "battle"]);
 
 function isTextInputMiniGame(gameType: string) {
   return TEXT_INPUT_GAME_TYPES.has(scalarText(gameType));
@@ -328,16 +328,19 @@ function buildMiniGamePhaseLabel(session: JsonRecord, rulebook: MiniGameRulebook
 
 function buildMiniGameInputHint(rulebook: MiniGameRulebook): string {
   if (rulebook.gameType === "battle") {
-    return "可点击攻击、技能、防御、回气等操作继续战斗";
+    return "直接输入战斗动作，例如“攻击暴风狼”“施展灭魔步攻击”“防御”“调息回气”";
   }
   if (rulebook.gameType === "research_skill") {
-    return "输入技能名称、思路或调整方案";
+    return "直接输入技能名称、思路或调整方案，#退出 可强制退出小游戏";
   }
   if (rulebook.gameType === "alchemy") {
-    return "输入药方、药材搭配或火候思路";
+    return "直接输入药方、药材搭配或火候思路，#退出 可强制退出小游戏";
   }
   if (rulebook.gameType === "upgrade_equipment") {
-    return "输入装备名称和强化方案";
+    return "直接输入装备名称和强化方案，#退出 可强制退出小游戏";
+  }
+  if (rulebook.gameType === "battle") {
+    return "直接输入战斗动作，例如“攻击暴风狼”“施展灭魔步攻击”“防御”“调息回气”，#退出 可强制退出小游戏";
   }
   return "";
 }
@@ -490,12 +493,12 @@ function roleNumericStat(role: JsonRecord, key: "level" | "hp" | "mp" | "money",
 }
 
 /**
- * 解析 `#对战 xxx` 里的敌人名称列表。
+ * 解析 `#战斗 xxx` / `#对战 xxx` 里的敌人名称列表。
  * 支持单个名称，也支持用顿号、逗号、“和/与”分隔多个敌人。
  */
 function parseBattleTargetNames(input: string): string[] {
   const text = normalizeInlineText(input);
-  const withoutTrigger = text.replace(/^#对战/u, "").trim();
+  const withoutTrigger = text.replace(/^#(?:战斗|对战)/u, "").trim();
   if (!withoutTrigger) {
     return ["野怪"];
   }
@@ -649,6 +652,52 @@ function battleStatusSummary(session: JsonRecord): string {
  */
 function battleActionTargetId(actionId: string): string {
   return scalarText(actionId.split(":")[1]);
+}
+
+/**
+ * 在文本战斗模式下，根据用户输入匹配当前攻击目标。
+ * 这里优先按敌人名字命中；没有显式提及敌人时，再回退当前锁定目标。
+ */
+function resolveBattleTextTarget(session: JsonRecord, playerMessage: string): JsonRecord | null {
+  const aliveEnemies = aliveBattleEnemies(session);
+  if (!aliveEnemies.length) return null;
+  const normalized = normalizeInlineText(playerMessage);
+  const namedTarget = aliveEnemies.find((enemy) => {
+    const enemyName = scalarText(enemy.name);
+    return enemyName && normalized.includes(enemyName);
+  });
+  if (namedTarget) return namedTarget;
+  const publicState = asRecord(session.public_state);
+  const currentTargetId = scalarText(publicState.current_target_id);
+  const currentTarget = aliveEnemies.find((enemy) => scalarText(enemy.enemy_id) === currentTargetId);
+  return currentTarget || aliveEnemies[0];
+}
+
+/**
+ * 把文本战斗指令归一成 battleStep 可识别的动作。
+ * 文档要求战斗不走面板式玩法，所以这里负责把自然语言转换成攻击/技能/防御/回气。
+ */
+function resolveBattleTextAction(session: JsonRecord, playerMessage: string): { actionId: string; targetName: string } | null {
+  const normalized = normalizeInlineText(playerMessage);
+  if (!normalized) return null;
+  if (CONTROL_ALIASES.view_status.some((alias) => normalized.includes(alias))) {
+    return { actionId: "view_status", targetName: "" };
+  }
+  if (/(?:防御|格挡|招架|闪避|护体)/u.test(normalized)) {
+    return { actionId: "guard", targetName: "" };
+  }
+  if (/(?:回气|调息|回蓝|恢复法力|恢复蓝量|冥想|吐纳)/u.test(normalized)) {
+    return { actionId: "recover", targetName: "" };
+  }
+  const target = resolveBattleTextTarget(session, normalized);
+  if (!target) return null;
+  const targetId = scalarText(target.enemy_id);
+  const targetName = scalarText(target.name) || "敌人";
+  const useSkill = /(?:施展|使出|发动|运转|释放|催动|招式|技能|法术|功法|武技|斗技)/u.test(normalized);
+  return {
+    actionId: `${useSkill ? "skill" : "attack"}:${targetId}`,
+    targetName,
+  };
 }
 
 /**
@@ -812,7 +861,10 @@ function battleStep(session: JsonRecord, actionId: string, ctx: MiniGameControll
       damage = Math.max(1, Math.floor(damage * 0.45));
     }
     userHp = clamp(userHp - damage, 0, userMaxHp);
-    counterAttackLines.push(`${name}趁势反击，打掉了你 ${damage} 点气血。`);
+    const hostileLine = enemy.role_id
+      ? `${name}（扮演${name}）冷声喝道：“你还不配在这里放肆。”`
+      : `${name}低吼一声，露出獠牙扑了上来。`;
+    counterAttackLines.push(`${hostileLine}${name}趁势反击，打掉了你 ${damage} 点气血。`);
   });
   publicState.user_hp = userHp;
   publicState.user_mp = userMp;
@@ -1086,15 +1138,10 @@ function clearMiniGameCatalog(state: JsonRecord) {
 }
 
 function buildMiniGameCatalogNarration(prefix = ""): string {
-  const lines = availableMiniGameCatalog().map((item) => {
-    const command = item.triggerTags[0] || `#${item.displayName}`;
-    return `${item.index}. ${item.displayName}：${item.ruleSummary}（输入 ${command} 或 ${item.index}）`;
-  });
   return [
     prefix,
-    "当前可进入的小游戏如下：",
-    ...lines,
-    "你可以直接输入对应序号，或输入 #狼人杀 / #钓鱼 / #修炼 / #研发技能 / #炼药 / #挖矿 / #升级装备 进入。",
+    "（输入 #狼人杀 / #钓鱼 / #修炼 / #研发技能 / #炼药 / #挖矿 / #升级装备 / #战斗 进入小游戏。",
+    "游戏中 #退出 可以强制退出小游戏）请输入 #+小游戏名称，如 #钓鱼。",
   ].filter(Boolean).join("\n");
 }
 
@@ -2264,13 +2311,13 @@ const RULEBOOKS: Record<string, MiniGameRulebook> = {
   },
   battle: {
     gameType: "battle",
-    displayName: "对战",
+    displayName: "战斗",
     version: "1.0",
     goal: "击败当前全部敌人，并结算战利品、金钱与升级收益",
     phaseOrder: ["encounter", "settling"],
-    triggerTags: ["#对战"],
+    triggerTags: ["#战斗", "#对战"],
     passivePatterns: [/对战/, /战斗/, /迎战/, /开打/, /交手/],
-    ruleSummary: "通过攻击、技能、防御和回气推进战斗。敌人会在每轮后反击；击败全部敌人后自动结算战利品和恢复状态。",
+    ruleSummary: "输入 #战斗 目标 进入战斗。战斗开始后只通过文字输入动作推进，不再使用按钮式面板操作。",
     setup: (ctx, sessionId, entrySource) => {
       const targetNames = parseBattleTargetNames(ctx.playerMessage);
       const enemyList = targetNames.map((name, index) => buildBattleEnemy(ctx, name, index));
@@ -2291,7 +2338,7 @@ const RULEBOOKS: Record<string, MiniGameRulebook> = {
         scene_id: scalarText(ctx.chapter?.title) || "battlefield",
         participants: buildParticipants(ctx, 1),
         public_state: buildSimplePublicState({
-          battle_title: enemyList.length > 1 ? `对战 ${enemyList.length} 名敌人` : `对战 ${scalarText(enemyList[0]?.name) || "敌人"}`,
+          battle_title: enemyList.length > 1 ? `战斗 ${enemyList.length} 名敌人` : `战斗 ${scalarText(enemyList[0]?.name) || "敌人"}`,
           enemy_list: enemyList,
           alive_enemy_count: enemyList.length,
           current_target_id: scalarText(enemyList[0]?.enemy_id),
@@ -2513,7 +2560,10 @@ function buildStartNarration(rulebook: MiniGameRulebook, session: JsonRecord): s
     const publicState = asRecord(session.public_state);
     const aliveEnemies = aliveBattleEnemies(session);
     const enemyNames = aliveEnemies.map((enemy) => scalarText(enemy.name)).filter(Boolean).join("、") || "敌人";
-    return `战斗已经开始。旁白提示：你当前要对战的目标是 ${enemyNames}。先观察敌人的状态，再选择攻击、技能、防御或回气来推进战斗。`;
+    const leadTarget = aliveEnemies[0] || null;
+    const leadTargetName = scalarText(leadTarget?.name) || enemyNames;
+    const leadTargetLevel = Math.max(1, Number(leadTarget?.level || 1));
+    return `旁白：准备好与 ${leadTargetName}(lv${leadTargetLevel}) 进行战斗了吗？当前敌人有 ${enemyNames}。从现在开始请直接输入文字战斗指令，例如“攻击${leadTargetName}”“施展技能攻击${leadTargetName}”“防御”或“调息回气”。`;
   }
   return `小游戏已开始：${rulebook.displayName}。当前阶段：${scalarText(session.phase)}。可见状态：${summarizePublicState(publicState) || "暂无"}。`;
 }
@@ -2569,7 +2619,7 @@ function buildRuleNarration(rulebook: MiniGameRulebook): string {
     return "升级装备规则：直接输入目标装备和强化方案。我会判断升级结果，并把新装备名称或失败记录写回角色参数。";
   }
   if (rulebook.gameType === "battle") {
-    return "战斗规则：通过攻击、技能、防御和回气推进战斗。系统会实时更新敌我血量与法力；击败全部敌人后会结算战利品、金钱、升级概率，并在战后恢复用户血量与法力。";
+    return "战斗规则：通过文字输入攻击、技能、防御和回气推进战斗。系统会实时更新敌我血量与法力；击败全部敌人后会结算战利品、金钱、升级概率，并在战后恢复用户血量与法力。";
   }
   return `${rulebook.displayName}规则：${rulebook.ruleSummary}`;
 }
@@ -2847,7 +2897,40 @@ export async function handleMiniGameTurn(input: MiniGameControllerInput): Promis
     const beforeHiddenState = deepCloneRecord(asRecord(activeSession.hidden_state));
     const beforeResourceState = deepCloneRecord(asRecord(activeSession.resource_state));
     let step: MiniGameStepResult;
-    if (rulebook.gameType === "research_skill") {
+    if (rulebook.gameType === "battle") {
+      const battleAction = resolveBattleTextAction(activeSession, input.playerMessage);
+      if (!battleAction) {
+        const narration = `当前战斗只接受文字战斗指令。${buildMiniGameInputHint(rulebook)}。`;
+        refreshRuntimeUi(root, narration, rulebook);
+        return {
+          intercepted: true,
+          runtime: root,
+          message: {
+            role: scalarText(input.world?.narratorRole?.name) || "旁白",
+            roleType: "narrator",
+            eventType: "on_mini_game_invalid",
+            content: narration,
+            meta: buildMiniGameMeta(root),
+          },
+        };
+      }
+      if (battleAction.actionId === "view_status") {
+        const narration = buildStatusNarration(root, rulebook);
+        refreshRuntimeUi(root, narration, rulebook);
+        return {
+          intercepted: true,
+          runtime: root,
+          message: {
+            role: scalarText(input.world?.narratorRole?.name) || "旁白",
+            roleType: "narrator",
+            eventType: "on_mini_game_status",
+            content: narration,
+            meta: buildMiniGameMeta(root),
+          },
+        };
+      }
+      step = battleStep(activeSession, battleAction.actionId, input);
+    } else if (rulebook.gameType === "research_skill") {
       step = evaluateResearchSkillInput(activeSession, input);
     } else if (rulebook.gameType === "alchemy") {
       step = evaluateAlchemyInput(activeSession, input);
