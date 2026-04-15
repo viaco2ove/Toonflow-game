@@ -3517,8 +3517,8 @@ async function applyNarrativeEventProgress(params: {
   });
   if (DebugLogUtil.isDebugLogEnabled()) {
     const nextEvent = readNextEventProgressHint(params.chapter, params.state);
-    // [story:streamlines:stats] resolution
-    DebugLogUtil.logEventProgressResolution("story:streamlines:stats", {
+    // [story:event_progress:stats] resolution
+    DebugLogUtil.logEventProgressResolution("story:event_progress:stats", {
       chapter: params.chapter,
       currentEventIndex: Number(params.state?.chapterProgress?.eventIndex || params.state?.currentEventDigest?.eventIndex || 0),
       currentPhaseId: params.state?.chapterProgress?.phaseId,

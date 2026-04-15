@@ -94,6 +94,25 @@ export class DebugLogUtil {
     let currentContext: EventChainContext = {};
 
     /**
+     * 把章节/判定结果/下一章等上下文补到当前 entry。
+     *
+     * 用途：
+     * - 这些日志常常和“当前事件”分开打印；
+     * - 摘要生成时需要继承最近一次有效上下文，避免出现大量“未知”。
+     */
+    const applyContextToEntry = (entry: EventChainSummaryEntry | null): EventChainSummaryEntry | null => {
+      if (!entry) return entry;
+      return {
+        ...currentContext,
+        ...entry,
+        chapterTitle: entry.chapterTitle || currentContext.chapterTitle || "",
+        sessionStatus: entry.sessionStatus || currentContext.sessionStatus || "",
+        outcome: entry.outcome || currentContext.outcome || "",
+        nextChapterId: entry.nextChapterId || currentContext.nextChapterId || "",
+      };
+    };
+
+    /**
      * 当前 entry 有内容时才入列，避免空壳条目污染摘要。
      */
     const pushCurrentEntry = () => {
@@ -119,6 +138,7 @@ export class DebugLogUtil {
         const payload = parseJsonFromLogLine(line);
         if (payload) {
           currentContext = {
+            ...currentContext,
             requestId: readString(payload.requestId),
             sessionId: readString(payload.sessionId),
             debugRuntimeKey: readString(payload.debugRuntimeKey),
@@ -130,20 +150,21 @@ export class DebugLogUtil {
       if (line.includes("[story:orchestrator:stats] | 当前事件 | ")) {
         pushCurrentEntry();
         const currentEventText = extractTableContent(line, "当前事件");
-        currentEntry = {
+        currentEntry = applyContextToEntry({
           ...currentContext,
           currentEventIndex: extractField(currentEventText, "index"),
           currentEventSummary: extractField(currentEventText, "summary") || currentEventText,
           currentEventRaw: currentEventText,
-        };
+        });
         continue;
       }
 
       if (line.includes("[story:orchestrator:stats] current_chapter=")) {
         const payload = parseJsonFromLogLine(line.replace("[story:orchestrator:stats] current_chapter=", ""));
         if (payload) {
-          currentEntry = currentEntry || { ...currentContext };
-          currentEntry.chapterTitle = readString(payload.title);
+          currentContext.chapterTitle = readString(payload.title);
+          currentEntry = applyContextToEntry(currentEntry || { ...currentContext });
+          currentEntry.chapterTitle = currentContext.chapterTitle;
         }
         continue;
       }
@@ -186,7 +207,8 @@ export class DebugLogUtil {
         const payload = parseJsonFromLogLine(line);
         if (payload) {
           const responseText = readString(payload.responseText);
-          currentEntry.chapterTitle = extractJsonTextField(responseText, "chapter_title") || currentEntry.chapterTitle;
+          currentContext.chapterTitle = extractJsonTextField(responseText, "chapter_title") || currentContext.chapterTitle || "";
+          currentEntry.chapterTitle = currentContext.chapterTitle || currentEntry.chapterTitle;
           currentEntry.chapterJudge = [
             `result=${extractJsonTextField(responseText, "result")}`,
             `reason=${extractJsonTextField(responseText, "reason")}`,
@@ -197,15 +219,18 @@ export class DebugLogUtil {
       }
 
       if (line.includes("[story:chapter_ending_check:stats] sessionStatus:")) {
-        currentEntry.sessionStatus = extractAfter(line, "sessionStatus:");
+        currentContext.sessionStatus = extractAfter(line, "sessionStatus:");
+        currentEntry.sessionStatus = currentContext.sessionStatus;
       }
 
       if (line.includes("[story:chapter_ending_check:stats] outcome:")) {
-        currentEntry.outcome = extractAfter(line, "outcome:");
+        currentContext.outcome = extractAfter(line, "outcome:");
+        currentEntry.outcome = currentContext.outcome;
       }
 
       if (line.includes("[story:chapter_ending_check:stats] nextChapterId:")) {
-        currentEntry.nextChapterId = extractAfter(line, "nextChapterId:");
+        currentContext.nextChapterId = extractAfter(line, "nextChapterId:");
+        currentEntry.nextChapterId = currentContext.nextChapterId;
       }
     }
 

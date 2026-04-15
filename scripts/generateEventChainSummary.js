@@ -102,6 +102,25 @@ function generateEventChainSummaryMarkdown(logFilePath, outputMarkdownPath) {
   let currentContext = {};
 
   /**
+   * 把当前上下文灌进 entry。
+   *
+   * 用途：
+   * - 章节、会话状态、下一章等日志常常不会和“当前事件”出现在同一行；
+   * - 如果不做上下文继承，摘要里就会出现大量“未知”。
+   */
+  const applyContextToEntry = (entry) => {
+    if (!entry) return entry;
+    return {
+      ...currentContext,
+      ...entry,
+      chapterTitle: entry.chapterTitle || currentContext.chapterTitle || "",
+      sessionStatus: entry.sessionStatus || currentContext.sessionStatus || "",
+      outcome: entry.outcome || currentContext.outcome || "",
+      nextChapterId: entry.nextChapterId || currentContext.nextChapterId || "",
+    };
+  };
+
+  /**
    * 有实际内容的条目才写入结果。
    */
   const pushCurrentEntry = () => {
@@ -125,6 +144,7 @@ function generateEventChainSummaryMarkdown(logFilePath, outputMarkdownPath) {
       const payload = parseJsonFromLogLine(line);
       if (payload) {
         currentContext = {
+          ...currentContext,
           requestId: readString(payload.requestId),
           sessionId: readString(payload.sessionId),
           debugRuntimeKey: readString(payload.debugRuntimeKey),
@@ -134,18 +154,19 @@ function generateEventChainSummaryMarkdown(logFilePath, outputMarkdownPath) {
     if (line.includes("[story:orchestrator:stats] | 当前事件 | ")) {
       pushCurrentEntry();
       const currentEventText = extractTableContent(line, "当前事件");
-      currentEntry = {
+      currentEntry = applyContextToEntry({
         ...currentContext,
         currentEventIndex: extractField(currentEventText, "index"),
         currentEventSummary: extractField(currentEventText, "summary") || currentEventText,
-      };
+      });
       continue;
     }
     if (line.includes("[story:orchestrator:stats] current_chapter=")) {
       const payload = parseJsonFromLogLine(line.replace("[story:orchestrator:stats] current_chapter=", ""));
       if (payload) {
-        currentEntry = currentEntry || { ...currentContext };
-        currentEntry.chapterTitle = readString(payload.title);
+        currentContext.chapterTitle = readString(payload.title);
+        currentEntry = applyContextToEntry(currentEntry || { ...currentContext });
+        currentEntry.chapterTitle = currentContext.chapterTitle;
       }
       continue;
     }
@@ -182,7 +203,8 @@ function generateEventChainSummaryMarkdown(logFilePath, outputMarkdownPath) {
       const payload = parseJsonFromLogLine(line);
       if (payload) {
         const responseText = readString(payload.responseText);
-        currentEntry.chapterTitle = extractJsonTextField(responseText, "chapter_title") || currentEntry.chapterTitle;
+        currentContext.chapterTitle = extractJsonTextField(responseText, "chapter_title") || currentContext.chapterTitle || "";
+        currentEntry.chapterTitle = currentContext.chapterTitle || currentEntry.chapterTitle;
         currentEntry.chapterJudge = [
           `result=${extractJsonTextField(responseText, "result")}`,
           `reason=${extractJsonTextField(responseText, "reason")}`,
@@ -192,11 +214,18 @@ function generateEventChainSummaryMarkdown(logFilePath, outputMarkdownPath) {
       continue;
     }
     if (line.includes("[story:chapter_ending_check:stats] sessionStatus:")) {
-      currentEntry.sessionStatus = extractAfter(line, "sessionStatus:");
+      currentContext.sessionStatus = extractAfter(line, "sessionStatus:");
+      currentEntry.sessionStatus = currentContext.sessionStatus;
+      continue;
+    }
+    if (line.includes("[story:chapter_ending_check:stats] outcome:")) {
+      currentContext.outcome = extractAfter(line, "outcome:");
+      currentEntry.outcome = currentContext.outcome;
       continue;
     }
     if (line.includes("[story:chapter_ending_check:stats] nextChapterId:")) {
-      currentEntry.nextChapterId = extractAfter(line, "nextChapterId:");
+      currentContext.nextChapterId = extractAfter(line, "nextChapterId:");
+      currentEntry.nextChapterId = currentContext.nextChapterId;
     }
   }
 
