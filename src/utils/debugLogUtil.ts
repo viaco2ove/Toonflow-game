@@ -67,6 +67,41 @@ export class DebugLogUtil {
   }
 
   /**
+   * 统一打印小游戏文本输入的命中结果。
+   *
+   * 用途：
+   * - 明确记录小游戏输入被归一化后的文本；
+   * - 明确记录最终命中的控制动作、局内动作或战斗动作；
+   * - 便于直接从日志判断聊天框输入有没有真正命中目标玩法。
+   */
+  static logMiniGameActionResolution(tag: string, payload: {
+    gameType?: unknown;
+    phase?: unknown;
+    status?: unknown;
+    input?: unknown;
+    normalizedInput?: unknown;
+    controlAction?: unknown;
+    actionId?: unknown;
+    battleActionId?: unknown;
+    resultTags?: unknown;
+    intercepted?: unknown;
+  }): void {
+    if (!DebugLogUtil.isDebugLogEnabled()) return;
+    console.log(`[${tag}] action=${JSON.stringify({
+      gameType: String(payload.gameType || "").trim(),
+      phase: String(payload.phase || "").trim(),
+      status: String(payload.status || "").trim(),
+      input: String(payload.input || "").trim(),
+      normalizedInput: String(payload.normalizedInput || "").trim(),
+      controlAction: String(payload.controlAction || "").trim(),
+      actionId: String(payload.actionId || "").trim(),
+      battleActionId: String(payload.battleActionId || "").trim(),
+      resultTags: Array.isArray(payload.resultTags) ? payload.resultTags : [],
+      intercepted: Boolean(payload.intercepted),
+    })}`);
+  }
+
+  /**
    * 根据日志行里的 tag，抽取单轮编排链摘要并写成 markdown 文件。
    *
    * 输入：

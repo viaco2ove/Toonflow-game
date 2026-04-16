@@ -6,6 +6,7 @@ import {
   parseJsonSafe,
 } from "@/lib/gameEngine";
 import { worldRoles } from "@/modules/game-runtime/engines/NarrativeOrchestrator";
+import { DebugLogUtil } from "@/utils/debugLogUtil";
 
 export interface MiniGameActionOption {
   action_id: string;
@@ -65,8 +66,6 @@ const CONTROL_ALIASES: Record<string, string[]> = {
   view_status: ["查看状态", "状态", "局势", "看看状态", "查看局势"],
   view_rules: ["查看规则", "规则", "看看规则"],
   resume: ["继续", "继续钓鱼", "恢复小游戏", "恢复", "接着来"],
-  request_quit: ["申请退出", "退出小游戏", "退出钓鱼", "退出", "离开小游戏"],
-  confirm_quit: ["确认退出", "确认离开", "确定退出", "退出确认"],
   suspend: ["暂停", "暂停小游戏", "先暂停"],
 };
 
@@ -239,7 +238,6 @@ function buildMiniGameMeta(root: JsonRecord): JsonRecord {
       status: scalarText(session.status),
       phase: scalarText(session.phase),
       round: Number(session.round || 0),
-      playerOptions: asArray(ui.player_options),
       publicState: asRecord(session.public_state),
       acceptsTextInput: Boolean(ui.accepts_text_input),
       inputHint: scalarText(ui.input_hint),
@@ -327,8 +325,20 @@ function buildMiniGamePhaseLabel(session: JsonRecord, rulebook: MiniGameRulebook
 }
 
 function buildMiniGameInputHint(rulebook: MiniGameRulebook): string {
+  if (rulebook.gameType === "werewolf") {
+    return "直接输入动作，例如“发言”“进入投票”“投票萧炎”“查验美杜莎”“救萧炎”，#退出 可强制退出小游戏";
+  }
+  if (rulebook.gameType === "fishing") {
+    return "直接输入动作，例如“抛竿”“收杆”“继续钓鱼”，#退出 可强制退出小游戏";
+  }
+  if (rulebook.gameType === "cultivation") {
+    return "直接输入动作，例如“吐纳”“观想”“稳息”“服丹”“冲关”“收功”，#退出 可强制退出小游戏";
+  }
+  if (rulebook.gameType === "mining") {
+    return "直接输入动作，例如“勘探”“开采”“精挖”“支护”“清障”“休息”“撤离”，#退出 可强制退出小游戏";
+  }
   if (rulebook.gameType === "battle") {
-    return "直接输入战斗动作，例如“攻击暴风狼”“施展灭魔步攻击”“防御”“调息回气”";
+    return "直接输入战斗动作，例如“攻击暴风狼”“施展灭魔步攻击”“防御”“调息回气”，#退出 可强制退出小游戏";
   }
   if (rulebook.gameType === "research_skill") {
     return "直接输入技能名称、思路或调整方案，#退出 可强制退出小游戏";
@@ -339,14 +349,27 @@ function buildMiniGameInputHint(rulebook: MiniGameRulebook): string {
   if (rulebook.gameType === "upgrade_equipment") {
     return "直接输入装备名称和强化方案，#退出 可强制退出小游戏";
   }
-  if (rulebook.gameType === "battle") {
-    return "直接输入战斗动作，例如“攻击暴风狼”“施展灭魔步攻击”“防御”“调息回气”，#退出 可强制退出小游戏";
-  }
   return "";
 }
 
 function normalizeInlineText(input: unknown): string {
   return scalarText(input).replace(/\s+/g, " ").trim();
+}
+
+/**
+ * 统一压缩小游戏文本输入，尽量消除口语化前后缀和标点干扰。
+ * 这样“我想先抛竿试试”“帮我投票萧炎”这类输入也能命中动作。
+ */
+function normalizeMiniGameActionText(input: unknown): string {
+  const source = normalizeInlineText(input)
+    .replace(/^#/, "")
+    .replace(/[，。！？、,.!?\s]/g, "")
+    .trim();
+  if (!source) return "";
+  return source
+    .replace(/^(我想|我要|我先|先|请|请帮我|帮我|让我|现在|这就|准备|尝试|试着)+/u, "")
+    .replace(/(一下|一手|试试|看看|吧|呀|啦|呢|哦)+$/u, "")
+    .trim();
 }
 
 function createPlayerParameterCard(state: JsonRecord) {
@@ -609,28 +632,6 @@ function syncBattlePublicState(session: JsonRecord) {
   publicState.user_hp = clamp(Number(publicState.user_hp || 0), 0, Math.max(1, Number(publicState.user_max_hp || 1)));
   publicState.user_mp = clamp(Number(publicState.user_mp || 0), 0, Math.max(0, Number(publicState.user_max_mp || 0)));
   session.public_state = publicState;
-}
-
-/**
- * 生成战斗小游戏的操作按钮。
- * 当前所有存活敌人都可以作为攻击或技能目标。
- */
-function battleOptions(session: JsonRecord): MiniGameActionOption[] {
-  const aliveEnemies = aliveBattleEnemies(session);
-  const targetActions = aliveEnemies.flatMap((enemy) => {
-    const enemyId = scalarText(enemy.enemy_id);
-    const name = scalarText(enemy.name) || "敌人";
-    return [
-      { action_id: `attack:${enemyId}`, label: `攻击${name}`, desc: `对 ${name} 发起普通攻击` },
-      { action_id: `skill:${enemyId}`, label: `技能${name}`, desc: `消耗法力对 ${name} 发动技能` },
-    ];
-  });
-  return [
-    ...targetActions,
-    { action_id: "guard", label: "防御", desc: "降低下一轮受到的伤害" },
-    { action_id: "recover", label: "回气", desc: "恢复少量法力并稳住气息" },
-    { action_id: "view_status", label: "查看状态", desc: "查看当前敌我状态" },
-  ];
 }
 
 /**
@@ -1207,42 +1208,67 @@ function werewolfOptions(session: JsonRecord): MiniGameActionOption[] {
   const selectable = aliveList.filter((item) => item && item !== "用户" && item !== "用户");
   if (phase === "night_wolf") {
     return [
-      ...selectable.map((item) => ({ action_id: `kill:${item}`, label: `击杀${item}`, desc: `夜间袭击 ${item}` })),
-      { action_id: "skip_kill", label: "空刀", desc: "今晚不击杀目标" },
-      { action_id: "view_status", label: "查看局势", desc: "查看当前存活与公开记录" },
+      ...selectable.map((item) => ({
+        action_id: `kill:${item}`,
+        label: `击杀${item}`,
+        desc: `夜间袭击 ${item}`,
+        aliases: [`刀${item}`, `袭击${item}`, `杀${item}`],
+      })),
+      { action_id: "skip_kill", label: "空刀", desc: "今晚不击杀目标", aliases: ["跳过击杀", "不杀人", "今夜空刀"] },
+      { action_id: "view_status", label: "查看局势", desc: "查看当前存活与公开记录", aliases: ["查看状态", "状态", "查看记录"] },
     ];
   }
   if (phase === "night_seer") {
     return [
-      ...selectable.map((item) => ({ action_id: `check:${item}`, label: `查验${item}`, desc: `查验 ${item} 的阵营` })),
-      { action_id: "skip_check", label: "跳过", desc: "放弃本轮查验" },
-      { action_id: "view_status", label: "查看局势", desc: "查看当前公开记录" },
+      ...selectable.map((item) => ({
+        action_id: `check:${item}`,
+        label: `查验${item}`,
+        desc: `查验 ${item} 的阵营`,
+        aliases: [`验${item}`, `看${item}`, `查${item}`],
+      })),
+      { action_id: "skip_check", label: "跳过", desc: "放弃本轮查验", aliases: ["不查验", "跳过查验"] },
+      { action_id: "view_status", label: "查看局势", desc: "查看当前公开记录", aliases: ["查看状态", "状态", "查看记录"] },
     ];
   }
   if (phase === "night_witch") {
     const lastNightTarget = scalarText(asRecord(session.hidden_state).wolf_target);
     const options: MiniGameActionOption[] = [];
     if (lastNightTarget) {
-      options.push({ action_id: `save:${lastNightTarget}`, label: `救${lastNightTarget}`, desc: `使用解药救下 ${lastNightTarget}` });
+      options.push({
+        action_id: `save:${lastNightTarget}`,
+        label: `救${lastNightTarget}`,
+        desc: `使用解药救下 ${lastNightTarget}`,
+        aliases: [`解药${lastNightTarget}`, `救人${lastNightTarget}`],
+      });
     }
     options.push(
-      ...selectable.map((item) => ({ action_id: `poison:${item}`, label: `毒${item}`, desc: `使用毒药淘汰 ${item}` })),
-      { action_id: "skip_witch", label: "双跳过", desc: "本轮不救人也不下毒" },
-      { action_id: "view_status", label: "查看记录", desc: "查看已公开记录" },
+      ...selectable.map((item) => ({
+        action_id: `poison:${item}`,
+        label: `毒${item}`,
+        desc: `使用毒药淘汰 ${item}`,
+        aliases: [`下毒${item}`, `毒杀${item}`],
+      })),
+      { action_id: "skip_witch", label: "双跳过", desc: "本轮不救人也不下毒", aliases: ["跳过女巫", "不救不毒", "跳过"] },
+      { action_id: "view_status", label: "查看记录", desc: "查看已公开记录", aliases: ["查看状态", "状态", "查看局势"] },
     );
     return options;
   }
   if (phase === "day_vote") {
     return [
-      ...selectable.map((item) => ({ action_id: `vote:${item}`, label: `投票${item}`, desc: `白天投票淘汰 ${item}` })),
-      { action_id: "abstain", label: "弃票", desc: "本轮放弃投票" },
-      { action_id: "view_record", label: "查看记录", desc: "查看昨夜结果与投票历史" },
+      ...selectable.map((item) => ({
+        action_id: `vote:${item}`,
+        label: `投票${item}`,
+        desc: `白天投票淘汰 ${item}`,
+        aliases: [`票${item}`, `投${item}`, `投给${item}`],
+      })),
+      { action_id: "abstain", label: "弃票", desc: "本轮放弃投票", aliases: ["不投票", "跳过投票"] },
+      { action_id: "view_record", label: "查看记录", desc: "查看昨夜结果与投票历史", aliases: ["查看状态", "状态", "查看局势"] },
     ];
   }
   return [
-    { action_id: "speak", label: "发言", desc: "参与白天讨论" },
-    { action_id: "begin_vote", label: "进入投票", desc: "结束讨论并进入投票" },
-    { action_id: "view_record", label: "查看记录", desc: "查看公开死亡与投票记录" },
+    { action_id: "speak", label: "发言", desc: "参与白天讨论", aliases: ["说话", "讨论", "表态"] },
+    { action_id: "begin_vote", label: "进入投票", desc: "结束讨论并进入投票", aliases: ["开始投票", "投票阶段", "结束讨论"] },
+    { action_id: "view_record", label: "查看记录", desc: "查看公开死亡与投票记录", aliases: ["查看状态", "状态", "查看局势"] },
   ];
 }
 
@@ -1582,19 +1608,19 @@ function fishingOptions(session: JsonRecord): MiniGameActionOption[] {
   const phase = normalizePhase(session.phase, "prepare");
   if (phase === "prepare") {
     return [
-      { action_id: "cast", label: "抛竿", desc: "开始本次垂钓" },
-      { action_id: "finish", label: "退出钓鱼", desc: "结束本次钓鱼" },
+      { action_id: "cast", label: "抛竿", desc: "开始本次垂钓", aliases: ["开始钓鱼", "甩竿", "下钩"] },
+      { action_id: "finish", label: "#退出结束", desc: "输入 #退出 结束当前钓鱼", aliases: ["收摊", "结束钓鱼", "离开水边"] },
     ];
   }
   if (phase === "waiting") {
     return [
-      { action_id: "wait_more", label: "收杆看结果", desc: "立即查看这一竿有没有收获" },
-      { action_id: "finish", label: "退出钓鱼", desc: "结束本次钓鱼" },
+      { action_id: "wait_more", label: "收杆看结果", desc: "立即查看这一竿有没有收获", aliases: ["收杆", "起竿", "看结果"] },
+      { action_id: "finish", label: "#退出结束", desc: "输入 #退出 结束当前钓鱼", aliases: ["结束钓鱼", "离开水边"] },
     ];
   }
   return [
-    { action_id: "cast", label: "继续钓鱼", desc: "继续下一轮垂钓" },
-    { action_id: "finish", label: "退出钓鱼", desc: "结束本次钓鱼" },
+    { action_id: "cast", label: "继续钓鱼", desc: "继续下一轮垂钓", aliases: ["继续", "再来一竿", "继续抛竿"] },
+    { action_id: "finish", label: "#退出结束", desc: "输入 #退出 结束当前钓鱼", aliases: ["结束钓鱼", "离开水边"] },
   ];
 }
 
@@ -1644,7 +1670,7 @@ function resolveFishingRound(session: JsonRecord, siteName: string): MiniGameSte
     hidden.fish_rarity = "";
     hidden.reward_kind = "";
     return {
-      narration: `你把鱼钩抛进 ${siteName}，片刻后水面恢复了平静，这一竿没有鱼也没有宝物。你可以继续钓鱼，或退出钓鱼。`,
+      narration: `你把鱼钩抛进 ${siteName}，片刻后水面恢复了平静，这一竿没有鱼也没有宝物。你可以继续钓鱼，或输入 #退出 结束当前钓鱼。`,
       resultTags: ["cast", "empty_hook"],
       memorySummary: "钓鱼空竿一次",
     };
@@ -1658,8 +1684,8 @@ function resolveFishingRound(session: JsonRecord, siteName: string): MiniGameSte
   publicState.last_result = reward.narrationType === "宝物" ? `钓到宝物：${reward.name}` : `钓到：${reward.name}`;
   return {
     narration: reward.narrationType === "宝物"
-      ? `你把鱼钩抛进 ${siteName}，水面猛地一晃，你顺势收杆，意外捞到了 ${reward.name}，已放入物品。你可以继续钓鱼，或退出钓鱼。`
-      : `你把鱼钩抛进 ${siteName}，鱼漂一沉，你顺势收杆，钓到了 ${reward.name}，已放入物品。你可以继续钓鱼，或退出钓鱼。`,
+      ? `你把鱼钩抛进 ${siteName}，水面猛地一晃，你顺势收杆，意外捞到了 ${reward.name}，已放入物品。你可以继续钓鱼，或输入 #退出 结束当前钓鱼。`
+      : `你把鱼钩抛进 ${siteName}，鱼漂一沉，你顺势收杆，钓到了 ${reward.name}，已放入物品。你可以继续钓鱼，或输入 #退出 结束当前钓鱼。`,
     resultTags: ["cast", "success", reward.kind],
     rewardSummary: { loot: reward.name },
     writeback: {
@@ -1713,12 +1739,12 @@ function fishingStep(session: JsonRecord, actionId: string): MiniGameStepResult 
 
 function cultivationOptions(): MiniGameActionOption[] {
   return [
-    { action_id: "breathe", label: "吐纳", desc: "积攒灵气" },
-    { action_id: "visualize", label: "观想", desc: "提升感悟" },
-    { action_id: "steady", label: "稳息", desc: "稳定心神" },
-    { action_id: "take_pill", label: "服丹", desc: "短时提高灵气" },
-    { action_id: "breakthrough", label: "冲关", desc: "尝试突破当前瓶颈" },
-    { action_id: "finish", label: "收功", desc: "安全结束本轮修炼" },
+    { action_id: "breathe", label: "吐纳", desc: "积攒灵气", aliases: ["吸收灵气", "运转灵气"] },
+    { action_id: "visualize", label: "观想", desc: "提升感悟", aliases: ["冥想", "参悟"] },
+    { action_id: "steady", label: "稳息", desc: "稳定心神", aliases: ["稳固气息", "稳住心神"] },
+    { action_id: "take_pill", label: "服丹", desc: "短时提高灵气", aliases: ["吃丹药", "服用丹药"] },
+    { action_id: "breakthrough", label: "冲关", desc: "尝试突破当前瓶颈", aliases: ["突破", "尝试突破"] },
+    { action_id: "finish", label: "收功", desc: "安全结束本轮修炼", aliases: ["结束修炼", "停下修炼"] },
   ];
 }
 
@@ -1934,13 +1960,13 @@ function alchemyStep(session: JsonRecord, actionId: string): MiniGameStepResult 
 
 function miningOptions(): MiniGameActionOption[] {
   return [
-    { action_id: "survey", label: "勘探", desc: "寻找矿脉弱点" },
-    { action_id: "excavate", label: "开采", desc: "稳定开采矿脉" },
-    { action_id: "careful_excavate", label: "精挖", desc: "提高稀有掉率" },
-    { action_id: "support", label: "支护", desc: "降低坍塌风险" },
-    { action_id: "clear", label: "清障", desc: "减轻负重或整理矿道" },
-    { action_id: "rest", label: "休息", desc: "恢复体力" },
-    { action_id: "leave", label: "撤离", desc: "带着收益离开" },
+    { action_id: "survey", label: "勘探", desc: "寻找矿脉弱点", aliases: ["探矿", "查看矿脉"] },
+    { action_id: "excavate", label: "开采", desc: "稳定开采矿脉", aliases: ["挖矿", "挖掘"] },
+    { action_id: "careful_excavate", label: "精挖", desc: "提高稀有掉率", aliases: ["精细开采", "慢慢挖"] },
+    { action_id: "support", label: "支护", desc: "降低坍塌风险", aliases: ["加固", "支撑矿道"] },
+    { action_id: "clear", label: "清障", desc: "减轻负重或整理矿道", aliases: ["清理障碍", "整理矿道"] },
+    { action_id: "rest", label: "休息", desc: "恢复体力", aliases: ["休整", "恢复体力"] },
+    { action_id: "leave", label: "撤离", desc: "带着收益离开", aliases: ["离开矿洞", "带矿离开"] },
   ];
 }
 
@@ -2151,7 +2177,7 @@ const RULEBOOKS: Record<string, MiniGameRulebook> = {
     phaseOrder: ["prepare", "waiting", "result", "settling"],
     triggerTags: ["#钓鱼"],
     passivePatterns: [/钓鱼/, /去钓鱼/, /开始钓鱼/, /抛竿/],
-    ruleSummary: "点击抛竿后立刻结算结果。可能空竿，也可能钓到鱼或宝物；有收获会直接加入物品。",
+    ruleSummary: "直接输入“抛竿”“收杆”“继续钓鱼”等动作。可能空竿，也可能钓到鱼或宝物；有收获会直接加入物品。",
     setup: (ctx, sessionId, entrySource) => ({
       session_id: sessionId,
       game_type: "fishing",
@@ -2372,7 +2398,8 @@ const RULEBOOKS: Record<string, MiniGameRulebook> = {
       syncBattlePublicState(session);
       return session;
     },
-    options: battleOptions,
+    // 战斗统一改成聊天框动作输入，规则本不再生成按钮式操作列表。
+    options: () => [],
     applyAction: battleStep,
   },
   upgrade_equipment: {
@@ -2521,8 +2548,9 @@ function applyMiniGameWriteback(state: JsonRecord, writeback: JsonRecord) {
 function refreshRuntimeUi(root: JsonRecord, narration: string, rulebook: MiniGameRulebook) {
   const session = asRecord(root.session);
   const ui = asRecord(root.ui);
-  const acceptsTextInput = isTextInputMiniGame(rulebook.gameType) && !["finished", "aborted"].includes(scalarText(session.status));
-  const options = acceptsTextInput ? [] : rulebook.options(session);
+  // 小游戏统一走聊天框交互，面板只负责展示状态，不再承担操作入口。
+  const acceptsTextInput = !["finished", "aborted"].includes(scalarText(session.status));
+  const options: MiniGameActionOption[] = [];
   session.player_options = options;
   ui.narration = narration;
   ui.player_options = options;
@@ -2541,11 +2569,11 @@ function buildStartNarration(rulebook: MiniGameRulebook, session: JsonRecord): s
   if (rulebook.gameType === "werewolf") {
     const player = asArray<JsonRecord>(session.participants).find((item) => item.role_type === "player");
     const roleMap = asRecord(asRecord(session.hidden_state).role_map);
-      const playerRole = scalarText(roleMap[player?.role_name || "用户"]) || "村民";
-      return `小游戏已开始：${rulebook.displayName}。你的身份是 ${playerRole}。当前阶段：${scalarText(session.phase)}。`;
+    const playerRole = scalarText(roleMap[player?.role_name || "用户"]) || "村民";
+    return `小游戏已开始：${rulebook.displayName}。你的身份是 ${playerRole}。当前阶段：${scalarText(session.phase)}。请直接输入“发言”“进入投票”“投票某人”“查验某人”“救某人”等动作。`;
   }
   if (rulebook.gameType === "fishing") {
-    return `你来到 ${scalarText(publicState.site_name) || "水边"}，准备开始钓鱼。先点击“抛竿”。`;
+    return `你来到 ${scalarText(publicState.site_name) || "水边"}，准备开始钓鱼。现在可以直接输入“抛竿”“收杆”或“继续钓鱼”。`;
   }
   if (rulebook.gameType === "research_skill") {
     return "研发技能开始了。直接输入技能名称、研发思路和测试方案，我会立即帮你判断能否成型。";
@@ -2570,25 +2598,52 @@ function buildStartNarration(rulebook: MiniGameRulebook, session: JsonRecord): s
 
 function normalizeActionId(input: string, options: MiniGameActionOption[]): string | null {
   const text = scalarText(input).replace(/^#/, "").trim();
+  const normalizedText = normalizeMiniGameActionText(input);
   if (!text) return null;
-  const exact = options.find((item) => text === item.action_id || text === item.label);
+  const exact = options.find((item) => {
+    const actionId = normalizeMiniGameActionText(item.action_id);
+    const label = normalizeMiniGameActionText(item.label);
+    return text === item.action_id || text === item.label || normalizedText === actionId || normalizedText === label;
+  });
   if (exact) return exact.action_id;
-  const aliasMatch = options.find((item) => (item.aliases || []).some((alias) => text === alias || text.includes(alias)));
+  const aliasMatch = options.find((item) => (item.aliases || []).some((alias) => {
+    const normalizedAlias = normalizeMiniGameActionText(alias);
+    return text === alias || text.includes(alias) || normalizedText === normalizedAlias || normalizedText.includes(normalizedAlias);
+  }));
   if (aliasMatch) return aliasMatch.action_id;
-  const fuzzy = options.find((item) => text.includes(item.label) || item.label.includes(text) || text.includes(item.action_id));
+  const fuzzy = options.find((item) => {
+    const label = normalizeMiniGameActionText(item.label);
+    const actionId = normalizeMiniGameActionText(item.action_id);
+    return text.includes(item.label)
+      || item.label.includes(text)
+      || text.includes(item.action_id)
+      || normalizedText.includes(label)
+      || label.includes(normalizedText)
+      || normalizedText.includes(actionId);
+  });
   return fuzzy?.action_id || null;
 }
 
 function buildStatusNarration(root: JsonRecord, rulebook: MiniGameRulebook): string {
   const session = asRecord(root.session);
   const publicState = asRecord(session.public_state);
+  if (rulebook.gameType === "werewolf") {
+    return `${rulebook.displayName}状态：当前阶段 ${scalarText(session.phase) || "进行中"}。可直接输入“发言”“进入投票”“投票某人”“查验某人”“救某人”或“查看记录”。`;
+  }
   if (rulebook.gameType === "fishing") {
     const reward = scalarText(publicState.last_reward);
     return [
       `钓鱼状态：${scalarText(publicState.current_status) || "准备抛竿"}。`,
       scalarText(publicState.last_result) ? `本轮结果：${scalarText(publicState.last_result)}。` : "",
       reward ? `最近收获：${reward}。` : "",
+      "可直接输入“抛竿”“收杆”或“继续钓鱼”。",
     ].filter(Boolean).join("");
+  }
+  if (rulebook.gameType === "cultivation") {
+    return `修炼状态：第 ${Number(session.round || 1)} 轮。可直接输入“吐纳”“观想”“稳息”“服丹”“冲关”“收功”。`;
+  }
+  if (rulebook.gameType === "mining") {
+    return `挖矿状态：矿脉剩余 ${Number(publicState.vein_hp || 0)}，危险度 ${Number(publicState.danger || 0)}。可直接输入“勘探”“开采”“精挖”“支护”“清障”“休息”“撤离”。`;
   }
   if (rulebook.gameType === "research_skill") {
     return `研发状态：${scalarText(publicState.last_result) || "等待方案"}。${scalarText(publicState.last_advice) || "直接输入技能名称、原理和测试思路。"}。`;
@@ -2606,8 +2661,17 @@ function buildStatusNarration(root: JsonRecord, rulebook: MiniGameRulebook): str
 }
 
 function buildRuleNarration(rulebook: MiniGameRulebook): string {
+  if (rulebook.gameType === "werewolf") {
+    return "狼人杀规则：通过聊天框直接输入“发言”“进入投票”“投票某人”“查验某人”“救某人”等动作，系统会根据当前阶段自动判断是否合法。";
+  }
   if (rulebook.gameType === "fishing") {
-    return "钓鱼规则：点击抛竿后立刻结算结果。可能空竿，也可能钓到鱼或宝物；有收获会直接加入物品。";
+    return "钓鱼规则：通过聊天框直接输入“抛竿”“收杆”“继续钓鱼”等动作推进。可能空竿，也可能钓到鱼或宝物；有收获会直接加入物品。";
+  }
+  if (rulebook.gameType === "cultivation") {
+    return "修炼规则：通过聊天框直接输入“吐纳”“观想”“稳息”“服丹”“冲关”“收功”等动作，系统会根据当前灵气、感悟和稳定度结算结果。";
+  }
+  if (rulebook.gameType === "mining") {
+    return "挖矿规则：通过聊天框直接输入“勘探”“开采”“精挖”“支护”“清障”“休息”“撤离”等动作，系统会实时更新矿脉剩余、危险度和负重。";
   }
   if (rulebook.gameType === "research_skill") {
     return "研发技能规则：直接输入技能名称、原理、测试方式和改良思路。我会判断是成功研发、保留碎片还是失败，并把结果写回角色参数或记忆。";
@@ -2631,6 +2695,23 @@ export async function handleMiniGameTurn(input: MiniGameControllerInput): Promis
   const hasActiveGame = isMiniGameActiveState(state);
 
   if (!hasActiveGame) {
+    // #退出 在没有激活小游戏时也要有稳定语义，不能再落到“未识别小游戏”分支。
+    // 这里顺手关闭目录态，避免用户已经退出却还残留上一拍的小游戏目录提示。
+    if (isForceQuitMiniGameCommand(input.playerMessage)) {
+      clearMiniGameCatalog(state);
+      return {
+        intercepted: true,
+        runtime: root,
+        message: {
+          role: scalarText(input.world?.narratorRole?.name) || "旁白",
+          roleType: "narrator",
+          eventType: "on_mini_game_abort",
+          content: "当前没有进行中的小游戏。若要进入小游戏，请输入 #+小游戏名称，如 #钓鱼。",
+          meta: { miniGameCatalog: asRecord(state.miniGameCatalog) },
+        },
+      };
+    }
+
     if (isMiniGameCatalogCommand(input.playerMessage)) {
       const catalog = openMiniGameCatalog(state);
       return {
@@ -2707,9 +2788,36 @@ export async function handleMiniGameTurn(input: MiniGameControllerInput): Promis
   const gameType = scalarText(activeSession.game_type);
   const rulebook = RULEBOOKS[gameType];
   if (!rulebook) return null;
+  const logMiniGameAction = (payload: {
+    normalizedInput?: string;
+    controlAction?: string;
+    actionId?: string;
+    battleActionId?: string;
+    resultTags?: string[];
+    intercepted?: boolean;
+  }) => {
+    DebugLogUtil.logMiniGameActionResolution("story:mini_game:stats", {
+      gameType: rulebook.gameType,
+      phase: scalarText(activeSession.phase),
+      status: scalarText(activeSession.status),
+      input: input.playerMessage,
+      normalizedInput: payload.normalizedInput || "",
+      controlAction: payload.controlAction || "",
+      actionId: payload.actionId || "",
+      battleActionId: payload.battleActionId || "",
+      resultTags: payload.resultTags || [],
+      intercepted: payload.intercepted,
+    });
+  };
 
   const controlAction = detectControlAction(input.playerMessage);
   if (controlAction === "view_status") {
+    logMiniGameAction({
+      normalizedInput: normalizeMiniGameActionText(input.playerMessage),
+      controlAction,
+      intercepted: true,
+      resultTags: ["view_status"],
+    });
     const narration = buildStatusNarration(root, rulebook);
     refreshRuntimeUi(root, narration, rulebook);
     return {
@@ -2725,6 +2833,12 @@ export async function handleMiniGameTurn(input: MiniGameControllerInput): Promis
     };
   }
   if (controlAction === "view_rules") {
+    logMiniGameAction({
+      normalizedInput: normalizeMiniGameActionText(input.playerMessage),
+      controlAction,
+      intercepted: true,
+      resultTags: ["view_rules"],
+    });
     const narration = buildRuleNarration(rulebook);
     refreshRuntimeUi(root, narration, rulebook);
     return {
@@ -2740,6 +2854,12 @@ export async function handleMiniGameTurn(input: MiniGameControllerInput): Promis
     };
   }
   if (controlAction === "suspend") {
+    logMiniGameAction({
+      normalizedInput: normalizeMiniGameActionText(input.playerMessage),
+      controlAction,
+      intercepted: true,
+      resultTags: ["suspend"],
+    });
     activeSession.status = "suspended";
     const narration = `小游戏已暂停。输入“恢复小游戏”或“继续”可返回当前局面。`;
     refreshRuntimeUi(root, narration, rulebook);
@@ -2756,6 +2876,12 @@ export async function handleMiniGameTurn(input: MiniGameControllerInput): Promis
     };
   }
   if (controlAction === "resume") {
+    logMiniGameAction({
+      normalizedInput: normalizeMiniGameActionText(input.playerMessage),
+      controlAction,
+      intercepted: true,
+      resultTags: ["resume"],
+    });
     if (scalarText(activeSession.status) === "suspended") {
       activeSession.status = "active";
     }
@@ -2763,7 +2889,7 @@ export async function handleMiniGameTurn(input: MiniGameControllerInput): Promis
       activeSession.pending_exit = false;
     }
     const narration = rulebook.gameType === "fishing"
-      ? "继续钓鱼吧，直接选择上面的操作。"
+      ? "继续钓鱼吧，直接在聊天框输入“抛竿”“收杆”或“继续钓鱼”。"
       : buildStatusNarration(root, rulebook);
     refreshRuntimeUi(root, narration, rulebook);
     return {
@@ -2779,6 +2905,12 @@ export async function handleMiniGameTurn(input: MiniGameControllerInput): Promis
     };
   }
   if (isForceQuitMiniGameCommand(input.playerMessage)) {
+    logMiniGameAction({
+      normalizedInput: normalizeMiniGameActionText(input.playerMessage),
+      controlAction: "force_quit",
+      intercepted: true,
+      resultTags: ["force_quit"],
+    });
     activeSession.status = "aborted";
     activeSession.phase = "settling";
     activeSession.result = "aborted";
@@ -2798,68 +2930,12 @@ export async function handleMiniGameTurn(input: MiniGameControllerInput): Promis
       },
     };
   }
-  if (controlAction === "request_quit" || (controlAction === "confirm_quit" && rulebook.gameType === "fishing")) {
-    if (rulebook.gameType === "fishing") {
-      activeSession.status = "aborted";
-      activeSession.phase = "settling";
-      activeSession.result = "aborted";
-      activeSession.finish_reason = "用户退出钓鱼";
-      activeSession.pending_exit = false;
-      const narration = "你收起鱼竿，退出了钓鱼。";
-      refreshRuntimeUi(root, narration, rulebook);
-      return {
-        intercepted: true,
-        runtime: root,
-        message: {
-          role: scalarText(input.world?.narratorRole?.name) || "旁白",
-          roleType: "narrator",
-          eventType: "on_mini_game_abort",
-          content: narration,
-          meta: buildMiniGameMeta(root),
-        },
-      };
-    }
-    activeSession.pending_exit = true;
-    const narration = rulebook.gameType === "fishing"
-      ? "要结束这次钓鱼吗？再点一次“确认退出”。"
-      : "当前小游戏仍在进行。若要放弃本局，请再输入“确认退出”。";
-    refreshRuntimeUi(root, narration, rulebook);
-    return {
-      intercepted: true,
-      runtime: root,
-      message: {
-        role: scalarText(input.world?.narratorRole?.name) || "旁白",
-        roleType: "narrator",
-        eventType: "on_mini_game_request_quit",
-        content: narration,
-        meta: buildMiniGameMeta(root),
-      },
-    };
-  }
-  if (controlAction === "confirm_quit" && activeSession.pending_exit) {
-    activeSession.status = "aborted";
-    activeSession.phase = "settling";
-    activeSession.result = "aborted";
-    activeSession.finish_reason = "用户确认退出小游戏";
-    activeSession.pending_exit = false;
-    const narration = rulebook.gameType === "fishing"
-      ? "你收起鱼竿，退出了钓鱼。"
-      : `你退出了 ${rulebook.displayName}。本局状态已保留为结束，可继续回到主线剧情。`;
-    refreshRuntimeUi(root, narration, rulebook);
-    return {
-      intercepted: true,
-      runtime: root,
-      message: {
-        role: scalarText(input.world?.narratorRole?.name) || "旁白",
-        roleType: "narrator",
-        eventType: "on_mini_game_abort",
-        content: narration,
-        meta: buildMiniGameMeta(root),
-      },
-    };
-  }
-
   if (scalarText(activeSession.status) === "suspended") {
+    logMiniGameAction({
+      normalizedInput: normalizeMiniGameActionText(input.playerMessage),
+      intercepted: true,
+      resultTags: ["blocked_suspended"],
+    });
     const narration = "当前小游戏已暂停。请先输入“恢复小游戏”或“继续”，然后再执行局内动作。";
     refreshRuntimeUi(root, narration, rulebook);
     return {
@@ -2878,7 +2954,13 @@ export async function handleMiniGameTurn(input: MiniGameControllerInput): Promis
   const options = rulebook.options(activeSession);
   if (isTextInputMiniGame(rulebook.gameType)) {
     const textInput = normalizeInlineText(input.playerMessage);
+    const normalizedInput = normalizeMiniGameActionText(input.playerMessage);
     if (!textInput) {
+      logMiniGameAction({
+        normalizedInput,
+        intercepted: true,
+        resultTags: ["invalid_empty_input"],
+      });
       const narration = `当前仍在 ${rulebook.displayName} 中，请直接输入你的方案。${buildMiniGameInputHint(rulebook)}。`;
       refreshRuntimeUi(root, narration, rulebook);
       return {
@@ -2900,6 +2982,11 @@ export async function handleMiniGameTurn(input: MiniGameControllerInput): Promis
     if (rulebook.gameType === "battle") {
       const battleAction = resolveBattleTextAction(activeSession, input.playerMessage);
       if (!battleAction) {
+        logMiniGameAction({
+          normalizedInput,
+          intercepted: true,
+          resultTags: ["invalid_battle_input"],
+        });
         const narration = `当前战斗只接受文字战斗指令。${buildMiniGameInputHint(rulebook)}。`;
         refreshRuntimeUi(root, narration, rulebook);
         return {
@@ -2915,6 +3002,12 @@ export async function handleMiniGameTurn(input: MiniGameControllerInput): Promis
         };
       }
       if (battleAction.actionId === "view_status") {
+        logMiniGameAction({
+          normalizedInput,
+          battleActionId: battleAction.actionId,
+          intercepted: true,
+          resultTags: ["view_status"],
+        });
         const narration = buildStatusNarration(root, rulebook);
         refreshRuntimeUi(root, narration, rulebook);
         return {
@@ -2930,12 +3023,33 @@ export async function handleMiniGameTurn(input: MiniGameControllerInput): Promis
         };
       }
       step = battleStep(activeSession, battleAction.actionId, input);
+      logMiniGameAction({
+        normalizedInput,
+        battleActionId: battleAction.actionId,
+        intercepted: true,
+        resultTags: step.resultTags || [],
+      });
     } else if (rulebook.gameType === "research_skill") {
       step = evaluateResearchSkillInput(activeSession, input);
+      logMiniGameAction({
+        normalizedInput,
+        intercepted: true,
+        resultTags: step.resultTags || [],
+      });
     } else if (rulebook.gameType === "alchemy") {
       step = evaluateAlchemyInput(activeSession, input);
+      logMiniGameAction({
+        normalizedInput,
+        intercepted: true,
+        resultTags: step.resultTags || [],
+      });
     } else {
       step = evaluateEquipmentInput(activeSession, input);
+      logMiniGameAction({
+        normalizedInput,
+        intercepted: true,
+        resultTags: step.resultTags || [],
+      });
     }
     const stateDelta = {
       public_state: buildStateDelta(beforePublicState, asRecord(activeSession.public_state)),
@@ -2990,6 +3104,11 @@ export async function handleMiniGameTurn(input: MiniGameControllerInput): Promis
   }
   const actionId = normalizeActionId(input.playerMessage, options);
   if (!actionId) {
+    logMiniGameAction({
+      normalizedInput: normalizeMiniGameActionText(input.playerMessage),
+      intercepted: true,
+      resultTags: ["invalid_action"],
+    });
     const narration = `当前仍在 ${rulebook.displayName} 中，请先完成、暂停或退出小游戏。当前合法动作：${options.map((item) => item.label).join("、")}。`;
     refreshRuntimeUi(root, narration, rulebook);
     return {
@@ -3009,6 +3128,12 @@ export async function handleMiniGameTurn(input: MiniGameControllerInput): Promis
   const beforeHiddenState = deepCloneRecord(asRecord(activeSession.hidden_state));
   const beforeResourceState = deepCloneRecord(asRecord(activeSession.resource_state));
   const step = rulebook.applyAction(activeSession, actionId, input);
+  logMiniGameAction({
+    normalizedInput: normalizeMiniGameActionText(input.playerMessage),
+    actionId,
+    intercepted: true,
+    resultTags: step.resultTags || [],
+  });
   const stateDelta = {
     public_state: buildStateDelta(beforePublicState, asRecord(activeSession.public_state)),
     hidden_state: buildStateDelta(beforeHiddenState, asRecord(activeSession.hidden_state)),
