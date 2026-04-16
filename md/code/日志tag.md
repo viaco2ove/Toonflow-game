@@ -23,10 +23,13 @@
 [story:event_progress:runtime]:AI故事-事件进度检测日志
 [story:event_progress:stats]: AI故事-事件进度检测 token 统计
 
+
 ## 后端通用tag
 [debug:revisit:not_found]: 回溯失败
 [debug:revisit]: 回溯相关
 [voice:preview:aliyun_ref_url]：把实际交给阿里的参考音频 URL 打出来
+[debug:mini-game]: 小游戏调试日志
+[debug:revisit:*]: 台词回溯调试日志
 
 # 事件链分析
 把日志里的编排流程过滤出来生成下面模版格式的md 文件，放到：logs/event_log/
@@ -43,3 +46,6 @@
   nextChapterId：
 ```
 编排流程文件生成命令： yarn debug:event-chain logs/app-2026-04-13.log 
+
+## 小游戏日志摘要生成
+yarn debug:mini-game logs/app-2026-04-16.log 

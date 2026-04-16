@@ -320,6 +320,67 @@ export class DebugLogUtil {
       entryCount: entries.length,
     };
   }
+
+  /**
+   * 根据小游戏输入命中日志生成 markdown 摘要。
+   *
+   * 用途：
+   * - 把 `story:mini_game:stats` 抽成可直接验收的简表；
+   * - 方便定位聊天框输入到底命中了哪个动作、是否被拦截、结果标签是什么。
+   */
+  static generateMiniGameActionSummaryMarkdown(logFilePath: string, outputMarkdownPath: string): {
+    outputPath: string;
+    entryCount: number;
+  } {
+    const rawLog = fs.readFileSync(logFilePath, "utf8");
+    const lines = rawLog.split(/\r?\n/);
+    const entries: MiniGameActionSummaryEntry[] = [];
+
+    lines.forEach((line) => {
+      if (!line.includes("[story:mini_game:stats] action=")) return;
+      const payload = parseJsonFromLogLine(line.replace("[story:mini_game:stats] action=", ""));
+      if (!payload) return;
+      entries.push({
+        gameType: readString(payload.gameType),
+        phase: readString(payload.phase),
+        status: readString(payload.status),
+        input: readString(payload.input),
+        normalizedInput: readString(payload.normalizedInput),
+        controlAction: readString(payload.controlAction),
+        actionId: readString(payload.actionId),
+        battleActionId: readString(payload.battleActionId),
+        resultTags: Array.isArray(payload.resultTags) ? payload.resultTags.map((item) => readString(item)).filter(Boolean) : [],
+        intercepted: Boolean(payload.intercepted),
+      });
+    });
+
+    const markdownLines = [
+      "# 小游戏输入命中摘要",
+      "",
+      ...entries.flatMap((entry, index) => {
+        return [
+          `## ${index + 1}. ${entry.gameType || "未知小游戏"}`,
+          "",
+          `- 阶段：${entry.phase || "未知"}`,
+          `- 状态：${entry.status || "未知"}`,
+          `- 原始输入：${entry.input || "空"}`,
+          `- 归一化输入：${entry.normalizedInput || "空"}`,
+          `- 控制动作：${entry.controlAction || "无"}`,
+          `- 命中动作：${entry.actionId || entry.battleActionId || "无"}`,
+          `- 结果标签：${entry.resultTags.length ? entry.resultTags.join("、") : "无"}`,
+          `- 是否拦截：${entry.intercepted ? "是" : "否"}`,
+          "",
+        ];
+      }),
+    ];
+
+    fs.mkdirSync(path.dirname(outputMarkdownPath), { recursive: true });
+    fs.writeFileSync(outputMarkdownPath, markdownLines.join("\n").trim() + "\n", "utf8");
+    return {
+      outputPath: outputMarkdownPath,
+      entryCount: entries.length,
+    };
+  }
 }
 
 type EventChainContext = {
@@ -346,6 +407,19 @@ type EventChainSummaryEntry = EventChainContext & {
   sessionStatus?: string;
   nextChapterId?: string;
   outcome?: string;
+};
+
+type MiniGameActionSummaryEntry = {
+  gameType?: string;
+  phase?: string;
+  status?: string;
+  input?: string;
+  normalizedInput?: string;
+  controlAction?: string;
+  actionId?: string;
+  battleActionId?: string;
+  resultTags: string[];
+  intercepted?: boolean;
 };
 
 /**

@@ -1619,7 +1619,7 @@ function fishingOptions(session: JsonRecord): MiniGameActionOption[] {
     ];
   }
   return [
-    { action_id: "cast", label: "继续钓鱼", desc: "继续下一轮垂钓", aliases: ["继续", "再来一竿", "继续抛竿"] },
+    { action_id: "cast", label: "继续钓鱼", desc: "继续下一轮垂钓", aliases: ["继续", "再来一竿", "继续抛竿", "抛竿", "甩竿", "下钩"] },
     { action_id: "finish", label: "#退出结束", desc: "输入 #退出 结束当前钓鱼", aliases: ["结束钓鱼", "离开水边"] },
   ];
 }
@@ -2876,33 +2876,33 @@ export async function handleMiniGameTurn(input: MiniGameControllerInput): Promis
     };
   }
   if (controlAction === "resume") {
-    logMiniGameAction({
-      normalizedInput: normalizeMiniGameActionText(input.playerMessage),
-      controlAction,
-      intercepted: true,
-      resultTags: ["resume"],
-    });
     if (scalarText(activeSession.status) === "suspended") {
+      logMiniGameAction({
+        normalizedInput: normalizeMiniGameActionText(input.playerMessage),
+        controlAction,
+        intercepted: true,
+        resultTags: ["resume"],
+      });
       activeSession.status = "active";
+      if (activeSession.pending_exit) {
+        activeSession.pending_exit = false;
+      }
+      const narration = rulebook.gameType === "fishing"
+        ? "继续钓鱼吧，直接在聊天框输入“抛竿”“收杆”或“继续钓鱼”。"
+        : buildStatusNarration(root, rulebook);
+      refreshRuntimeUi(root, narration, rulebook);
+      return {
+        intercepted: true,
+        runtime: root,
+        message: {
+          role: scalarText(input.world?.narratorRole?.name) || "旁白",
+          roleType: "narrator",
+          eventType: "on_mini_game_resume",
+          content: narration,
+          meta: buildMiniGameMeta(root),
+        },
+      };
     }
-    if (activeSession.pending_exit) {
-      activeSession.pending_exit = false;
-    }
-    const narration = rulebook.gameType === "fishing"
-      ? "继续钓鱼吧，直接在聊天框输入“抛竿”“收杆”或“继续钓鱼”。"
-      : buildStatusNarration(root, rulebook);
-    refreshRuntimeUi(root, narration, rulebook);
-    return {
-      intercepted: true,
-      runtime: root,
-      message: {
-        role: scalarText(input.world?.narratorRole?.name) || "旁白",
-        roleType: "narrator",
-        eventType: "on_mini_game_resume",
-        content: narration,
-        meta: buildMiniGameMeta(root),
-      },
-    };
   }
   if (isForceQuitMiniGameCommand(input.playerMessage)) {
     logMiniGameAction({

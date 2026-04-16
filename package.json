@@ -61,6 +61,7 @@
     "docker:autodl": "docker compose --env-file docker/.env.autodl -f docker/docker-compose.autodl.yml up -d --build",
     "debug:ai": "npx @ai-sdk/devtools",
     "debug:event-chain": "node scripts/generateEventChainSummary.js",
+    "debug:mini-game": "node scripts/generateMiniGameSummary.js",
     "license": "bun run scripts/license.ts",
     "voice:regen:presets": "tsx scripts/regenerateStoryVoicePresets.ts"
   },
