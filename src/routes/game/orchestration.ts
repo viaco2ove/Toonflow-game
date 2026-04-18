@@ -927,15 +927,18 @@ async function handleDebugPlayerTurn(params: {
   });
   if (miniGameResult?.intercepted) {
     // 小游戏命中了自己的状态机时，剧情编排本轮直接让位给小游戏结果。
-    const presetMessage = miniGameResult.message
-      ? {
-        role: miniGameResult.message.role,
-        roleType: miniGameResult.message.roleType,
-        eventType: miniGameResult.message.eventType,
-        content: miniGameResult.message.content,
-        createTime: nowTs(),
-      }
-      : null;
+    const presetMessages = (miniGameResult.messages && miniGameResult.messages.length
+      ? miniGameResult.messages
+      : miniGameResult.message
+        ? [miniGameResult.message]
+        : []
+    ).map((item) => ({
+      role: item.role,
+      roleType: item.roleType,
+      eventType: item.eventType,
+      content: item.content,
+      createTime: nowTs(),
+    }));
     return sendDebugSuccess(params.res, {
       userId: params.userId,
       worldId: params.worldId,
@@ -943,10 +946,10 @@ async function handleDebugPlayerTurn(params: {
       chapterTitle: responseChapterMeta.chapterTitle,
       state: params.state,
       endDialog: null,
-      plan: presetMessage
-        ? buildPresetPlan(presetMessage, { awaitUser: false, nextRole: "", nextRoleType: "" })
+      plan: presetMessages[0]
+        ? buildPresetPlan(presetMessages[0], { awaitUser: false, nextRole: "", nextRoleType: "" })
         : null,
-      messages: params.inputMessages,
+      messages: [...params.inputMessages, ...presetMessages],
     });
   }
 

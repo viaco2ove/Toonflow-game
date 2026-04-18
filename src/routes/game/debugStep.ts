@@ -455,13 +455,18 @@ export default router.post(
           state,
           historyMessages: messages,
           endDialog: null,
-          messages: miniGameResult.message ? [asDebugMessage({
-            role: miniGameResult.message.role,
-            roleType: miniGameResult.message.roleType,
-            eventType: miniGameResult.message.eventType,
-            content: miniGameResult.message.content,
+          messages: (miniGameResult.messages && miniGameResult.messages.length
+            ? miniGameResult.messages
+            : miniGameResult.message
+              ? [miniGameResult.message]
+              : []
+          ).map((item) => asDebugMessage({
+            role: item.role,
+            roleType: item.roleType,
+            eventType: item.eventType,
+            content: item.content,
             createTime: nowTs(),
-          })] : [],
+          })),
         })));
       }
 

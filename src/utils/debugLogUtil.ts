@@ -106,6 +106,35 @@ export class DebugLogUtil {
   }
 
   /**
+   * 统一打印显式“@记忆管理”指令的参数卡写回结果。
+   *
+   * 用途：
+   * - 明确看到这条输入是否真的命中了显式记忆指令解析；
+   * - 明确看到技能 / 物品 / 装备分别新增了什么；
+   * - 避免只看用户面板时无法判断是后端没写回，还是前端没刷新。
+   */
+  static logPlayerMemoryDirective(tag: string, payload: {
+    mode?: unknown;
+    applied?: unknown;
+    body?: unknown;
+    addedSkills?: unknown;
+    addedItems?: unknown;
+    addedEquipment?: unknown;
+    addedOther?: unknown;
+  }): void {
+    if (!DebugLogUtil.isDebugLogEnabled()) return;
+    console.log(`[${tag}] directive=${JSON.stringify({
+      mode: String(payload.mode || "").trim(),
+      applied: Boolean(payload.applied),
+      body: String(payload.body || "").trim(),
+      addedSkills: Array.isArray(payload.addedSkills) ? payload.addedSkills : [],
+      addedItems: Array.isArray(payload.addedItems) ? payload.addedItems : [],
+      addedEquipment: Array.isArray(payload.addedEquipment) ? payload.addedEquipment : [],
+      addedOther: Array.isArray(payload.addedOther) ? payload.addedOther : [],
+    })}`);
+  }
+
+  /**
    * 根据日志行里的 tag，抽取单轮编排链摘要并写成 markdown 文件。
    *
    * 输入：

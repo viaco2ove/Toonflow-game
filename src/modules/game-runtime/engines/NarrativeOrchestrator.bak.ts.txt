@@ -1811,10 +1811,8 @@ function normalizeAgeValue(input: unknown): number | null {
   return value;
 }
 
-// 从身份绑定输入里解析姓名、性别和年龄。
-// 这里只接受“异天,男,36”或“姓名:异天 性别:男 年龄:36”这类显式填写格式，
-// 禁止把“我是路过的”这种普通剧情对话误判成姓名。
-function parsePlayerProfileFromMessage(message: string): {
+// 从用户输入里解析姓名、性别和年龄。
+function parsePlayerProfileFromMessage(message: string, currentName: string): {
   name?: string;
   gender?: string;
   age?: number;
@@ -1826,32 +1824,59 @@ function parsePlayerProfileFromMessage(message: string): {
   if (!text) return {};
 
   const result: { name?: string; gender?: string; age?: number } = {};
-
-  // 紧凑格式：异天,男,36
-  const compact = text.match(/^([A-Za-z\u4e00-\u9fa5·•]{1,16})\s*[，,、/|｜]\s*(男|女|男性|女性|男生|女生)\s*[，,、/|｜]\s*(\d{1,3})\s*岁?$/u);
+  const compact = text.match(/^([A-Za-z\u4e00-\u9fa5·•]{1,12}?)(男|女)(?:性|生)?(?:[，,、/\s]+(\d{1,3})(?:岁)?)?$/u);
   if (compact) {
     result.name = normalizeScalarText(compact[1]);
     result.gender = normalizeGenderValue(compact[2]);
-    result.age = normalizeAgeValue(compact[3]) ?? undefined;
+    const age = normalizeAgeValue(compact[3]);
+    if (age !== null) result.age = age;
     return result;
   }
 
-  // 显式标签格式：姓名:异天 性别:男 年龄:36
-  const explicitName = text.match(/(?:姓名|名称|名字|角色名)\s*[:：]\s*([A-Za-z\u4e00-\u9fa5·•]{1,16})/u);
-  const explicitGender = text.match(/性别\s*[:：]\s*(男|女|男性|女性|男生|女生)/u);
-  const explicitAge = text.match(/年龄\s*[:：]\s*(\d{1,3})\s*岁?/u);
+  const explicitName = text.match(/(?:我叫|我是|姓名(?:是|[:：])?|名字(?:是|[:：])?)\s*([A-Za-z\u4e00-\u9fa5·•]{1,16})/u);
   if (explicitName) {
     result.name = normalizeScalarText(explicitName[1]);
   }
-  if (explicitGender) {
-    result.gender = normalizeGenderValue(explicitGender[1]);
+
+  const explicitGender = text.match(/(?:性别(?:是|[:：])?\s*)?(男|女|男性|女性|男生|女生)/u);
+  const gender = normalizeGenderValue(explicitGender?.[1]);
+  if (gender) {
+    result.gender = gender;
   }
-  if (explicitAge) {
-    result.age = normalizeAgeValue(explicitAge[1]) ?? undefined;
+
+  const explicitAge = text.match(/(?:年龄(?:是|[:：])?\s*|我今年|今年)\s*(\d{1,3})\s*岁?/u);
+  const age = normalizeAgeValue(explicitAge?.[1] || "");
+  if (age !== null) {
+    result.age = age;
+  }
+
+  if (!result.name && text.length <= 24) {
+    const segments = text
+      .split(/[，,、/|｜]/)
+      .map((item) => item.trim())
+      .filter(Boolean);
+    const hasProfileSegment = segments.some((item) => Boolean(normalizeGenderValue(item)) || normalizeAgeValue(item) !== null);
+    if (segments.length >= 2 && segments.length <= 4 && hasProfileSegment) {
+      const nameCandidate = segments.find((item) => /^[A-Za-z\u4e00-\u9fa5·•]{1,16}$/u.test(item) && !normalizeGenderValue(item) && normalizeAgeValue(item) === null);
+      if (nameCandidate) {
+        result.name = normalizeScalarText(nameCandidate);
+      }
+      if (!result.gender) {
+        const segmentGender = segments.map((item) => normalizeGenderValue(item)).find(Boolean);
+        if (segmentGender) result.gender = segmentGender;
+      }
+      if (result.age == null) {
+        const segmentAge = segments.map((item) => normalizeAgeValue(item)).find((item) => item != null) ?? null;
+        if (segmentAge !== null) result.age = segmentAge;
+      }
+    }
+  }
+
+  if (result.name === currentName) {
+    delete result.name;
   }
   return result;
 }
-
 
 // 将用户资料写回运行时状态和参数卡。
 export function applyPlayerProfileFromMessageToState(state: JsonRecord, world: any, message: unknown): JsonRecord {
@@ -1860,7 +1885,7 @@ export function applyPlayerProfileFromMessageToState(state: JsonRecord, world: a
   const currentPlayer = asRecord(state.player);
   const displayName = normalizeScalarText(rolePair.playerRole.name) || "用户";
   const currentName = normalizeScalarText(currentPlayer.name || displayName) || displayName;
-  const parsed = parsePlayerProfileFromMessage(text);
+  const parsed = parsePlayerProfileFromMessage(text, currentName);
   const identityAlreadyBound = currentPlayer.identity_bound === true;
   const parsedCompleteProfile = Boolean(parsed.name && parsed.gender && parsed.age != null);
   if (!parsed.name && !parsed.gender && parsed.age == null) {

@@ -35,6 +35,13 @@ export interface MiniGameControllerResult {
     content: string;
     meta: JsonRecord;
   } | null;
+  messages?: Array<{
+    role: string;
+    roleType: string;
+    eventType: string;
+    content: string;
+    meta: JsonRecord;
+  }>;
   runtime: JsonRecord | null;
 }
 
@@ -56,6 +63,14 @@ interface MiniGameRulebook {
 
 interface MiniGameStepResult {
   narration: string;
+  speakerRole?: string;
+  speakerRoleType?: string;
+  messages?: Array<{
+    role: string;
+    roleType: string;
+    eventType: string;
+    content: string;
+  }>;
   resultTags?: string[];
   rngUsed?: number[];
   rewardSummary?: JsonRecord;
@@ -577,6 +592,78 @@ function resolveWorldRoleByName(ctx: MiniGameControllerInput, name: string): Jso
 }
 
 /**
+ * 判断一个世界角色是否能承担“万能角色”兜底发言职责。
+ * 当敌人只是野怪且故事里存在万能角色时，优先让万能角色代替野怪发言。
+ */
+function isWildcardWorldRole(role: JsonRecord): boolean {
+  const haystack = [
+    scalarText(role.name),
+    scalarText(role.description),
+    scalarText(role.sample),
+    typeof role.parameterCardJson === "string" ? scalarText(role.parameterCardJson) : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
+  return /万能角色|万能/u.test(haystack);
+}
+
+/**
+ * 为当前战斗敌人选择一个真正负责说话的角色。
+ *
+ * 规则：
+ * - 敌人本身就是故事角色时，让该角色自己说话；
+ * - 敌人是野怪但世界里存在万能角色时，让万能角色代替野怪发言；
+ * - 只有找不到可发言角色时，才回退到旁白。
+ */
+function resolveBattleSpeaker(
+  session: JsonRecord,
+  ctx: MiniGameControllerInput,
+  preferredEnemy?: JsonRecord | null,
+): { role: string; roleType: string; speakerName: string; proxyEnemyName: string; viaWildcard: boolean; narratorFallback: boolean } {
+  const narratorName = scalarText(ctx.world?.narratorRole?.name) || "旁白";
+  const candidateEnemy = preferredEnemy || aliveBattleEnemies(session)[0] || null;
+  const proxyEnemyName = scalarText(candidateEnemy?.name) || "敌人";
+  const rolePool = worldRoles(ctx.world).map((item) => asRecord(item));
+  const roleEnemyId = scalarText(candidateEnemy?.role_id);
+  const roleEnemyName = scalarText(candidateEnemy?.name);
+  const exactRoleEnemy = rolePool.find((item) => {
+    const roleId = scalarText(item.id);
+    const roleName = scalarText(item.name);
+    return (roleEnemyId && roleId && roleId === roleEnemyId)
+      || (roleEnemyName && roleName && roleName === roleEnemyName);
+  });
+  if (exactRoleEnemy) {
+    return {
+      role: scalarText(exactRoleEnemy.name) || proxyEnemyName,
+      roleType: scalarText(exactRoleEnemy.roleType) || "npc",
+      speakerName: scalarText(exactRoleEnemy.name) || proxyEnemyName,
+      proxyEnemyName,
+      viaWildcard: false,
+      narratorFallback: false,
+    };
+  }
+  const wildcardRole = rolePool.find((item) => isWildcardWorldRole(item));
+  if (wildcardRole) {
+    return {
+      role: scalarText(wildcardRole.name) || narratorName,
+      roleType: scalarText(wildcardRole.roleType) || "npc",
+      speakerName: scalarText(wildcardRole.name) || narratorName,
+      proxyEnemyName,
+      viaWildcard: true,
+      narratorFallback: false,
+    };
+  }
+  return {
+    role: narratorName,
+    roleType: "narrator",
+    speakerName: narratorName,
+    proxyEnemyName,
+    viaWildcard: false,
+    narratorFallback: true,
+  };
+}
+
+/**
  * 为野怪或未命中世界角色的名称生成一份默认敌人简介。
  * 这样在敌人状态面板里不会只看到一个空名字。
  */
@@ -870,6 +957,8 @@ function finalizeBattleVictory(session: JsonRecord): MiniGameStepResult {
   session.public_state = publicState;
   return {
     narration: `旁白播报战报：你已经击败全部敌人。${rewardItems.length ? `本次战利品为 ${rewardItems.join("、")}。` : ""}获得 ${totalMoney} 金钱。${levelUp ? "同时，你在战斗中突破瓶颈，等级提升了一级。" : ""}战斗结束后，你的气血与法力都已经恢复到最佳状态。`,
+    speakerRole: "旁白",
+    speakerRoleType: "narrator",
     resultTags: ["success", "battle_victory"],
     rewardSummary: { money: totalMoney, items: rewardItems, levelUp },
     writeback: buildBattleVictoryWriteback(session, levelUp),
@@ -895,6 +984,8 @@ function finalizeBattleDefeat(session: JsonRecord): MiniGameStepResult {
   session.public_state = publicState;
   return {
     narration: "旁白播报战报：你在这场战斗中被彻底压制，只能暂时撤退。为了避免主线中断，你已经强行调息，恢复了部分气血与法力，随时可以重新规划下一步行动。",
+    speakerRole: "旁白",
+    speakerRoleType: "narrator",
     resultTags: ["failed", "battle_defeat"],
     rewardSummary: { retreat: true },
     writeback: {
@@ -974,6 +1065,7 @@ function battleStep(session: JsonRecord, actionId: string, ctx: MiniGameControll
     return victory;
   }
   const counterAttackLines: string[] = [];
+  let leadCounterEnemy: JsonRecord | null = null;
   aliveBattleEnemies(session).forEach((enemy) => {
     const name = scalarText(enemy.name) || "敌人";
     const level = Math.max(1, Number(enemy.level || 1));
@@ -982,10 +1074,10 @@ function battleStep(session: JsonRecord, actionId: string, ctx: MiniGameControll
       damage = Math.max(1, Math.floor(damage * 0.45));
     }
     userHp = clamp(userHp - damage, 0, userMaxHp);
-    const hostileLine = enemy.role_id
-      ? `${name}（扮演${name}）冷声喝道：“你还不配在这里放肆。”`
-      : `${name}低吼一声，露出獠牙扑了上来。`;
-    counterAttackLines.push(`${hostileLine}${name}趁势反击，打掉了你 ${damage} 点气血。`);
+    if (!leadCounterEnemy) {
+      leadCounterEnemy = enemy;
+    }
+    counterAttackLines.push(`${name}趁势反击，打掉了你 ${damage} 点气血。`);
   });
   publicState.user_hp = userHp;
   publicState.user_mp = userMp;
@@ -999,8 +1091,42 @@ function battleStep(session: JsonRecord, actionId: string, ctx: MiniGameControll
     return defeat;
   }
   syncBattlePublicState(session);
+  const battleSpeaker = resolveBattleSpeaker(session, ctx, leadCounterEnemy);
+  const counterSpeech = leadCounterEnemy
+    ? battleSpeaker.narratorFallback
+      ? `旁白播报：${battleSpeaker.proxyEnemyName}${battleSpeaker.viaWildcard ? "借由万能角色的气势" : ""}发起了下一轮攻击。`
+      : battleSpeaker.viaWildcard
+        ? `“${battleSpeaker.proxyEnemyName}可不会给你喘息的机会。”`
+        : `“你还不配在这里放肆。”`
+    : "";
+  const battleReport = `${narrations.join("")}${counterAttackLines.join("")}旁白播报：当前战斗仍在继续，${battleStatusSummary(session)}`;
   return {
-    narration: `${narrations.join("")}${counterAttackLines.join("")}当前战斗仍在继续，${battleStatusSummary(session)}`,
+    narration: counterSpeech ? `${counterSpeech}${battleReport}` : battleReport,
+    speakerRole: battleSpeaker.role,
+    speakerRoleType: battleSpeaker.roleType,
+    messages: counterSpeech
+      ? [
+        {
+          role: battleSpeaker.role,
+          roleType: battleSpeaker.roleType,
+          eventType: "on_mini_game",
+          content: counterSpeech,
+        },
+        {
+          role: scalarText(ctx.world?.narratorRole?.name) || "旁白",
+          roleType: "narrator",
+          eventType: "on_mini_game",
+          content: battleReport,
+        },
+      ]
+      : [
+        {
+          role: scalarText(ctx.world?.narratorRole?.name) || "旁白",
+          roleType: "narrator",
+          eventType: "on_mini_game",
+          content: battleReport,
+        },
+      ],
     resultTags: ["ongoing", "battle_round"],
     rewardSummary: {},
     memorySummary: `战斗推进一轮：${scalarText(publicState.current_target_name) || "敌人"}`,
@@ -2724,6 +2850,46 @@ function buildStartNarration(rulebook: MiniGameRulebook, session: JsonRecord): s
   return `小游戏已开始：${rulebook.displayName}。当前阶段：${scalarText(session.phase)}。可见状态：${summarizePublicState(publicState) || "暂无"}。`;
 }
 
+/**
+ * 为战斗开场生成带角色主体的发言内容。
+ * 角色敌人/万能角色优先承担宣战台词，旁白只在确实没有可发言角色时兜底。
+ */
+function buildBattleStartSpeech(session: JsonRecord, ctx: MiniGameControllerInput): { role: string; roleType: string; content: string } {
+  const aliveEnemies = aliveBattleEnemies(session);
+  const enemyNames = aliveEnemies.map((enemy) => scalarText(enemy.name)).filter(Boolean).join("、") || "敌人";
+  const leadTarget = aliveEnemies[0] || null;
+  const leadTargetName = scalarText(leadTarget?.name) || enemyNames;
+  const leadTargetLevel = Math.max(1, Number(leadTarget?.level || 1));
+  const speaker = resolveBattleSpeaker(session, ctx, leadTarget);
+  const content = speaker.narratorFallback
+    ? `旁白：准备好与 ${leadTargetName}(lv${leadTargetLevel}) 进行战斗了吗？当前敌人有 ${enemyNames}。从现在开始请直接输入文字战斗指令，例如“攻击${leadTargetName}”“施展技能攻击${leadTargetName}”“防御”或“调息回气”。`
+    : speaker.viaWildcard
+      ? `“${speaker.proxyEnemyName}已经盯上你了。”当前敌人有 ${enemyNames}。你现在可以直接输入文字战斗指令，例如“攻击${leadTargetName}”“施展技能攻击${leadTargetName}”“防御”或“调息回气”。`
+      : `“准备好接招了吗？”${speaker.speakerName}已经摆出战斗姿态。当前敌人有 ${enemyNames}。你现在可以直接输入文字战斗指令，例如“攻击${leadTargetName}”“施展技能攻击${leadTargetName}”“防御”或“调息回气”。`;
+  return {
+    role: speaker.role,
+    roleType: speaker.roleType,
+    content,
+  };
+}
+
+/**
+ * 给小游戏消息批量补齐统一 meta。
+ * 多条消息共用同一份小游戏状态快照，避免前端收到的每条消息元数据不一致。
+ */
+function attachMiniGameMeta(
+  messages: Array<{ role: string; roleType: string; eventType: string; content: string }>,
+  meta: JsonRecord,
+) {
+  return messages.map((item) => ({
+    role: item.role,
+    roleType: item.roleType,
+    eventType: item.eventType,
+    content: item.content,
+    meta,
+  }));
+}
+
 function normalizeActionId(input: string, options: MiniGameActionOption[]): string | null {
   const text = scalarText(input).replace(/^#/, "").trim();
   const normalizedText = normalizeMiniGameActionText(input);
@@ -2824,9 +2990,14 @@ export async function handleMiniGameTurn(input: MiniGameControllerInput): Promis
 
   if (!hasActiveGame) {
     // #退出 在没有激活小游戏时也要有稳定语义，不能再落到“未识别小游戏”分支。
-    // 这里顺手关闭目录态，避免用户已经退出却还残留上一拍的小游戏目录提示。
+    // 这里顺手关闭目录态，并彻底清掉可能残留的小游戏状态。
+    // 否则后端虽然判断“当前没有进行中的小游戏”，前端仍可能继续拿着旧 miniGame 状态挂面板。
     if (isForceQuitMiniGameCommand(input.playerMessage)) {
       clearMiniGameCatalog(state);
+      clearMiniGameSession(root);
+      // 已经显式退出过小游戏后，后续普通文本只能回到主线，
+      // 只有再次显式输入 #钓鱼 / #战斗 / 目录选择时才允许重新进入。
+      suppressPassiveMiniGameReentry(root);
       return {
         intercepted: true,
         runtime: root,
@@ -2902,16 +3073,30 @@ export async function handleMiniGameTurn(input: MiniGameControllerInput): Promis
       result_json: { narration },
       created_at: nowTs(),
     });
+    const battleStartSpeech = rulebook.gameType === "battle"
+      ? buildBattleStartSpeech(session, input)
+      : null;
+    const startMeta = buildMiniGameMeta(root);
     return {
       intercepted: true,
       runtime: root,
       message: {
-        role: scalarText(input.world?.narratorRole?.name) || "旁白",
-        roleType: "narrator",
+        role: battleStartSpeech?.role || scalarText(input.world?.narratorRole?.name) || "旁白",
+        roleType: battleStartSpeech?.roleType || "narrator",
         eventType: "on_mini_game_start",
-        content: narration,
-        meta: buildMiniGameMeta(root),
+        content: battleStartSpeech?.content || narration,
+        meta: startMeta,
       },
+      messages: battleStartSpeech
+        ? attachMiniGameMeta([
+          {
+            role: battleStartSpeech.role,
+            roleType: battleStartSpeech.roleType,
+            eventType: "on_mini_game_start",
+            content: battleStartSpeech.content,
+          },
+        ], startMeta)
+        : undefined,
     };
   }
 
@@ -3239,16 +3424,18 @@ export async function handleMiniGameTurn(input: MiniGameControllerInput): Promis
     const eventType = scalarText(activeSession.status) === "finished" || scalarText(activeSession.status) === "aborted"
       ? "on_mini_game_finish"
       : "on_mini_game";
+    const stepMeta = buildMiniGameMeta(root);
     return {
       intercepted: true,
       runtime: root,
       message: {
-        role: scalarText(input.world?.narratorRole?.name) || "旁白",
-        roleType: "narrator",
+        role: step.speakerRole || scalarText(input.world?.narratorRole?.name) || "旁白",
+        roleType: step.speakerRoleType || "narrator",
         eventType,
         content: narration,
-        meta: buildMiniGameMeta(root),
+        meta: stepMeta,
       },
+      messages: step.messages?.length ? attachMiniGameMeta(step.messages, stepMeta) : undefined,
     };
   }
   const aiIntent = await resolveMiniGameIntentByAi({

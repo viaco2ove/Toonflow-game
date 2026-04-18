@@ -25,6 +25,7 @@
 
 [story:memory:runtime]: AI故事-记忆管理agent日志
 [story:memory:stats]: AI故事-忆管理agent token 统计
+[story:memory_directive:stats]: 显式 @记忆管理 参数卡写回日志。打印是否命中，以及新增的技能/物品/装备/其他
 ## 后端通用tag
 [debug:revisit:not_found]: 回溯失败
 [debug:revisit]: 回溯相关

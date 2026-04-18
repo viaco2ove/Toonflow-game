@@ -1206,20 +1206,25 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
         await db("t_entityStateDelta").insert(deltaRows);
       }
 
-	      let narrativeMessageRow: any = null;
-	      if (miniGameResult.message) {
+      let narrativeMessageRow: any = null;
+      const miniGameMessages = miniGameResult.messages && miniGameResult.messages.length
+        ? miniGameResult.messages
+        : miniGameResult.message
+          ? [miniGameResult.message]
+          : [];
+      for (const item of miniGameMessages) {
         const inserted = await db("t_sessionMessage").insert({
           sessionId,
-          role: String(miniGameResult.message.role || state.narrator?.name || "旁白"),
-          roleType: String(miniGameResult.message.roleType || "narrator"),
-          content: String(miniGameResult.message.content || ""),
-          eventType: String(miniGameResult.message.eventType || "on_mini_game"),
-          meta: toJsonText(miniGameResult.message.meta || {}, {}),
+          role: String(item.role || state.narrator?.name || "旁白"),
+          roleType: String(item.roleType || "narrator"),
+          content: String(item.content || ""),
+          eventType: String(item.eventType || "on_mini_game"),
+          meta: toJsonText(item.meta || {}, {}),
           createTime: now,
         });
-	        const narrativeMessageId = normalizeMessageId(inserted);
-	        narrativeMessageRow = await db("t_sessionMessage").where({ id: narrativeMessageId }).first();
-	      }
+        const narrativeMessageId = normalizeMessageId(inserted);
+        narrativeMessageRow = await db("t_sessionMessage").where({ id: narrativeMessageId }).first();
+      }
 
 	      if (currentChapter) {
 	        syncChapterProgressWithRuntime(currentChapter, state);
