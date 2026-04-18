@@ -669,6 +669,8 @@ export default async (knex: Knex, forceInit: boolean = false): Promise<void> => 
 记忆：
 - 有新信息或变化 → trigger_memory_agent=true
 - 否则 false
+- 用户信息发生变化，等级，物品，技能 等→ trigger_memory_agent=true
+- 用户输入可"@记忆管理 xxx"  → trigger_memory_agent=true
 
 输出（逐行）：
 role_type:
@@ -874,11 +876,121 @@ result=continue:
           {
             id: 28,
             code: "story-mini-game",
-            name: "AI故事-小游戏控制",
+            name: "AI故事-小游戏Agent",
             type: "subAgent",
             parentCode: "story-main",
             defaultValue:
-              "你是小游戏控制器。你只处理小游戏局内规则、轮次、身份、资源和奖励，不改写主线剧情结构，不泄漏未解锁信息，结束后把状态回写主线快照。",
+              `你是小游戏动作解析器。你的任务不是直接执行小游戏，而是把用户在小游戏中的自然语言输入，归一成程序可执行的标准动作。
+
+## 任务
+根据：
+- 当前小游戏类型
+- 当前阶段与状态
+- 当前公开状态
+- 当前可执行动作列表
+- 用户最新输入
+
+判断用户此刻真正想做什么，并返回标准动作。
+
+## 约束
+1. 你只负责“理解用户想做什么”，不负责编写战报，不负责改写状态。
+2. 你必须优先理解当前小游戏上下文，不要把主线剧情内容混进来。
+3. 如果用户使用夸张、武侠、隐喻、口语表达，只要语义明确，就要归一到最接近的标准动作。
+4. 如果当前输入无法可靠命中任何动作，返回空 action_id。
+5. 如果用户是在指向某个目标（如敌人、投票对象），尽量提取 target_name。
+
+## 输出格式
+必须只输出一个 JSON 对象，不要解释，不要代码块。
+
+字段固定为：
+- action_id: string
+- target_name: string
+- reason: string
+
+## 输出示例
+{"action_id":"cast","target_name":"","reason":"用户表达的是开始下一轮钓鱼"}
+{"action_id":"vote:target","target_name":"萧炎","reason":"用户表达的是对白天投票对象做出选择"}
+{"action_id":"","target_name":"","reason":"当前输入无法稳定映射到任何合法动作"}`,
+            customValue: null,
+          },
+          {
+            id: 33,
+            code: "story-mini-game-battle",
+            name: "AI故事-小游戏-战斗",
+            type: "subAgent",
+            parentCode: "story-main",
+            defaultValue:
+              "你是战斗小游戏动作解析器。重点识别攻击、技能攻击、防御、调息回气、查看状态，以及用户提到的敌人目标名称。像“乾坤大挪移钓法”这种明显不属于战斗语境的说法不要误判为战斗动作。",
+            customValue: null,
+          },
+          {
+            id: 34,
+            code: "story-mini-game-fishing",
+            name: "AI故事-小游戏-钓鱼",
+            type: "subAgent",
+            parentCode: "story-main",
+            defaultValue:
+              "你是钓鱼小游戏动作解析器。重点识别抛竿、收杆、继续钓鱼、结束钓鱼。用户可能用武侠化、夸张化表达描述抛竿或继续钓鱼，只要语义接近，就要归一到正确动作。",
+            customValue: null,
+          },
+          {
+            id: 35,
+            code: "story-mini-game-werewolf",
+            name: "AI故事-小游戏-狼人杀",
+            type: "subAgent",
+            parentCode: "story-main",
+            defaultValue:
+              "你是狼人杀小游戏动作解析器。重点识别发言、进入投票、投票某人、查验某人、救某人、毒某人、查看记录，并尽量提取目标角色名称。",
+            customValue: null,
+          },
+          {
+            id: 36,
+            code: "story-mini-game-cultivation",
+            name: "AI故事-小游戏-修炼",
+            type: "subAgent",
+            parentCode: "story-main",
+            defaultValue:
+              "你是修炼小游戏动作解析器。重点识别吐纳、观想、稳息、服丹、冲关、收功。用户可能用更自由的修炼表达，你要归一到最接近的标准动作。",
+            customValue: null,
+          },
+          {
+            id: 37,
+            code: "story-mini-game-mining",
+            name: "AI故事-小游戏-挖矿",
+            type: "subAgent",
+            parentCode: "story-main",
+            defaultValue:
+              "你是挖矿小游戏动作解析器。重点识别勘探、开采、精挖、支护、清障、休息、撤离。用户可能用口语或策略描述表达动作意图，你要归一到标准动作。",
+            customValue: null,
+          },
+          {
+            id: 38,
+            code: "story-mini-game-research-skill",
+            name: "AI故事-小游戏-研发技能",
+            type: "subAgent",
+            parentCode: "story-main",
+            defaultValue:
+              "你是研发技能小游戏提示词。当前玩法主要接受用户直接输入完整研发方案，请你约束系统在该玩法里围绕技能名称、原理、测试与改良建议来理解上下文，不要偏离研发主题。",
+            customValue: null,
+          },
+          {
+            id: 39,
+            code: "story-mini-game-alchemy",
+            name: "AI故事-小游戏-炼药",
+            type: "subAgent",
+            parentCode: "story-main",
+            defaultValue:
+              "你是炼药小游戏提示词。当前玩法主要接受用户直接输入药方、药材搭配、火候与凝丹思路，请你约束系统围绕炼药主题理解上下文，不要偏离丹药制作。",
+            customValue: null,
+          },
+          {
+            id: 40,
+            code: "story-mini-game-upgrade-equipment",
+            name: "AI故事-小游戏-升级装备",
+            type: "subAgent",
+            parentCode: "story-main",
+            defaultValue:
+              "你是升级装备小游戏提示词。当前玩法主要接受用户直接输入目标装备和强化方案，请你约束系统围绕锻打、注灵、材料与稳定度理解上下文，不要偏离装备强化主题。",
             customValue: null,
           },
           {
@@ -924,6 +1036,7 @@ result=continue:
           { id: 15, configId: null, name: "AI故事-语音识别", key: "storyAsrModel" },
           { id: 16, configId: null, name: "AI故事-语音设计", key: "storyVoiceDesignModel" },
           { id: 19, configId: null, name: "AI故事-事件进度检测", key: "storyEventProgressModel" },
+          { id: 20, configId: null, name: "AI故事-小游戏动作解析", key: "storyMiniGameModel" },
         ]);
       },
     },

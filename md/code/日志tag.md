@@ -20,10 +20,11 @@
 
 [speaker:route] 角色发言路由选择日志。用于判断当前这轮走 fast / standard / template 哪条角色发言路径
 
-[story:event_progress:runtime]:AI故事-事件进度检测日志
+[story:event_progress:runtime]: AI故事-事件进度检测日志
 [story:event_progress:stats]: AI故事-事件进度检测 token 统计
 
-
+[story:memory:runtime]: AI故事-记忆管理agent日志
+[story:memory:stats]: AI故事-忆管理agent token 统计
 ## 后端通用tag
 [debug:revisit:not_found]: 回溯失败
 [debug:revisit]: 回溯相关

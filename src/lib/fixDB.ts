@@ -702,6 +702,7 @@ export default async (knex: Knex): Promise<void> => {
     { name: "AI故事-编排师", key: "storyOrchestratorModel" },
     { name: "AI故事-章节判定", key: "storyChapterJudgeModel" },
     { name: "AI故事-事件进度检测", key: "storyEventProgressModel" },
+    { name: "AI故事-小游戏动作解析", key: "storyMiniGameModel" },
     { name: "AI故事-快速角色发言", key: "storyFastSpeakerModel" },
     { name: "AI故事-角色发言", key: "storySpeakerModel" },
     { name: "AI故事-记忆管理", key: "storyMemoryModel" },
@@ -778,6 +779,8 @@ export default async (knex: Knex): Promise<void> => {
 记忆：
 - 有新信息或变化 → trigger_memory_agent=true
 - 否则 false
+- 用户信息发生变化，等级，物品，技能 等→ trigger_memory_agent=true
+- 用户输入可"@记忆管理 xxx"  → trigger_memory_agent=true
 
 输出（逐行）：
 role_type:
@@ -971,11 +974,109 @@ result=continue:
       },
       {
         code: "story-mini-game",
-        name: "AI故事-小游戏控制",
+        name: "AI故事-小游戏Agent",
         type: "subAgent",
         parentCode: "story-main",
         defaultValue:
-          "你是小游戏控制器。你只处理小游戏局内规则、轮次、身份、资源和奖励，不改写主线剧情结构，不泄漏未解锁信息，结束后把状态回写主线快照。",
+          `你是“小游戏动作解析 agent”。你的职责不是推进剧情，而是把用户在小游戏里的自然语言输入，识别成程序可执行的局内动作。
+
+## 你的输入
+系统会给你：
+- 当前小游戏类型
+- 当前阶段与状态
+- 当前公开状态摘要
+- 当前合法动作列表
+- 用户原话
+
+## 你的任务
+你只做一件事：
+- 判断用户现在想执行哪个局内动作
+- 如有目标对象，补出 target_name
+
+## 输出要求
+只能输出一个 JSON 对象，不要解释，不要代码块。
+
+字段固定为：
+- action_id: string
+- target_name: string
+- reason: string
+
+## 约束
+1. action_id 必须优先从“当前合法动作列表”里选择
+2. 不要编造不存在的动作
+3. 如果用户只是闲聊、抱怨或信息不足，action_id 输出空串
+4. 如果能理解出是在做什么，即使说法很花，也要归一到真实动作
+5. reason 要简短，说明为什么这样判断
+
+## 示例
+{"action_id":"cast","target_name":"","reason":"用户表达的是再次抛竿钓鱼"}
+{"action_id":"vote","target_name":"萧炎","reason":"用户明确表示要投票给萧炎"}
+{"action_id":"","target_name":"","reason":"用户输入未表达明确局内动作"}
+`,
+      },
+      {
+        code: "story-mini-game-battle",
+        name: "AI故事-小游戏-战斗",
+        type: "subAgent",
+        parentCode: "story-main",
+        defaultValue:
+          "你是战斗小游戏动作解析器。重点识别攻击、技能、防御、回气、查看状态，以及攻击目标是谁。像“乾坤大挪移钓法”这类明显不属于战斗的说法不要硬判成动作。",
+      },
+      {
+        code: "story-mini-game-fishing",
+        name: "AI故事-小游戏-钓鱼",
+        type: "subAgent",
+        parentCode: "story-main",
+        defaultValue:
+          "你是钓鱼小游戏动作解析器。重点识别抛竿、收杆、继续钓鱼、查看状态。像“乾坤大挪移钓法”“再来一竿”“甩一手”这类口语或夸张说法，只要语义是在继续垂钓，就应归一到合法动作。",
+      },
+      {
+        code: "story-mini-game-werewolf",
+        name: "AI故事-小游戏-狼人杀",
+        type: "subAgent",
+        parentCode: "story-main",
+        defaultValue:
+          "你是狼人杀小游戏动作解析器。重点识别发言、进入投票、投票目标、查验目标、救人、毒人、查看记录。请结合当前阶段，只在合法动作里选择。",
+      },
+      {
+        code: "story-mini-game-cultivation",
+        name: "AI故事-小游戏-修炼",
+        type: "subAgent",
+        parentCode: "story-main",
+        defaultValue:
+          "你是修炼小游戏动作解析器。重点识别吐纳、观想、稳息、服丹、冲关、收功。像“先稳一手”“我想突破一下”这类自然说法，要归一到合法动作。",
+      },
+      {
+        code: "story-mini-game-mining",
+        name: "AI故事-小游戏-挖矿",
+        type: "subAgent",
+        parentCode: "story-main",
+        defaultValue:
+          "你是挖矿小游戏动作解析器。重点识别勘探、开采、精挖、支护、清障、休息、撤离。只要语义接近当前合法动作，就应归一到对应动作。",
+      },
+      {
+        code: "story-mini-game-research-skill",
+        name: "AI故事-小游戏-研发技能",
+        type: "subAgent",
+        parentCode: "story-main",
+        defaultValue:
+          "你是研发技能小游戏提示词。当前玩法主要接受用户直接输入完整研发方案，请你约束系统在该玩法里围绕技能名称、原理、测试与改良建议来理解上下文，不要偏离研发主题。",
+      },
+      {
+        code: "story-mini-game-alchemy",
+        name: "AI故事-小游戏-炼药",
+        type: "subAgent",
+        parentCode: "story-main",
+        defaultValue:
+          "你是炼药小游戏提示词。当前玩法主要接受用户直接输入药方、药材搭配、火候与凝丹思路，请你约束系统围绕炼药主题理解上下文，不要偏离丹药制作。 ",
+      },
+      {
+        code: "story-mini-game-upgrade-equipment",
+        name: "AI故事-小游戏-升级装备",
+        type: "subAgent",
+        parentCode: "story-main",
+        defaultValue:
+          "你是升级装备小游戏提示词。当前玩法主要接受用户直接输入目标装备和强化方案，请你约束系统围绕锻打、注灵、材料与稳定度理解上下文，不要偏离装备强化主题。",
       },
       {
         code: "story-safety",

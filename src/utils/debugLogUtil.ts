@@ -83,6 +83,8 @@ export class DebugLogUtil {
     controlAction?: unknown;
     actionId?: unknown;
     battleActionId?: unknown;
+    resolverSource?: unknown;
+    resolverReason?: unknown;
     resultTags?: unknown;
     intercepted?: unknown;
   }): void {
@@ -96,6 +98,8 @@ export class DebugLogUtil {
       controlAction: String(payload.controlAction || "").trim(),
       actionId: String(payload.actionId || "").trim(),
       battleActionId: String(payload.battleActionId || "").trim(),
+      resolverSource: String(payload.resolverSource || "").trim(),
+      resolverReason: String(payload.resolverReason || "").trim(),
       resultTags: Array.isArray(payload.resultTags) ? payload.resultTags : [],
       intercepted: Boolean(payload.intercepted),
     })}`);
@@ -349,6 +353,8 @@ export class DebugLogUtil {
         controlAction: readString(payload.controlAction),
         actionId: readString(payload.actionId),
         battleActionId: readString(payload.battleActionId),
+        resolverSource: readString(payload.resolverSource),
+        resolverReason: readString(payload.resolverReason),
         resultTags: Array.isArray(payload.resultTags) ? payload.resultTags.map((item) => readString(item)).filter(Boolean) : [],
         intercepted: Boolean(payload.intercepted),
       });
@@ -367,6 +373,8 @@ export class DebugLogUtil {
           `- 归一化输入：${entry.normalizedInput || "空"}`,
           `- 控制动作：${entry.controlAction || "无"}`,
           `- 命中动作：${entry.actionId || entry.battleActionId || "无"}`,
+          `- 解析来源：${entry.resolverSource || "未知"}`,
+          `- 解析原因：${entry.resolverReason || "空"}`,
           `- 结果标签：${entry.resultTags.length ? entry.resultTags.join("、") : "无"}`,
           `- 是否拦截：${entry.intercepted ? "是" : "否"}`,
           "",
@@ -418,6 +426,8 @@ type MiniGameActionSummaryEntry = {
   controlAction?: string;
   actionId?: string;
   battleActionId?: string;
+  resolverSource?: string;
+  resolverReason?: string;
   resultTags: string[];
   intercepted?: boolean;
 };

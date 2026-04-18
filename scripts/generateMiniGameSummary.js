@@ -58,18 +58,20 @@ function generateMiniGameSummaryMarkdown(logFilePath, outputMarkdownPath) {
     if (!line.includes("[story:mini_game:stats] action=")) continue;
     const payload = parseJsonFromLogLine(line.replace("[story:mini_game:stats] action=", ""));
     if (!payload) continue;
-    entries.push({
-      gameType: readString(payload.gameType),
-      phase: readString(payload.phase),
-      status: readString(payload.status),
-      input: readString(payload.input),
-      normalizedInput: readString(payload.normalizedInput),
-      controlAction: readString(payload.controlAction),
-      actionId: readString(payload.actionId),
-      battleActionId: readString(payload.battleActionId),
-      resultTags: Array.isArray(payload.resultTags) ? payload.resultTags.map((item) => readString(item)).filter(Boolean) : [],
-      intercepted: Boolean(payload.intercepted),
-    });
+      entries.push({
+        gameType: readString(payload.gameType),
+        phase: readString(payload.phase),
+        status: readString(payload.status),
+        input: readString(payload.input),
+        normalizedInput: readString(payload.normalizedInput),
+        controlAction: readString(payload.controlAction),
+        actionId: readString(payload.actionId),
+        battleActionId: readString(payload.battleActionId),
+        resolverSource: readString(payload.resolverSource),
+        resolverReason: readString(payload.resolverReason),
+        resultTags: Array.isArray(payload.resultTags) ? payload.resultTags.map((item) => readString(item)).filter(Boolean) : [],
+        intercepted: Boolean(payload.intercepted),
+      });
   }
 
   const markdownLines = [
@@ -85,6 +87,8 @@ function generateMiniGameSummaryMarkdown(logFilePath, outputMarkdownPath) {
         `- 归一化输入：${entry.normalizedInput || "空"}`,
         `- 控制动作：${entry.controlAction || "无"}`,
         `- 命中动作：${entry.actionId || entry.battleActionId || "无"}`,
+        `- 解析来源：${entry.resolverSource || "未知"}`,
+        `- 解析原因：${entry.resolverReason || "空"}`,
         `- 结果标签：${entry.resultTags.length ? entry.resultTags.join("、") : "无"}`,
         `- 是否拦截：${entry.intercepted ? "是" : "否"}`,
         "",

@@ -26,6 +26,14 @@ export default router.post(
       "story-chapter",
       "story-event-progress",
       "story-mini-game",
+      "story-mini-game-battle",
+      "story-mini-game-fishing",
+      "story-mini-game-werewolf",
+      "story-mini-game-cultivation",
+      "story-mini-game-mining",
+      "story-mini-game-research-skill",
+      "story-mini-game-alchemy",
+      "story-mini-game-upgrade-equipment",
       "story-safety",
     ]);
 

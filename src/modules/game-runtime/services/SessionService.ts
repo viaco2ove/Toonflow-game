@@ -14,6 +14,7 @@ import {
   upsertRuntimeEventDigestState,
 } from "@/lib/gameEngine";
 import { ensureWorldRolesWithAiParameterCards } from "@/lib/roleParameterCard";
+import { applyExplicitMemoryDirectiveToPlayerCard } from "@/modules/game-runtime/services/PlayerMemoryDirectiveService";
 import { getCurrentUserId } from "@/lib/requestContext";
 import {
   applyMemoryResultToState,
@@ -1169,6 +1170,12 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
     contentPreview: messageContent.slice(0, 120),
     time: now,
   });
+
+  // 显式 @记忆管理 指令要在正式会话里同步写回用户参数卡，
+  // 不能只停留在记忆摘要层，否则用户详情面板看不到新增物品/装备/技能。
+  if (roleTypeValue === "player" && eventTypeValue === "on_message" && messageContent.trim()) {
+    applyExplicitMemoryDirectiveToPlayerCard(state, messageContent);
+  }
 
   if (roleTypeValue === "player" && eventTypeValue === "on_message" && messageContent.trim()) {
     const rawRecentMessages = await db("t_sessionMessage").where({ sessionId }).orderBy("id", "desc").limit(20);

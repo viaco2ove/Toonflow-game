@@ -28,6 +28,7 @@ import {
 } from "@/modules/game-runtime/engines/NarrativeOrchestrator";
 import { evaluateRuntimeOutcome } from "@/modules/game-runtime/services/ChapterRuntimeService";
 import { evaluateEventProgressByAi } from "@/modules/game-runtime/services/EventProgressRuntimeService";
+import { applyExplicitMemoryDirectiveToPlayerCard } from "@/modules/game-runtime/services/PlayerMemoryDirectiveService";
 import {
   AppliedDelta,
   TaskProgressChange,
@@ -592,6 +593,9 @@ export async function applyDebugUserMessageProgress(params: {
   if (!params.chapter) {
     return;
   }
+  // 显式 @记忆管理 指令需要先写回用户参数卡，
+  // 这样后续 storyInfo/角色详情面板会立即看到技能、物品、装备变化。
+  applyExplicitMemoryDirectiveToPlayerCard(params.state, params.messageContent);
   syncDebugChapterRuntime(params.chapter, params.state);
   // 先把原始当前事件送给 AI 判断，避免旧规则先根据宽信号把 phase 提前切到下一事件。
   const resolution = await evaluateEventProgressByAi({

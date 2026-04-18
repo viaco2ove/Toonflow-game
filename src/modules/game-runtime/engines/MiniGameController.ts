@@ -7,6 +7,7 @@ import {
 } from "@/lib/gameEngine";
 import { worldRoles } from "@/modules/game-runtime/engines/NarrativeOrchestrator";
 import { DebugLogUtil } from "@/utils/debugLogUtil";
+import { resolveMiniGameIntentByAi } from "@/modules/game-runtime/services/MiniGameIntentService";
 
 export interface MiniGameActionOption {
   action_id: string;
@@ -88,17 +89,17 @@ function uniqueTexts(items: string[]) {
 }
 
 const PASSIVE_CONFIRM_PATTERNS = [
-  /好/,
-  /开始/,
-  /来吧/,
-  /可以/,
-  /行/,
-  /同意/,
-  /参加/,
-  /试试/,
-  /那就/,
-  /一起/,
-  /继续/,
+  /^(好|好的|好啊|好吧)$/,
+  /^(开始|开始吧)$/,
+  /^(来吧|来)$/,
+  /^(可以|可以了|可以吧)$/,
+  /^(行|行啊|行吧)$/,
+  /^(同意|我同意)$/,
+  /^(参加|我参加)$/,
+  /^(试试|试一下|那就试试)$/,
+  /^(那就|那就来吧)$/,
+  /^(一起|一起吧)$/,
+  /^(继续|继续吧)$/,
 ];
 
 function asRecord(input: unknown): JsonRecord {
@@ -178,6 +179,7 @@ function ensureMiniGameRoot(state: JsonRecord): JsonRecord {
   root.ui = asRecord(root.ui);
   root.actionLog = asArray<JsonRecord>(root.actionLog);
   root.memorySummary = scalarText(root.memorySummary);
+  root.passiveReentrySuppressed = Boolean(root.passiveReentrySuppressed);
   state.miniGame = root;
   return root;
 }
@@ -190,6 +192,35 @@ function isMiniGameActiveState(state: JsonRecord): boolean {
   const session = asRecord(asRecord(state.miniGame).session);
   const status = scalarText(session.status) as MiniGameStatus;
   return activeStatuses().has(status);
+}
+
+/**
+ * 强制结束小游戏后，彻底清掉本轮小游戏会话与 UI 残留。
+ * 否则旧的 transcript 和面板状态仍可能让下一句普通输入再次误触发同一个小游戏。
+ */
+function clearMiniGameSession(root: JsonRecord) {
+  root.session = {};
+  root.rulebook = {};
+  root.ui = {};
+  root.actionLog = [];
+  root.writeback = {};
+  root.memorySummary = "";
+}
+
+/**
+ * #退出 后阻止被动再次进入小游戏。
+ * 只有显式的 #钓鱼 / #战斗 / 目录选择，才能重新开启小游戏。
+ */
+function suppressPassiveMiniGameReentry(root: JsonRecord) {
+  root.passiveReentrySuppressed = true;
+}
+
+/**
+ * 当用户显式要求进入小游戏时，解除被动重进抑制。
+ * 这样后续新的小游戏流程仍然可以正常运行。
+ */
+function clearPassiveMiniGameReentrySuppression(root: JsonRecord) {
+  root.passiveReentrySuppressed = false;
 }
 
 function detectControlAction(input: string): string | null {
@@ -675,6 +706,23 @@ function resolveBattleTextTarget(session: JsonRecord, playerMessage: string): Js
 }
 
 /**
+ * 优先按 AI 返回的目标名锁定战斗目标。
+ *
+ * 用途：
+ * - 小游戏 agent 可能只给出“攻击萧炎”里的目标名称；
+ * - 程序侧仍然需要把它落到具体 enemy_id，保证战斗状态机不直接吃自然语言。
+ */
+function resolveBattleTargetByName(session: JsonRecord, targetName: string): JsonRecord | null {
+  const aliveEnemies = aliveBattleEnemies(session);
+  if (!aliveEnemies.length) return null;
+  const normalizedTargetName = normalizeInlineText(targetName);
+  if (!normalizedTargetName) return null;
+  return aliveEnemies.find((enemy) => normalizeInlineText(scalarText(enemy.name)) === normalizedTargetName)
+    || aliveEnemies.find((enemy) => normalizeInlineText(scalarText(enemy.name)).includes(normalizedTargetName))
+    || null;
+}
+
+/**
  * 把文本战斗指令归一成 battleStep 可识别的动作。
  * 文档要求战斗不走面板式玩法，所以这里负责把自然语言转换成攻击/技能/防御/回气。
  */
@@ -699,6 +747,78 @@ function resolveBattleTextAction(session: JsonRecord, playerMessage: string): { 
     actionId: `${useSkill ? "skill" : "attack"}:${targetId}`,
     targetName,
   };
+}
+
+/**
+ * 生成给小游戏 agent 的合法动作清单。
+ *
+ * 用途：
+ * - 让模型只在当前合法动作里做归一化，不去发明不存在的玩法；
+ * - 战斗没有按钮动作列表，所以这里要补一份固定的程序动作。
+ */
+function buildMiniGameIntentOptions(session: JsonRecord, rulebook: MiniGameRulebook): MiniGameActionOption[] {
+  if (rulebook.gameType === "battle") {
+    return [
+      { action_id: "attack", label: "普通攻击", desc: "对当前目标或指定目标发起普通攻击", aliases: ["攻击", "平A", "普通攻击", "砍他", "打他"] },
+      { action_id: "skill", label: "技能攻击", desc: "施展功法、斗技或技能攻击目标", aliases: ["技能", "施展技能", "施展斗技", "用功法打", "放技能"] },
+      { action_id: "guard", label: "防御", desc: "本回合防御，降低承受伤害", aliases: ["防御", "格挡", "招架", "护体", "闪避"] },
+      { action_id: "recover", label: "回气", desc: "调息回气，恢复法力", aliases: ["回气", "调息", "回蓝", "恢复法力", "吐纳"] },
+      { action_id: "view_status", label: "查看状态", desc: "查看当前战斗状态", aliases: ["查看状态", "状态", "看看状态"] },
+    ];
+  }
+  return rulebook.options(session);
+}
+
+/**
+ * 使用小游戏 agent 尝试把自然语言解析成战斗动作。
+ *
+ * 用途：
+ * - 先让大模型理解“乾坤大挪移钓法”“帮我砍暴风狼”这类自由说法；
+ * - 解析失败时再回退当前规则匹配，保证行为稳定。
+ */
+async function resolveBattleActionByAgent(
+  session: JsonRecord,
+  rulebook: MiniGameRulebook,
+  ctx: MiniGameControllerInput,
+  latestNarration: string,
+): Promise<{ actionId: string; targetName: string; resolverSource: string; resolverReason: string } | null> {
+  const options = buildMiniGameIntentOptions(session, rulebook);
+  const intent = await resolveMiniGameIntentByAi({
+    userId: ctx.userId,
+    gameType: rulebook.gameType,
+    phase: scalarText(session.phase),
+    status: scalarText(session.status),
+    publicStateSummary: battleStatusSummary(session),
+    latestNarration,
+    userInput: ctx.playerMessage,
+    options: options.map((item) => ({
+      actionId: item.action_id,
+      label: item.label,
+      desc: item.desc,
+      aliases: item.aliases || [],
+    })),
+  });
+  if (!intent) return null;
+  if (intent.actionId === "view_status" || intent.actionId === "guard" || intent.actionId === "recover") {
+    return {
+      actionId: intent.actionId,
+      targetName: intent.targetName,
+      resolverSource: "ai",
+      resolverReason: intent.reason,
+    };
+  }
+  if (intent.actionId === "attack" || intent.actionId === "skill") {
+    const explicitTarget = resolveBattleTargetByName(session, intent.targetName);
+    const fallbackTarget = explicitTarget || resolveBattleTextTarget(session, intent.targetName || ctx.playerMessage);
+    if (!fallbackTarget) return null;
+    return {
+      actionId: `${intent.actionId}:${scalarText(fallbackTarget.enemy_id)}`,
+      targetName: scalarText(fallbackTarget.name),
+      resolverSource: "ai",
+      resolverReason: intent.reason,
+    };
+  }
+  return null;
 }
 
 /**
@@ -1067,7 +1187,11 @@ function buildParticipants(ctx: MiniGameControllerInput, count: number): JsonRec
   return [player, ...npcs.slice(0, Math.max(0, count - 1))];
 }
 
-function detectGameTrigger(message: string, recentMessages: Array<Record<string, any>> = []): { gameType: string; source: string } | null {
+function detectGameTrigger(
+  message: string,
+  recentMessages: Array<Record<string, any>> = [],
+  root: JsonRecord = {},
+): { gameType: string; source: string } | null {
   const text = scalarText(message);
   const transcript = [
     ...recentMessages.slice(-8).map((item) => `${scalarText(item.role)}:${scalarText(item.content)}`.trim()).filter(Boolean),
@@ -1078,6 +1202,10 @@ function detectGameTrigger(message: string, recentMessages: Array<Record<string,
     if (rulebook.triggerTags.some((tag) => text.includes(tag))) {
       return { gameType: rulebook.gameType, source: "active" };
     }
+  }
+  // #退出 后只允许显式命令重新进入小游戏，禁止继续依赖最近消息被动重触发。
+  if (Boolean(root.passiveReentrySuppressed)) {
+    return null;
   }
   const currentConfirmsPassive = PASSIVE_CONFIRM_PATTERNS.some((pattern) => pattern.test(text));
   for (const rulebook of Object.values(RULEBOOKS)) {
@@ -2743,10 +2871,12 @@ export async function handleMiniGameTurn(input: MiniGameControllerInput): Promis
       };
     }
 
-    const detected = catalogSelection.detected || detectGameTrigger(input.playerMessage, input.recentMessages);
+    const detected = catalogSelection.detected || detectGameTrigger(input.playerMessage, input.recentMessages, root);
     if (!detected) return null;
     const rulebook = RULEBOOKS[detected.gameType];
     if (!rulebook) return null;
+    // 只有显式标签或目录选择真正进入小游戏时，才解除退出后的被动重进抑制。
+    clearPassiveMiniGameReentrySuppression(root);
     clearMiniGameCatalog(state);
     const session = rulebook.setup(input, gameSessionId(detected.gameType), detected.source);
     root.rulebook = {
@@ -2793,6 +2923,8 @@ export async function handleMiniGameTurn(input: MiniGameControllerInput): Promis
     controlAction?: string;
     actionId?: string;
     battleActionId?: string;
+    resolverSource?: string;
+    resolverReason?: string;
     resultTags?: string[];
     intercepted?: boolean;
   }) => {
@@ -2805,6 +2937,8 @@ export async function handleMiniGameTurn(input: MiniGameControllerInput): Promis
       controlAction: payload.controlAction || "",
       actionId: payload.actionId || "",
       battleActionId: payload.battleActionId || "",
+      resolverSource: payload.resolverSource || "",
+      resolverReason: payload.resolverReason || "",
       resultTags: payload.resultTags || [],
       intercepted: payload.intercepted,
     });
@@ -2918,6 +3052,10 @@ export async function handleMiniGameTurn(input: MiniGameControllerInput): Promis
     activeSession.pending_exit = false;
     const narration = `你已强制退出 ${rulebook.displayName}，当前可继续回到主线剧情。`;
     refreshRuntimeUi(root, narration, rulebook);
+    // 生成退出播报后，立刻清空小游戏运行态，避免后续普通输入再次被旧小游戏上下文误触发。
+    clearMiniGameSession(root);
+    // 退出后进入主线阶段，只允许显式 #小游戏 / #钓鱼 这类命令重新进入，禁止被动再次命中。
+    suppressPassiveMiniGameReentry(root);
     return {
       intercepted: true,
       runtime: root,
@@ -2980,10 +3118,17 @@ export async function handleMiniGameTurn(input: MiniGameControllerInput): Promis
     const beforeResourceState = deepCloneRecord(asRecord(activeSession.resource_state));
     let step: MiniGameStepResult;
     if (rulebook.gameType === "battle") {
-      const battleAction = resolveBattleTextAction(activeSession, input.playerMessage);
+      const aiBattleAction = await resolveBattleActionByAgent(
+        activeSession,
+        rulebook,
+        input,
+        scalarText(asRecord(root.ui).narration),
+      );
+      const battleAction = aiBattleAction || resolveBattleTextAction(activeSession, input.playerMessage);
       if (!battleAction) {
         logMiniGameAction({
           normalizedInput,
+          resolverSource: aiBattleAction ? "ai" : "rule",
           intercepted: true,
           resultTags: ["invalid_battle_input"],
         });
@@ -3005,6 +3150,8 @@ export async function handleMiniGameTurn(input: MiniGameControllerInput): Promis
         logMiniGameAction({
           normalizedInput,
           battleActionId: battleAction.actionId,
+          resolverSource: aiBattleAction?.resolverSource || "rule",
+          resolverReason: aiBattleAction?.resolverReason || "",
           intercepted: true,
           resultTags: ["view_status"],
         });
@@ -3026,6 +3173,8 @@ export async function handleMiniGameTurn(input: MiniGameControllerInput): Promis
       logMiniGameAction({
         normalizedInput,
         battleActionId: battleAction.actionId,
+        resolverSource: aiBattleAction?.resolverSource || "rule",
+        resolverReason: aiBattleAction?.resolverReason || "",
         intercepted: true,
         resultTags: step.resultTags || [],
       });
@@ -3102,10 +3251,27 @@ export async function handleMiniGameTurn(input: MiniGameControllerInput): Promis
       },
     };
   }
-  const actionId = normalizeActionId(input.playerMessage, options);
+  const aiIntent = await resolveMiniGameIntentByAi({
+    userId: input.userId,
+    gameType: rulebook.gameType,
+    phase: scalarText(activeSession.phase),
+    status: scalarText(activeSession.status),
+    publicStateSummary: summarizePublicState(asRecord(activeSession.public_state)),
+    latestNarration: scalarText(asRecord(root.ui).narration),
+    userInput: input.playerMessage,
+    options: options.map((item) => ({
+      actionId: item.action_id,
+      label: item.label,
+      desc: item.desc,
+      aliases: item.aliases || [],
+    })),
+  });
+  const actionId = aiIntent?.actionId || normalizeActionId(input.playerMessage, options);
   if (!actionId) {
     logMiniGameAction({
       normalizedInput: normalizeMiniGameActionText(input.playerMessage),
+      resolverSource: aiIntent ? "ai" : "rule",
+      resolverReason: aiIntent?.reason || "",
       intercepted: true,
       resultTags: ["invalid_action"],
     });
@@ -3131,6 +3297,8 @@ export async function handleMiniGameTurn(input: MiniGameControllerInput): Promis
   logMiniGameAction({
     normalizedInput: normalizeMiniGameActionText(input.playerMessage),
     actionId,
+    resolverSource: aiIntent ? "ai" : "rule",
+    resolverReason: aiIntent?.reason || "",
     intercepted: true,
     resultTags: step.resultTags || [],
   });
