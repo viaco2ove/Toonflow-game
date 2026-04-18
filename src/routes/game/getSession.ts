@@ -76,6 +76,10 @@ export default router.post(
       const snapshot = await db("t_sessionStateSnapshot").where({ sessionId: sessionIdValue }).orderBy("id", "desc").first();
       const rawMessages = await db("t_sessionMessage").where({ sessionId: sessionIdValue }).orderBy("id", "desc").limit(limit);
       const messages = rawMessages.reverse().map((item: any) => normalizeMessageOutput(item));
+      // getSession 也必须和 storyInfo 一样，使用章节行数据回填当前章节标题。
+      // 否则安卓首次进入故事会先读到旧 state.chapterTitle，短时间内显示成上一章。
+      state.chapterId = activeChapterId || 0;
+      state.chapterTitle = String(chapter?.title || "").trim() || String(state.chapterTitle || "").trim();
 
       res.status(200).send(
         success({
