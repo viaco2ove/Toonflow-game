@@ -159,6 +159,7 @@ function generateEventChainSummaryMarkdown(logFilePath, outputMarkdownPath) {
   const entries = [];
   let currentEntry = null;
   let currentContext = {};
+  let pendingEntryPatch = {};
 
   /**
    * 把当前上下文灌进 entry。
@@ -177,6 +178,23 @@ function generateEventChainSummaryMarkdown(logFilePath, outputMarkdownPath) {
       outcome: entry.outcome || currentContext.outcome || "",
       nextChapterId: entry.nextChapterId || currentContext.nextChapterId || "",
     };
+  };
+
+  /**
+   * 把当前编排轮次里“先出现、后归属”的字段暂存起来。
+   *
+   * 用途：
+   * - 真实日志里 `response_preview/current_chapter` 往往早于 `当前事件`；
+   * - 如果此时直接创建 entry，会生成 `current_event: 0 ,无` 这种伪条目；
+   * - 正确做法是先缓存，等读到 `当前事件` 后再一次性归属到该条目。
+   */
+  const assignEntryField = (field, value) => {
+    if (!value) return;
+    if (currentEntry) {
+      currentEntry[field] = value;
+      return;
+    }
+    pendingEntryPatch[field] = value;
   };
 
   /**
@@ -227,30 +245,35 @@ function generateEventChainSummaryMarkdown(logFilePath, outputMarkdownPath) {
       const currentEventText = extractTableContent(line, "当前事件");
       currentEntry = applyContextToEntry({
         ...currentContext,
+        ...pendingEntryPatch,
         currentEventIndex: extractField(currentEventText, "index"),
         currentEventSummary: extractField(currentEventText, "summary") || currentEventText,
       });
+      pendingEntryPatch = {};
       continue;
     }
     if (line.includes("[story:orchestrator:stats] current_chapter=")) {
       const payload = parseJsonFromLogLine(line.replace("[story:orchestrator:stats] current_chapter=", ""));
       if (payload) {
         currentContext.chapterTitle = readString(payload.title);
-        currentEntry = applyContextToEntry(currentEntry || { ...currentContext });
-        currentEntry.chapterTitle = currentContext.chapterTitle;
+        if (currentEntry) {
+          currentEntry = applyContextToEntry(currentEntry);
+          currentEntry.chapterTitle = currentContext.chapterTitle;
+        }
       }
       continue;
     }
-    if (!currentEntry) continue;
     if (line.includes("[story:orchestrator:stats] response_preview=")) {
-      currentEntry.orchestratorResponse = extractAfter(line, "response_preview=");
-      currentEntry.triggerMemoryAgent = readTriggerMemoryAgentFromResponse(currentEntry.orchestratorResponse);
+      const orchestratorResponse = extractAfter(line, "response_preview=");
+      assignEntryField("orchestratorResponse", orchestratorResponse);
+      assignEntryField("triggerMemoryAgent", readTriggerMemoryAgentFromResponse(orchestratorResponse));
       continue;
     }
     if (line.includes("[story:memory:runtime] triggerMemoryAgent=")) {
-      currentEntry.triggerMemoryAgent = extractAfter(line, "triggerMemoryAgent=");
+      assignEntryField("triggerMemoryAgent", extractAfter(line, "triggerMemoryAgent="));
       continue;
     }
+    if (!currentEntry) continue;
     if (line.includes("[story:streamlines:stats] | 本轮动机 | ")) {
       currentEntry.motive = extractTableContent(line, "本轮动机");
       continue;
