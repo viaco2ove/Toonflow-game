@@ -25,7 +25,7 @@ const router = express.Router();
 /**
  * 统一返回故事运行态信息。
  * 该接口专门承载故事设定、当前章节事件和调试锚点等非台词数据，
- * 用来替代 streamlines/orchestration 里原先的大杂烩响应。
+ * 用来替代 /streamlines和/orchestration 里原先的大杂烩响应。
  */
 export default router.post(
   "/",

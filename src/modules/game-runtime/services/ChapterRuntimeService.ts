@@ -1,6 +1,7 @@
 import u from "@/utils";
 import {
   JsonRecord,
+  readChapterProgressState,
   readPhaseAwareRuntimeCurrentEventDigestState,
 } from "@/lib/gameEngine";
 import { applyChapterOutcomeToState, ChapterOutcomeResult, evaluateChapterOutcome } from "@/modules/game-runtime/engines/ChapterOutcomeEngine";
@@ -70,6 +71,25 @@ function getPromptValue(row: any): string {
 
 function unwrapModelText(input: unknown): string {
   return normalizeScalarText(input).replace(/^```[a-zA-Z]*\s*|\s*```$/g, "").trim();
+}
+
+/**
+ * 判断当前运行态是否已经进入“结束条件检查”阶段。
+ *
+ * 用途：
+ * - 章节判定返回 continue 时，并不代表一定要立刻把 current_event 切到 ending；
+ * - 如果正文事件还没完成，强行切到 ending 再被 sync 重算，会把 current_event 冲回错误的正文 phase；
+ * - 这里只允许已经处于 ending，或正文事件确实已经完成时，才激活 ending-check 状态。
+ */
+function shouldActivateEndingGuideState(input: EvaluateRuntimeOutcomeInput): boolean {
+  const currentProgress = readChapterProgressState(input.state);
+  const currentDigest = readPhaseAwareRuntimeCurrentEventDigestState(input.chapter, input.state);
+  const currentFlowType = normalizeScalarText(currentDigest.eventFlowType || currentProgress.eventKind).toLowerCase();
+  const currentKind = normalizeScalarText(currentDigest.eventKind || currentProgress.eventKind).toLowerCase();
+  if (currentKind === "ending" || currentFlowType === "chapter_ending_check") {
+    return true;
+  }
+  return currentProgress.eventStatus === "completed";
 }
 
 function normalizeResultObject(input: unknown): Record<string, unknown> | null {
@@ -610,14 +630,18 @@ export async function evaluateRuntimeOutcome(input: EvaluateRuntimeOutcomeInput)
 
   if (evaluation.hasRule && outcome === "continue") {
     input.state.__pendingEndingGuide = true;
-    activateChapterEndingCheckState({
-      chapter: input.chapter,
-      state: input.state,
-      reason: evaluation.reason || null,
-      guideSummary: evaluation.guideSummary || null,
-      guideFacts: Array.isArray(evaluation.guideFacts) ? evaluation.guideFacts : [],
-      eventStatus: "active",
-    });
+    // 只有真正进入章节结束检查阶段时，才允许把 current_event 切到 ending。
+    // 正文事件尚未完成时仅挂起 guide 标记，避免后续编排读取到被提前改写的事件索引。
+    if (shouldActivateEndingGuideState(input)) {
+      activateChapterEndingCheckState({
+        chapter: input.chapter,
+        state: input.state,
+        reason: evaluation.reason || null,
+        guideSummary: evaluation.guideSummary || null,
+        guideFacts: Array.isArray(evaluation.guideFacts) ? evaluation.guideFacts : [],
+        eventStatus: "active",
+      });
+    }
   } else {
     input.state.__pendingEndingGuide = false;
   }
