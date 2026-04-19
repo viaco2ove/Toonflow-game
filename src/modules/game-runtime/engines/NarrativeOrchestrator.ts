@@ -5,6 +5,7 @@ import {
   JsonRecord,
   RuntimeCurrentEventState,
   readDefaultRuntimeEventDigestWindowTextState,
+  readRuntimeDynamicEventByIndex,
   readRuntimeEventDigestWindowTextState,
   normalizeChapterRuntimeOutline,
   readRuntimeCurrentEventDigestState,
@@ -693,10 +694,21 @@ function readCurrentRuntimeEventContext(chapter: any, state: JsonRecord): {
   const phaseIndex = currentPhase ? phases.findIndex((item) => item.id === currentPhase.id) : -1;
   const phaseDerivedEventIndex = phaseIndex >= 0 ? phaseIndex + 1 : 0;
   const runtimeEventDigest = readPhaseAwareRuntimeCurrentEventDigestState(chapter, state);
+  const digestDynamicEvent = readRuntimeDynamicEventByIndex(
+    state,
+    Number(runtimeEventDigest.eventIndex || 0),
+  );
   // 当前章节 phaseId 是真实状态机的锚点。
   // 只要 phaseId 已经推进到新事件，就不能让旧 digest 再把编排上下文拉回旧事件。
+  // 这里除了 eventIndex，还要校验 digest 对应的动态事件 phaseId 是否仍属于当前 phase。
+  // 否则上一章 eventIndex=1 的摘要，会在下一章同样 eventIndex=1 时被误复用。
   const digestMatchesCurrentEvent = Number(runtimeEventDigest.eventIndex || 0) === Number(
     phaseDerivedEventIndex || runtimeEvent.index || progress.eventIndex || 0,
+  ) && (
+    !currentPhase
+    || !digestDynamicEvent
+    || !String(digestDynamicEvent.phaseId || "").trim()
+    || String(digestDynamicEvent.phaseId || "").trim() === String(currentPhase.id || "").trim()
   );
   if (runtimeEventDigest.eventSummary && digestMatchesCurrentEvent) {
     return {
@@ -1318,6 +1330,7 @@ function logOrchestratorPromptStats(
     }
     console.log(`[story:orchestrator:stats] System Prompt`);
     console.log(systemPrompt +"\n \n userPrompt:\n"+userPrompt);
+
     console.log(`[story:orchestrator:stats] 耗时: ${Number(timing?.totalMs || 0)}ms`);
 
 
@@ -2920,6 +2933,11 @@ async function doRunNarrativePlan(input: OrchestratorInput): Promise<NarrativePl
       (objectLike && Object.keys(objectLike).length ? objectLike.triggerMemoryAgent : undefined)
       || getPlainField(fieldMap, "trigger_memory_agent", "triggermemoryagent"),
     ) || memoryHints.length > 0;
+
+    if (DebugLogUtil.isDebugLogEnabled()) {
+       console.log(`[story:memory:runtime] triggerMemoryAgent=${triggerMemoryAgent}`);
+    }
+
     const rawEventAdjustMode = normalizeScalarText(
       (objectLike && Object.keys(objectLike).length ? objectLike.eventAdjustMode : undefined)
       || getPlainField(fieldMap, "event_adjust_mode", "eventadjustmode"),

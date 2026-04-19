@@ -121,6 +121,46 @@ export function clearAllSessionRevisitCaches(): void {
   SESSION_REVISIT_HOT.clear();
 }
 
+/**
+ * 切章时清理上一章残留的运行态事件缓存。
+ *
+ * 用途：
+ * - 正式游玩链切到下一章后，新章节同样会从 eventIndex=1 开始；
+ * - 如果保留上一章的 currentEvent/currentEventDigest/dynamicEvents/chapterProgress，
+ *   编排师就会把上一章的事件 1 误当成新章节的事件 1 继续使用；
+ * - 这里和调试链保持一致，在真正进入新章节前先把旧章事件缓存清空。
+ */
+function resetSessionChapterRuntimeOnSwitch(
+  state: Record<string, any>,
+  nextChapterId: number | null,
+  previousChapterId?: number | null,
+  nextChapterTitle?: string | null,
+): void {
+  const normalizedNextChapterId = Number(nextChapterId || 0) || 0;
+  const normalizedPreviousChapterId = Number(
+    previousChapterId ?? state.chapterId ?? 0,
+  ) || 0;
+  const chapterSwitched = normalizedNextChapterId > 0
+    && normalizedPreviousChapterId > 0
+    && normalizedNextChapterId !== normalizedPreviousChapterId;
+  if (!chapterSwitched) {
+    return;
+  }
+  // 这些字段都和“当前章节的事件推进”强绑定。
+  // 一旦切章还继续保留，后续读取 current_event 时就会串到上一章。
+  delete state.currentEvent;
+  delete state.currentEventDigest;
+  delete state.eventDigestWindow;
+  delete state.eventDigestWindowText;
+  delete state.dynamicEvents;
+  delete state.chapterProgress;
+  delete state.__pendingEndingGuide;
+  state.chapterId = normalizedNextChapterId;
+  if (String(nextChapterTitle || "").trim()) {
+    state.chapterTitle = String(nextChapterTitle || "").trim();
+  }
+}
+
 export interface AddSessionMessageInput {
   sessionId: string;
   roleType?: string | null;
@@ -1477,6 +1517,12 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
   if (nextChapterId && nextChapterId !== prevChapterId) {
     const switchedChapter = normalizeChapterOutput(await db("t_storyChapter").where({ id: nextChapterId }).first());
     if (switchedChapter) {
+      resetSessionChapterRuntimeOnSwitch(
+        state,
+        Number(switchedChapter.id || 0) || null,
+        prevChapterId,
+        String(switchedChapter.title || "").trim(),
+      );
       const openingMessage = resolveOpeningMessage(world, switchedChapter);
       const transitionMessages: RuntimeMessageInput[] = [];
       if (openingMessage && String(openingMessage.content || "").trim()) {
@@ -1916,6 +1962,12 @@ export async function orchestrateSessionTurn(sessionIdInput: string): Promise<Se
       ? normalizeChapterOutput(await db("t_storyChapter").where({ id: result.chapterId }).first())
       : null;
     if (activeChapter) {
+      resetSessionChapterRuntimeOnSwitch(
+        state,
+        Number(activeChapter.id || 0) || null,
+        currentChapterId,
+        String(activeChapter.title || "").trim(),
+      );
       initializeChapterProgressForState(activeChapter, state);
       syncChapterProgressWithRuntime(activeChapter, state);
     }
@@ -1940,7 +1992,14 @@ export async function orchestrateSessionTurn(sessionIdInput: string): Promise<Se
   };
 
   const buildChapterStartPlan = async (chapter: any): Promise<SessionOrchestrationResult> => {
+    resetSessionChapterRuntimeOnSwitch(
+      state,
+      Number(chapter.id || 0) || null,
+      currentChapterId,
+      String(chapter.title || "").trim(),
+    );
     state.chapterId = Number(chapter.id || 0) || null;
+    state.chapterTitle = String(chapter.title || "").trim() || String(state.chapterTitle || "").trim();
     const openingMessage = resolveOpeningMessage(world, chapter);
     setPendingSessionChapterId(state, null);
     setRuntimeTurnState(state, world, {
@@ -1976,7 +2035,8 @@ export async function orchestrateSessionTurn(sessionIdInput: string): Promise<Se
       world,
       chapter,
       state,
-      recentMessages: [],
+      // 切章启动同样需要保留最近对话窗口，避免编排师完全丢失上一轮真实上下文。
+      recentMessages,
       playerMessage: "",
       maxRetries: 0,
       allowControlHints: false,
@@ -1992,7 +2052,8 @@ export async function orchestrateSessionTurn(sessionIdInput: string): Promise<Se
       world,
       chapter,
       state,
-      recentMessages: [],
+      // 角色发言器也要看到相同的最近对话，否则会出现编排师与落地台词上下文不一致。
+      recentMessages,
       plan,
     });
     return finalizeOrchestrationResult({

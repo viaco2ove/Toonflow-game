@@ -2,6 +2,65 @@ const fs = require("fs");
 const path = require("path");
 
 /**
+ * 读取当前仓库里可用的日志候选，便于找不到文件时给出可操作提示。
+ */
+function listAvailableLogCandidates() {
+  const searchRoots = [
+    path.resolve("logs"),
+    path.resolve("logs/event_log"),
+  ];
+  const results = [];
+  for (const root of searchRoots) {
+    if (!fs.existsSync(root) || !fs.statSync(root).isDirectory()) {
+      continue;
+    }
+    const entries = fs.readdirSync(root, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isFile()) continue;
+      const fullPath = path.join(root, entry.name);
+      if (!/\.(log|md)$/i.test(entry.name)) continue;
+      results.push(fullPath);
+    }
+  }
+  return Array.from(new Set(results)).sort();
+}
+
+/**
+ * 解析输入路径。
+ *
+ * 用途：
+ * - 兼容用户直接传 `logs/app-xxxx.log`
+ * - 兼容只传文件名时自动去 `logs/`、`logs/event_log/` 下补找
+ * - 找不到时直接给出当前仓库内可用日志，避免只抛裸 `ENOENT`
+ */
+function resolveInputPath(inputPath) {
+  const rawInputPath = String(inputPath || "").trim();
+  const directPath = path.resolve(rawInputPath);
+  if (fs.existsSync(directPath)) {
+    return directPath;
+  }
+  const baseName = path.basename(rawInputPath);
+  const candidates = [
+    directPath,
+    path.resolve("logs", rawInputPath),
+    path.resolve("logs", baseName),
+    path.resolve("logs/event_log", rawInputPath),
+    path.resolve("logs/event_log", baseName),
+  ];
+  const resolved = candidates.find((candidate) => fs.existsSync(candidate));
+  if (resolved) {
+    return resolved;
+  }
+  const availableLogs = listAvailableLogCandidates()
+    .map((item) => path.relative(process.cwd(), item) || item)
+    .slice(0, 20);
+  const availableTips = availableLogs.length
+    ? `\n当前可用日志示例：\n- ${availableLogs.join("\n- ")}`
+    : "\n当前仓库下未找到 logs/ 或 logs/event_log/ 中的日志文件。";
+  throw new Error(`日志文件不存在：${rawInputPath}${availableTips}`);
+}
+
+/**
  * 解析命令行参数，得到输入日志和输出 md 路径。
  */
 function parseCliArgs(argv) {
@@ -12,10 +71,10 @@ function parseCliArgs(argv) {
   if (!inputPath) {
     throw new Error("缺少日志文件路径，示例：node scripts/generateEventChainSummary.js logs/app-2026-04-13.log");
   }
-  const normalizedInputPath = path.resolve(inputPath);
+  const normalizedInputPath = resolveInputPath(inputPath);
   const defaultOutputPath = path.resolve(
     "logs/event_log",
-    `${path.basename(inputPath, path.extname(inputPath))}.event_chain.summary.md`,
+    `${path.basename(normalizedInputPath, path.extname(normalizedInputPath))}.event_chain.summary.md`,
   );
   const outputPath = outputArg
     ? path.resolve(outputArg.startsWith("--output=") ? outputArg.slice("--output=".length) : outputArg)
@@ -121,6 +180,18 @@ function generateEventChainSummaryMarkdown(logFilePath, outputMarkdownPath) {
   };
 
   /**
+   * 从编排返回摘要里提取 trigger_memory_agent。
+   */
+  const readTriggerMemoryAgentFromResponse = (responseText) => {
+    const direct = extractField(responseText, "trigger_memory_agent");
+    if (direct) return direct;
+    const normalized = String(responseText || "").toLowerCase();
+    if (normalized.includes("trigger_memory_agent: true")) return "true";
+    if (normalized.includes("trigger_memory_agent: false")) return "false";
+    return "";
+  };
+
+  /**
    * 有实际内容的条目才写入结果。
    */
   const pushCurrentEntry = () => {
@@ -173,6 +244,11 @@ function generateEventChainSummaryMarkdown(logFilePath, outputMarkdownPath) {
     if (!currentEntry) continue;
     if (line.includes("[story:orchestrator:stats] response_preview=")) {
       currentEntry.orchestratorResponse = extractAfter(line, "response_preview=");
+      currentEntry.triggerMemoryAgent = readTriggerMemoryAgentFromResponse(currentEntry.orchestratorResponse);
+      continue;
+    }
+    if (line.includes("[story:memory:runtime] triggerMemoryAgent=")) {
+      currentEntry.triggerMemoryAgent = extractAfter(line, "triggerMemoryAgent=");
       continue;
     }
     if (line.includes("[story:streamlines:stats] | 本轮动机 | ")) {
@@ -245,6 +321,7 @@ function generateEventChainSummaryMarkdown(logFilePath, outputMarkdownPath) {
         `  - chapterTitle: ${chapterTitle}`,
       ];
       if (entry.orchestratorResponse) linesForEntry.push(`  - 返回了，${entry.orchestratorResponse}`);
+      if (entry.triggerMemoryAgent) linesForEntry.push(`  - 记忆管理触发：${entry.triggerMemoryAgent}`);
       if (entry.motive) linesForEntry.push(`  - 本轮动机，${entry.motive}`);
       if (entry.speech) linesForEntry.push(`  - 台词： ${entry.speech}`);
       if (entry.eventStage) {

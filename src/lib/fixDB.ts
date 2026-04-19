@@ -766,6 +766,7 @@ export default async (knex: Knex): Promise<void> => {
 3. motive 用一句短话（10~25字）说明本轮要做什么
 4. 不输出解释或多余内容
 5. 编排用户要返回"role":"用户" 而不是用户的具体名称
+6.@旁白：xxx 就是代码编排的角色是旁白的意思。@角色名 的意思。
 
 事件：
 - 若 event_summary 为空 → 必须补一句 summary + 1~2条 facts
@@ -780,7 +781,7 @@ export default async (knex: Knex): Promise<void> => {
 - 有新信息或变化 → trigger_memory_agent=true
 - 否则 false
 - 用户信息发生变化，等级，物品，技能 等→ trigger_memory_agent=true
-- 用户输入可"@记忆管理 xxx"  → trigger_memory_agent=true
+- 用户输入了"@记忆管理 xxx"  → trigger_memory_agent=true
 
 输出（逐行）：
 role_type:
@@ -823,6 +824,7 @@ event_facts:`,
 3. 不输出最终展示台词
 4. 优先推动事件目标，而非闲聊
 5. 控制节奏：避免连续 NPC 抢回合
+6.@旁白：xxx 就是代码编排的角色是旁白的意思。@角色名 的意思。
 
 事件控制：
 - event_summary：当前事件核心焦点（一句话）
@@ -843,7 +845,8 @@ event_facts:`,
 记忆策略：
 - 新事实 / 状态变化 /任务变化 → trigger_memory_agent=true
 - 普通对话 → false
-
+- 用户信息发生变化，等级，物品，技能 → trigger_memory_agent=true
+- 用户输入了"@记忆管理 xxx"  → trigger_memory_agent=true
 状态机：
 - event_adjust_mode:
   - keep：继续

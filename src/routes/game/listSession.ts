@@ -120,6 +120,13 @@ export default router.post(
         const latest = latestMessageMap.get(sessionId);
         const worldRow = worldMap.get(worldIdValue);
         const worldSettings = parseJsonSafe<any>(worldRow?.settings, {});
+        const resolvedChapterTitle = chapterIdValue > 0 ? chapterNameMap.get(chapterIdValue) || "" : "";
+        // listSession 返回的 state 也要同步回当前章节标题。
+        // 否则前端列表页和安卓恢复页会先拿到旧 state.chapterTitle，造成“chapterTitle=第2章，但 state 里还是第1章”。
+        if (runtimeState && typeof runtimeState === "object") {
+          runtimeState.chapterId = chapterIdValue > 0 ? chapterIdValue : null;
+          runtimeState.chapterTitle = resolvedChapterTitle || String(runtimeState.chapterTitle || "").trim();
+        }
         const eventView = readDefaultRuntimeEventViewState(runtimeState);
         return {
           sessionId,
@@ -128,7 +135,7 @@ export default router.post(
           worldIntro: String(worldRow?.intro || ""),
           worldCoverPath: String(worldRow?.coverPath || worldSettings?.coverPath || worldSettings?.coverBgPath || ""),
           chapterId: chapterIdValue > 0 ? chapterIdValue : null,
-          chapterTitle: chapterIdValue > 0 ? chapterNameMap.get(chapterIdValue) || "" : "",
+          chapterTitle: resolvedChapterTitle,
           projectId: projectIdValue || null,
           projectName: projectIdValue > 0 ? projectNameMap.get(projectIdValue) || "" : "",
           title: String(item.title || ""),
