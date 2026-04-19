@@ -1,4 +1,5 @@
 import {
+  extractFirstChapterDialogueLine,
   getGameDb,
   JsonRecord,
   normalizeRolePair,
@@ -9,14 +10,12 @@ import {
 } from "@/lib/gameEngine";
 import { ensureWorldRolesWithAiParameterCards } from "@/lib/roleParameterCard";
 import {
-  advanceNarrativeUntilPlayerTurn,
-  applyNarrativeMemoryHintsToState,
   resolveOpeningMessage,
-  runNarrativeOrchestrator,
   RuntimeMessageInput,
   setRuntimeTurnState,
   summarizeNarrativePlan,
 } from "@/modules/game-runtime/engines/NarrativeOrchestrator";
+import { syncChapterProgressWithRuntime } from "@/modules/game-runtime/engines/ChapterProgressEngine";
 
 const CHAPTER_INITIAL_SNAPSHOT_KEY = "chapterInitialSnapshots";
 const PUBLISH_FAILURE_REASON_KEY = "publishFailureReason";
@@ -104,7 +103,59 @@ export function readChapterInitialSnapshotCache(input: {
   return snapshot;
 }
 
-// 预生成章节第一轮运行时快照，避免首次 startSession 同步等待开场编排。
+/**
+ * 生成章节开局应直接落库的初始消息列表。
+ *
+ * 用途：
+ * - 章节初始快照必须和 `startSession` 首次未命中缓存时的行为保持一致；
+ * - 这里只构造“开场白 + 正文第一条显式台词”，不执行任何自动编排；
+ * - 这样正式会话始终从当前章节的第一事件起步，而不是提前推进到下一事件。
+ */
+function buildChapterInitialMessages(input: {
+  world: JsonRecord;
+  chapter: JsonRecord;
+  state: JsonRecord;
+  createTime: number;
+}): RuntimeMessageInput[] {
+  const messages: RuntimeMessageInput[] = [];
+  const openingMessage = resolveOpeningMessage(input.world, input.chapter);
+  if (openingMessage && String(openingMessage.content || "").trim()) {
+    messages.push({
+      role: String(openingMessage.role || input.state.narrator?.name || "旁白"),
+      roleType: String(openingMessage.roleType || "narrator"),
+      eventType: String(openingMessage.eventType || "on_enter_chapter"),
+      content: String(openingMessage.content || ""),
+      createTime: input.createTime,
+    });
+  }
+
+  const firstDialogue = extractFirstChapterDialogueLine(input.chapter.content);
+  const firstDialogueContent = String(firstDialogue?.line || "").trim();
+  const openingContent = String(openingMessage?.content || "").trim();
+  if (!firstDialogue || !firstDialogueContent || firstDialogueContent === openingContent) {
+    return messages;
+  }
+
+  const firstDialogueRole = String(firstDialogue.role || "").trim();
+  const narratorName = String(input.state.narrator?.name || "旁白").trim();
+  const userName = String(input.state.player?.name || "用户").trim();
+  let roleType = "npc";
+  if (!firstDialogueRole || firstDialogueRole === narratorName || firstDialogueRole === "旁白") {
+    roleType = "narrator";
+  } else if (firstDialogueRole === userName || firstDialogueRole === "用户") {
+    roleType = "player";
+  }
+  messages.push({
+    role: firstDialogueRole || narratorName,
+    roleType,
+    eventType: "on_enter_chapter",
+    content: firstDialogueContent,
+    createTime: input.createTime + 1,
+  });
+  return messages;
+}
+
+// 预生成章节开局运行时快照，避免首次 startSession 同步等待初始化。
 export async function buildChapterInitialSnapshotCache(input: {
   userId: number;
   world: unknown;
@@ -122,52 +173,28 @@ export async function buildChapterInitialSnapshotCache(input: {
   const rolePair = normalizeRolePair(world.playerRole, world.narratorRole);
   const state = normalizeSessionState(null, Number(world.id || 0), Number(chapter.id || 0), rolePair, world);
   const createTime = nowTs();
-  const messages: RuntimeMessageInput[] = [];
-  let plan: ReturnType<typeof summarizeNarrativePlan> = null;
-
-  const openingMessage = resolveOpeningMessage(world, chapter);
-  if (openingMessage && String(openingMessage.content || "").trim()) {
-    messages.push({
-      role: String(openingMessage.role || state.narrator?.name || "旁白"),
-      roleType: String(openingMessage.roleType || "narrator"),
-      eventType: String(openingMessage.eventType || "on_enter_chapter"),
-      content: String(openingMessage.content || ""),
-      createTime,
-    });
-  }
+  const messages = buildChapterInitialMessages({
+    world,
+    chapter,
+    state,
+    createTime,
+  });
+  const plan: ReturnType<typeof summarizeNarrativePlan> = null;
+  const normalizedContent = String(chapter.content || "").replace(/\r\n/g, "\n");
+  const explicitDialogueCount = (normalizedContent.match(/^@[^:\n：]+\s*[:：]/gm) || []).length;
+  const shouldWaitUserInput = explicitDialogueCount <= 1 && messages.length > 1;
 
   setRuntimeTurnState(state, world, {
-    canPlayerSpeak: false,
-    expectedRoleType: "narrator",
-    expectedRole: String(state.narrator?.name || "旁白"),
+    canPlayerSpeak: shouldWaitUserInput,
+    expectedRoleType: shouldWaitUserInput ? "player" : "narrator",
+    expectedRole: shouldWaitUserInput
+      ? String(state.player?.name || "用户")
+      : String(state.narrator?.name || "旁白"),
     lastSpeakerRoleType: String(messages[messages.length - 1]?.roleType || "narrator"),
     lastSpeaker: String(messages[messages.length - 1]?.role || state.narrator?.name || "旁白"),
   });
-
-  const orchestrator = await runNarrativeOrchestrator({
-    userId: Number(input.userId || 0),
-    world,
-    chapter,
-    state,
-    recentMessages: messages,
-    playerMessage: "",
-    maxRetries: 0,
-    allowControlHints: false,
-    allowStateDelta: false,
-  });
-  const orchestrated = await advanceNarrativeUntilPlayerTurn({
-    userId: Number(input.userId || 0),
-    world,
-    chapter,
-    state,
-    recentMessages: messages,
-    playerMessage: "",
-    initialResult: orchestrator,
-    maxAutoTurns: 1,
-  });
-  plan = summarizeNarrativePlan(orchestrator);
-  messages.push(...orchestrated.messages);
-  applyNarrativeMemoryHintsToState(state, orchestrator.memoryHints);
+  // 初始快照只保留章节开局态，不允许在预热阶段自动推进章节事件。
+  syncChapterProgressWithRuntime(chapter, state);
 
   return {
     world,

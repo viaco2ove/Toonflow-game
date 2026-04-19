@@ -27,6 +27,7 @@ import {
   applyPlayerProfileFromMessageToState,
   canPlayerSpeakNow,
   resolveOpeningMessage,
+  refreshStoryMemoryBestEffort,
   runNarrativePlan,
   runNarrativeOrchestrator,
   setRuntimeTurnState,
@@ -1543,6 +1544,23 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
       });
       initializeChapterProgressForState(switchedChapter, state);
       syncChapterProgressWithRuntime(switchedChapter, state);
+      // 切章后的第一轮编排必须先消费上一章末尾新增的消息记忆，
+      // 否则模型会拿着旧记忆直接编排新章节，容易把上一章的目标/角色关系带进来。
+      const recentMessagesForChapterSwitchMemory = await loadIncrementalMessagesForMemory(db, sessionId, state);
+      if (recentMessagesForChapterSwitchMemory.length) {
+        await refreshStoryMemoryBestEffort({
+          userId: currentUserId,
+          world,
+          chapter: switchedChapter,
+          state,
+          recentMessages: recentMessagesForChapterSwitchMemory,
+        });
+        const lastMemoryMessageId = recentMessagesForChapterSwitchMemory.reduce((max, item) => {
+          const currentId = Number(item?.messageId || 0);
+          return Number.isFinite(currentId) && currentId > max ? currentId : max;
+        }, 0);
+        setMemoryCursor(state, lastMemoryMessageId, now);
+      }
       const orchestrator = await runNarrativeOrchestrator({
         userId: currentUserId,
         world,
