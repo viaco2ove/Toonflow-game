@@ -701,7 +701,6 @@ event_facts:`,
 - 发言动机（motive）
 - 剧情如何推进（通过角色行动/信息）
 - 是否轮到用户（await_user）
-- 下一步角色（next_speaker）
 
 核心目标：
 - 保持剧情推进质量
