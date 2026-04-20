@@ -657,6 +657,7 @@ export default async (knex: Knex, forceInit: boolean = false): Promise<void> => 
 4. 不输出解释或多余内容
 5. 编排用户要返回"role":"用户" 而不是用户的具体名称
 6.@旁白：xxx 就是代码编排的角色是旁白的意思。@角色名 的意思。
+7.旁白等角色引导了用户说话，那么这轮是编排用户说话而不是继续是引导用户说话。
 
 事件：
 - 若 event_summary 为空 → 必须补一句 summary + 1~2条 facts
@@ -678,8 +679,6 @@ role_type:
 speaker:
 motive:
 await_user:
-next_role_type:
-next_speaker:
 trigger_memory_agent:
 event_adjust_mode:
 event_status:
@@ -717,6 +716,7 @@ event_facts:`,
 4. 优先推动事件目标，而非闲聊
 5. 控制节奏：避免连续 NPC 抢回合
 6.@旁白：xxx 就是代码编排的角色是旁白的意思。@角色名 的意思。
+7.旁白等角色引导了用户说话，那么这轮是编排用户说话而不是继续是引导用户说话。
 
 事件控制：
 - event_summary：当前事件核心焦点（一句话）
@@ -761,8 +761,6 @@ role_type:
 speaker:
 motive:
 await_user:
-next_role_type:
-next_speaker:
 memory_hints:
 trigger_memory_agent:
 event_adjust_mode:

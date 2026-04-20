@@ -151,7 +151,7 @@ function buildOrchestrationPayload(params: {
   endDialog?: string | null;
   plan?: ReturnType<typeof buildPlanResult>;
 }) {
-  const stateSnapshot = cacheAndBuildDebugStateSnapshot({
+  cacheAndBuildDebugStateSnapshot({
     userId: params.userId,
     worldId: params.worldId,
     state: params.state,
@@ -165,24 +165,11 @@ function buildOrchestrationPayload(params: {
     }));
   }
   return {
-    chapterId: params.chapterId,
-    chapterTitle: params.chapterTitle,
-    // 开场编排和正式编排一致，只回调试缓存锚点，不返回整份运行态。
-    state: {
-      debugRuntimeKey: String(stateSnapshot.debugRuntimeKey || ""),
-    },
-    currentEventDigest: stateSnapshot.currentEventDigest || null,
-    eventDigestWindow: Array.isArray(stateSnapshot.eventDigestWindow) ? stateSnapshot.eventDigestWindow : [],
-    eventDigestWindowText: String(stateSnapshot.eventDigestWindowText || ""),
-    endDialog: params.endDialog || null,
-    // 开场编排也不携带“下一位是谁”，避免前端提前切换回合。
-    plan: params.plan
-      ? {
-        ...params.plan,
-        nextRole: "",
-        nextRoleType: "",
-      }
-      : null,
+    // 开场编排与正式编排保持同一最小返回结构，避免前端消费章节/事件大对象。
+    role: String(params.plan?.role || "").trim(),
+    roleType: String(params.plan?.roleType || "").trim(),
+    motive: String(params.plan?.motive || "").trim(),
+    awaitUser: Boolean(params.plan?.awaitUser),
   };
 }
 
