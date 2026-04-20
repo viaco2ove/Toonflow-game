@@ -128,8 +128,7 @@ function applyDebugPlanTurnState(
   },
 ) {
   // 调试编排也复用正式会话的 turn-state 规则，保证“该轮到谁说”在前后端一致。
-  const shouldYieldToUser =
-    Boolean(plan.awaitUser) || String(plan.nextRoleType || "").trim().toLowerCase() === "player";
+  const shouldYieldToUser = Boolean(plan.awaitUser);
   if (shouldYieldToUser) {
     allowPlayerTurn(
       state,
@@ -141,7 +140,7 @@ function applyDebugPlanTurnState(
   }
   setRuntimeTurnState(state, world, {
     canPlayerSpeak: false,
-    expectedRoleType: String(plan.nextRoleType || "narrator"),
+    expectedRoleType: String(plan.nextRoleType || plan.roleType || "narrator"),
     expectedRole: String(plan.nextRole || plan.role || rolePair.narratorRole.name || "旁白"),
     lastSpeakerRoleType: String(plan.roleType || "narrator"),
     lastSpeaker: String(plan.role || rolePair.narratorRole.name || "旁白"),

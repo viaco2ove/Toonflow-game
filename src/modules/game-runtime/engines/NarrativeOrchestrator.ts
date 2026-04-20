@@ -162,7 +162,7 @@ type OrchestratorPromptPayload = {
   currentEventMemoryFacts: string[];
   currentEventWindow: string;
   phaseAllowedSpeakers: string[];
-  recentDialogue: string;
+  recentDialogue: RecentDialogueTurn[];
   latestPlayerMessage: string;
   traceMeta?: JsonRecord;
 };
@@ -196,9 +196,16 @@ type SpeakerPromptPayload = {
   motive: string;
   storyState: string;
   latestPlayerMessage: string;
-  recentDialogue: string;
+  recentDialogue: RecentDialogueTurn[];
   otherRoles: string[];
   traceMeta?: JsonRecord;
+};
+
+type RecentDialogueTurn = {
+  role: string;
+  roleType: string;
+  eventType: string;
+  content: string;
 };
 
 type PromptStatRow = {
@@ -1179,7 +1186,7 @@ function buildCompactOrchestratorSections(payload: OrchestratorPromptPayload): A
     160,
   );
   const recentLines = [
-    payload.recentDialogue || "",
+    stringifyRecentDialogue(payload.recentDialogue),
     payload.latestPlayerMessage ? `用户待处理:${payload.latestPlayerMessage}` : "",
   ].filter(Boolean).join("\n");
   return [
@@ -1203,7 +1210,7 @@ function buildOrchestratorPromptStats(payload: OrchestratorPromptPayload, compac
       { title: "当前阶段", content: [`label:${payload.currentPhaseLabel || "未命名阶段"}`, payload.currentPhaseGoal ? `goal:${payload.currentPhaseGoal}` : "", `allowed_speakers:${payload.phaseAllowedSpeakers.length ? payload.phaseAllowedSpeakers.join("、") : "全部当前角色"}`].filter(Boolean).join("\n") },
       { title: "当前事件", content: [payload.currentEventIndex != null ? `index:${payload.currentEventIndex}` : "", `kind:${payload.currentEventKind || "scene"}`, `flow:${payload.currentEventFlowType || "chapter_content"}`, `status:${payload.currentEventStatus || "active"}`, `summary:${payload.currentEventSummary || "当前事件未命名"}`, payload.currentEventFacts.length ? `facts:${payload.currentEventFacts.join("；")}` : "", payload.currentEventMemorySummary ? `memory_summary:${payload.currentEventMemorySummary}` : "", payload.currentEventMemoryFacts.length ? `memory_facts:${payload.currentEventMemoryFacts.join("；")}` : "", payload.currentEventWindow ? `事件窗口:${payload.currentEventWindow}` : ""].filter(Boolean).join("\n") },
       { title: "回合状态", content: [`can_player_speak:${payload.turnState.canPlayerSpeak ? "true" : "false"}`, `expected_role_type:${sanitizeRoleType(payload.turnState.expectedRoleType)}`, `expected_role:${payload.turnState.expectedRole || "无"}`, `last_speaker_role_type:${sanitizeRoleType(payload.turnState.lastSpeakerRoleType)}`, `last_speaker:${payload.turnState.lastSpeaker || "无"}`].join("\n") },
-      { title: "最近对话", content: payload.recentDialogue || "无" },
+      { title: "最近对话", content: payload.recentDialogue.length ? stringifyRecentDialogue(payload.recentDialogue) : "[]" },
       { title: "用户本轮输入", content: payload.latestPlayerMessage || "无" },
     ];
   return sections.map((section) => {
@@ -1227,7 +1234,7 @@ function buildSpeakerPromptStats(payload: SpeakerPromptPayload, compactMode: boo
     { title: "当前说话人", content: [`name:${payload.speakerName || "未命名角色"}`, `role_type:${payload.speakerRoleType || "unknown"}`, payload.speakerProfile || ""].filter(Boolean).join("\n") || "无" },
     { title: "本轮动机", content: payload.motive || "无" },
     ...(!compactMode ? [{ title: "剧情摘要", content: payload.storyState || "无" }] : []),
-    { title: "最近对话", content: payload.recentDialogue || "无" },
+    { title: "最近对话", content: payload.recentDialogue.length ? stringifyRecentDialogue(payload.recentDialogue) : "[]" },
     { title: "用户最近输入", content: payload.latestPlayerMessage || "无" },
     ...(!compactMode ? [{ title: "其他可见角色", content: payload.otherRoles.length ? payload.otherRoles.join("、") : "无" }] : []),
   ];
@@ -1471,7 +1478,7 @@ function buildOrchestratorInputSnapshot(payload: OrchestratorPromptPayload, comp
       last_speaker_role_type: sanitizeRoleType(payload.turnState.lastSpeakerRoleType),
       last_speaker: payload.turnState.lastSpeaker || "",
     },
-    recent_dialogue: payload.recentDialogue || "",
+    recent_dialogue: payload.recentDialogue,
     latest_player_message: payload.latestPlayerMessage || "",
   };
   if (compactMode) {
@@ -1526,7 +1533,7 @@ function buildSpeakerUserPrompt(payload: {
   motive: string;
   storyState: string;
   latestPlayerMessage: string;
-  recentDialogue: string;
+  recentDialogue: RecentDialogueTurn[];
   otherRoles: string[];
 }): string {
   return [
@@ -1573,8 +1580,8 @@ function buildSpeakerUserPrompt(payload: {
     "[剧情摘要]",
     payload.storyState || "暂无额外摘要",
     "",
-    "[最近对话]",
-    payload.recentDialogue || "无",
+    "[最近对话(JSON数组)]",
+    stringifyRecentDialogue(payload.recentDialogue),
     "",
     "[用户最近输入]",
     payload.latestPlayerMessage || "无",
@@ -1600,7 +1607,7 @@ function buildMemoryUserPrompt(payload: {
   eventDeltaText: string;
   currentFacts: string;
   currentTags: string;
-  recentDialogue: string;
+  recentDialogue: RecentDialogueTurn[];
   currentMemory: string;
 }, compactMode = false): string {
   if (compactMode) {
@@ -1625,8 +1632,8 @@ function buildMemoryUserPrompt(payload: {
       "[当前标签]",
       payload.currentTags || "无",
       "",
-      "[新增对话]",
-      payload.recentDialogue || "无",
+      "[新增对话(JSON数组)]",
+      stringifyRecentDialogue(payload.recentDialogue),
       "",
       "[任务]",
       "请对比当前记忆与新增对话，只保留对后续剧情有用的新事实、修正和标签。",
@@ -1656,8 +1663,8 @@ function buildMemoryUserPrompt(payload: {
     "[事件增量]",
     payload.eventDeltaText || "无",
     "",
-    "[最近对话]",
-    payload.recentDialogue || "无",
+    "[最近对话(JSON数组)]",
+    stringifyRecentDialogue(payload.recentDialogue),
     "",
     "[现有记忆摘要]",
     payload.currentMemory || "无",
@@ -2173,19 +2180,47 @@ function buildOrchestratorOutputFields(options: {
   return fields.join(" / ");
 }
 
-// 拼接最近对话，作为编排/发言的上下文。
-function recentDialogueText(messages: RuntimeMessageInput[], maxCount = 12, maxChars = 0): string {
-  return messages
+// 把最近对话整理成结构化数组，避免模型把多轮台词误当成一整段普通文本。
+function recentDialogueItems(messages: RuntimeMessageInput[], maxCount = 12, maxChars = 0): RecentDialogueTurn[] {
+  const items = messages
     .slice(-Math.max(1, maxCount))
     .map((item) => {
       const role = normalizeScalarText(item.role) || normalizeScalarText(item.roleType) || "系统";
+      const roleType = sanitizeRoleType(item.roleType);
+      const eventType = normalizeScalarText(item.eventType);
       const content = normalizeScalarText(item.content);
-      if (!content) return "";
-      return `${role}：${content}`;
+      if (!content) return null;
+      return {
+        role,
+        roleType,
+        eventType,
+        content,
+      };
     })
-    .filter(Boolean)
-    .join("\n")
-    .slice(maxChars > 0 ? -maxChars : undefined);
+    .filter((item): item is RecentDialogueTurn => Boolean(item));
+  if (maxChars <= 0) {
+    return items;
+  }
+  let remain = Math.max(0, maxChars);
+  const selected: RecentDialogueTurn[] = [];
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const current = items[index];
+    const currentChars = current.content.length;
+    if (selected.length > 0 && currentChars > remain) {
+      break;
+    }
+    selected.unshift(current);
+    remain -= currentChars;
+  }
+  return selected;
+}
+
+// 把结构化最近对话稳定序列化成 JSON，方便纯文本 prompt 也能保留轮次结构。
+function stringifyRecentDialogue(turns: RecentDialogueTurn[]): string {
+  if (!Array.isArray(turns) || !turns.length) {
+    return "[]";
+  }
+  return JSON.stringify(turns, null, 2);
 }
 
 function readMemoryDeltaInput(message: RuntimeMessageInput): {
@@ -2489,10 +2524,10 @@ export async function runStorySpeakerContent(input: {
     storyState: useFastSpeakerPrompt ? "" : shortText(summarizeStoryState(input.state), compactMode ? 160 : 260),
     latestPlayerMessage: normalizeScalarText(input.playerMessage),
     recentDialogue: useFastSpeakerPrompt
-      ? recentDialogueText(input.recentMessages, 2, 180)
+      ? recentDialogueItems(input.recentMessages, 2, 180)
       : compactMode
-        ? recentDialogueText(input.recentMessages, 3, 240)
-        : recentDialogueText(input.recentMessages, 5, 520),
+        ? recentDialogueItems(input.recentMessages, 3, 240)
+        : recentDialogueItems(input.recentMessages, 5, 520),
     otherRoles: useFastSpeakerPrompt
       ? []
       : roles
@@ -2767,7 +2802,7 @@ async function doRunNarrativePlan(input: OrchestratorInput): Promise<NarrativePl
       limit: compactMode ? 80 : 140,
     }),
     phaseAllowedSpeakers: Array.isArray(currentPhase?.allowedSpeakers) ? currentPhase.allowedSpeakers : [],
-    recentDialogue: compactMode ? recentDialogueText(input.recentMessages, 10, 900) : recentDialogueText(input.recentMessages),
+    recentDialogue: compactMode ? recentDialogueItems(input.recentMessages, 10, 900) : recentDialogueItems(input.recentMessages),
     latestPlayerMessage: normalizeScalarText(input.playerMessage),
     traceMeta: normalizeTraceMeta(input.traceMeta),
   };
@@ -3222,8 +3257,8 @@ export async function runStoryMemoryManager(input: {
     ...buildPromptEventContextTextPayload(currentEvent, compactMode),
     eventDeltaText: buildMemoryEventDeltaText(memoryInputs.eventDeltaMessages, compactMode),
     recentDialogue: compactMode
-      ? recentDialogueText(memoryInputs.dialogueMessages, 4, 420)
-      : recentDialogueText(memoryInputs.dialogueMessages, 10, 1600),
+      ? recentDialogueItems(memoryInputs.dialogueMessages, 4, 420)
+      : recentDialogueItems(memoryInputs.dialogueMessages, 10, 1600),
     currentMemory: shortText(input.state.memorySummary ?? "", compactMode ? 160 : 320),
     currentFacts: compactMode
       ? uniqueTextList(Array.isArray(input.state.memoryFacts) ? input.state.memoryFacts : [], 5).join("；")
@@ -3630,7 +3665,8 @@ export async function advanceNarrativeUntilPlayerTurn(input: OrchestratorInput &
       };
     }
 
-    const shouldYieldToPlayer = current.awaitUser || sanitizeRoleType(current.nextRoleType || "player") === "player";
+    // 是否交回用户输入只认 awaitUser，避免继续依赖编辑师返回 nextRoleType。
+    const shouldYieldToPlayer = current.awaitUser;
     if (shouldYieldToPlayer) {
       allowPlayerTurn(input.state, input.world, sanitizeRoleType(current.roleType), normalizeScalarText(current.role));
       return {
@@ -3642,7 +3678,7 @@ export async function advanceNarrativeUntilPlayerTurn(input: OrchestratorInput &
 
     setRuntimeTurnState(input.state, input.world, {
       canPlayerSpeak: false,
-      expectedRoleType: sanitizeRoleType(current.nextRoleType),
+      expectedRoleType: sanitizeRoleType(current.nextRoleType || current.roleType || "narrator"),
       expectedRole: normalizeScalarText(current.nextRole || current.role),
       lastSpeakerRoleType: sanitizeRoleType(current.roleType),
       lastSpeaker: normalizeScalarText(current.role),

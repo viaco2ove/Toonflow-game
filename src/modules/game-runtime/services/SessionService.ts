@@ -857,18 +857,16 @@ function applyPlanTurnStateToSessionState(
   const hasNonPlayerLineToGenerate = Boolean(String(plan.role || "").trim()) && speakingRoleType !== "player";
   // 编排结果里的 nextRole/awaitUser 只描述“这句台词之后”的方向。
   // 如果当前还有旁白/NPC 台词要生成，必须等 /streamlines 落库后才能把输入权交还用户。
-  const shouldYieldToPlayer = !hasNonPlayerLineToGenerate
-    && (
-      Boolean(plan.awaitUser)
-      || String(plan.nextRoleType || "").trim().toLowerCase() === "player"
-    );
+  const shouldYieldToPlayer = !hasNonPlayerLineToGenerate && Boolean(plan.awaitUser);
   if (shouldYieldToPlayer) {
     allowPlayerTurn(state, world, String(plan.roleType || "narrator"), String(plan.role || state.narrator?.name || "旁白"));
     return;
   }
   setRuntimeTurnState(state, world, {
     canPlayerSpeak: false,
-    expectedRoleType: String(plan.nextRoleType || "narrator"),
+    // 编辑师现在允许不再返回 nextRoleType。
+    // 这里优先沿用显式值，缺失时回退到当前发言角色类型，再回退到旁白。
+    expectedRoleType: String(plan.nextRoleType || plan.roleType || "narrator"),
     expectedRole: String(plan.nextRole || plan.role || state.narrator?.name || "旁白"),
     lastSpeakerRoleType: String(plan.roleType || "narrator"),
     lastSpeaker: String(plan.role || state.narrator?.name || "旁白"),

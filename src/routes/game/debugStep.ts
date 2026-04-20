@@ -407,15 +407,13 @@ export default router.post(
           })));
         }
 
-        const shouldYieldToPlayer = phaseAdvance.enteredUserPhase
-          || orchestrator.awaitUser
-          || String(orchestrator.nextRoleType || "").trim().toLowerCase() === "player";
+        const shouldYieldToPlayer = phaseAdvance.enteredUserPhase || orchestrator.awaitUser;
         if (shouldYieldToPlayer) {
           allowPlayerTurn(state, world, String(orchestrator.roleType || "narrator"), String(orchestrator.role || rolePair.narratorRole.name || "旁白"));
         } else {
           setRuntimeTurnState(state, world, {
             canPlayerSpeak: false,
-            expectedRoleType: String(orchestrator.nextRoleType || "narrator"),
+            expectedRoleType: String(orchestrator.nextRoleType || orchestrator.roleType || "narrator"),
             expectedRole: String(orchestrator.nextRole || orchestrator.role || rolePair.narratorRole.name || "旁白"),
             lastSpeakerRoleType: String(orchestrator.roleType || "narrator"),
             lastSpeaker: String(orchestrator.role || rolePair.narratorRole.name || "旁白"),
@@ -682,15 +680,13 @@ export default router.post(
         })));
       }
 
-      const shouldYieldToPlayer = phaseAdvance.enteredUserPhase
-        || orchestrator.awaitUser
-        || String(orchestrator.nextRoleType || "").trim().toLowerCase() === "player";
+      const shouldYieldToPlayer = phaseAdvance.enteredUserPhase || orchestrator.awaitUser;
       if (shouldYieldToPlayer) {
         allowPlayerTurn(state, world, String(orchestrator.roleType || "narrator"), String(orchestrator.role || rolePair.narratorRole.name || "旁白"));
       } else {
         setRuntimeTurnState(state, world, {
           canPlayerSpeak: false,
-          expectedRoleType: String(orchestrator.nextRoleType || "narrator"),
+          expectedRoleType: String(orchestrator.nextRoleType || orchestrator.roleType || "narrator"),
           expectedRole: String(orchestrator.nextRole || orchestrator.role || rolePair.narratorRole.name || "旁白"),
           lastSpeakerRoleType: String(orchestrator.roleType || "narrator"),
           lastSpeaker: String(orchestrator.role || rolePair.narratorRole.name || "旁白"),
