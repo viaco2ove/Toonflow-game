@@ -43,6 +43,7 @@ import {
 } from "./debugRuntimeShared";
 import {
   asTrimmedText,
+  buildMinimalOrchestrationResponse,
   buildDebugSuccessFollowUpPlan,
   buildPlanResult,
   buildPresetPlan,
@@ -800,7 +801,8 @@ async function handleDebugOrchestrationRequest(req: express.Request, res: expres
   const sessionId = asTrimmedText(req.body.sessionId);
   if (sessionId) {
     const result = await orchestrateSessionTurn(sessionId);
-    return res.status(200).send(success(result));
+    // data 里只保留 role/roleType/motive；code/message 由标准响应信封承载。
+    return res.status(200).send(success(buildMinimalOrchestrationResponse(result.plan)));
   }
 
   const db = getGameDb();
@@ -900,8 +902,10 @@ async function handleDebugOrchestrationRequest(req: express.Request, res: expres
  * 只允许返回 谁说法，动机是什么，禁止进行大杂烩接口，禁止进行编排下一个角色是谁！！！！
  * （第一章节的话有开场白）->编排接口-> 台词接口（steam 形式返回）->语音接口 和编排接口 同时发送->语音播放完毕（错误or 静音）-》台词接口（steam 形式返回）
  * 其他信息只能通过 storyInfo 接口返回!!!!
- * 返回{"role": "旁白","roleType": "narrator","motive": "介绍空间戒指当前的具体存储物品情况"}
- * 不允许返回任何其他信息！！！
+ * 接口返回
+ * {"code": 200, "data": {"role": "旁白","roleType": "narrator","motive": "介绍空间戒指当前的具体存储物品情况"}
+ * ,"message": "成功"} data 只允许返回 谁说法，动机是什么.
+ * 不允许返回任何其他信息！！！ 这不是大杂烩接口！！！！
  * 其他信息在/streamlines 访问后端时后端自己在后端获取。
  */
 export default router.post(

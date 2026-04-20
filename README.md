@@ -532,7 +532,43 @@ Toonflow 基于 AGPL-3.0 协议开源发布，许可证详情：https://www.gnu.
 
 [![Star History Chart](https://api.star-history.com/svg?repos=HBAI-Ltd/Toonflow-app&type=timeline&legend=top-left)](https://www.star-history.com/#HBAI-Ltd/Toonflow-app&type=timeline&legend=top-left)
 
----
+# 配置建议
+  最低配置（开发/测试环境）
+   配置项                                                                               │ 建议值
+  ──────────────────────────────────────────────────────────────────────────────────────┼─────────────────────────────────────────────────────────────────────────────────────      
+   CPU                                                                                  │ 2 核
+   内存                                                                                 │ 4 GB
+   硬盘                                                                                 │ 40 GB SSD
+   带宽                                                                                 │ 5 Mbps
+   操作系统                                                                             │ Ubuntu 22.04 LTS / Debian 12
+
+  推荐配置（生产环境）
+   配置项                                                                               │ 建议值
+  ──────────────────────────────────────────────────────────────────────────────────────┼─────────────────────────────────────────────────────────────────────────────────────      
+   CPU                                                                                  │ 4 核
+   内存                                                                                 │ 8 GB
+   硬盘                                                                                 │ 80 GB SSD
+   带宽                                                                                 │ 10 Mbps+
+   操作系统                                                                             │ Ubuntu 22.04 LTS / Debian 12
+  --------
+  项目依赖分析
+  技术栈：                                                                                                                                                                          
+
+  - 后端：Node.js 24 + Express + TypeScript
+  - 数据库：SQLite（better-sqlite3）
+  - 前端：构建后为静态 HTML，通过 Nginx 提供服务
+  - 进程管理：PM2 + Supervisor
+  - AI 服务：依赖多个 AI Provider（OpenAI、DeepSeek、Google、Anthropic 等）
+  - 图像处理：Sharp（图片处理库）
+
+  关键依赖：
+
+  - 需要调用外部 AI API（OpenAI、DeepSeek、智谱等）
+  - 图片处理（Sharp 库需要编译原生模块）
+  - 文件存储（阿里云 COS、腾讯云 COS）
+  --------
+内存2g :单人轻度使用 
+
 
 # 🙏 致谢
 

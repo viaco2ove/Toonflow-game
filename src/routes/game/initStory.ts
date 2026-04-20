@@ -124,8 +124,8 @@ export default router.post(
       }
 
       // 应用初始状态
-      initializeChapterProgressForState(state, chapter);
-      syncChapterProgressWithRuntime(state, chapter);
+      initializeChapterProgressForState(chapter, state);
+      syncChapterProgressWithRuntime(chapter, state);
 
       // 5. 创建 session 记录
       const contentVersion = buildContentVersion(world, chapter, now);

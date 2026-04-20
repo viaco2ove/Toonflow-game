@@ -1,6 +1,6 @@
 import express from "express";
-import { success } from "@/lib/responseFormat";
 import { RuntimeMessageInput } from "@/modules/game-runtime/engines/NarrativeOrchestrator";
+import { success } from "@/lib/responseFormat";
 import { cacheAndBuildDebugStateSnapshot } from "./debugRuntimeShared";
 import { DebugLogUtil } from "@/utils/debugLogUtil";
 
@@ -300,12 +300,33 @@ export function buildOrchestrationPayload(params: {
 
   return {
     role: asTrimmedText(params.plan?.role),
+    // 前端需要明确知道当前发言角色类型，用于区分旁白、NPC 和用户展示样式。
+    roleType: asTrimmedText(params.plan?.roleType),
     motive: asTrimmedText(params.plan?.motive),
   };
 }
 
 /**
- * 调试态统一成功返回入口，避免每个分支都重复拼最小响应和 success 包装。
+ * 把正式会话和调试态的计划统一收口成接口约定的最小返回结构。
+ */
+export function buildMinimalOrchestrationResponse(plan?: {
+  role?: unknown;
+  roleType?: unknown;
+  motive?: unknown;
+} | null) {
+  return {
+    role: asTrimmedText(plan?.role),
+    roleType: asTrimmedText(plan?.roleType),
+    motive: asTrimmedText(plan?.motive),
+  };
+}
+
+/**
+ * 调试态统一成功返回入口，避免每个分支都重复拼最小响应。
+ *
+ * 响应约束：
+ * - 外层维持通用 `code/message` 信封；
+ * - data 只能包含 `role/roleType/motive`，禁止夹带 state、chapter、event 等大杂烩字段。
  */
 export function sendDebugSuccess(
   res: express.Response,

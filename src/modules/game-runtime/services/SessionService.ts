@@ -162,6 +162,37 @@ function resetSessionChapterRuntimeOnSwitch(
   }
 }
 
+/**
+ * 开场白不属于章节事件图，提交或消费开场白后必须回到章节第一个内容事件。
+ *
+ * 用途：
+ * - 防止旧初始快照或开场白裁决把 phase_1 误标为 completed；
+ * - 保证 `/initStory -> /introduction -> /orchestration` 后编排师读取的是事件 1，而不是事件 2。
+ */
+function resetSessionChapterContentProgressForOpening(chapter: any, state: Record<string, any>): void {
+  if (!chapter) return;
+  delete state.currentEvent;
+  delete state.currentEventDigest;
+  delete state.eventDigestWindow;
+  delete state.eventDigestWindowText;
+  delete state.dynamicEvents;
+  delete state.chapterProgress;
+  delete state.__pendingEndingGuide;
+  state.chapterId = Number(chapter.id || 0) || state.chapterId || null;
+  state.chapterTitle = String(chapter.title || "").trim() || String(state.chapterTitle || "").trim();
+  initializeChapterProgressForState(chapter, state);
+  syncChapterProgressWithRuntime(chapter, state);
+}
+
+/**
+ * 判断消息是否为章节外开场白。
+ *
+ * 用途：开场白只负责展示入场文案，不能触发章节判定、事件完成或章节切换。
+ */
+function isOpeningRuntimeEventType(eventType: unknown): boolean {
+  return String(eventType || "").trim() === "on_opening";
+}
+
 export interface AddSessionMessageInput {
   sessionId: string;
   roleType?: string | null;
@@ -2131,6 +2162,45 @@ export async function orchestrateSessionTurn(sessionIdInput: string): Promise<Se
   }
 
   const latestRecentMessage = recentMessages[recentMessages.length - 1];
+  if (isOpeningRuntimeEventType(latestRecentMessage?.eventType)) {
+    resetSessionChapterContentProgressForOpening(chapter, state);
+    logSessionOrchestrationKeyNode("session_opening:skip_judge", requestTrace, {
+      reason: "opening_is_outside_chapter_event_graph",
+      resetEventIndex: Number(state.chapterProgress?.eventIndex || state.currentEvent?.index || 0),
+    });
+    const plan = await runNarrativePlan({
+      userId: currentUserId,
+      world,
+      chapter,
+      state,
+      recentMessages,
+      playerMessage: "",
+      maxRetries: 0,
+      allowControlHints: false,
+      allowStateDelta: false,
+      traceMeta: {
+        ...requestTrace,
+        chapterId: Number(chapter.id || 0),
+        planMode: "after_opening",
+      },
+    });
+    const builtPlan = applySessionNarrativePlanToState({
+      userId: currentUserId,
+      world,
+      chapter,
+      state,
+      recentMessages,
+      plan,
+    });
+    return finalizeOrchestrationResult({
+      sessionId,
+      status: sessionStatus,
+      chapterId: Number(chapter.id || 0) || null,
+      expectedRole: "",
+      expectedRoleType: "",
+      plan: builtPlan,
+    });
+  }
   const arbitration = await runConcurrentSessionJudgeAndNarrative({
     userId: currentUserId,
     world,
@@ -2212,6 +2282,7 @@ export async function commitSessionNarrativeTurn(input: CommitSessionNarrativeTu
   let nextChapterId = Number(input.chapterId || prevChapterId || 0) || null;
   let sessionStatus = String(input.status || prevStatus || "active").trim() || "active";
   const createTime = Number(input.createTime || now) || now;
+  const committedEventType = String(input.eventType || pendingPlan?.eventType || "on_orchestrated_reply").trim() || "on_orchestrated_reply";
   const insertedRows = await insertSessionNarrativeMessages({
     db,
     sessionId,
@@ -2219,12 +2290,12 @@ export async function commitSessionNarrativeTurn(input: CommitSessionNarrativeTu
     messages: [{
       role: String(input.role || pendingPlan?.role || state.narrator?.name || "旁白"),
       roleType: String(input.roleType || pendingPlan?.roleType || "narrator"),
-      eventType: String(input.eventType || pendingPlan?.eventType || "on_orchestrated_reply"),
+      eventType: committedEventType,
       content: String(input.content || ""),
       createTime,
     }],
     now: createTime,
-    eventTypeFallback: String(input.eventType || pendingPlan?.eventType || "on_orchestrated_reply"),
+    eventTypeFallback: committedEventType,
   });
   setPendingSessionNarrativePlan(state, null);
   const chapter = nextChapterId
@@ -2232,44 +2303,49 @@ export async function commitSessionNarrativeTurn(input: CommitSessionNarrativeTu
     : null;
   if (chapter) {
     const latestGeneratedMessage = insertedRows[insertedRows.length - 1];
-    const mergedOutcome = await evaluateRuntimeOutcome({
-      chapter,
-      state,
-      messageContent: String(latestGeneratedMessage?.content || input.content || ""),
-      eventType: String(latestGeneratedMessage?.eventType || input.eventType || pendingPlan?.eventType || "on_orchestrated_reply"),
-      meta: {},
-      recentMessages: insertedRows.map((item) => ({
-        role: String(item.role || ""),
-        roleType: String(item.roleType || ""),
-        eventType: String(item.eventType || ""),
-        content: String(item.content || ""),
-        createTime: Number(item.createTime || 0),
-      })),
-      fallbackStatus: sessionStatus,
-      fallbackChapterId: nextChapterId,
-      applyToState: true,
-    });
-    sessionStatus = mergedOutcome.sessionStatus;
-    nextChapterId = mergedOutcome.nextChapterId;
-    let outcome = mergedOutcome.outcome;
-    if (DebugLogUtil.isDebugLogEnabled()) {
-      // [story:chapter_ending_check:stats] current_chapter
-      DebugLogUtil.logCurrentChapter("story:chapter_ending_check:stats", chapter);
-      console.log(`[story:chapter_ending_check:stats] sessionStatus: ${sessionStatus}`);
-      console.log(`[story:chapter_ending_check:stats] outcome: ${outcome}`);
-
-      console.log(`[story:chapter_ending_check:stats] nextChapterId: ${nextChapterId}`);
-
-    }
-    if (sessionStatus === "chapter_completed" && (!nextChapterId || nextChapterId === prevChapterId)) {
-      const resolvedNextChapterId = await resolveNextChapterIdByOrder(db, Number(sessionRow.worldId || 0), prevChapterId);
-      if (resolvedNextChapterId && resolvedNextChapterId !== prevChapterId) {
-        nextChapterId = resolvedNextChapterId;
-        sessionStatus = "active";
+    const latestEventType = String(latestGeneratedMessage?.eventType || committedEventType).trim();
+    const isOpeningCommit = isOpeningRuntimeEventType(latestEventType);
+    // 开场白属于章节外的入场台词，只能落库展示，不能触发章节事件完成、切换或同步推进。
+    if (isOpeningCommit) {
+      resetSessionChapterContentProgressForOpening(chapter, state);
+    } else {
+      const mergedOutcome = await evaluateRuntimeOutcome({
+        chapter,
+        state,
+        messageContent: String(latestGeneratedMessage?.content || input.content || ""),
+        eventType: latestEventType || committedEventType,
+        meta: {},
+        recentMessages: insertedRows.map((item) => ({
+          role: String(item.role || ""),
+          roleType: String(item.roleType || ""),
+          eventType: String(item.eventType || ""),
+          content: String(item.content || ""),
+          createTime: Number(item.createTime || 0),
+        })),
+        fallbackStatus: sessionStatus,
+        fallbackChapterId: nextChapterId,
+        applyToState: true,
+      });
+      sessionStatus = mergedOutcome.sessionStatus;
+      nextChapterId = mergedOutcome.nextChapterId;
+      const outcome = mergedOutcome.outcome;
+      if (DebugLogUtil.isDebugLogEnabled()) {
+        // [story:chapter_ending_check:stats] current_chapter
+        DebugLogUtil.logCurrentChapter("story:chapter_ending_check:stats", chapter);
+        console.log(`[story:chapter_ending_check:stats] sessionStatus: ${sessionStatus}`);
+        console.log(`[story:chapter_ending_check:stats] outcome: ${outcome}`);
+        console.log(`[story:chapter_ending_check:stats] nextChapterId: ${nextChapterId}`);
       }
+      if (sessionStatus === "chapter_completed" && (!nextChapterId || nextChapterId === prevChapterId)) {
+        const resolvedNextChapterId = await resolveNextChapterIdByOrder(db, Number(sessionRow.worldId || 0), prevChapterId);
+        if (resolvedNextChapterId && resolvedNextChapterId !== prevChapterId) {
+          nextChapterId = resolvedNextChapterId;
+          sessionStatus = "active";
+        }
+      }
+      initializeChapterProgressForState(chapter, state);
+      syncChapterProgressWithRuntime(chapter, state);
     }
-    initializeChapterProgressForState(chapter, state);
-    syncChapterProgressWithRuntime(chapter, state);
   }
   const stateJson = toJsonText(state, {});
   await db("t_gameSession").where({ sessionId }).update({
