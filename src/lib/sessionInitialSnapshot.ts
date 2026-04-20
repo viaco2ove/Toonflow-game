@@ -19,6 +19,9 @@ import { syncChapterProgressWithRuntime } from "@/modules/game-runtime/engines/C
 
 const CHAPTER_INITIAL_SNAPSHOT_KEY = "chapterInitialSnapshots";
 const PUBLISH_FAILURE_REASON_KEY = "publishFailureReason";
+// 初始快照不仅依赖章节文本，也依赖“开局运行态如何生成”的算法。
+// 旧版本曾把首个章节事件提前标记完成；提升版本可让旧坏缓存自动失效。
+const CHAPTER_INITIAL_SNAPSHOT_VERSION = "snapshot_v3";
 
 export interface ChapterInitialSnapshotCache {
   chapterId: number;
@@ -75,7 +78,7 @@ export function buildChapterInitialSnapshotVersion(world: unknown, chapter: unkn
     completionCondition: chapterRecord.completionCondition || null,
     entryCondition: chapterRecord.entryCondition || null,
   };
-  return `snapshot_v2_${hashVersionText(toJsonText(payload, {}))}`;
+  return `${CHAPTER_INITIAL_SNAPSHOT_VERSION}_${hashVersionText(toJsonText(payload, {}))}`;
 }
 
 function parseWorldSettings(input: unknown): JsonRecord {
