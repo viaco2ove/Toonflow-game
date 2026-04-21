@@ -9,6 +9,14 @@ export type PlanEventAdjustMode = "keep" | "update" | "waiting_input" | "complet
 export type PlanEventKind = "opening" | "scene" | "user" | "fixed" | "ending";
 export type PlanEventStatus = "idle" | "active" | "waiting_input" | "completed";
 export type PlanSpeakerMode = "template" | "fast" | "premium";
+export type OrchestrationCommandType = "init_chapter";
+
+export type OrchestrationCommand = {
+  type: OrchestrationCommandType;
+  chapterId: number;
+  chapterTitle: string;
+  trigger: "chapter_completed";
+};
 
 export type PlanLike = {
   role: string;
@@ -265,7 +273,7 @@ export function buildDebugSuccessFollowUpPlan(params: {
 }
 
 /**
- * /game/orchestration 只允许返回“当前谁说、为什么说、是否轮到用户”。
+ * /game/orchestration 只允许返回“当前谁说、为什么说、是否轮到用户”和显式章节命令。
  * 其他运行时状态统一缓存到服务端，后续再通过 storyInfo/streamlines 获取。
  */
 export function buildOrchestrationPayload(params: {
@@ -277,6 +285,7 @@ export function buildOrchestrationPayload(params: {
   endDialog?: string | null;
   endDialogDetail?: string | null;
   plan?: ReturnType<typeof buildPlanResult>;
+  command?: OrchestrationCommand | null;
   messages?: RuntimeMessageInput[];
 }) {
   cacheAndBuildDebugStateSnapshot({
@@ -305,6 +314,7 @@ export function buildOrchestrationPayload(params: {
     motive: asTrimmedText(params.plan?.motive),
     // 正式游玩只认 awaitUser，不再对外暴露“下一位是谁”的预编排字段。
     awaitUser: Boolean(params.plan?.awaitUser),
+    command: params.command || null,
   };
 }
 
@@ -316,12 +326,14 @@ export function buildMinimalOrchestrationResponse(plan?: {
   roleType?: unknown;
   motive?: unknown;
   awaitUser?: unknown;
+  command?: OrchestrationCommand | null;
 } | null) {
   return {
     role: asTrimmedText(plan?.role),
     roleType: asTrimmedText(plan?.roleType),
     motive: asTrimmedText(plan?.motive),
     awaitUser: Boolean(plan?.awaitUser),
+    command: plan?.command || null,
   };
 }
 

@@ -257,16 +257,37 @@ export interface SessionNarrativePlanResult {
   };
 }
 
+export interface SessionChapterCommand {
+  type: "init_chapter";
+  chapterId: number;
+  chapterTitle: string;
+  trigger: "chapter_completed";
+}
+
 export interface SessionOrchestrationResult {
   sessionId: string;
   status: string;
   chapterId: number | null;
   expectedRole: string;
   expectedRoleType: string;
+  command?: SessionChapterCommand | null;
   currentEventDigest: RuntimeEventViewState["currentEventDigest"];
   eventDigestWindow: RuntimeEventViewState["eventDigestWindow"];
   eventDigestWindowText: RuntimeEventViewState["eventDigestWindowText"];
   plan: SessionNarrativePlanResult | null;
+}
+
+export interface InitSessionChapterResult {
+  sessionId: string;
+  status: string;
+  worldId: number;
+  chapterId: number | null;
+  chapterTitle: string;
+  state: Record<string, any>;
+  chapter: Record<string, any> | null;
+  currentEventDigest: RuntimeEventViewState["currentEventDigest"];
+  eventDigestWindow: RuntimeEventViewState["eventDigestWindow"];
+  eventDigestWindowText: RuntimeEventViewState["eventDigestWindowText"];
 }
 
 type SessionOrchestrationResultSeed = Omit<
@@ -810,6 +831,49 @@ function setPendingSessionChapterId(state: Record<string, any>, chapterId: numbe
     return;
   }
   delete state.pendingChapterId;
+}
+
+/**
+ * 判断当前会话是否已经显式完成下一章初始化，等待新章节首轮编排。
+ *
+ * 用途：
+ * - `/orchestration` 在收到 `init_chapter` 命令前不能偷偷进入下一章；
+ * - `/initchapter` 完成后再把这个标记设为 true，让下一次 `/orchestration`
+ *   明确走“新章节启动编排”而不是继续沿用旧章节残局。
+ */
+function getPendingSessionChapterStart(state: Record<string, any>): boolean {
+  return state?.pendingChapterStart === true;
+}
+
+/**
+ * 写入“下一次编排应该从新章节开场开始”的显式标记。
+ *
+ * 用途：
+ * - 只有 `/initchapter` 才允许把 pendingChapterStart 设为 true；
+ * - 一旦 `/orchestration` 消费完新章节开场，就立刻清掉，避免重复开场。
+ */
+function setPendingSessionChapterStart(state: Record<string, any>, enabled: boolean): void {
+  if (enabled) {
+    state.pendingChapterStart = true;
+    return;
+  }
+  delete state.pendingChapterStart;
+}
+
+/**
+ * 统一构造“当前章节已结束，需要显式初始化下一章”的命令。
+ *
+ * 用途：
+ * - 前端只需要识别 `command.type === "init_chapter"`；
+ * - 不再让客户端从 chapterId/status 里反推是否该切章。
+ */
+function buildInitChapterCommand(chapter: any): SessionChapterCommand {
+  return {
+    type: "init_chapter",
+    chapterId: Number(chapter?.id || 0) || 0,
+    chapterTitle: String(chapter?.title || "").trim(),
+    trigger: "chapter_completed",
+  };
 }
 
 function getPendingSessionNarrativePlan(state: Record<string, any>): SessionNarrativePlanResult | null {
@@ -1454,7 +1518,16 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
       sessionStatus = "active";
     }
   }
-  state.chapterId = nextChapterId;
+  const hasPendingNextChapter = Boolean(nextChapterId && nextChapterId !== prevChapterId);
+  if (hasPendingNextChapter) {
+    setPendingSessionChapterId(state, nextChapterId);
+    setPendingSessionChapterStart(state, false);
+    state.chapterId = prevChapterId;
+  } else {
+    setPendingSessionChapterId(state, null);
+    setPendingSessionChapterStart(state, false);
+    state.chapterId = nextChapterId;
+  }
 
   if (appliedDeltas.length > 0) {
     const deltaRows = appliedDeltas.map((delta) => ({
@@ -1473,9 +1546,6 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
 
   if (input.orchestrate === false) {
     if (roleTypeValue === "player" && eventTypeValue === "on_message" && messageContent.trim()) {
-      if (nextChapterId && nextChapterId !== prevChapterId) {
-        setPendingSessionChapterId(state, nextChapterId);
-      }
       setRuntimeTurnState(state, world, {
         canPlayerSpeak: false,
         expectedRoleType: "narrator",
@@ -1490,7 +1560,7 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
     const stateJson = toJsonText(state, {});
     await db("t_gameSession").where({ sessionId }).update({
       stateJson,
-      chapterId: nextChapterId,
+      chapterId: state.chapterId || prevChapterId,
       status: sessionStatus,
       updateTime: now,
     });
@@ -1502,7 +1572,7 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
       now,
       policy: {
         saveSnapshot: input.saveSnapshot,
-        nextChapterId,
+        nextChapterId: state.chapterId || prevChapterId,
         prevChapterId,
         sessionStatus,
         prevStatus,
@@ -1518,18 +1588,19 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
       db,
       rows: [messageRow],
       state,
-      chapterId: nextChapterId,
+      chapterId: state.chapterId || prevChapterId,
       status: sessionStatus,
       capturedAt: now,
     });
-    const activeChapter = nextChapterId
-      ? normalizeChapterOutput(await db("t_storyChapter").where({ id: nextChapterId }).first())
+    const activeChapterId = Number(state.chapterId || prevChapterId || 0) || null;
+    const activeChapter = activeChapterId
+      ? normalizeChapterOutput(await db("t_storyChapter").where({ id: activeChapterId }).first())
       : null;
     const eventView = buildEventView(state);
     return {
       sessionId,
       status: sessionStatus,
-      chapterId: nextChapterId,
+      chapterId: activeChapterId,
       chapter: activeChapter,
       state,
       currentEventDigest: eventView.currentEventDigest,
@@ -1552,90 +1623,7 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
   let narrativeMessageRow: any = null;
   let generatedMessages: Record<string, any>[] = [];
   let narrativePlan: NarrativePlanSummary | null = null;
-  if (nextChapterId && nextChapterId !== prevChapterId) {
-    const switchedChapter = normalizeChapterOutput(await db("t_storyChapter").where({ id: nextChapterId }).first());
-    if (switchedChapter) {
-      resetSessionChapterRuntimeOnSwitch(
-        state,
-        Number(switchedChapter.id || 0) || null,
-        prevChapterId,
-        String(switchedChapter.title || "").trim(),
-      );
-      const openingMessage = resolveOpeningMessage(world, switchedChapter);
-      const transitionMessages: RuntimeMessageInput[] = [];
-      if (openingMessage && String(openingMessage.content || "").trim()) {
-        transitionMessages.push({
-          role: String(openingMessage.role || state.narrator?.name || "旁白"),
-          roleType: String(openingMessage.roleType || "narrator"),
-          eventType: String(openingMessage.eventType || "on_enter_chapter"),
-          content: String(openingMessage.content || ""),
-          createTime: now,
-        });
-      }
-      setRuntimeTurnState(state, world, {
-        canPlayerSpeak: false,
-        expectedRoleType: "narrator",
-        expectedRole: String(state.narrator?.name || "旁白"),
-        lastSpeakerRoleType: String(transitionMessages[transitionMessages.length - 1]?.roleType || "narrator"),
-        lastSpeaker: String(transitionMessages[transitionMessages.length - 1]?.role || state.narrator?.name || "旁白"),
-      });
-      initializeChapterProgressForState(switchedChapter, state);
-      syncChapterProgressWithRuntime(switchedChapter, state);
-      // 切章后的第一轮编排必须先消费上一章末尾新增的消息记忆，
-      // 否则模型会拿着旧记忆直接编排新章节，容易把上一章的目标/角色关系带进来。
-      const recentMessagesForChapterSwitchMemory = await loadIncrementalMessagesForMemory(db, sessionId, state);
-      if (recentMessagesForChapterSwitchMemory.length) {
-        await refreshStoryMemoryBestEffort({
-          userId: currentUserId,
-          world,
-          chapter: switchedChapter,
-          state,
-          recentMessages: recentMessagesForChapterSwitchMemory,
-        });
-        const lastMemoryMessageId = recentMessagesForChapterSwitchMemory.reduce((max, item) => {
-          const currentId = Number(item?.messageId || 0);
-          return Number.isFinite(currentId) && currentId > max ? currentId : max;
-        }, 0);
-        setMemoryCursor(state, lastMemoryMessageId, now);
-      }
-      const orchestrator = await runNarrativeOrchestrator({
-        userId: currentUserId,
-        world,
-        chapter: switchedChapter,
-        state,
-        recentMessages: transitionMessages,
-        playerMessage: "",
-        maxRetries: 0,
-        allowControlHints: false,
-        allowStateDelta: false,
-      });
-      narrativePlan = summarizeNarrativePlan(orchestrator);
-      asyncMemoryRefreshRequested = Boolean(orchestrator.triggerMemoryAgent);
-      asyncMemoryRefreshChapter = switchedChapter;
-      const orchestrated = await advanceNarrativeUntilPlayerTurn({
-        userId: currentUserId,
-        world,
-        chapter: switchedChapter,
-        state,
-        recentMessages: transitionMessages,
-        playerMessage: "",
-        initialResult: orchestrator,
-        maxAutoTurns: 1,
-      });
-      transitionMessages.push(...orchestrated.messages);
-      applyNarrativeMemoryHintsToState(state, orchestrator.memoryHints);
-      generatedMessages = await insertSessionNarrativeMessages({
-        db,
-        sessionId,
-        state,
-        messages: transitionMessages,
-        now,
-        eventTypeFallback: "on_orchestrated_reply",
-      });
-      chapterSwitchMessageRow = generatedMessages[0] || null;
-      narrativeMessageRow = generatedMessages[generatedMessages.length - 1] || null;
-    }
-  } else if (roleTypeValue === "player" && eventTypeValue === "on_message" && messageContent.trim()) {
+  if (!(nextChapterId && nextChapterId !== prevChapterId) && roleTypeValue === "player" && eventTypeValue === "on_message" && messageContent.trim()) {
     const playChapter = nextChapterId
       ? normalizeChapterOutput(await db("t_storyChapter").where({ id: nextChapterId }).first())
       : null;
@@ -1684,7 +1672,7 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
   const stateJson = toJsonText(state, {});
   await db("t_gameSession").where({ sessionId }).update({
     stateJson,
-    chapterId: nextChapterId,
+    chapterId: state.chapterId || prevChapterId,
     status: sessionStatus,
     updateTime: now,
   });
@@ -1697,7 +1685,7 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
     now,
     policy: {
       saveSnapshot: input.saveSnapshot,
-      nextChapterId,
+      nextChapterId: state.chapterId || prevChapterId,
       prevChapterId,
       sessionStatus,
       prevStatus,
@@ -1733,18 +1721,19 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
     db,
     rows: [messageRow, chapterSwitchMessageRow, ...generatedMessages],
     state,
-    chapterId: nextChapterId,
+    chapterId: state.chapterId || prevChapterId,
     status: sessionStatus,
     capturedAt: now,
   });
-  const activeChapter = nextChapterId
-    ? normalizeChapterOutput(await db("t_storyChapter").where({ id: nextChapterId }).first())
+  const activeChapterId = Number(state.chapterId || prevChapterId || 0) || null;
+  const activeChapter = activeChapterId
+    ? normalizeChapterOutput(await db("t_storyChapter").where({ id: activeChapterId }).first())
     : null;
   const eventView = buildEventView(state);
   return {
     sessionId,
     status: sessionStatus,
-    chapterId: nextChapterId,
+    chapterId: activeChapterId,
     chapter: activeChapter,
     state,
     currentEventDigest: eventView.currentEventDigest,
@@ -1891,12 +1880,21 @@ export async function continueSessionNarrative(sessionIdInput: string): Promise<
       sessionStatus = "active";
     }
   }
+  if (nextChapterId && nextChapterId !== prevChapterId) {
+    setPendingSessionChapterId(state, nextChapterId);
+    setPendingSessionChapterStart(state, false);
+    state.chapterId = prevChapterId;
+  } else {
+    setPendingSessionChapterId(state, null);
+    setPendingSessionChapterStart(state, false);
+    state.chapterId = nextChapterId;
+  }
   initializeChapterProgressForState(chapter, state);
   syncChapterProgressWithRuntime(chapter, state);
   const stateJson = toJsonText(state, {});
   await db("t_gameSession").where({ sessionId }).update({
     stateJson,
-    chapterId: nextChapterId,
+    chapterId: state.chapterId || prevChapterId,
     status: sessionStatus,
     updateTime: now,
   });
@@ -1909,7 +1907,7 @@ export async function continueSessionNarrative(sessionIdInput: string): Promise<
     now,
     policy: {
       saveSnapshot: true,
-      nextChapterId,
+      nextChapterId: state.chapterId || prevChapterId,
       prevChapterId,
       sessionStatus,
       prevStatus,
@@ -1943,7 +1941,7 @@ export async function continueSessionNarrative(sessionIdInput: string): Promise<
     db,
     rows: generatedMessages,
     state,
-    chapterId: nextChapterId,
+    chapterId: state.chapterId || prevChapterId,
     status: sessionStatus,
     capturedAt: now,
   });
@@ -1952,8 +1950,8 @@ export async function continueSessionNarrative(sessionIdInput: string): Promise<
   return {
     sessionId,
     status: sessionStatus,
-    chapterId: nextChapterId,
-    chapter: nextChapterId ? normalizeChapterOutput(await db("t_storyChapter").where({ id: nextChapterId }).first()) : null,
+    chapterId: Number(state.chapterId || prevChapterId || 0) || null,
+    chapter: state.chapterId ? normalizeChapterOutput(await db("t_storyChapter").where({ id: state.chapterId }).first()) : null,
     state,
     currentEventDigest: eventView.currentEventDigest,
     eventDigestWindow: eventView.eventDigestWindow,
@@ -2042,6 +2040,7 @@ export async function orchestrateSessionTurn(sessionIdInput: string): Promise<Se
       currentEventDigest: eventView.currentEventDigest,
       eventDigestWindow: eventView.eventDigestWindow,
       eventDigestWindowText: eventView.eventDigestWindowText,
+      command: result.command || null,
       plan: buildPublicSessionPlanResult(result.plan),
     };
   };
@@ -2057,6 +2056,7 @@ export async function orchestrateSessionTurn(sessionIdInput: string): Promise<Se
     state.chapterTitle = String(chapter.title || "").trim() || String(state.chapterTitle || "").trim();
     const openingMessage = resolveOpeningMessage(world, chapter);
     setPendingSessionChapterId(state, null);
+    setPendingSessionChapterStart(state, false);
     setRuntimeTurnState(state, world, {
       canPlayerSpeak: false,
       expectedRoleType: "narrator",
@@ -2122,7 +2122,25 @@ export async function orchestrateSessionTurn(sessionIdInput: string): Promise<Se
   };
 
   const pendingChapterId = getPendingSessionChapterId(state);
-  if (pendingChapterId) {
+  const pendingChapterStart = getPendingSessionChapterStart(state);
+  if (pendingChapterId && pendingChapterStart) {
+    const nextChapter = normalizeChapterOutput(await db("t_storyChapter").where({ id: pendingChapterId }).first());
+    if (!nextChapter) {
+      setPendingSessionChapterId(state, null);
+      setPendingSessionChapterStart(state, false);
+      return finalizeOrchestrationResult({
+        sessionId,
+        status: sessionStatus,
+        chapterId: currentChapterId,
+        expectedRole: "",
+        expectedRoleType: "",
+        command: null,
+        plan: null,
+      });
+    }
+    return buildChapterStartPlan(nextChapter);
+  }
+  if (pendingChapterId && !pendingChapterStart) {
     const nextChapter = normalizeChapterOutput(await db("t_storyChapter").where({ id: pendingChapterId }).first());
     if (!nextChapter) {
       setPendingSessionChapterId(state, null);
@@ -2132,10 +2150,19 @@ export async function orchestrateSessionTurn(sessionIdInput: string): Promise<Se
         chapterId: currentChapterId,
         expectedRole: "",
         expectedRoleType: "",
+        command: null,
         plan: null,
       });
     }
-    return buildChapterStartPlan(nextChapter);
+    return finalizeOrchestrationResult({
+      sessionId,
+      status: sessionStatus,
+      chapterId: currentChapterId,
+      expectedRole: "",
+      expectedRoleType: "",
+      command: buildInitChapterCommand(nextChapter),
+      plan: null,
+    });
   }
 
   let chapter = currentChapterId
@@ -2163,6 +2190,7 @@ export async function orchestrateSessionTurn(sessionIdInput: string): Promise<Se
       chapterId: Number(chapter.id || 0) || null,
       expectedRole: "",
       expectedRoleType: "",
+      command: null,
       plan: null,
     });
   }
@@ -2204,6 +2232,7 @@ export async function orchestrateSessionTurn(sessionIdInput: string): Promise<Se
       chapterId: Number(chapter.id || 0) || null,
       expectedRole: "",
       expectedRoleType: "",
+      command: null,
       plan: builtPlan,
     });
   }
@@ -2235,11 +2264,18 @@ export async function orchestrateSessionTurn(sessionIdInput: string): Promise<Se
       if (resolvedNextChapter) {
         if (String(plan?.role || "").trim()) {
           setPendingSessionChapterId(state, resolvedNextChapterId);
-        } else {
-          nextChapter = resolvedNextChapter;
-          nextChapterId = resolvedNextChapterId;
-          return buildChapterStartPlan(resolvedNextChapter);
         }
+        nextChapter = chapter;
+        nextChapterId = Number(chapter.id || 0) || currentChapterId;
+        return finalizeOrchestrationResult({
+          sessionId,
+          status: nextStatus,
+          chapterId: nextChapterId,
+          expectedRole: "",
+          expectedRoleType: "",
+          command: buildInitChapterCommand(resolvedNextChapter),
+          plan,
+        });
       }
     }
   }
@@ -2250,12 +2286,106 @@ export async function orchestrateSessionTurn(sessionIdInput: string): Promise<Se
     chapterId: nextChapterId,
     expectedRole: "",
     expectedRoleType: "",
+    command: null,
     currentEventDigest: eventView.currentEventDigest,
     eventDigestWindow: eventView.eventDigestWindow,
     eventDigestWindowText: eventView.eventDigestWindowText,
     plan,
   };
   return finalizeOrchestrationResult(result);
+}
+
+/**
+ * 显式初始化正式会话的下一章节运行态。
+ *
+ * 用途：
+ * - 章节结束后不再在 `/orchestration` 里偷偷切章；
+ * - 前端必须先调用 `/initchapter`，把下一章事件图、turnState、pending 标记都准备好；
+ * - 随后再次调用 `/orchestration`，才会真正生成下一章的开场编排。
+ */
+export async function initSessionChapter(sessionIdInput: string, chapterIdInput?: number | null): Promise<InitSessionChapterResult> {
+  const db = getGameDb();
+  const sessionId = String(sessionIdInput || "").trim();
+  if (!sessionId) {
+    throw new SessionServiceError(400, "sessionId 不能为空");
+  }
+
+  const sessionRow = await db("t_gameSession").where({ sessionId }).first();
+  if (!sessionRow) {
+    throw new SessionServiceError(404, "会话不存在");
+  }
+  const currentUserId = getCurrentUserId(0);
+  if (currentUserId > 0 && Number(sessionRow.userId || 0) !== currentUserId) {
+    throw new SessionServiceError(403, "无权访问该会话");
+  }
+
+  const prevChapterId = Number(sessionRow.chapterId || 0) || null;
+  const world = await loadSessionWorld(db, Number(sessionRow.worldId || 0));
+  const rolePair = normalizeRolePair(world?.playerRole, world?.narratorRole);
+  const state = normalizeSessionState(
+    sessionRow.stateJson,
+    Number(sessionRow.worldId || 0),
+    prevChapterId,
+    rolePair,
+    world,
+  );
+
+  const explicitChapterId = Number(chapterIdInput || 0) || null;
+  const pendingChapterId = getPendingSessionChapterId(state);
+  const targetChapterId = explicitChapterId || pendingChapterId;
+  if (!targetChapterId) {
+    throw new SessionServiceError(409, "当前没有待初始化的下一章节");
+  }
+
+  const chapter = normalizeChapterOutput(
+    await db("t_storyChapter").where({ id: targetChapterId, worldId: Number(sessionRow.worldId || 0) }).first(),
+  );
+  if (!chapter) {
+    throw new SessionServiceError(404, "目标章节不存在");
+  }
+
+  resetSessionChapterRuntimeOnSwitch(
+    state,
+    Number(chapter.id || 0) || null,
+    prevChapterId,
+    String(chapter.title || "").trim(),
+  );
+  state.chapterId = Number(chapter.id || 0) || null;
+  state.chapterTitle = String(chapter.title || "").trim() || String(state.chapterTitle || "").trim();
+  setPendingSessionChapterId(state, Number(chapter.id || 0) || null);
+  setPendingSessionChapterStart(state, true);
+  setPendingSessionNarrativePlan(state, null);
+  initializeChapterProgressForState(chapter, state);
+  syncChapterProgressWithRuntime(chapter, state);
+  setRuntimeTurnState(state, world, {
+    canPlayerSpeak: false,
+    expectedRoleType: "narrator",
+    expectedRole: String(state.narrator?.name || "旁白"),
+    lastSpeakerRoleType: String(state.turnState?.lastSpeakerRoleType || "narrator"),
+    lastSpeaker: String(state.turnState?.lastSpeaker || state.narrator?.name || "旁白"),
+  });
+
+  const stateJson = toJsonText(state, {});
+  await db("t_gameSession").where({ sessionId }).update({
+    stateJson,
+    chapterId: Number(chapter.id || 0) || null,
+    status: String(sessionRow.status || "active").trim() || "active",
+    updateTime: nowTs(),
+  });
+
+  const eventView = buildEventView(state);
+  return {
+    sessionId,
+    status: String(sessionRow.status || "active").trim() || "active",
+    worldId: Number(sessionRow.worldId || 0),
+    chapterId: Number(chapter.id || 0) || null,
+    chapterTitle: String(chapter.title || ""),
+    state,
+    chapter,
+    currentEventDigest: eventView.currentEventDigest,
+    eventDigestWindow: eventView.eventDigestWindow,
+    eventDigestWindowText: eventView.eventDigestWindowText,
+  };
 }
 
 export async function commitSessionNarrativeTurn(input: CommitSessionNarrativeTurnInput): Promise<AddSessionMessageResult> {
@@ -2349,6 +2479,15 @@ export async function commitSessionNarrativeTurn(input: CommitSessionNarrativeTu
           sessionStatus = "active";
         }
       }
+      if (nextChapterId && nextChapterId !== prevChapterId) {
+        setPendingSessionChapterId(state, nextChapterId);
+        setPendingSessionChapterStart(state, false);
+        state.chapterId = prevChapterId;
+      } else {
+        setPendingSessionChapterId(state, null);
+        setPendingSessionChapterStart(state, false);
+        state.chapterId = nextChapterId;
+      }
       initializeChapterProgressForState(chapter, state);
       syncChapterProgressWithRuntime(chapter, state);
     }
@@ -2356,7 +2495,7 @@ export async function commitSessionNarrativeTurn(input: CommitSessionNarrativeTu
   const stateJson = toJsonText(state, {});
   await db("t_gameSession").where({ sessionId }).update({
     stateJson,
-    chapterId: nextChapterId,
+    chapterId: state.chapterId || prevChapterId,
     status: sessionStatus,
     updateTime: now,
   });
@@ -2368,7 +2507,7 @@ export async function commitSessionNarrativeTurn(input: CommitSessionNarrativeTu
     now,
     policy: {
       saveSnapshot: input.saveSnapshot,
-      nextChapterId,
+      nextChapterId: state.chapterId || prevChapterId,
       prevChapterId,
       sessionStatus,
       prevStatus,
@@ -2379,7 +2518,7 @@ export async function commitSessionNarrativeTurn(input: CommitSessionNarrativeTu
     db,
     rows: insertedRows,
     state,
-    chapterId: nextChapterId,
+    chapterId: state.chapterId || prevChapterId,
     status: sessionStatus,
     capturedAt: now,
   });
@@ -2387,14 +2526,15 @@ export async function commitSessionNarrativeTurn(input: CommitSessionNarrativeTu
     userId: currentUserId,
     world,
   });
-  const activeChapter = nextChapterId
-    ? normalizeChapterOutput(await db("t_storyChapter").where({ id: nextChapterId }).first())
+  const activeChapterId = Number(state.chapterId || prevChapterId || 0) || null;
+  const activeChapter = activeChapterId
+    ? normalizeChapterOutput(await db("t_storyChapter").where({ id: activeChapterId }).first())
     : null;
   const eventView = buildEventView(state);
   return {
     sessionId,
     status: sessionStatus,
-    chapterId: nextChapterId,
+    chapterId: activeChapterId,
     chapter: activeChapter,
     state,
     currentEventDigest: eventView.currentEventDigest,

@@ -800,8 +800,17 @@ async function handleDebugOrchestrationRequest(req: express.Request, res: expres
   const sessionId = asTrimmedText(req.body.sessionId);
   if (sessionId) {
     const result = await orchestrateSessionTurn(sessionId);
-    // data 里只保留 role/roleType/motive；code/message 由标准响应信封承载。
-    return res.status(200).send(success(buildMinimalOrchestrationResponse(result.plan)));
+    // data 里只保留 role/roleType/motive/awaitUser/command；code/message 由标准响应信封承载。
+    return res.status(200).send(success(buildMinimalOrchestrationResponse(
+      result.plan
+        ? {
+          ...result.plan,
+          command: result.command || null,
+        }
+        : {
+          command: result.command || null,
+        },
+    )));
   }
 
   const db = getGameDb();
