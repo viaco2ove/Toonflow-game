@@ -2312,6 +2312,30 @@ function findFirstRoleByType(roles: RuntimeStoryRole[], roleType: string): Runti
   return roles.find((item) => sanitizeRoleType(item.roleType) === sanitizeRoleType(roleType));
 }
 
+// 编排师有时会返回 `speaker: 用户`，但运行时里的真实用户名可能是“异天”。
+// 这里统一把“用户/玩家/player”这类占位说法映射到当前用户角色，避免模型明明编排给用户却被当成无效结果。
+function resolvePlannerSpeakerRole(
+  roles: RuntimeStoryRole[],
+  speaker: string,
+  roleType: string,
+): RuntimeStoryRole | null {
+  const normalizedSpeaker = normalizeScalarText(speaker);
+  const normalizedRoleType = sanitizeRoleType(roleType);
+  if (normalizedRoleType === "player" || /^(用户|玩家|player)$/i.test(normalizedSpeaker)) {
+    return findFirstRoleByType(roles, "player") || null;
+  }
+  if (normalizedSpeaker) {
+    const matchedByName = roles.find((item) => normalizeScalarText(item.name) === normalizedSpeaker) || null;
+    if (matchedByName) {
+      return matchedByName;
+    }
+  }
+  if (normalizedRoleType && normalizedRoleType !== "player") {
+    return roles.find((item) => sanitizeRoleType(item.roleType) === normalizedRoleType && sanitizeRoleType(item.roleType) !== "player") || null;
+  }
+  return null;
+}
+
 // 选择当前回合的回退发言角色。
 function resolveFallbackRole(roles: RuntimeStoryRole[], turnState: RuntimeTurnState, latestPlayerMessage: string): RuntimeStoryRole {
   const narrator = findFirstRoleByType(roles, "narrator");
@@ -3248,20 +3272,14 @@ async function doRunNarrativePlan(input: OrchestratorInput): Promise<NarrativePl
     const objectLike = parseJsonSafe<Record<string, unknown>>(rawText, {});
     const fieldMap = parseFieldMap(rawText);
     const speaker = normalizeScalarText(
-      (objectLike && Object.keys(objectLike).length ? objectLike.speaker : undefined)
-      || getPlainField(fieldMap, "speaker"),
+      (objectLike && Object.keys(objectLike).length ? (objectLike.speaker ?? objectLike.role) : undefined)
+      || getPlainField(fieldMap, "speaker", "role"),
     );
     const roleType = sanitizeRoleType(
       (objectLike && Object.keys(objectLike).length ? objectLike.roleType : undefined)
       || getPlainField(fieldMap, "role_type", "roletype"),
     );
-    const matchedRole = (speaker
-      ? roles.find((item) => normalizeScalarText(item.name) === speaker)
-      : null)
-      || (roleType !== "player"
-        ? roles.find((item) => sanitizeRoleType(item.roleType) === roleType && sanitizeRoleType(item.roleType) !== "player")
-        : null)
-      || null;
+    const matchedRole = resolvePlannerSpeakerRole(roles, speaker, roleType);
     const motive = normalizeGeneratedLine(
       (objectLike && Object.keys(objectLike).length ? objectLike.motive : undefined)
       || getPlainField(fieldMap, "motive"),
@@ -3370,7 +3388,9 @@ async function doRunNarrativePlan(input: OrchestratorInput): Promise<NarrativePl
       ? nextChapterId
       : null;
     const pendingEndingGuide = input.state?.__pendingEndingGuide === true;
-    const canYieldDirectly = awaitUser && hasPlayerInput && !matchedRole && !pendingEndingGuide;
+    // “等待用户选择/输入”并不要求当前请求必须带着用户发言。
+    // 只要模型明确给出 await_user=true，就应该允许直接把回合交还给用户。
+    const canYieldDirectly = awaitUser && !matchedRole && !pendingEndingGuide;
     if (motive && looksLikeDirectiveLeak(motive, currentChapter.directive, currentChapter.openingText)) {
       throw createRuntimeModelError("orchestrator", "模型返回结构无效或泄漏了内部编排内容");
     }
