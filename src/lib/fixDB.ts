@@ -789,6 +789,7 @@ export default async (knex: Knex): Promise<void> => {
 - 否则 false
 - 用户信息发生变化，等级，物品，技能 等→ trigger_memory_agent=true
 - 用户输入了"@记忆管理 xxx"  → trigger_memory_agent=true
+- 旁白输入了"@记忆管理 xxx"  → trigger_memory_agent=true
 
 输出（逐行）：
 role_type:
@@ -862,6 +863,7 @@ event_facts:`,
 - 普通对话 → false
 - 用户信息发生变化，等级，物品，技能 → trigger_memory_agent=true
 - 用户输入了"@记忆管理 xxx"  → trigger_memory_agent=true
+- 旁白输入了"@记忆管理 xxx"  → trigger_memory_agent=true
 状态机：
 - event_adjust_mode:
   - keep：继续
