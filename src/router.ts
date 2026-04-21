@@ -176,7 +176,7 @@ export default async (app: Express) => {
   app.use("/game/getTrigger", route26);
   app.use("/game/getWorld", route27);
   app.use("/game/importWorldRole", route28);
-  app.use("/game/initChapter", route29);
+  app.use("/game/initchapter", route29);
   app.use("/game/initDebug", route30);
   app.use("/game/initStory", route31);
   app.use("/game/introduction", route32);

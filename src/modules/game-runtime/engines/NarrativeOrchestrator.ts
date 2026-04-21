@@ -135,6 +135,13 @@ export interface MemoryManagerResult {
   summary: string;
   facts: string[];
   tags: string[];
+  playerCardPatch: JsonRecord;
+  npcCardPatches: Array<{
+    roleId: string;
+    roleName: string;
+    roleType: string;
+    patch: JsonRecord;
+  }>;
   source: "ai" | "fallback";
 }
 
@@ -213,6 +220,13 @@ type PromptStatRow = {
   content: string;
   chars: number;
   estimatedTokens: number;
+};
+
+type MemoryRoleCardSnapshot = {
+  roleId: string;
+  roleName: string;
+  roleType: string;
+  card: JsonRecord;
 };
 
 // 截断错误信息，避免日志和报错文本过长。
@@ -565,6 +579,103 @@ function summarizeParameterCardKeyText(input: unknown): string {
     level ? `等级:${level}` : "",
   ].filter(Boolean);
   return parts.join("|");
+}
+
+// 记忆管理器不需要完整参数卡原文，只需要足以推断成长变化的关键信息。
+function buildMemoryRoleCardSummary(input: {
+  roleId: string;
+  roleName: string;
+  roleType: string;
+  card: JsonRecord;
+}, compactMode: boolean): JsonRecord {
+  const card = asRecord(input.card);
+  return {
+    role_id: input.roleId,
+    role_name: input.roleName,
+    role_type: sanitizeRoleType(input.roleType),
+    card: compactMode
+      ? summarizeParameterCardText(card)
+      : {
+        name: normalizeScalarText(card.name),
+        raw_setting: normalizeScalarText(card.raw_setting || card.rawSetting),
+        gender: normalizeScalarText(card.gender),
+        age: Number.isFinite(Number(card.age)) ? Number(card.age) : null,
+        level: Number.isFinite(Number(card.level)) ? Number(card.level) : null,
+        level_desc: normalizeScalarText(card.level_desc || card.levelDesc),
+        personality: normalizeScalarText(card.personality),
+        appearance: normalizeScalarText(card.appearance),
+        voice: normalizeScalarText(card.voice),
+        skills: Array.isArray(card.skills)
+          ? card.skills.map((item: unknown) => normalizeScalarText(item)).filter(Boolean).slice(0, 8)
+          : [],
+        items: Array.isArray(card.items)
+          ? card.items.map((item: unknown) => normalizeScalarText(item)).filter(Boolean).slice(0, 8)
+          : [],
+        equipment: Array.isArray(card.equipment)
+          ? card.equipment.map((item: unknown) => normalizeScalarText(item)).filter(Boolean).slice(0, 8)
+          : [],
+        hp: Number.isFinite(Number(card.hp)) ? Number(card.hp) : null,
+        mp: Number.isFinite(Number(card.mp)) ? Number(card.mp) : null,
+        money: Number.isFinite(Number(card.money)) ? Number(card.money) : null,
+        other: Array.isArray(card.other)
+          ? card.other.map((item: unknown) => normalizeScalarText(item)).filter(Boolean).slice(0, 8)
+          : [],
+      },
+  };
+}
+
+// 为记忆管理器选出本轮最相关的角色参数卡，避免把整个世界的所有角色都塞进 prompt。
+function collectMemoryRoleCardSnapshots(input: {
+  world: any;
+  state: JsonRecord;
+  recentMessages: RuntimeMessageInput[];
+}): {
+  playerCard: MemoryRoleCardSnapshot | null;
+  npcCards: MemoryRoleCardSnapshot[];
+} {
+  const allRoles = runtimeStoryRoles(input.world, input.state);
+  const messageRoleNames = new Set<string>();
+  const messageRoleIds = new Set<string>();
+  (Array.isArray(input.recentMessages) ? input.recentMessages : []).forEach((message) => {
+    const roleName = normalizeScalarText(message.role);
+    const roleType = sanitizeRoleType(message.roleType);
+    if (roleName && roleType !== "narrator") {
+      messageRoleNames.add(roleName);
+    }
+  });
+  allRoles.forEach((role) => {
+    if (messageRoleNames.has(normalizeScalarText(role.name))) {
+      messageRoleIds.add(normalizeScalarText(role.id));
+    }
+  });
+
+  const playerRole = allRoles.find((role) => sanitizeRoleType(role.roleType) === "player") || null;
+  const playerCard = playerRole
+    ? {
+      roleId: normalizeScalarText(playerRole.id) || "player",
+      roleName: normalizeScalarText(playerRole.name) || "用户",
+      roleType: sanitizeRoleType(playerRole.roleType),
+      card: asRecord(playerRole.parameterCardJson),
+    }
+    : null;
+
+  const npcCards = allRoles
+    .filter((role) => sanitizeRoleType(role.roleType) === "npc")
+    .sort((left, right) => {
+      const leftMatched = messageRoleIds.has(normalizeScalarText(left.id)) || messageRoleNames.has(normalizeScalarText(left.name));
+      const rightMatched = messageRoleIds.has(normalizeScalarText(right.id)) || messageRoleNames.has(normalizeScalarText(right.name));
+      if (leftMatched === rightMatched) return 0;
+      return leftMatched ? -1 : 1;
+    })
+    .slice(0, 8)
+    .map((role) => ({
+      roleId: normalizeScalarText(role.id),
+      roleName: normalizeScalarText(role.name),
+      roleType: sanitizeRoleType(role.roleType),
+      card: asRecord(role.parameterCardJson),
+    }));
+
+  return { playerCard, npcCards };
 }
 
 // 将角色的基础信息、口吻和参数卡压成编排模型可读的短摘要，避免把整份设定直接塞给模型。
@@ -1249,6 +1360,78 @@ function buildSpeakerPromptStats(payload: SpeakerPromptPayload, compactMode: boo
   });
 }
 
+// 把记忆管理链路里的上下文拆成可读统计块，便于直接判断“旧记忆为什么被覆盖了”。
+function buildMemoryPromptStats(payload: {
+  worldName: string;
+  chapterTitle: string;
+  currentEventIndex: number;
+  currentEventKind: string;
+  currentEventSummary: string;
+  currentEventFacts: string;
+  currentEventMemorySummary: string;
+  currentEventMemoryFacts: string;
+  eventDeltaText: string;
+  currentFacts: string;
+  currentTags: string;
+  recentDialogue: RecentDialogueTurn[];
+  currentMemory: string;
+  playerCard: JsonRecord | null;
+  npcCards: JsonRecord[];
+}, compactMode: boolean): PromptStatRow[] {
+  const sections = compactMode
+    ? [
+      { title: "当前记忆", content: payload.currentMemory || "无" },
+      { title: "当前事实", content: payload.currentFacts || "无" },
+      {
+        title: "当前事件",
+        content: [
+          `index:${payload.currentEventIndex || 1}`,
+          `kind:${payload.currentEventKind || "scene"}`,
+          `summary:${payload.currentEventSummary || "当前事件未命名"}`,
+          payload.currentEventFacts ? `facts:${payload.currentEventFacts}` : "",
+          payload.currentEventMemorySummary ? `memory_summary:${payload.currentEventMemorySummary}` : "",
+          payload.currentEventMemoryFacts ? `memory_facts:${payload.currentEventMemoryFacts}` : "",
+        ].filter(Boolean).join("\n") || "无",
+      },
+      { title: "事件增量", content: payload.eventDeltaText || "无" },
+      { title: "当前标签", content: payload.currentTags || "无" },
+      { title: "用户参数卡", content: payload.playerCard ? JSON.stringify(payload.playerCard, null, 2) : "无" },
+      { title: "相关NPC参数卡", content: payload.npcCards.length ? JSON.stringify(payload.npcCards, null, 2) : "[]" },
+      { title: "新增对话", content: payload.recentDialogue.length ? stringifyRecentDialogue(payload.recentDialogue) : "[]" },
+    ]
+    : [
+      { title: "世界", content: payload.worldName ? `名称:${payload.worldName}` : "无" },
+      { title: "章节", content: payload.chapterTitle ? `标题:${payload.chapterTitle}` : "无" },
+      {
+        title: "当前事件",
+        content: [
+          `index:${payload.currentEventIndex || 1}`,
+          `kind:${payload.currentEventKind || "scene"}`,
+          `summary:${payload.currentEventSummary || "当前事件未命名"}`,
+          payload.currentEventFacts ? `facts:${payload.currentEventFacts}` : "",
+          payload.currentEventMemorySummary ? `memory_summary:${payload.currentEventMemorySummary}` : "",
+          payload.currentEventMemoryFacts ? `memory_facts:${payload.currentEventMemoryFacts}` : "",
+        ].filter(Boolean).join("\n") || "无",
+      },
+      { title: "事件增量", content: payload.eventDeltaText || "无" },
+      { title: "现有记忆摘要", content: payload.currentMemory || "无" },
+      { title: "当前事实", content: payload.currentFacts || "无" },
+      { title: "当前标签", content: payload.currentTags || "无" },
+      { title: "用户参数卡", content: payload.playerCard ? JSON.stringify(payload.playerCard, null, 2) : "无" },
+      { title: "相关NPC参数卡", content: payload.npcCards.length ? JSON.stringify(payload.npcCards, null, 2) : "[]" },
+      { title: "新增对话", content: payload.recentDialogue.length ? stringifyRecentDialogue(payload.recentDialogue) : "[]" },
+    ];
+  return sections.map((section) => {
+    const content = section.content || "无";
+    return {
+      block: section.title,
+      content,
+      chars: content.length,
+      estimatedTokens: estimatePromptTokens(content),
+    };
+  });
+}
+
 function logOrchestratorPromptStats(
   payload: OrchestratorPromptPayload,
   compactMode: boolean,
@@ -1344,6 +1527,104 @@ function logOrchestratorPromptStats(
 
 
   }
+}
+
+// 统一输出记忆管理器的 runtime/stats 日志，便于核对请求是否正确、返回是否为空、以及是否覆盖了旧记忆。
+function logMemoryPromptStats(input: {
+  payload: {
+    worldName: string;
+    chapterTitle: string;
+    currentEventIndex: number;
+    currentEventKind: string;
+    currentEventSummary: string;
+    currentEventFacts: string;
+    currentEventMemorySummary: string;
+    currentEventMemoryFacts: string;
+    eventDeltaText: string;
+    currentFacts: string;
+    currentTags: string;
+    recentDialogue: RecentDialogueTurn[];
+    currentMemory: string;
+    playerCard: JsonRecord | null;
+    npcCards: JsonRecord[];
+  };
+  chapterMeta: { id?: unknown; title?: unknown; sort?: unknown } | null;
+  compactMode: boolean;
+  runtime: NarrativeRuntimeMeta;
+  systemPrompt: string;
+  userPrompt: string;
+  runtimeError: unknown;
+  tokenUsage?: { inputTokens?: number; outputTokens?: number; reasoningTokens?: number } | null;
+  rawResponse?: string | null;
+  timing?: { buildMs?: number; invokeMs?: number; totalMs?: number } | null;
+}) {
+  const rows: PromptStatRow[] = [
+    {
+      block: "系统提示词",
+      content: input.systemPrompt || "无",
+      chars: input.systemPrompt.length,
+      estimatedTokens: estimatePromptTokens(input.systemPrompt),
+    },
+    ...buildMemoryPromptStats(input.payload, input.compactMode),
+    {
+      block: "用户提示词",
+      content: input.userPrompt || "无",
+      chars: input.userPrompt.length,
+      estimatedTokens: estimatePromptTokens(input.userPrompt),
+    },
+  ];
+  const totalPromptChars = input.systemPrompt.length + input.userPrompt.length;
+  const totalPromptTokens = estimatePromptTokens(`${input.systemPrompt}\n${input.userPrompt}`.trim());
+  const responseText = String(input.rawResponse || "").trim();
+  const runtimeLog: Record<string, unknown> = {
+    ...input.runtime,
+    requestChars: totalPromptChars,
+    systemChars: input.systemPrompt.length,
+    userChars: input.userPrompt.length,
+    requestStatus: input.runtimeError ? "fallback" : "success",
+    responseTextLength: responseText.length,
+    responseText: responseText ? responseText.slice(0, 500) : "",
+    tokenUsage: input.tokenUsage || null,
+    buildMs: Number(input.timing?.buildMs || 0),
+    invokeMs: Number(input.timing?.invokeMs || 0),
+    totalMs: Number(input.timing?.totalMs || 0),
+    currentEventIndex: input.payload.currentEventIndex,
+    recentDialogueCount: input.payload.recentDialogue.length,
+  };
+  if (input.runtimeError) {
+    runtimeLog.error = normalizePromptStatContent((input.runtimeError as any)?.message || String(input.runtimeError));
+  }
+  if (!DebugLogUtil.isDebugLogEnabled()) return;
+  console.log("[story:memory:runtime]", JSON.stringify(runtimeLog));
+  DebugLogUtil.logCurrentChapter("story:memory:stats", input.chapterMeta);
+  console.log(`[story:memory:stats] request_chars=${totalPromptChars} estimated_tokens=${totalPromptTokens} system_chars=${input.systemPrompt.length} user_chars=${input.userPrompt.length} build_ms=${Number(input.timing?.buildMs || 0)} invoke_ms=${Number(input.timing?.invokeMs || 0)} total_ms=${Number(input.timing?.totalMs || 0)}`);
+  if (input.tokenUsage) {
+    console.log(`[story:memory:stats] actual_input_tokens=${input.tokenUsage.inputTokens || 0} actual_output_tokens=${input.tokenUsage.outputTokens || 0} actual_reasoning_tokens=${input.tokenUsage.reasoningTokens || 0}`);
+  }
+  if (responseText) {
+    console.log(`[story:memory:stats] response_chars=${responseText.length}`);
+    console.log(`[story:memory:stats] response_preview=${normalizePromptStatContent(responseText)}`);
+  }
+  if (input.runtimeError) {
+    console.log(`[story:memory:stats] request_status=fallback reason=${normalizePromptStatContent((input.runtimeError as any)?.message || String(input.runtimeError))}`);
+  } else {
+    console.log("[story:memory:stats] request_status=success");
+  }
+  console.log("[story:memory:stats] 以下为 prompt 体积估算，不等于模型真实 usage。");
+  console.log("[story:memory:stats] | 区块 | 实际内容 | 字符数 | 估算 Prompt Tokens |");
+  console.log("[story:memory:stats] |---|---|---:|---:|");
+  rows.forEach((row) => {
+    console.log(`[story:memory:stats] | ${row.block} | ${normalizePromptStatContent(row.content)} | ${row.chars} | ${row.estimatedTokens} |`);
+  });
+  if (responseText) {
+    console.log(`[story:memory:stats] | 返回内容 | ${normalizePromptStatContent(responseText)} | ${responseText.length} | - |`);
+  }
+  if (input.tokenUsage) {
+    console.log(`[story:memory:stats] | 实际推理消耗 | input=${input.tokenUsage.inputTokens || 0}, output=${input.tokenUsage.outputTokens || 0}, reasoning=${input.tokenUsage.reasoningTokens || 0} | - | - |`);
+  }
+  console.log("[story:memory:stats] System Prompt");
+  console.log(`${input.systemPrompt}\n \n userPrompt:\n${input.userPrompt}`);
+  console.log(`[story:memory:stats] 耗时: ${Number(input.timing?.totalMs || 0)}ms`);
 }
 
 // 统一输出角色发言器的 runtime/stats 日志，避免后续排查时还要反查到底走了哪条 speaker 路由。
@@ -1609,6 +1890,8 @@ function buildMemoryUserPrompt(payload: {
   currentTags: string;
   recentDialogue: RecentDialogueTurn[];
   currentMemory: string;
+  playerCard: JsonRecord | null;
+  npcCards: JsonRecord[];
 }, compactMode = false): string {
   if (compactMode) {
     return [
@@ -1632,17 +1915,43 @@ function buildMemoryUserPrompt(payload: {
       "[当前标签]",
       payload.currentTags || "无",
       "",
+      "[用户当前参数卡(JSON)]",
+      payload.playerCard ? JSON.stringify(payload.playerCard, null, 2) : "无",
+      "",
+      "[相关NPC参数卡(JSON数组)]",
+      payload.npcCards.length ? JSON.stringify(payload.npcCards, null, 2) : "[]",
+      "",
       "[新增对话(JSON数组)]",
       stringifyRecentDialogue(payload.recentDialogue),
       "",
       "[任务]",
-      "请对比当前记忆与新增对话，只保留对后续剧情有用的新事实、修正和标签。",
+      "请对比当前记忆、当前参数卡与新增对话，只保留对后续剧情有用的新事实、修正和标签。",
+      "如果对话里出现角色状态变化、获得/失去物品、技能成长、身份变化，请同时输出参数卡 patch。",
       "如果有重复，直接合并；如果有冲突，按最新对话修正。",
       "",
-      "[输出字段]",
-      "summary:",
-      "facts:",
-      "tags:",
+      "[输出格式(JSON)]",
+      JSON.stringify({
+        summary: "新的故事摘要",
+        facts: ["新事实1"],
+        tags: ["标签1"],
+        player_card_patch: {
+          level: 2,
+          items: ["新获得物品"],
+          other: ["新的长期状态"],
+        },
+        npc_card_patches: [
+          {
+            role_id: "npc_xxx",
+            role_name: "某角色",
+            patch: {
+              items: ["新获得物品"],
+              other: ["新的长期状态"],
+            },
+          },
+        ],
+      }, null, 2),
+      "注意：patch 只允许这些字段：raw_setting, personality, appearance, voice, skills, items, equipment, other, gender, age, level, level_desc, hp, mp, money。",
+      "没有变化就返回空对象 {} 或空数组 []。",
     ].filter(Boolean).join("\n");
   }
   return [
@@ -1675,10 +1984,42 @@ function buildMemoryUserPrompt(payload: {
     "[当前标签]",
     payload.currentTags || "无",
     "",
-    "[输出字段]",
-    "summary:",
-    "facts:",
-    "tags:",
+    "[用户当前参数卡(JSON)]",
+    payload.playerCard ? JSON.stringify(payload.playerCard, null, 2) : "无",
+    "",
+    "[相关NPC参数卡(JSON数组)]",
+    payload.npcCards.length ? JSON.stringify(payload.npcCards, null, 2) : "[]",
+    "",
+    "[任务]",
+    "根据现有记忆、当前事件、最近对话和角色参数卡，更新整个故事所需的长期记忆。",
+    "如果对话里出现用户或 NPC 的长期状态变化，必须同时输出参数卡 patch。",
+    "只保留对后续剧情真的有用的变化，重复项请合并，冲突项按最新剧情修正。",
+    "",
+    "[输出格式(JSON)]",
+    JSON.stringify({
+      summary: "新的故事摘要",
+      facts: ["新事实1", "新事实2"],
+      tags: ["标签1", "标签2"],
+      player_card_patch: {
+        level: 2,
+        level_desc: "斗之气2星",
+        skills: ["新技能"],
+        items: ["新物品"],
+        other: ["新的长期状态"],
+      },
+      npc_card_patches: [
+        {
+          role_id: "npc_xxx",
+          role_name: "某角色",
+          patch: {
+            items: ["新物品"],
+            other: ["新状态"],
+          },
+        },
+      ],
+    }, null, 2),
+    "只允许使用这些 patch 字段：raw_setting, personality, appearance, voice, skills, items, equipment, other, gender, age, level, level_desc, hp, mp, money。",
+    "如果没有参数卡变化，player_card_patch 返回 {}，npc_card_patches 返回 []。",
   ].filter(Boolean).join("\n");
 }
 
@@ -3246,11 +3587,19 @@ export async function runStoryMemoryManager(input: {
   state: JsonRecord;
   recentMessages: RuntimeMessageInput[];
 }): Promise<MemoryManagerResult> {
+  // 记忆管理也需要打印 build/invoke/total 三段耗时，方便直接比对是 prompt 过大还是模型慢。
+  const totalStartedAt = Date.now();
   const prompts = await loadStoryPrompts();
   const promptAiConfig = await resolveTextStageModel(input.userId, "storyMemoryModel");
   const compactMode = shouldUseCompactMemoryPayload(promptAiConfig);
+  const memoryRuntime = resolveNarrativeRuntimeMeta("storyMemoryModel", promptAiConfig, compactMode);
   const currentEvent = readCurrentRuntimeEventContext(input.chapter, input.state);
   const memoryInputs = splitMemoryRefreshInputs(input.recentMessages);
+  const roleCardSnapshots = collectMemoryRoleCardSnapshots({
+    world: input.world,
+    state: input.state,
+    recentMessages: input.recentMessages,
+  });
   const payload = {
     worldName: normalizeScalarText(input.world?.name),
     chapterTitle: normalizeScalarText(input.chapter?.title),
@@ -3266,9 +3615,37 @@ export async function runStoryMemoryManager(input: {
     currentTags: compactMode
       ? uniqueTextList(Array.isArray(input.state.memoryTags) ? input.state.memoryTags : [], 6).join("；")
       : uniqueTextList(Array.isArray(input.state.memoryTags) ? input.state.memoryTags : [], 12).join("；"),
+    playerCard: roleCardSnapshots.playerCard
+      ? buildMemoryRoleCardSummary(roleCardSnapshots.playerCard, compactMode)
+      : null,
+    npcCards: roleCardSnapshots.npcCards.map((item) => buildMemoryRoleCardSummary(item, compactMode)),
   };
+  const systemPrompt = compactMode
+    ? [
+      "你是记忆管理器。",
+      "你负责更新整个故事的长期记忆，包括剧情摘要、关键事实、标签，以及角色动态参数卡。",
+      "优先保留新变化、修正冲突、合并重复信息。",
+      "不要写剧情正文，不要输出代码块。",
+      "严格输出一个 JSON 对象。",
+      "字段固定为 summary, facts, tags, player_card_patch, npc_card_patches。",
+      "player_card_patch 和 npc_card_patches.patch 只允许这些字段：raw_setting, personality, appearance, voice, skills, items, equipment, other, gender, age, level, level_desc, hp, mp, money。",
+    ].join("\n")
+    : [
+      prompts.storyMemory,
+      "输出要求：",
+      "1. 你负责管理整个故事记忆，不只更新摘要，还要维护角色动态参数卡。",
+      "2. 只提炼对后续剧情有用的事实和长期变化。",
+      "3. 不写剧情正文，不要代码块。",
+      "4. 严格输出一个 JSON 对象，字段固定为：summary, facts, tags, player_card_patch, npc_card_patches。",
+      "5. player_card_patch 和 npc_card_patches.patch 只允许这些字段：raw_setting, personality, appearance, voice, skills, items, equipment, other, gender, age, level, level_desc, hp, mp, money。",
+    ].filter(Boolean).join("\n\n");
+  const userPrompt = buildMemoryUserPrompt(payload, compactMode);
+  const buildFinishedAt = Date.now();
+  let tokenUsage: { inputTokens?: number; outputTokens?: number; reasoningTokens?: number } | null = null;
+  let rawText = "";
 
   try {
+    const invokeStartedAt = Date.now();
     const result = await u.ai.text.invoke(
       {
         plainTextOutput: true,
@@ -3282,36 +3659,43 @@ export async function runStoryMemoryManager(input: {
         messages: [
           {
             role: "system",
-            content: compactMode
-              ? [
-                  "你是记忆管理器。",
-                  "只根据当前记忆和新增对话更新故事记忆。",
-                  "优先保留新变化、修正冲突、合并重复信息。",
-                  "不要写剧情正文，不要输出代码块。",
-                  "严格只输出 summary / facts / tags 三个字段。",
-                ].join("\n")
-              : [
-                  prompts.storyMemory,
-                  "输出要求：",
-                  "1. 只提炼对后续剧情有用的事实。",
-                  "2. 不写剧情正文。",
-                  "3. 本阶段禁止 JSON、禁止代码块，只按字段逐行输出。",
-                  "4. 严格使用以下字段名：summary / facts / tags。",
-                ].filter(Boolean).join("\n\n"),
+            content: systemPrompt,
           },
           {
             role: "user",
-            content: buildMemoryUserPrompt(payload, compactMode),
+            content: userPrompt,
           },
         ],
         maxRetries: 0,
       },
       promptAiConfig as any,
     );
-    const rawText = unwrapModelText((result as any)?.text || "");
+    const invokeFinishedAt = Date.now();
+    tokenUsage = {
+      inputTokens: Number((result as any)?.usage?.inputTokens || 0),
+      outputTokens: Number((result as any)?.usage?.outputTokens || 0),
+      reasoningTokens: Number((result as any)?.usage?.outputTokenDetails?.reasoningTokens || (result as any)?.usage?.reasoningTokens || 0),
+    };
+    rawText = unwrapModelText((result as any)?.text || "");
     const objectLike = parseJsonSafe<Record<string, unknown>>(rawText, {});
     const fieldMap = parseFieldMap(rawText);
-    return {
+    const playerCardPatch = sanitizeMemoryParameterCardPatch(
+      (objectLike && Object.keys(objectLike).length ? objectLike.player_card_patch ?? objectLike.playerCardPatch : undefined)
+      || parseJsonSafe<JsonRecord>(getPlainField(fieldMap, "player_card_patch", "playercardpatch"), {}),
+    );
+    const npcCardPatchSource = (objectLike && Object.keys(objectLike).length ? objectLike.npc_card_patches ?? objectLike.npcCardPatches : undefined);
+    const npcCardPatches = Array.isArray(npcCardPatchSource)
+      ? npcCardPatchSource.map((item: unknown) => {
+        const rawItem = asRecord(item);
+        return {
+          roleId: normalizeScalarText(rawItem.role_id || rawItem.roleId),
+          roleName: normalizeScalarText(rawItem.role_name || rawItem.roleName),
+          roleType: sanitizeRoleType(rawItem.role_type || rawItem.roleType || "npc"),
+          patch: sanitizeMemoryParameterCardPatch(rawItem.patch),
+        };
+      }).filter((item) => (item.roleId || item.roleName) && Object.keys(item.patch).length)
+      : [];
+    const normalizedMemory: MemoryManagerResult = {
       summary: normalizeScalarText(
         (objectLike && Object.keys(objectLike).length ? objectLike.summary : undefined)
         || getPlainField(fieldMap, "summary"),
@@ -3322,9 +3706,53 @@ export async function runStoryMemoryManager(input: {
       tags: Array.isArray(objectLike?.tags)
         ? (objectLike as any).tags.map((item: unknown) => normalizeScalarText(item)).filter(Boolean)
         : parsePlainList(getPlainField(fieldMap, "tags")),
+      playerCardPatch,
+      npcCardPatches,
       source: "ai",
     };
+    logMemoryPromptStats({
+      payload,
+      chapterMeta: {
+        id: input.chapter?.id,
+        title: input.chapter?.title,
+        sort: (input.chapter as any)?.sort,
+      },
+      compactMode,
+      runtime: memoryRuntime,
+      systemPrompt,
+      userPrompt,
+      runtimeError: null,
+      tokenUsage,
+      rawResponse: rawText,
+      timing: {
+        buildMs: buildFinishedAt - totalStartedAt,
+        invokeMs: invokeFinishedAt - invokeStartedAt,
+        totalMs: invokeFinishedAt - totalStartedAt,
+      },
+    });
+    return normalizedMemory;
   } catch (err) {
+    const failedAt = Date.now();
+    logMemoryPromptStats({
+      payload,
+      chapterMeta: {
+        id: input.chapter?.id,
+        title: input.chapter?.title,
+        sort: (input.chapter as any)?.sort,
+      },
+      compactMode,
+      runtime: memoryRuntime,
+      systemPrompt,
+      userPrompt,
+      runtimeError: err,
+      tokenUsage,
+      rawResponse: rawText,
+      timing: {
+        buildMs: buildFinishedAt - totalStartedAt,
+        invokeMs: Math.max(0, failedAt - buildFinishedAt),
+        totalMs: failedAt - totalStartedAt,
+      },
+    });
     console.warn("[story:memory] error", {
       manufacturer: (promptAiConfig as any)?.manufacturer || "",
       model: (promptAiConfig as any)?.model || "",
@@ -3334,11 +3762,215 @@ export async function runStoryMemoryManager(input: {
   }
 }
 
-// 把记忆管理结果写回运行时 state。
+// 给任意角色生成一张保底参数卡，避免后续 patch 合并时遇到空对象。
+function buildDefaultRoleParameterCardForMemory(input: {
+  role?: unknown;
+  fallbackName?: string;
+}): JsonRecord {
+  const role = asRecord(input.role);
+  const currentCard = asRecord(role.parameterCardJson);
+  return {
+    name: normalizeScalarText(currentCard.name || role.name || input.fallbackName || "用户") || "用户",
+    raw_setting: normalizeScalarText(currentCard.raw_setting || currentCard.rawSetting || role.description),
+    gender: normalizeScalarText(currentCard.gender),
+    age: Number.isFinite(Number(currentCard.age)) ? Number(currentCard.age) : null,
+    level: Number.isFinite(Number(currentCard.level)) ? Number(currentCard.level) : 1,
+    level_desc: normalizeScalarText(currentCard.level_desc || currentCard.levelDesc) || "初入此界",
+    personality: normalizeScalarText(currentCard.personality),
+    appearance: normalizeScalarText(currentCard.appearance),
+    voice: normalizeScalarText(currentCard.voice || role.voice),
+    skills: Array.isArray(currentCard.skills)
+      ? currentCard.skills.map((item: unknown) => normalizeScalarText(item)).filter(Boolean)
+      : [],
+    items: Array.isArray(currentCard.items)
+      ? currentCard.items.map((item: unknown) => normalizeScalarText(item)).filter(Boolean)
+      : [],
+    equipment: Array.isArray(currentCard.equipment)
+      ? currentCard.equipment.map((item: unknown) => normalizeScalarText(item)).filter(Boolean)
+      : [],
+    hp: Number.isFinite(Number(currentCard.hp)) ? Number(currentCard.hp) : 100,
+    mp: Number.isFinite(Number(currentCard.mp)) ? Number(currentCard.mp) : 0,
+    money: Number.isFinite(Number(currentCard.money)) ? Number(currentCard.money) : 0,
+    other: Array.isArray(currentCard.other)
+      ? currentCard.other.map((item: unknown) => normalizeScalarText(item)).filter(Boolean)
+      : [],
+  };
+}
+
+// 只允许记忆管理器改动一小组安全字段，避免模型胡乱污染整个参数卡。
+function sanitizeMemoryParameterCardPatch(input: unknown): JsonRecord {
+  const raw = asRecord(input);
+  const patch: JsonRecord = {};
+  const scalarKeys = ["raw_setting", "personality", "appearance", "voice", "gender", "level_desc"];
+  scalarKeys.forEach((key) => {
+    const value = normalizeScalarText(raw[key] ?? raw[key.replace(/_([a-z])/g, (_, char) => char.toUpperCase())]);
+    if (value) {
+      patch[key] = value;
+    }
+  });
+  const numericKeys = ["age", "level", "hp", "mp", "money"];
+  numericKeys.forEach((key) => {
+    const numericValue = Number(raw[key]);
+    if (Number.isFinite(numericValue)) {
+      patch[key] = numericValue;
+    }
+  });
+  const listKeys = ["skills", "items", "equipment", "other"];
+  listKeys.forEach((key) => {
+    const listValue = Array.isArray(raw[key])
+      ? raw[key].map((item: unknown) => normalizeScalarText(item)).filter(Boolean)
+      : typeof raw[key] === "string"
+        ? parsePlainList(raw[key])
+        : [];
+    if (listValue.length) {
+      patch[key] = uniqueTextList(listValue, 20);
+    }
+  });
+  return patch;
+}
+
+// 将记忆管理器给出的 patch 合并到参数卡，标量覆盖、数组去重合并。
+function mergeMemoryParameterCardPatch(baseCard: JsonRecord, patchInput: unknown): JsonRecord {
+  const patch = sanitizeMemoryParameterCardPatch(patchInput);
+  if (!Object.keys(patch).length) {
+    return baseCard;
+  }
+  const nextCard = buildDefaultRoleParameterCardForMemory({
+    role: {
+      parameterCardJson: baseCard,
+      name: baseCard.name,
+      description: baseCard.raw_setting,
+      voice: baseCard.voice,
+    },
+    fallbackName: normalizeScalarText(baseCard.name) || "用户",
+  });
+  Object.entries(patch).forEach(([key, value]) => {
+    if (Array.isArray(value)) {
+      const previousList = Array.isArray(nextCard[key]) ? (nextCard[key] as unknown[]) : [];
+      nextCard[key] = uniqueTextList([...previousList, ...value], 20);
+      return;
+    }
+    nextCard[key] = value;
+  });
+  return nextCard;
+}
+
+// 把记忆摘要、事实和标签以长期信息形式补进用户 patch，避免模型只更新摘要不更新参数卡。
+function buildDerivedPlayerMemoryPatch(memory: MemoryManagerResult): JsonRecord {
+  const nextOther = [
+    normalizeScalarText(memory.summary) ? `记忆摘要：${shortText(memory.summary, 120)}` : "",
+    ...(Array.isArray(memory.facts) ? memory.facts : []).map((item) => `记忆事实：${shortText(item, 80)}`),
+    ...(Array.isArray(memory.tags) ? memory.tags : []).map((item) => `记忆标签：${shortText(item, 40)}`),
+  ].map((item) => normalizeScalarText(item)).filter(Boolean);
+  return nextOther.length ? { other: nextOther } : {};
+}
+
+// 将记忆管理器的用户参数卡 patch 写回当前用户。
+function applyMemoryPlayerCardPatchToState(state: JsonRecord, memory: MemoryManagerResult): {
+  existedBefore: boolean;
+  otherCountBefore: number;
+  otherCountAfter: number;
+  applied: boolean;
+} {
+  const player = asRecord(state.player);
+  const existedBefore = Boolean(player.parameterCardJson && typeof player.parameterCardJson === "object");
+  const currentCard = buildDefaultRoleParameterCardForMemory({
+    role: player,
+    fallbackName: normalizeScalarText(player.name) || "用户",
+  });
+  const otherCountBefore = Array.isArray(currentCard.other) ? currentCard.other.length : 0;
+  const explicitPatch = asRecord(memory.playerCardPatch);
+  const derivedPatch = buildDerivedPlayerMemoryPatch(memory);
+  const mergedPatch = {
+    ...explicitPatch,
+    ...derivedPatch,
+    other: uniqueTextList([
+      ...(Array.isArray(explicitPatch.other) ? explicitPatch.other : []),
+      ...(Array.isArray(derivedPatch.other) ? derivedPatch.other : []),
+    ], 20),
+  };
+  const nextCard = mergeMemoryParameterCardPatch(currentCard, mergedPatch);
+  player.parameterCardJson = nextCard;
+  state.player = player;
+  return {
+    existedBefore,
+    otherCountBefore,
+    otherCountAfter: Array.isArray(nextCard.other) ? nextCard.other.length : 0,
+    applied: Object.keys(sanitizeMemoryParameterCardPatch(mergedPatch)).length > 0,
+  };
+}
+
+// 在运行时 NPC 包里按 id/name 匹配并写回参数卡 patch。
+function applyMemoryNpcCardPatchesToState(state: JsonRecord, memory: MemoryManagerResult): Array<{
+  roleId: string;
+  roleName: string;
+  applied: boolean;
+}> {
+  const npcBag = asRecord(state.npcs);
+  const patchList = Array.isArray(memory.npcCardPatches) ? memory.npcCardPatches : [];
+  if (!Object.keys(npcBag).length || !patchList.length) {
+    return [];
+  }
+  const appliedResults: Array<{ roleId: string; roleName: string; applied: boolean }> = [];
+  patchList.forEach((patchEntry) => {
+    const roleId = normalizeScalarText(patchEntry.roleId);
+    const roleName = normalizeScalarText(patchEntry.roleName);
+    const patch = sanitizeMemoryParameterCardPatch(patchEntry.patch);
+    if (!Object.keys(patch).length) {
+      appliedResults.push({ roleId, roleName, applied: false });
+      return;
+    }
+    let matchedKey = "";
+    Object.entries(npcBag).some(([key, value]) => {
+      const npc = asRecord(value);
+      const npcId = normalizeScalarText(npc.id);
+      const npcName = normalizeScalarText(npc.name);
+      if ((roleId && npcId === roleId) || (roleName && npcName === roleName)) {
+        matchedKey = key;
+        return true;
+      }
+      return false;
+    });
+    if (!matchedKey) {
+      appliedResults.push({ roleId, roleName, applied: false });
+      return;
+    }
+    const npc = asRecord(npcBag[matchedKey]);
+    const currentCard = buildDefaultRoleParameterCardForMemory({
+      role: npc,
+      fallbackName: roleName || normalizeScalarText(npc.name) || matchedKey,
+    });
+    npc.parameterCardJson = mergeMemoryParameterCardPatch(currentCard, patch);
+    npcBag[matchedKey] = npc;
+    appliedResults.push({ roleId, roleName, applied: true });
+  });
+  state.npcs = npcBag;
+  return appliedResults;
+}
+
 export function applyMemoryResultToState(state: JsonRecord, memory: MemoryManagerResult) {
-  state.memorySummary = memory.summary;
-  state.memoryFacts = memory.facts;
-  state.memoryTags = memory.tags;
+  const previousSummary = normalizeScalarText(state.memorySummary);
+  const previousFacts = Array.isArray(state.memoryFacts)
+    ? state.memoryFacts.map((item) => normalizeScalarText(item)).filter(Boolean)
+    : [];
+  const previousTags = Array.isArray(state.memoryTags)
+    ? state.memoryTags.map((item) => normalizeScalarText(item)).filter(Boolean)
+    : [];
+  const mergedFacts = uniqueTextList([...(Array.isArray(memory.facts) ? memory.facts : []), ...previousFacts], 12);
+  const mergedTags = uniqueTextList([...(Array.isArray(memory.tags) ? memory.tags : []), ...previousTags], 12);
+  const nextSummary = normalizeScalarText(memory.summary)
+    || previousSummary
+    || shortText(mergedFacts.join("；"), 180);
+  state.memorySummary = nextSummary;
+  state.memoryFacts = mergedFacts;
+  state.memoryTags = mergedTags;
+  applyMemoryPlayerCardPatchToState(state, {
+    ...memory,
+    summary: nextSummary,
+    facts: mergedFacts,
+    tags: mergedTags,
+  });
+  applyMemoryNpcCardPatchesToState(state, memory);
 }
 
 // 将完整编排结果压缩成前端和日志都好读的摘要。
@@ -3415,14 +4047,72 @@ export async function refreshStoryMemoryBestEffort(input: {
   const recentMessages = Array.isArray(input.recentMessages) ? input.recentMessages.filter(Boolean) : [];
   if (!recentMessages.length) return null;
   try {
+    const previousSummary = normalizeScalarText(input.state.memorySummary);
+    const previousFacts = Array.isArray(input.state.memoryFacts)
+      ? input.state.memoryFacts.map((item) => normalizeScalarText(item)).filter(Boolean)
+      : [];
+    const previousTags = Array.isArray(input.state.memoryTags)
+      ? input.state.memoryTags.map((item) => normalizeScalarText(item)).filter(Boolean)
+      : [];
+    const previousPlayerCard = asRecord(asRecord(input.state.player).parameterCardJson);
     const memory = await runStoryMemoryManager({
       ...input,
       recentMessages,
     });
-    if (!memory.summary && !memory.facts.length && !memory.tags.length) {
+    if (
+      !memory.summary
+      && !memory.facts.length
+      && !memory.tags.length
+      && !Object.keys(asRecord(memory.playerCardPatch)).length
+      && !memory.npcCardPatches.length
+    ) {
+      if (DebugLogUtil.isDebugLogEnabled()) {
+        console.log("[story:memory:runtime]", JSON.stringify({
+          action: "skip_apply",
+          reason: "empty_result",
+          chapterId: Number(input.chapter?.id || 0),
+          recentMessageCount: recentMessages.length,
+        }));
+      }
       return null;
     }
     applyMemoryResultToState(input.state, memory);
+    const nextPlayerCard = asRecord(asRecord(input.state.player).parameterCardJson);
+    const nextNpcBag = asRecord(input.state.npcs);
+    const npcCardAppliedTargets = (Array.isArray(memory.npcCardPatches) ? memory.npcCardPatches : [])
+      .map((item) => {
+        const roleId = normalizeScalarText(item.roleId);
+        const roleName = normalizeScalarText(item.roleName);
+        const matched = Object.values(nextNpcBag).find((npc) => {
+          const raw = asRecord(npc);
+          return (roleId && normalizeScalarText(raw.id) === roleId)
+            || (roleName && normalizeScalarText(raw.name) === roleName);
+        });
+        return matched ? roleId || roleName : "";
+      })
+      .filter(Boolean);
+    if (DebugLogUtil.isDebugLogEnabled()) {
+      console.log("[story:memory:runtime]", JSON.stringify({
+        action: "apply_result",
+        chapterId: Number(input.chapter?.id || 0),
+        source: memory.source,
+        previousSummaryLength: previousSummary.length,
+        nextSummaryLength: normalizeScalarText(input.state.memorySummary).length,
+        previousFactsCount: previousFacts.length,
+        nextFactsCount: Array.isArray(input.state.memoryFacts) ? input.state.memoryFacts.length : 0,
+        previousTagsCount: previousTags.length,
+        nextTagsCount: Array.isArray(input.state.memoryTags) ? input.state.memoryTags.length : 0,
+        playerCardExistedBefore: Object.keys(previousPlayerCard).length > 0,
+        playerCardExistsAfter: Object.keys(nextPlayerCard).length > 0,
+        playerCardOtherCountBefore: Array.isArray(previousPlayerCard.other) ? previousPlayerCard.other.length : 0,
+        playerCardOtherCountAfter: Array.isArray(nextPlayerCard.other) ? nextPlayerCard.other.length : 0,
+        playerCardPatchApplied: Object.keys(asRecord(memory.playerCardPatch)).length > 0,
+        playerCardPatchKeys: Object.keys(asRecord(memory.playerCardPatch)),
+        npcCardPatchCount: memory.npcCardPatches.length,
+        npcCardAppliedCount: npcCardAppliedTargets.length,
+        npcCardAppliedTargets,
+      }));
+    }
     return memory;
   } catch (err) {
     const message = normalizeScalarText((err as any)?.message || String(err));

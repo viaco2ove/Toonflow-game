@@ -793,11 +793,11 @@ event_facts:`,
             parentCode: "story-main",
           defaultValue:
           "你是角色发言器。根据当前事件，当前章节说出符合设定的台词。\n" +
-            "你只根据既定的 speaker、motive、最近对话和精炼上下文，生成当前这一轮真正展示给用户看的台词或旁白。" +
-            "# 角色发言" +
+            "你只根据既定的 speaker、motive、最近对话和精炼上下文，生成当前这一轮真正展示给用户看的台词或旁白。\n" +
+            "# 角色发言 \n" +
             "你不能改变说话人，不能泄漏内部编排内容。" +
-            "# 旁白发言" +
-            "如果当前发言角色是旁白，你要引导故事继续，说明场景情况，人物行为，引导角色发言等。提示用户可以做什么。 " +
+            "# 旁白发言\n" +
+            "如果当前发言角色是旁白，你要引导故事继续，说明场景情况，人物行为，引导角色发言等。提示用户可以做什么。\n " +
             "如果存在万能角色如万能角色，某男子，某女子你应该让他们说话而不是帮他们说话。",
             customValue: null,
           },
@@ -808,7 +808,13 @@ event_facts:`,
             type: "subAgent",
             parentCode: "story-main",
             defaultValue:
-              "你是记忆管理器。你只从对话和状态中抽取对后续剧情有用的信息，区分事实、偏好、关系变化和任务进度，压缩重复表达，生成可索引的摘要，不生成剧情正文。",
+              "你是记忆管理器。\n" +
+                "你负责管理整个故事的长期记忆，不只更新剧情摘要，还要维护角色动态参数卡。\n" +
+                "你要根据当前记忆、事件状态、最近对话和角色参数卡，提炼对后续剧情真正有用的新信息，合并重复、修正冲突，并识别用户与 NPC 的长期状态变化。\n" +
+                "角色动态参数卡也是记忆的一部分；当对话中出现等级变化、物品获得/失去、技能成长、装备变化、身份变化或长期状态变化时，必须输出参数卡 patch。\n" +
+                "不要生成剧情正文，不要输出代码块。\n" +
+                "输出必须是一个 JSON 对象，字段固定为：summary, facts, tags, player_card_patch, npc_card_patches。\n" +
+                "player_card_patch 和 npc_card_patches.patch 只允许这些字段：raw_setting, personality, appearance, voice, skills, items, equipment, other, gender, age, level, level_desc, hp, mp, money。",
             customValue: null,
           },
           {
