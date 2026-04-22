@@ -307,6 +307,36 @@ function normalizeRuntimeSummary(input: string, fallback: string): string {
   return text.slice(0, 80) || fallback;
 }
 
+// 将单行正文统一格式化。
+// 作用：
+// 1. 把 `@角色:内容` 统一成稳定的 `@角色：内容` 格式；
+// 2. 清掉列表项前缀，避免 phase 摘要里出现多余的 `-` / `*`；
+// 3. 供多行 phase 摘要与对白信号复用，保证运行时文本一致。
+function formatRuntimeDisplayLine(input: string): string {
+  const line = String(input || "").trim();
+  if (!line) return "";
+  const dialogueMatched = line.match(/^@([^:\n：]+)\s*[:：]\s*(.+)$/);
+  if (dialogueMatched) {
+    const speaker = String(dialogueMatched[1] || "").trim();
+    const content = String(dialogueMatched[2] || "").trim();
+    return speaker && content ? `@${speaker}：${content}` : line;
+  }
+  return line.replace(/^[-*]\s+/, "").trim();
+}
+
+// 将正文整理成“保留换行”的运行时摘要。
+// phase.targetSummary 需要保留逐行结构，否则像：
+// `@旁白 ... @萧炎 ... @某男子 ...`
+// 这种多角色串联场景会被压成一整行，后续编排与事件推进无法识别当前到底轮到谁。
+function normalizeRuntimeMultilineSummary(input: string, fallback: string): string {
+  const lines = String(input || "")
+    .replace(/\r\n/g, "\n")
+    .split("\n")
+    .map((line) => formatRuntimeDisplayLine(line))
+    .filter(Boolean);
+  return lines.join("\n").trim() || fallback;
+}
+
 // 去重并截断 phase 的推进信号，
 // 防止正文太长时把 advanceSignals 塞爆。
 function normalizePhaseSignalList(input: unknown[]): string[] {
@@ -515,18 +545,42 @@ function extractDialogueSignalsFromSectionBody(input: string): string[] {
   const lines = String(input || "")
     .replace(/\r\n/g, "\n")
     .split("\n")
-    .map((item) => item.trim())
+    .map((item) => formatRuntimeDisplayLine(item))
     .filter(Boolean);
   const signals: string[] = [];
   for (const line of lines) {
     const matched = line.match(/^@([^:\n：]+)\s*[:：]\s*(.+)$/);
     if (!matched) continue;
-    const content = String(matched[2] || "").trim();
-    // 这里只保留台词正文，不再把“旁白/用户”等角色名自动当作推进信号，
-    // 否则同一角色任意开口都会把当前事件错误推进到下一阶段。
-    if (content) signals.push(content.slice(0, 80));
+    // phase 自动信号必须保留完整“角色 + 台词”结构，
+    // 否则多角色开场被压成一段宽文本后，会让事件判断无法分辨谁已经发言。
+    signals.push(line);
   }
   return normalizePhaseSignalList(signals);
+}
+
+// 为 phase 生成自动推进信号。
+// 优先使用“事件标题 + 逐条对白”这种窄信号；只有正文没有对白时，
+// 才回退到“事件标题 + 多行摘要”，避免再把整段内容压成一个宽匹配字符串。
+function buildPhaseAdvanceSignals(input: {
+  heading: string;
+  body: string;
+  explicitSignals: string[];
+}): string[] {
+  const heading = String(input.heading || "").trim();
+  const titleSignal = heading ? `事件标题：${heading}` : "";
+  const dialogueSignals = extractDialogueSignalsFromSectionBody(input.body);
+  if (dialogueSignals.length > 0) {
+    return normalizePhaseSignalList([
+      titleSignal,
+      ...input.explicitSignals,
+      ...dialogueSignals,
+    ]);
+  }
+  return normalizePhaseSignalList([
+    titleSignal,
+    normalizeRuntimeMultilineSummary(input.body, heading || "阶段"),
+    ...input.explicitSignals,
+  ]);
 }
 
 // 用 section 文本去猜测和哪些固定结果事件相关，
@@ -580,7 +634,10 @@ function extractRuntimePhasesFromContent(
       id: phaseId,
       label: section.heading || `阶段 ${index + 1}`,
       kind: isUserPhase ? "user" : "scene",
-      targetSummary: normalizeRuntimeSummary(phaseDirectives.cleanedBody, section.heading || `阶段 ${index + 1}`),
+      targetSummary: normalizeRuntimeMultilineSummary(
+        phaseDirectives.cleanedBody,
+        section.heading || `阶段 ${index + 1}`,
+      ),
       userNodeId: userNode?.id || null,
       allowedSpeakers: Array.from(new Set([
         ...phaseDirectives.allowedSpeakers,
@@ -599,12 +656,11 @@ function extractRuntimePhasesFromContent(
         : (isUserPhase
           ? (userNode?.id ? [getUserNodeRuntimeMarker(userNode.id)] : [])
           : relatedFixedEventIds),
-      advanceSignals: normalizePhaseSignalList([
-        section.heading,
-        normalizeRuntimeSummary(phaseDirectives.cleanedBody, section.heading || `阶段 ${index + 1}`),
-        ...phaseDirectives.advanceSignals,
-        ...extractDialogueSignalsFromSectionBody(phaseDirectives.cleanedBody),
-      ]),
+      advanceSignals: buildPhaseAdvanceSignals({
+        heading: section.heading || `阶段 ${index + 1}`,
+        body: phaseDirectives.cleanedBody,
+        explicitSignals: phaseDirectives.advanceSignals,
+      }),
       relatedFixedEventIds,
       nextPhaseRefs: phaseDirectives.nextPhaseRefs,
       defaultNextPhaseRef: phaseDirectives.defaultNextPhaseRef,
