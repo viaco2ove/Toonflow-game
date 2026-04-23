@@ -71,7 +71,7 @@ type SeparateRoleAvatarResult = {
   backgroundFilePath: string;
 };
 
-type ImageAiConfig = {
+export type ImageAiConfig = {
   model?: string;
   apiKey: string;
   baseURL?: string;
@@ -185,7 +185,7 @@ async function normalizeRoleSource(dataUrl: string): Promise<Buffer> {
     .toBuffer();
 }
 
-async function normalizeRoleSourceForMatting(dataUrl: string): Promise<Buffer> {
+export async function normalizeRoleSourceForMatting(dataUrl: string): Promise<Buffer> {
   const source = extractBase64Buffer(dataUrl);
   return await sharp(source, { animated: true, pages: 1 })
     .resize(MODEL_INPUT_SIZE, MODEL_INPUT_SIZE, {
@@ -292,7 +292,7 @@ async function chromaKeyForeground(input: Buffer): Promise<Buffer> {
   }).png().toBuffer();
 }
 
-async function normalizeForegroundLayer(input: Buffer, options?: { skipChromaKey?: boolean }): Promise<Buffer> {
+export async function normalizeForegroundLayer(input: Buffer, options?: { skipChromaKey?: boolean }): Promise<Buffer> {
   const prepared = options?.skipChromaKey
     ? await sharp(input).ensureAlpha().png().toBuffer()
     : await chromaKeyForeground(input);
@@ -327,11 +327,11 @@ async function normalizeForegroundLayer(input: Buffer, options?: { skipChromaKey
     .toBuffer();
 }
 
-async function normalizeBackgroundLayer(input: Buffer): Promise<Buffer> {
+export async function normalizeBackgroundLayer(input: Buffer): Promise<Buffer> {
   return await fillOpaqueCanvas(input, AVATAR_BG_SIZE, AVATAR_BG_SIZE);
 }
 
-async function createApproximateBackgroundLayer(source: Buffer, foreground: Buffer): Promise<Buffer> {
+export async function createApproximateBackgroundLayer(source: Buffer, foreground: Buffer): Promise<Buffer> {
   const sourcePng = await sharp(source)
     .removeAlpha()
     .png()
@@ -386,7 +386,7 @@ async function resolveImageConfig(userId: number) {
   throw new Error("未配置可用图像模型，请先配置 AI生图 或 图片编辑 模型");
 }
 
-async function resolveAvatarMattingConfig(userId: number): Promise<ImageAiConfig | null> {
+export async function resolveAvatarMattingConfig(userId: number): Promise<ImageAiConfig | null> {
   const config = await u.getPromptAi("storyAvatarMattingModel", userId);
   if ((config as any)?.manufacturer) {
     return config as ImageAiConfig;
@@ -394,23 +394,23 @@ async function resolveAvatarMattingConfig(userId: number): Promise<ImageAiConfig
   return null;
 }
 
-function isBriaAvatarMattingConfig(config: ImageAiConfig | null | undefined): config is ImageAiConfig {
+export function isBriaAvatarMattingConfig(config: ImageAiConfig | null | undefined): config is ImageAiConfig {
   return String(config?.manufacturer || "").trim().toLowerCase() === "bria"
     && !!String(config?.apiKey || "").trim();
 }
 
-function isAliyunAvatarMattingConfig(config: ImageAiConfig | null | undefined): config is ImageAiConfig {
+export function isAliyunAvatarMattingConfig(config: ImageAiConfig | null | undefined): config is ImageAiConfig {
   return String(config?.manufacturer || "").trim().toLowerCase() === "aliyun_imageseg"
     && !!String(config?.apiKey || "").trim();
 }
 
-function isTencentAvatarMattingConfig(config: ImageAiConfig | null | undefined): config is ImageAiConfig {
+export function isTencentAvatarMattingConfig(config: ImageAiConfig | null | undefined): config is ImageAiConfig {
   return String(config?.manufacturer || "").trim().toLowerCase() === "tencent_ci"
     && !!String(config?.apiKey || "").trim()
     && !!String(config?.baseURL || "").trim();
 }
 
-function isLocalBiRefNetAvatarMattingConfig(config: ImageAiConfig | null | undefined): config is ImageAiConfig {
+export function isLocalBiRefNetAvatarMattingConfig(config: ImageAiConfig | null | undefined): config is ImageAiConfig {
   return String(config?.manufacturer || "").trim().toLowerCase() === LOCAL_BIREFNET_MANUFACTURER;
 }
 
@@ -847,7 +847,7 @@ async function waitBriaResultImageUrl(config: ImageAiConfig, responseData: any):
   throw new Error("Bria 异步任务超时，请稍后重试");
 }
 
-async function callBriaEdit(
+export async function callBriaEdit(
   config: ImageAiConfig,
   path: "remove_background" | "erase_foreground",
   payload: Record<string, unknown>,
@@ -868,7 +868,7 @@ async function callBriaEdit(
   return await fetchRemoteImageBuffer(imageUrl);
 }
 
-async function callAliyunMatting(
+export async function callAliyunMatting(
   input: Buffer,
   config: ImageAiConfig,
 ): Promise<Buffer> {
@@ -900,7 +900,7 @@ async function callAliyunMatting(
   return await fetchRemoteImageBuffer(imageUrl);
 }
 
-async function callTencentPortraitMatting(
+export async function callTencentPortraitMatting(
   input: Buffer,
   config: ImageAiConfig,
 ): Promise<Buffer> {

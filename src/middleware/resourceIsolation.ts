@@ -25,6 +25,7 @@ const NON_PROJECT_SCOPED_PATHS = new Set<string>([
   "/game/listWorlds",
   "/game/uploadImage",
   "/game/convertAvatarVideoToGif",
+  "/game/convertAvatarVideoToGif/status",
   "/game/separateRoleAvatar",
   "/game/separateRoleAvatar/status",
   "/game/debugStep",

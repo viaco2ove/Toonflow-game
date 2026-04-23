@@ -143,9 +143,19 @@ async function writeInstallState(state: InstallStateFile): Promise<void> {
   await fs.writeFile(getBiRefNetStateFilePath(), JSON.stringify(state, null, 2), "utf8");
 }
 
-function formatCommandError(command: string, args: string[], stdout: string, stderr: string): string {
-  const joined = [stderr.trim(), stdout.trim()].filter(Boolean).join("\n").trim();
-  return joined || `命令执行失败: ${command} ${args.join(" ")}`.trim();
+/**
+ * 格式化本地命令失败信息，保留退出码和最近的 stdout/stderr，便于排查 Python 子进程失败原因。
+ */
+function formatCommandError(command: string, args: string[], stdout: string, stderr: string, exitCode?: number | null): string {
+  const stderrTail = stderr.trim().split(/\r?\n/).slice(-12).join("\n").trim();
+  const stdoutTail = stdout.trim().split(/\r?\n/).slice(-12).join("\n").trim();
+  const detail = [
+    exitCode === null || exitCode === undefined ? "" : `退出码: ${exitCode}`,
+    stderrTail ? `stderr:\n${stderrTail}` : "",
+    stdoutTail ? `stdout:\n${stdoutTail}` : "",
+  ].filter(Boolean).join("\n").trim();
+  const commandText = `命令执行失败: ${command} ${args.join(" ")}`.trim();
+  return detail ? `${commandText}\n${detail}` : commandText;
 }
 
 async function runCommand(command: string, args: string[], options: RunCommandOptions = {}): Promise<{ stdout: string; stderr: string }> {
@@ -201,7 +211,7 @@ async function runCommand(command: string, args: string[], options: RunCommandOp
         resolve({ stdout, stderr });
         return;
       }
-      reject(new Error(formatCommandError(command, args, stdout, stderr)));
+      reject(new Error(formatCommandError(command, args, stdout, stderr, code)));
     });
   });
 }
