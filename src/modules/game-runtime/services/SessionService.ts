@@ -1333,6 +1333,18 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
     });
 
       if (miniGameResult?.intercepted) {
+      // 小游戏链已经接管后续交互，正式会话这里必须立刻交还给用户输入。
+      //
+      // 用途：
+      // - 战斗/钓鱼等小游戏现在统一通过聊天框输入动作推进；
+      // - 如果这里继续沿用“等待旁白/角色发言”的旧 turnState，前端会误触发主线续写；
+      // - ScenePlay 的小游戏面板和输入提示也会继续显示成“还没轮到用户”，看起来像没有真正进入小游戏。
+      allowPlayerTurn(
+        state,
+        world,
+        String(miniGameResult.message?.roleType || "narrator"),
+        String(miniGameResult.message?.role || state.narrator?.name || "旁白"),
+      );
       if (attrDeltas.length > 0) {
         const deltaRows = attrDeltas.map((delta) => ({
           sessionId,
@@ -2407,8 +2419,15 @@ export async function commitSessionNarrativeTurn(input: CommitSessionNarrativeTu
   const rolePair = normalizeRolePair(world?.playerRole, world?.narratorRole);
   const prevChapterId = Number(sessionRow.chapterId || 0) || null;
   const prevStatus = String(sessionRow.status || "active");
+  // 正式会话的运行态必须以服务端已落库 stateJson 为准。
+  //
+  // 用途：
+  // - `/orchestration` 已经先把 pendingNarrativePlan / turnState 写回数据库；
+  // - 前端在流式台词结束后再调用 `/commitNarrativeTurn` 时，手里的本地 state 可能还是旧快照；
+  // - 如果这里继续优先信 input.state，会把刚写好的服务端 turnState 覆盖回旧值，出现
+  //   “画面已经显示旁白，但输入框仍提示等待上一位角色继续发言”的卡死现象。
   const state = normalizeSessionState(
-    input.state ?? sessionRow.stateJson,
+    sessionRow.stateJson,
     Number(sessionRow.worldId || 0),
     prevChapterId,
     rolePair,
@@ -2492,6 +2511,41 @@ export async function commitSessionNarrativeTurn(input: CommitSessionNarrativeTu
       syncChapterProgressWithRuntime(chapter, state);
     }
   }
+
+  const committedRole = String(input.role || pendingPlan?.role || state.narrator?.name || "旁白");
+  const committedRoleType = String(input.roleType || pendingPlan?.roleType || "narrator");
+  const hasPendingChapterSwitch = Boolean(
+    Number((state as any)?.pendingChapterId || 0) > 0
+    && Number((state as any)?.pendingChapterId || 0) !== Number(prevChapterId || 0),
+  );
+  const isOpeningCommit = isOpeningRuntimeEventType(committedEventType);
+
+  // 台词真正落库后，要立刻把 session turnState 推进到“这句之后”的状态。
+  //
+  // 用途：
+  // - orchestration 只负责预编排，不代表这一句已经真正提交；
+  // - 如果 commit 后不显式推进 turnState，storyInfo / listSession 仍可能读到旧 expectedRole；
+  // - 前端就会继续显示“等待上一位角色发言”，直到回溯或刷新才恢复。
+  if (hasPendingChapterSwitch || isOpeningCommit) {
+    setRuntimeTurnState(state, world, {
+      canPlayerSpeak: false,
+      expectedRoleType: "narrator",
+      expectedRole: String(state.narrator?.name || "旁白"),
+      lastSpeakerRoleType: committedRoleType,
+      lastSpeaker: committedRole,
+    });
+  } else if (pendingPlan?.awaitUser) {
+    allowPlayerTurn(state, world, committedRoleType, committedRole);
+  } else {
+    setRuntimeTurnState(state, world, {
+      canPlayerSpeak: false,
+      expectedRoleType: String(pendingPlan?.nextRoleType || pendingPlan?.roleType || "narrator"),
+      expectedRole: String(pendingPlan?.nextRole || pendingPlan?.role || state.narrator?.name || "旁白"),
+      lastSpeakerRoleType: committedRoleType,
+      lastSpeaker: committedRole,
+    });
+  }
+
   const stateJson = toJsonText(state, {});
   await db("t_gameSession").where({ sessionId }).update({
     stateJson,

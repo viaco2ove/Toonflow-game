@@ -259,44 +259,49 @@ export default router.post(
         },
       });
 
-      let content = presetContent;
-      if (!content) {
-        const roles = runtimeStoryRoles(world, state);
-        const currentRole = roles.find((item) => item.name === roleName)
-          || roles.find((item) => item.roleType === roleType && roleType !== "player")
-          || null;
-        if (!currentRole) {
-          throw new Error("当前流式发言角色不存在");
-        }
-        let heartbeatTimer: NodeJS.Timeout | null = null;
-        try {
-          heartbeatTimer = setInterval(() => {
-            try {
-              writeStreamLine(res, {
-                type: "heartbeat",
-                data: {
-                  stage: "speaker_generating",
-                  timestamp: Date.now(),
-                },
-              });
-            } catch {
-              // 响应关闭后忽略心跳异常，避免心跳本身干扰主链路。
-            }
-          }, 5000);
-          content = await runStorySpeakerContent({
-            userId,
-            world,
-            chapter,
-            state,
-            recentMessages,
-            playerMessage: playerContent,
-            currentRole,
-            motive: String(plan.motive || "").trim(),
-          });
-        } finally {
-          if (heartbeatTimer) {
-            clearInterval(heartbeatTimer);
+      const roles = runtimeStoryRoles(world, state);
+      const currentRole = roles.find((item) => item.name === roleName)
+        || roles.find((item) => item.roleType === roleType && roleType !== "player")
+        || null;
+      if (!currentRole) {
+        throw new Error("当前流式发言角色不存在");
+      }
+      // 预置文本不再直接回填到聊天框。
+      //
+      // 用途：
+      // - 避免接口一返回就先插入固定文案，导致页面立刻出现“获取台词中”的伪台词框；
+      // - opening / 规则分支 / 兜底分支仍可把旧 preset 文本当作生成提示，而不是最终输出；
+      // - 这样所有正式台词统一经过 speaker 模型，输出风格才不会一半模板一半模型。
+      const effectiveMotive = String(plan.motive || "").trim() || presetContent;
+      let content = "";
+      let heartbeatTimer: NodeJS.Timeout | null = null;
+      try {
+        heartbeatTimer = setInterval(() => {
+          try {
+            writeStreamLine(res, {
+              type: "heartbeat",
+              data: {
+                stage: "speaker_generating",
+                timestamp: Date.now(),
+              },
+            });
+          } catch {
+            // 响应关闭后忽略心跳异常，避免心跳本身干扰主链路。
           }
+        }, 5000);
+        content = await runStorySpeakerContent({
+          userId,
+          world,
+          chapter,
+          state,
+          recentMessages,
+          playerMessage: playerContent,
+          currentRole,
+          motive: effectiveMotive,
+        });
+      } finally {
+        if (heartbeatTimer) {
+          clearInterval(heartbeatTimer);
         }
       }
 

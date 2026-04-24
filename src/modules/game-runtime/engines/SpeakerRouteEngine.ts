@@ -7,7 +7,7 @@ export interface SpeakerRouteRole {
 }
 
 export interface SpeakerModeDecision {
-  mode: "template" | "fast" | "premium";
+  mode: "fast" | "premium";
   voiceMode: "skip" | "async" | "immediate";
   memoryMode: "skip" | "async";
   reason: string;
@@ -52,7 +52,7 @@ function isClearlyKeyRole(role: SpeakerRouteRole): boolean {
   ]
     .map((item) => normalizeScalarText(item))
     .join("\n");
-  return /萧炎|纳兰嫣然|萧薰儿|古薰儿|薰儿|小医仙|药老|主角|少宗主|重要角色|关键角色/.test(haystack);
+  return /重要角色|关键角色/.test(haystack);
 }
 
 function shortMotive(input: string): boolean {
@@ -127,21 +127,23 @@ export function resolveSpeakerModeDecision(input: {
     };
   }
 
+  // 固定模板台词容易让运行态出现“接口一返回就先塞一条预制句”的僵硬感。
+  // 这里统一改成走模型，仅保留 fast/premium 两档，让角色链和旁白链都经过同一套生成逻辑。
   if (isTemplateNarrator(roleType, latestUserMessage, motive)) {
     return {
-      mode: "template",
+      mode: "fast",
       voiceMode: "async",
       memoryMode: "skip",
-      reason: "narrator_template",
+      reason: "narrator_fast_replacing_template",
     };
   }
 
   if (isTemplateWildcard(wildcard, latestUserMessage, motive)) {
     return {
-      mode: "template",
+      mode: "fast",
       voiceMode: "async",
       memoryMode: "skip",
-      reason: "wildcard_template",
+      reason: "wildcard_fast_replacing_template",
     };
   }
 
@@ -156,10 +158,10 @@ export function resolveSpeakerModeDecision(input: {
 
   if (!latestUserMessage && roleType === "npc" && wildcard) {
     return {
-      mode: shortMotive(motive) ? "template" : "fast",
+      mode: "fast",
       voiceMode: "async",
       memoryMode: "skip",
-      reason: shortMotive(motive) ? "wildcard_template_short_turn" : "wildcard_fast_turn",
+      reason: shortMotive(motive) ? "wildcard_fast_short_turn" : "wildcard_fast_turn",
     };
   }
 

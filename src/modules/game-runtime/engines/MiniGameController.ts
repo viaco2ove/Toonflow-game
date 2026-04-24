@@ -578,17 +578,96 @@ function parseBattleTargetNames(input: string): string[] {
 }
 
 /**
+ * 统一战斗角色名匹配用的文本。
+ * 这里会顺手去掉空白，避免“萧 薰儿”这种输入影响命中。
+ */
+function normalizeBattleRoleLookupText(input: unknown): string {
+  return scalarText(input).replace(/\s+/g, "").trim();
+}
+
+/**
+ * 从角色显示名里提取一组可用于战斗匹配的候选名称。
+ *
+ * 例子：
+ * - `熏儿（萧薰儿|古薰儿）` -> `["熏儿（萧薰儿|古薰儿）", "熏儿", "萧薰儿", "古薰儿"]`
+ * - `萧炎` -> `["萧炎"]`
+ */
+function battleRoleCandidateNames(role: JsonRecord): string[] {
+  const rawName = scalarText(role.name);
+  if (!rawName) return [];
+  const names = new Set<string>();
+  names.add(rawName);
+  const compactRawName = normalizeBattleRoleLookupText(rawName);
+  if (compactRawName) {
+    names.add(compactRawName);
+  }
+  const strippedName = scalarText(rawName.replace(/[（(][^（）()]*[）)]/gu, ""));
+  if (strippedName) {
+    names.add(strippedName);
+    const compactStrippedName = normalizeBattleRoleLookupText(strippedName);
+    if (compactStrippedName) {
+      names.add(compactStrippedName);
+    }
+  }
+  const bracketMatches = rawName.match(/[（(]([^（）()]*)[）)]/gu) || [];
+  for (const item of bracketMatches) {
+    const inner = scalarText(item.replace(/^[（(]|[）)]$/gu, ""));
+    if (!inner) continue;
+    for (const alias of inner.split(/[|｜/、，,]/u).map((part) => scalarText(part)).filter(Boolean)) {
+      names.add(alias);
+      const compactAlias = normalizeBattleRoleLookupText(alias);
+      if (compactAlias) {
+        names.add(compactAlias);
+      }
+    }
+  }
+  return Array.from(names);
+}
+
+/**
+ * 计算输入名与候选角色名的匹配分值。
+ * 分值越高代表命中越可靠；精确别名优先，包含匹配只作兜底。
+ */
+function battleRoleMatchScore(inputName: string, candidateNames: string[]): number {
+  const normalizedInput = normalizeBattleRoleLookupText(inputName);
+  if (!normalizedInput) return -1;
+  let bestScore = -1;
+  for (const candidate of candidateNames) {
+    const normalizedCandidate = normalizeBattleRoleLookupText(candidate);
+    if (!normalizedCandidate) continue;
+    if (normalizedCandidate === normalizedInput) {
+      bestScore = Math.max(bestScore, 300);
+      continue;
+    }
+    if (normalizedCandidate.startsWith(normalizedInput) || normalizedInput.startsWith(normalizedCandidate)) {
+      bestScore = Math.max(bestScore, 220);
+      continue;
+    }
+    if (normalizedCandidate.includes(normalizedInput) || normalizedInput.includes(normalizedCandidate)) {
+      bestScore = Math.max(bestScore, 120);
+    }
+  }
+  return bestScore;
+}
+
+/**
  * 从世界角色里按名称匹配敌人来源角色。
  * 如果能匹配到现有角色，就复用其头像、简介和参数卡。
  */
 function resolveWorldRoleByName(ctx: MiniGameControllerInput, name: string): JsonRecord | null {
   const normalized = scalarText(name);
   if (!normalized) return null;
-  const matched = worldRoles(ctx.world).find((item) => {
-    const roleName = scalarText(item.name);
-    return roleName === normalized || roleName.includes(normalized) || normalized.includes(roleName);
-  });
-  return matched ? asRecord(matched) : null;
+  const roles = worldRoles(ctx.world).map((item) => asRecord(item));
+  let bestRole: JsonRecord | null = null;
+  let bestScore = -1;
+  for (const role of roles) {
+    const score = battleRoleMatchScore(normalized, battleRoleCandidateNames(role));
+    if (score > bestScore) {
+      bestScore = score;
+      bestRole = role;
+    }
+  }
+  return bestScore >= 0 ? bestRole : null;
 }
 
 /**
@@ -781,10 +860,15 @@ function resolveBattleTextTarget(session: JsonRecord, playerMessage: string): Js
   const aliveEnemies = aliveBattleEnemies(session);
   if (!aliveEnemies.length) return null;
   const normalized = normalizeInlineText(playerMessage);
-  const namedTarget = aliveEnemies.find((enemy) => {
-    const enemyName = scalarText(enemy.name);
-    return enemyName && normalized.includes(enemyName);
-  });
+  let namedTarget: JsonRecord | null = null;
+  let bestScore = -1;
+  for (const enemy of aliveEnemies) {
+    const score = battleRoleMatchScore(normalized, [scalarText(enemy.name)]);
+    if (score > bestScore) {
+      bestScore = score;
+      namedTarget = enemy;
+    }
+  }
   if (namedTarget) return namedTarget;
   const publicState = asRecord(session.public_state);
   const currentTargetId = scalarText(publicState.current_target_id);
@@ -804,9 +888,16 @@ function resolveBattleTargetByName(session: JsonRecord, targetName: string): Jso
   if (!aliveEnemies.length) return null;
   const normalizedTargetName = normalizeInlineText(targetName);
   if (!normalizedTargetName) return null;
-  return aliveEnemies.find((enemy) => normalizeInlineText(scalarText(enemy.name)) === normalizedTargetName)
-    || aliveEnemies.find((enemy) => normalizeInlineText(scalarText(enemy.name)).includes(normalizedTargetName))
-    || null;
+  let bestTarget: JsonRecord | null = null;
+  let bestScore = -1;
+  for (const enemy of aliveEnemies) {
+    const score = battleRoleMatchScore(normalizedTargetName, [scalarText(enemy.name)]);
+    if (score > bestScore) {
+      bestScore = score;
+      bestTarget = enemy;
+    }
+  }
+  return bestScore >= 0 ? bestTarget : null;
 }
 
 /**

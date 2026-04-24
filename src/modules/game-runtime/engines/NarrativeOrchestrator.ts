@@ -29,7 +29,6 @@ import {
 import { resolveRuleNarrativePlan } from "@/modules/game-runtime/engines/RuleOrchestrator";
 import { evaluateEventProgressByAi } from "@/modules/game-runtime/services/EventProgressRuntimeService";
 import {
-  buildTemplateSpeakerContent,
   resolveSpeakerModeDecision,
 } from "@/modules/game-runtime/engines/SpeakerRouteEngine";
 import { DebugLogUtil } from "@/utils/debugLogUtil";
@@ -2781,14 +2780,6 @@ export async function runStorySpeakerContent(input: {
     mode: speakerMode.mode,
     reason: speakerMode.reason,
   });
-  if (speakerMode.mode === "template") {
-    return buildTemplateSpeakerContent({
-      role: input.currentRole,
-      motive: input.motive,
-      latestUserMessage: normalizeScalarText(input.playerMessage),
-    });
-  }
-
   const prompts = await loadStoryPrompts();
   const useFastSpeakerPrompt = speakerMode.mode === "fast";
   const speakerModelKey = useFastSpeakerPrompt ? "storyFastSpeakerModel" : "storySpeakerModel";
