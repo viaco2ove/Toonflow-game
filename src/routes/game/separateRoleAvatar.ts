@@ -410,6 +410,19 @@ export function isTencentAvatarMattingConfig(config: ImageAiConfig | null | unde
     && !!String(config?.baseURL || "").trim();
 }
 
+/**
+ * 判断当前头像分离配置是否使用火山图像模型。
+ *
+ * 用途：
+ * - 允许用户为“头像分离”单独绑定火山模型，而不是强依赖通用 AI 生图配置；
+ * - 复用现有图生图前景/背景重建链路，避免引入额外厂商 SDK。
+ */
+export function isVolcengineAvatarMattingConfig(config: ImageAiConfig | null | undefined): config is ImageAiConfig {
+  return String(config?.manufacturer || "").trim().toLowerCase() === "volcengine"
+    && !!String(config?.apiKey || "").trim()
+    && !!String(config?.model || "").trim();
+}
+
 export function isLocalBiRefNetAvatarMattingConfig(config: ImageAiConfig | null | undefined): config is ImageAiConfig {
   return String(config?.manufacturer || "").trim().toLowerCase() === LOCAL_BIREFNET_MANUFACTURER;
 }
@@ -1147,9 +1160,27 @@ async function runImageModelAvatarMattingJob(
   payload: SeparateRoleAvatarPayload & { userId: number; projectId: number | null },
   normalizedInput: string,
 ): Promise<SeparateRoleAvatarResult> {
+  return await runConfiguredImageModelAvatarMattingJob(
+    payload,
+    normalizedInput,
+    await resolveImageConfig(payload.userId),
+  );
+}
+
+/**
+ * 使用指定图像模型完成头像分离。
+ *
+ * 用途：
+ * - 复用现有“前景重建 + 背景补全”逻辑；
+ * - 支持把头像分离槽位直接绑定到火山图像模型，而不强制依赖通用生图槽位。
+ */
+async function runConfiguredImageModelAvatarMattingJob(
+  payload: SeparateRoleAvatarPayload & { userId: number; projectId: number | null },
+  normalizedInput: string,
+  config: ImageAiConfig,
+): Promise<SeparateRoleAvatarResult> {
   const safeName = String(payload.name || "").trim() || "角色";
   const modelInputDataUrl = await createImageModelInputDataUrl(normalizedInput);
-  const config = await resolveImageConfig(payload.userId);
 
   const [foregroundBuffer, backgroundBuffer] = await Promise.all([
     generateImageModelForegroundBuffer(modelInputDataUrl, safeName, config),
@@ -1261,6 +1292,19 @@ async function runSeparateRoleAvatarJob(
         userId: payload.userId,
         projectId: payload.projectId,
         manufacturer: avatarMattingConfig.manufacturer,
+        message: u.error(err).message,
+      });
+    }
+  }
+  if (isVolcengineAvatarMattingConfig(avatarMattingConfig)) {
+    try {
+      return await runConfiguredImageModelAvatarMattingJob(payload, normalizedInput, avatarMattingConfig);
+    } catch (err) {
+      console.warn("[separateRoleAvatar] volcengine avatar matting failed, fallback to image model", {
+        userId: payload.userId,
+        projectId: payload.projectId,
+        manufacturer: avatarMattingConfig.manufacturer,
+        model: avatarMattingConfig.model,
         message: u.error(err).message,
       });
     }

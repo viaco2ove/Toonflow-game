@@ -22,7 +22,8 @@ const SLOT_CONFIG_RULES: Record<string, { type: "text" | "image" | "voice" | "vo
   assetsImage: { type: "image" },
   editImage: { type: "image" },
   storyImageModel: { type: "image" },
-  storyAvatarMattingModel: { type: "image", manufacturer: ["bria", "aliyun_imageseg", "tencent_ci", "local_birefnet"] },
+  // 头像分离允许绑定专用抠图厂商，也允许绑定火山图像模型做角色前景/背景重建。
+  storyAvatarMattingModel: { type: "image", manufacturer: ["bria", "aliyun_imageseg", "tencent_ci", "local_birefnet", "volcengine"] },
   storyVoiceDesignModel: { type: "voice_design" },
   storyVoiceModel: { type: "voice", modelType: "tts" },
   storyAsrModel: { type: "voice", modelType: "asr" },

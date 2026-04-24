@@ -70,6 +70,17 @@ export default router.post(
     }
 
     if (type === "image") {
+      const volcengineDefaults = [
+        { label: "doubao-seedream-5-0-260128", value: "doubao-seedream-5-0-260128" },
+        { label: "doubao-seedream-4-5-251128", value: "doubao-seedream-4-5-251128" },
+        { label: "doubao-seedream-4-0-250828", value: "doubao-seedream-4-0-250828" },
+      ];
+      if (!result.volcengine) result.volcengine = [];
+      for (const item of volcengineDefaults) {
+        const exists = result.volcengine.some((model) => String(model?.value || "") === item.value);
+        if (!exists) result.volcengine.push(item);
+      }
+
       const briaDefaults = [
         { label: "RMBG-2.0", value: "RMBG-2.0" },
       ];
