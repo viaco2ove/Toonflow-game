@@ -36,7 +36,7 @@ const DEFAULT_MAX_GIF_DURATION_SECONDS = 4;
 // 头像动图需要保留原视频的主要动作观感；10fps 是质量与本地抠图耗时之间的折中。
 const DEFAULT_GIF_FPS = 10;
 // 先把抽帧压到头像目标尺寸附近，减少本地抠图模型的单帧推理成本。512/256/128/64
-const DEFAULT_FRAME_OUTPUT_SIDE = 128;
+const DEFAULT_FRAME_OUTPUT_SIDE = 512;
 // 逐帧抠图最消耗时间，允许通过环境变量提高同时处理的帧数。
 const DEFAULT_VIDEO_MATTING_CONCURRENCY = 1;
 const MAX_VIDEO_MATTING_CONCURRENCY = 6;
