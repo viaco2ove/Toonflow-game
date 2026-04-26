@@ -813,6 +813,21 @@ function summarizeStoryState(state: JsonRecord): string {
   return parts.join("\n");
 }
 
+// 根据事件 kind 推导运行流，避免多个上下文分支里重复写同一套嵌套三元。
+function resolveEventFlowType(
+  eventKind: unknown,
+  fallbackFlowType: "free_runtime" | "chapter_content" = "chapter_content",
+): "introduction" | "chapter_content" | "chapter_ending_check" | "free_runtime" {
+  const normalizedEventKind = String(eventKind || "").trim();
+  if (normalizedEventKind === "opening") {
+    return "introduction";
+  }
+  if (normalizedEventKind === "fixed" || normalizedEventKind === "ending") {
+    return "chapter_ending_check";
+  }
+  return fallbackFlowType;
+}
+
 function readCurrentRuntimeEventContext(chapter: any, state: JsonRecord): {
   eventIndex: number;
   eventKind: RuntimeCurrentEventState["kind"];
@@ -865,11 +880,7 @@ function readCurrentRuntimeEventContext(chapter: any, state: JsonRecord): {
     return {
       eventIndex: runtimeEvent.index,
       eventKind: runtimeEvent.kind,
-      eventFlowType: runtimeEvent.kind === "opening"
-        ? "introduction"
-        : runtimeEvent.kind === "fixed" || runtimeEvent.kind === "ending"
-          ? "chapter_ending_check"
-          : "free_runtime",
+      eventFlowType: resolveEventFlowType(runtimeEvent.kind, "free_runtime"),
       eventSummary: normalizeScalarText(
         digestMatchesCurrentEvent ? (runtimeEventDigest.eventSummary || runtimeEvent.summary) : runtimeEvent.summary,
       ),
@@ -882,14 +893,11 @@ function readCurrentRuntimeEventContext(chapter: any, state: JsonRecord): {
     };
   }
   if (!currentPhase) {
+    const fallbackEventKind = progress.eventKind || runtimeEvent.kind || "scene";
     return {
       eventIndex: Number.isFinite(Number(progress.eventIndex)) ? Math.max(1, Number(progress.eventIndex)) : 1,
-      eventKind: progress.eventKind || runtimeEvent.kind || "scene",
-      eventFlowType: (progress.eventKind || runtimeEvent.kind) === "opening"
-        ? "introduction"
-        : (progress.eventKind || runtimeEvent.kind) === "fixed" || (progress.eventKind || runtimeEvent.kind) === "ending"
-          ? "chapter_ending_check"
-          : "chapter_content",
+      eventKind: fallbackEventKind,
+      eventFlowType: resolveEventFlowType(fallbackEventKind),
       eventSummary: normalizeScalarText(progress.eventSummary)
         || shortText(chapterDirectiveText(chapter), 120)
         || "当前事件未命名",
@@ -916,7 +924,7 @@ function readCurrentRuntimeEventContext(chapter: any, state: JsonRecord): {
   return {
     eventIndex: phaseDerivedEventIndex || Math.max(1, Number(progress.phaseIndex || 0) + 1),
     eventKind: currentPhase.kind || "scene",
-    eventFlowType: currentPhase.kind === "opening" ? "introduction" : "chapter_content",
+    eventFlowType: resolveEventFlowType(currentPhase.kind, "chapter_content"),
     eventSummary,
     eventFacts: Array.isArray(runtimeEvent.facts) ? runtimeEvent.facts : [],
     eventMemorySummary: "",
