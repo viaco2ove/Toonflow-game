@@ -307,6 +307,20 @@ function asRecord(input: unknown): JsonRecord {
   return parseJsonSafe<JsonRecord>(input, {});
 }
 
+function hasRecordKeys(input: JsonRecord): boolean {
+  return Object.keys(input).length > 0;
+}
+
+function formatRuntimeErrorMessage(runtimeError: unknown): string {
+  if (runtimeError instanceof Error) {
+    return normalizePromptStatContent(runtimeError.message);
+  }
+  if (typeof runtimeError === "string") {
+    return normalizePromptStatContent(runtimeError);
+  }
+  return normalizePromptStatContent(JSON.stringify(runtimeError ?? ""));
+}
+
 // 从世界定义里组装用户、旁白和 NPC 角色列表。
 export function worldRoles(world: any): RuntimeStoryRole[] {
   const rolePair = normalizeRolePair(world?.playerRole, world?.narratorRole);
@@ -345,7 +359,7 @@ export function worldRoles(world: any): RuntimeStoryRole[] {
 // 用运行时状态覆盖基础角色信息。
 function applyRuntimeRoleOverlay(base: RuntimeStoryRole, runtimeRole: unknown): RuntimeStoryRole {
   const raw = asRecord(runtimeRole);
-  if (!Object.keys(raw).length) return base;
+  if (!hasRecordKeys(raw)) return base;
   return {
     ...base,
     id: normalizeScalarText(raw.id) || base.id,
@@ -360,7 +374,7 @@ function applyRuntimeRoleOverlay(base: RuntimeStoryRole, runtimeRole: unknown): 
 // 在运行时状态里查找与当前 NPC 对应的覆盖数据。
 function findRuntimeNpcOverlay(runtimeState: JsonRecord, role: RuntimeStoryRole): unknown {
   const npcBag = asRecord(runtimeState.npcs);
-  if (!Object.keys(npcBag).length) return null;
+  if (!hasRecordKeys(npcBag)) return null;
   const roleId = normalizeScalarText(role.id);
   const roleName = normalizeScalarText(role.name);
   for (const entry of Object.values(npcBag)) {
@@ -542,7 +556,7 @@ function summarizeJsonValue(input: unknown, maxPairs = 6): string {
 // 将参数卡压成适合编排模型读取的短文本，只保留关键人物属性。
 function summarizeParameterCardText(input: unknown): string {
   const card = asRecord(input);
-  if (!Object.keys(card).length) return "";
+  if (!hasRecordKeys(card)) return "";
   const parts = [
     normalizeScalarText(card.name) ? `角色名:${normalizeScalarText(card.name)}` : "",
     normalizeScalarText(card.gender) ? `性别:${normalizeScalarText(card.gender)}` : "",
@@ -566,7 +580,7 @@ function summarizeParameterCardText(input: unknown): string {
 
 function summarizeParameterCardKeyText(input: unknown): string {
   const card = asRecord(input);
-  if (!Object.keys(card).length) return "";
+  if (!hasRecordKeys(card)) return "";
   const levelValue = card.level != null && normalizeScalarText(card.level) ? normalizeScalarText(card.level) : "";
   const levelLabel = normalizeScalarText(card.level_desc || card.levelDesc);
   const level = [levelValue, levelLabel].filter(Boolean).join("/");
@@ -1248,7 +1262,7 @@ function parsePlainStateDelta(input: unknown): JsonRecord {
   const text = normalizeScalarText(input);
   if (!text) return {};
   const objectLike = parseJsonSafe<JsonRecord>(text, {});
-  if (objectLike && typeof objectLike === "object" && !Array.isArray(objectLike) && Object.keys(objectLike).length) {
+  if (hasRecordKeys(objectLike)) {
     return objectLike;
   }
   const result: JsonRecord = {};
@@ -1336,11 +1350,20 @@ function buildOrchestratorPromptStats(payload: OrchestratorPromptPayload, compac
 
 // 把角色发言链路里的上下文拆成可读统计块，方便直接对比快路由和标准路由的 prompt 体积。
 function buildSpeakerPromptStats(payload: SpeakerPromptPayload, compactMode: boolean): PromptStatRow[] {
+  const nextEventLines = [
+    payload.nextEventIndex != null ? `index:${payload.nextEventIndex}` : "",
+    payload.nextEventKind ? `kind:${payload.nextEventKind}` : "",
+    payload.nextEventFlowType ? `flow:${payload.nextEventFlowType}` : "",
+    payload.nextEventStatus ? `status:${payload.nextEventStatus}` : "",
+    payload.nextEventSummary ? `summary:${payload.nextEventSummary}` : "",
+    payload.nextEventFacts.length ? `facts:${payload.nextEventFacts.join("；")}` : "",
+    payload.nextEventTransitionHint ? `transition_hint:${payload.nextEventTransitionHint}` : "",
+  ].filter(Boolean).join("\n") || "无";
   const sections = [
     { title: "世界", content: [payload.worldName ? `名称:${payload.worldName}` : "", payload.worldIntro ? `简介:${payload.worldIntro}` : ""].filter(Boolean).join("\n") || "无" },
     { title: "章节", content: [payload.chapterTitle ? `标题:${payload.chapterTitle}` : "", payload.chapterContentHint ? `章节内容:${payload.chapterContentHint}` : "", payload.chapterEndingConditionHint ? `章节结束条件:${payload.chapterEndingConditionHint}` : "", payload.currentPhaseLabel ? `阶段:${payload.currentPhaseLabel}` : ""].filter(Boolean).join("\n") || "无" },
     { title: "当前事件", content: [payload.currentEventIndex != null ? `index:${payload.currentEventIndex}` : "", `kind:${payload.currentEventKind || "scene"}`, payload.currentEventFlowType ? `flow:${payload.currentEventFlowType}` : "", payload.currentEventStatus ? `status:${payload.currentEventStatus}` : "", `summary:${payload.currentEventSummary || "当前事件未命名"}`, payload.currentEventFacts.length ? `facts:${payload.currentEventFacts.join("；")}` : "", payload.currentEventMemorySummary ? `memory_summary:${payload.currentEventMemorySummary}` : "", payload.currentEventMemoryFacts.length ? `memory_facts:${payload.currentEventMemoryFacts.join("；")}` : "", payload.currentEventWindow ? `window:${payload.currentEventWindow}` : ""].filter(Boolean).join("\n") || "无" },
-    { title: "下一事件", content: [payload.nextEventIndex != null ? `index:${payload.nextEventIndex}` : "", payload.nextEventKind ? `kind:${payload.nextEventKind}` : "", payload.nextEventFlowType ? `flow:${payload.nextEventFlowType}` : "", payload.nextEventStatus ? `status:${payload.nextEventStatus}` : "", payload.nextEventSummary ? `summary:${payload.nextEventSummary}` : "", payload.nextEventFacts.length ? `facts:${payload.nextEventFacts.join("；")}` : "", payload.nextEventTransitionHint ? `transition_hint:${payload.nextEventTransitionHint}` : ""].filter(Boolean).join("\n") || "无" },
+    { title: "下一事件", content: nextEventLines },
     { title: "当前说话人", content: [`name:${payload.speakerName || "未命名角色"}`, `role_type:${payload.speakerRoleType || "unknown"}`, payload.speakerProfile || ""].filter(Boolean).join("\n") || "无" },
     { title: "本轮动机", content: payload.motive || "无" },
     ...(!compactMode ? [{ title: "剧情摘要", content: payload.storyState || "无" }] : []),
@@ -1476,7 +1499,7 @@ function logOrchestratorPromptStats(
     totalMs: Number(timing?.totalMs || 0),
   };
   if (runtimeError) {
-    runtimeLog.error = normalizePromptStatContent((runtimeError as any)?.message || String(runtimeError));
+    runtimeLog.error = formatRuntimeErrorMessage(runtimeError);
   }
 
   if (DebugLogUtil.isDebugLogEnabled()) {
@@ -1500,7 +1523,7 @@ function logOrchestratorPromptStats(
     }
 
     if (runtimeError) {
-      console.log(`[story:orchestrator:stats] request_status=fallback reason=${normalizePromptStatContent((runtimeError as any)?.message || String(runtimeError))}`);
+      console.log(`[story:orchestrator:stats] request_status=fallback reason=${formatRuntimeErrorMessage(runtimeError)}`);
     } else {
       console.log("[story:orchestrator:stats] request_status=success");
     }
@@ -1591,7 +1614,7 @@ function logMemoryPromptStats(input: {
     recentDialogueCount: input.payload.recentDialogue.length,
   };
   if (input.runtimeError) {
-    runtimeLog.error = normalizePromptStatContent((input.runtimeError as any)?.message || String(input.runtimeError));
+    runtimeLog.error = formatRuntimeErrorMessage(input.runtimeError);
   }
   if (!DebugLogUtil.isDebugLogEnabled()) return;
   console.log("[story:memory:runtime]", JSON.stringify(runtimeLog));
@@ -1605,7 +1628,7 @@ function logMemoryPromptStats(input: {
     console.log(`[story:memory:stats] response_preview=${normalizePromptStatContent(responseText)}`);
   }
   if (input.runtimeError) {
-    console.log(`[story:memory:stats] request_status=fallback reason=${normalizePromptStatContent((input.runtimeError as any)?.message || String(input.runtimeError))}`);
+    console.log(`[story:memory:stats] request_status=fallback reason=${formatRuntimeErrorMessage(input.runtimeError)}`);
   } else {
     console.log("[story:memory:stats] request_status=success");
   }
@@ -1674,7 +1697,7 @@ function logSpeakerPromptStats(input: {
     totalMs: Number(input.timing?.totalMs || 0),
   };
   if (input.runtimeError) {
-    runtimeLog.error = normalizePromptStatContent((input.runtimeError as any)?.message || String(input.runtimeError));
+    runtimeLog.error = formatRuntimeErrorMessage(input.runtimeError);
   }
   if (!DebugLogUtil.isDebugLogEnabled()) {
     return;
@@ -1690,7 +1713,7 @@ function logSpeakerPromptStats(input: {
     console.log(`[story:streamlines:stats] response_preview=${normalizePromptStatContent(responseText)}`);
   }
   if (input.runtimeError) {
-    console.log(`[story:streamlines:stats] request_status=fallback reason=${normalizePromptStatContent((input.runtimeError as any)?.message || String(input.runtimeError))}`);
+    console.log(`[story:streamlines:stats] request_status=fallback reason=${formatRuntimeErrorMessage(input.runtimeError)}`);
   } else {
     console.log("[story:streamlines:stats] request_status=success");
   }
@@ -2596,7 +2619,7 @@ function readMemoryDeltaInput(message: RuntimeMessageInput): {
   memoryFacts: string[];
 } | null {
   const raw = asRecord((message as Record<string, unknown>)?.memoryDelta);
-  if (!Object.keys(raw).length) return null;
+  if (!hasRecordKeys(raw)) return null;
   return {
     eventIndex: Number.isFinite(Number(raw.eventIndex)) ? Math.max(1, Number(raw.eventIndex)) : 1,
     eventKind: normalizeScalarText(raw.eventKind) || "scene",
@@ -2790,23 +2813,30 @@ export async function runStorySpeakerContent(input: {
     directive: chapterDirectiveText(input.chapter),
     directiveExcerpt: directiveExcerpt(chapterDirectiveText(input.chapter)),
   };
+  const speakerSummaryLimit = useFastSpeakerPrompt ? 56 : (compactMode ? 72 : 96);
+  const speakerFactsLimit = useFastSpeakerPrompt ? 2 : (compactMode ? 3 : 4);
+  const speakerWorldIntroLimit = compactMode ? 48 : 72;
+  const speakerMotiveLimit = useFastSpeakerPrompt ? 64 : (compactMode ? 80 : 120);
+  const speakerStoryStateLimit = compactMode ? 160 : 260;
+  const speakerNextEventFactsLimit = compactMode ? 2 : 3;
   const promptEventSummary = buildPromptSafeEventSummary({
     currentEventSummary: currentEvent.eventSummary,
     currentPhaseLabel: normalizeScalarText(currentPhase?.label),
     chapterDirective: currentChapter.directive,
-    limit: useFastSpeakerPrompt ? 56 : compactMode ? 72 : 96,
+    limit: speakerSummaryLimit,
   });
   const promptEventFacts = buildPromptSafeEventFacts({
     currentEventFacts: currentEvent.eventFacts,
     chapterDirective: currentChapter.directive,
-    limit: useFastSpeakerPrompt ? 2 : compactMode ? 3 : 4,
+    limit: speakerFactsLimit,
   });
   // 当前事件已经完成时，角色发言器应该面向下一事件继续生成，而不是围绕已完成事件原地打转。
   // 这里复用事件进度检测同一份“下一事件提示”，让角色发言器和事件进度检测看到一致的阶段边界。
   const nextEventHint = readNextEventProgressHint(input.chapter, input.state);
-  const nextEventFlowType = nextEventHint
-    ? (nextEventHint.kind === "ending" ? "chapter_ending_check" : "chapter_content")
-    : undefined;
+  let nextEventFlowType: "chapter_ending_check" | "chapter_content" | undefined;
+  if (nextEventHint) {
+    nextEventFlowType = nextEventHint.kind === "ending" ? "chapter_ending_check" : "chapter_content";
+  }
   // 章节内容和章节结束条件单独显式喂给角色发言器，避免模型只能从事件窗口里间接猜边界。
   const chapterContentHint = shortText(
     currentChapter.directiveExcerpt || currentChapter.directive,
@@ -2821,10 +2851,12 @@ export async function runStorySpeakerContent(input: {
   const promptCurrentEventIndex = currentEvent.eventStatus === "completed" && nextEventHint
     ? nextEventHint.index
     : currentEvent.eventIndex;
+  let nextPromptEventKind: RuntimeCurrentEventState["kind"] = "scene";
+  if (nextEventHint && ["opening", "scene", "user", "fixed", "ending"].includes(nextEventHint.kind)) {
+    nextPromptEventKind = nextEventHint.kind as RuntimeCurrentEventState["kind"];
+  }
   const promptCurrentEventKind: RuntimeCurrentEventState["kind"] = currentEvent.eventStatus === "completed" && nextEventHint
-    ? ((["opening", "scene", "user", "fixed", "ending"].includes(nextEventHint.kind)
-      ? nextEventHint.kind
-      : "scene") as RuntimeCurrentEventState["kind"])
+    ? nextPromptEventKind
     : currentEvent.eventKind;
   const promptCurrentEventFlowType = currentEvent.eventStatus === "completed" && nextEventHint
     ? (nextEventFlowType || currentEvent.eventFlowType)
@@ -2839,11 +2871,11 @@ export async function runStorySpeakerContent(input: {
     ? uniqueTextList([
       normalizeScalarText(nextEventHint.summary),
       normalizeScalarText(nextEventHint.transitionHint),
-    ], compactMode ? 2 : 3)
+    ], speakerNextEventFactsLimit)
     : promptEventFacts;
   const payload: SpeakerPromptPayload = {
     worldName: normalizeScalarText(input.world?.name),
-    worldIntro: useFastSpeakerPrompt ? "" : shortText(input.world?.intro, compactMode ? 48 : 72),
+    worldIntro: useFastSpeakerPrompt ? "" : shortText(input.world?.intro, speakerWorldIntroLimit),
     chapterTitle: currentChapter.title,
     chapterContentHint,
     chapterEndingConditionHint,
@@ -2871,13 +2903,13 @@ export async function runStorySpeakerContent(input: {
     nextEventFacts: uniqueTextList([
       normalizeScalarText(nextEventHint?.summary),
       normalizeScalarText(nextEventHint?.transitionHint),
-    ], compactMode ? 2 : 3),
+    ], speakerNextEventFactsLimit),
     nextEventTransitionHint: normalizeScalarText(nextEventHint?.transitionHint),
     speakerName: normalizeScalarText(input.currentRole.name),
     speakerRoleType: sanitizeRoleType(input.currentRole.roleType),
     speakerProfile: useFastSpeakerPrompt ? describeRoleLite(input.currentRole) : describeRole(input.currentRole, true),
-    motive: shortText(input.motive, useFastSpeakerPrompt ? 64 : compactMode ? 80 : 120),
-    storyState: useFastSpeakerPrompt ? "" : shortText(summarizeStoryState(input.state), compactMode ? 160 : 260),
+    motive: shortText(input.motive, speakerMotiveLimit),
+    storyState: useFastSpeakerPrompt ? "" : shortText(summarizeStoryState(input.state), speakerStoryStateLimit),
     latestPlayerMessage: normalizeScalarText(input.playerMessage),
     recentDialogue: useFastSpeakerPrompt
       ? recentDialogueItems(input.recentMessages, 2, 180)
@@ -3261,31 +3293,32 @@ async function doRunNarrativePlan(input: OrchestratorInput): Promise<NarrativePl
     orchestratorRawText = rawText;
     orchestratorTokenUsage = (result as any)?.usage || null;
     const objectLike = parseJsonSafe<Record<string, unknown>>(rawText, {});
+    const hasObjectLike = hasRecordKeys(asRecord(objectLike));
     const fieldMap = parseFieldMap(rawText);
     const speaker = normalizeScalarText(
-      (objectLike && Object.keys(objectLike).length ? (objectLike.speaker ?? objectLike.role) : undefined)
+      (hasObjectLike ? (objectLike.speaker ?? objectLike.role) : undefined)
       || getPlainField(fieldMap, "speaker", "role"),
     );
     const roleType = sanitizeRoleType(
-      (objectLike && Object.keys(objectLike).length ? objectLike.roleType : undefined)
+      (hasObjectLike ? objectLike.roleType : undefined)
       || getPlainField(fieldMap, "role_type", "roletype"),
     );
     const matchedRole = resolvePlannerSpeakerRole(roles, speaker, roleType);
     const motive = normalizeGeneratedLine(
-      (objectLike && Object.keys(objectLike).length ? objectLike.motive : undefined)
+      (hasObjectLike ? objectLike.motive : undefined)
       || getPlainField(fieldMap, "motive"),
       compactMode ? 100 : 160,
     );
     const awaitUser = parsePlainBoolean(
-      (objectLike && Object.keys(objectLike).length ? objectLike.awaitUser : undefined)
+      (hasObjectLike ? objectLike.awaitUser : undefined)
       || getPlainField(fieldMap, "await_user", "awaituser"),
     );
     const rawNextRoleType = normalizeScalarText(
-      (objectLike && Object.keys(objectLike).length ? objectLike.nextRoleType : undefined)
+      (hasObjectLike ? objectLike.nextRoleType : undefined)
       || getPlainField(fieldMap, "next_role_type", "nextroletype"),
     );
     const rawNextRole = normalizeScalarText(
-      (objectLike && Object.keys(objectLike).length ? objectLike.nextSpeaker : undefined)
+      (hasObjectLike ? objectLike.nextSpeaker : undefined)
       || getPlainField(fieldMap, "next_speaker", "nextspeaker"),
     );
     const nextRoleState = resolvePhaseAwareNextRole({
@@ -3302,12 +3335,12 @@ async function doRunNarrativePlan(input: OrchestratorInput): Promise<NarrativePl
       throw createRuntimeModelError("orchestrator", "模型选择了当前阶段不允许发言的角色");
     }
     const chapterOutcome = String(
-      (objectLike && Object.keys(objectLike).length ? objectLike.chapterOutcome : undefined)
+      (hasObjectLike ? objectLike.chapterOutcome : undefined)
       || getPlainField(fieldMap, "chapter_outcome", "chapteroutcome")
       || "continue",
     ).trim().toLowerCase();
     const nextChapterIdRaw = normalizeScalarText(
-      (objectLike && Object.keys(objectLike).length ? objectLike.nextChapterId : undefined)
+      (hasObjectLike ? objectLike.nextChapterId : undefined)
       || getPlainField(fieldMap, "next_chapter_id", "nextchapterid"),
     );
     const nextChapterId = Number(nextChapterIdRaw || 0);
@@ -3315,7 +3348,7 @@ async function doRunNarrativePlan(input: OrchestratorInput): Promise<NarrativePl
       ? (objectLike as any).memoryHints.map((item: unknown) => normalizeScalarText(item)).filter(Boolean)
       : parsePlainList(getPlainField(fieldMap, "memory_hints", "memoryhints"));
     const triggerMemoryAgent = parsePlainBoolean(
-      (objectLike && Object.keys(objectLike).length ? objectLike.triggerMemoryAgent : undefined)
+      (hasObjectLike ? objectLike.triggerMemoryAgent : undefined)
       || getPlainField(fieldMap, "trigger_memory_agent", "triggermemoryagent"),
     ) || memoryHints.length > 0;
 
@@ -3324,11 +3357,11 @@ async function doRunNarrativePlan(input: OrchestratorInput): Promise<NarrativePl
     }
 
     const rawEventAdjustMode = normalizeScalarText(
-      (objectLike && Object.keys(objectLike).length ? objectLike.eventAdjustMode : undefined)
+      (hasObjectLike ? objectLike.eventAdjustMode : undefined)
       || getPlainField(fieldMap, "event_adjust_mode", "eventadjustmode"),
     ).toLowerCase();
     const rawEventStatus = normalizeScalarText(
-      (objectLike && Object.keys(objectLike).length ? objectLike.eventStatus : undefined)
+      (hasObjectLike ? objectLike.eventStatus : undefined)
       || getPlainField(fieldMap, "event_status", "eventstatus"),
     );
     const eventStatus: RuntimeCurrentEventState["status"] = rawEventStatus === "completed"
@@ -3372,9 +3405,14 @@ async function doRunNarrativePlan(input: OrchestratorInput): Promise<NarrativePl
       allowStateDelta,
     });
 
-    const normalizedOutcome = allowControlHints
-      ? (chapterOutcome === "failed" ? "failed" : chapterOutcome === "success" ? "success" : "continue")
-      : "continue";
+    let normalizedOutcome: "failed" | "success" | "continue" = "continue";
+    if (allowControlHints) {
+      if (chapterOutcome === "failed") {
+        normalizedOutcome = "failed";
+      } else if (chapterOutcome === "success") {
+        normalizedOutcome = "success";
+      }
+    }
     const normalizedNextChapterId = allowControlHints && Number.isFinite(nextChapterId) && nextChapterId > 0
       ? nextChapterId
       : null;
@@ -3640,6 +3678,8 @@ export async function runStoryMemoryManager(input: {
       "严格输出一个 JSON 对象。",
       "字段固定为 summary, facts, tags, player_card_patch, npc_card_patches。",
       "player_card_patch 和 npc_card_patches.patch 只允许这些字段：raw_setting, personality, appearance, voice, skills, items, equipment, other, gender, age, level, level_desc, hp, mp, money。",
+      "age、level、hp、mp、money 必须输出数字；不要写“已恢复”“充盈”“满了”这类中文状态。",
+      "如果只是表达状态变化，如“已恢复”“斗气更凝实”“状态转好”，请写到 other，不要写进 hp/mp。",
     ].join("\n")
     : [
       prompts.storyMemory,
@@ -3649,6 +3689,8 @@ export async function runStoryMemoryManager(input: {
       "3. 不写剧情正文，不要代码块。",
       "4. 严格输出一个 JSON 对象，字段固定为：summary, facts, tags, player_card_patch, npc_card_patches。",
       "5. player_card_patch 和 npc_card_patches.patch 只允许这些字段：raw_setting, personality, appearance, voice, skills, items, equipment, other, gender, age, level, level_desc, hp, mp, money。",
+      "6. age、level、hp、mp、money 必须输出数字；不要写“已恢复”“充盈”“满了”这类中文状态。",
+      "7. 如果只是表达状态变化，如“已恢复”“斗气更凝实”“状态转好”，请写到 other，不要写进 hp/mp。",
     ].filter(Boolean).join("\n\n");
   const userPrompt = buildMemoryUserPrompt(payload, compactMode);
   const buildFinishedAt = Date.now();
@@ -3689,12 +3731,13 @@ export async function runStoryMemoryManager(input: {
     };
     rawText = unwrapModelText((result as any)?.text || "");
     const objectLike = parseJsonSafe<Record<string, unknown>>(rawText, {});
+    const hasObjectLike = hasRecordKeys(asRecord(objectLike));
     const fieldMap = parseFieldMap(rawText);
     const playerCardPatch = sanitizeMemoryParameterCardPatch(
-      (objectLike && Object.keys(objectLike).length ? objectLike.player_card_patch ?? objectLike.playerCardPatch : undefined)
+      (hasObjectLike ? objectLike.player_card_patch ?? objectLike.playerCardPatch : undefined)
       || parseJsonSafe<JsonRecord>(getPlainField(fieldMap, "player_card_patch", "playercardpatch"), {}),
     );
-    const npcCardPatchSource = (objectLike && Object.keys(objectLike).length ? objectLike.npc_card_patches ?? objectLike.npcCardPatches : undefined);
+    const npcCardPatchSource = hasObjectLike ? objectLike.npc_card_patches ?? objectLike.npcCardPatches : undefined;
     const npcCardPatches = Array.isArray(npcCardPatchSource)
       ? npcCardPatchSource.map((item: unknown) => {
         const rawItem = asRecord(item);
@@ -3704,11 +3747,11 @@ export async function runStoryMemoryManager(input: {
           roleType: sanitizeRoleType(rawItem.role_type || rawItem.roleType || "npc"),
           patch: sanitizeMemoryParameterCardPatch(rawItem.patch),
         };
-      }).filter((item) => (item.roleId || item.roleName) && Object.keys(item.patch).length)
+      }).filter((item) => (item.roleId || item.roleName) && hasRecordKeys(item.patch))
       : [];
     const normalizedMemory: MemoryManagerResult = {
       summary: normalizeScalarText(
-        (objectLike && Object.keys(objectLike).length ? objectLike.summary : undefined)
+        (hasObjectLike ? objectLike.summary : undefined)
         || getPlainField(fieldMap, "summary"),
       ),
       facts: Array.isArray(objectLike?.facts)
@@ -3814,7 +3857,8 @@ function sanitizeMemoryParameterCardPatch(input: unknown): JsonRecord {
   const patch: JsonRecord = {};
   const scalarKeys = ["raw_setting", "personality", "appearance", "voice", "gender", "level_desc"];
   scalarKeys.forEach((key) => {
-    const value = normalizeScalarText(raw[key] ?? raw[key.replace(/_([a-z])/g, (_, char) => char.toUpperCase())]);
+    const camelKey = key.replace(/_([a-z])/g, (_, char) => char.toUpperCase());
+    const value = normalizeScalarText(raw[key] ?? raw[camelKey]);
     if (value) {
       patch[key] = value;
     }
@@ -3828,11 +3872,13 @@ function sanitizeMemoryParameterCardPatch(input: unknown): JsonRecord {
   });
   const listKeys = ["skills", "items", "equipment", "other"];
   listKeys.forEach((key) => {
-    const listValue = Array.isArray(raw[key])
-      ? raw[key].map((item: unknown) => normalizeScalarText(item)).filter(Boolean)
-      : typeof raw[key] === "string"
-        ? parsePlainList(raw[key])
-        : [];
+    const rawValue = raw[key];
+    let listValue: string[] = [];
+    if (Array.isArray(rawValue)) {
+      listValue = rawValue.map((item: unknown) => normalizeScalarText(item)).filter(Boolean);
+    } else if (typeof rawValue === "string") {
+      listValue = parsePlainList(rawValue);
+    }
     if (listValue.length) {
       patch[key] = uniqueTextList(listValue, 20);
     }
@@ -3843,7 +3889,7 @@ function sanitizeMemoryParameterCardPatch(input: unknown): JsonRecord {
 // 将记忆管理器给出的 patch 合并到参数卡，标量覆盖、数组去重合并。
 function mergeMemoryParameterCardPatch(baseCard: JsonRecord, patchInput: unknown): JsonRecord {
   const patch = sanitizeMemoryParameterCardPatch(patchInput);
-  if (!Object.keys(patch).length) {
+  if (!hasRecordKeys(patch)) {
     return baseCard;
   }
   const nextCard = buildDefaultRoleParameterCardForMemory({
@@ -3907,7 +3953,7 @@ function applyMemoryPlayerCardPatchToState(state: JsonRecord, memory: MemoryMana
     existedBefore,
     otherCountBefore,
     otherCountAfter: Array.isArray(nextCard.other) ? nextCard.other.length : 0,
-    applied: Object.keys(sanitizeMemoryParameterCardPatch(mergedPatch)).length > 0,
+    applied: hasRecordKeys(sanitizeMemoryParameterCardPatch(mergedPatch)),
   };
 }
 
@@ -3919,7 +3965,7 @@ function applyMemoryNpcCardPatchesToState(state: JsonRecord, memory: MemoryManag
 }> {
   const npcBag = asRecord(state.npcs);
   const patchList = Array.isArray(memory.npcCardPatches) ? memory.npcCardPatches : [];
-  if (!Object.keys(npcBag).length || !patchList.length) {
+  if (!hasRecordKeys(npcBag) || !patchList.length) {
     return [];
   }
   const appliedResults: Array<{ roleId: string; roleName: string; applied: boolean }> = [];
@@ -3927,7 +3973,7 @@ function applyMemoryNpcCardPatchesToState(state: JsonRecord, memory: MemoryManag
     const roleId = normalizeScalarText(patchEntry.roleId);
     const roleName = normalizeScalarText(patchEntry.roleName);
     const patch = sanitizeMemoryParameterCardPatch(patchEntry.patch);
-    if (!Object.keys(patch).length) {
+    if (!hasRecordKeys(patch)) {
       appliedResults.push({ roleId, roleName, applied: false });
       return;
     }
@@ -4074,7 +4120,7 @@ export async function refreshStoryMemoryBestEffort(input: {
       !memory.summary
       && !memory.facts.length
       && !memory.tags.length
-      && !Object.keys(asRecord(memory.playerCardPatch)).length
+      && !hasRecordKeys(asRecord(memory.playerCardPatch))
       && !memory.npcCardPatches.length
     ) {
       if (DebugLogUtil.isDebugLogEnabled()) {
@@ -4113,11 +4159,11 @@ export async function refreshStoryMemoryBestEffort(input: {
         nextFactsCount: Array.isArray(input.state.memoryFacts) ? input.state.memoryFacts.length : 0,
         previousTagsCount: previousTags.length,
         nextTagsCount: Array.isArray(input.state.memoryTags) ? input.state.memoryTags.length : 0,
-        playerCardExistedBefore: Object.keys(previousPlayerCard).length > 0,
-        playerCardExistsAfter: Object.keys(nextPlayerCard).length > 0,
+        playerCardExistedBefore: hasRecordKeys(previousPlayerCard),
+        playerCardExistsAfter: hasRecordKeys(nextPlayerCard),
         playerCardOtherCountBefore: Array.isArray(previousPlayerCard.other) ? previousPlayerCard.other.length : 0,
         playerCardOtherCountAfter: Array.isArray(nextPlayerCard.other) ? nextPlayerCard.other.length : 0,
-        playerCardPatchApplied: Object.keys(asRecord(memory.playerCardPatch)).length > 0,
+        playerCardPatchApplied: hasRecordKeys(asRecord(memory.playerCardPatch)),
         playerCardPatchKeys: Object.keys(asRecord(memory.playerCardPatch)),
         npcCardPatchCount: memory.npcCardPatches.length,
         npcCardAppliedCount: npcCardAppliedTargets.length,
