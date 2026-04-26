@@ -594,6 +594,23 @@ function summarizeParameterCardKeyText(input: unknown): string {
   return parts.join("|");
 }
 
+function normalizeCardTextList(value: unknown, limit = 8): string[] {
+  return Array.isArray(value)
+    ? value.map((item: unknown) => normalizeScalarText(item)).filter(Boolean).slice(0, limit)
+    : [];
+}
+
+function normalizeOptionalCardNumber(value: unknown): number | null {
+  const numericValue = Number(value);
+  return Number.isFinite(numericValue) ? numericValue : null;
+}
+
+// 根据当前调试模式限制记忆事实/标签的体积，避免调用方重复写同一套分支。
+function buildLimitedMemoryText(value: unknown, compactLimit: number, fullLimit: number, compactMode: boolean): string {
+  const maxItems = compactMode ? compactLimit : fullLimit;
+  return uniqueTextList(Array.isArray(value) ? value : [], maxItems).join("；");
+}
+
 // 记忆管理器不需要完整参数卡原文，只需要足以推断成长变化的关键信息。
 function buildMemoryRoleCardSummary(input: {
   roleId: string;
@@ -602,38 +619,29 @@ function buildMemoryRoleCardSummary(input: {
   card: JsonRecord;
 }, compactMode: boolean): JsonRecord {
   const card = asRecord(input.card);
+  const detailedCard = {
+    name: normalizeScalarText(card.name),
+    raw_setting: normalizeScalarText(card.raw_setting || card.rawSetting),
+    gender: normalizeScalarText(card.gender),
+    age: normalizeOptionalCardNumber(card.age),
+    level: normalizeOptionalCardNumber(card.level),
+    level_desc: normalizeScalarText(card.level_desc || card.levelDesc),
+    personality: normalizeScalarText(card.personality),
+    appearance: normalizeScalarText(card.appearance),
+    voice: normalizeScalarText(card.voice),
+    skills: normalizeCardTextList(card.skills),
+    items: normalizeCardTextList(card.items),
+    equipment: normalizeCardTextList(card.equipment),
+    hp: normalizeOptionalCardNumber(card.hp),
+    mp: normalizeOptionalCardNumber(card.mp),
+    money: normalizeOptionalCardNumber(card.money),
+    other: normalizeCardTextList(card.other),
+  };
   return {
     role_id: input.roleId,
     role_name: input.roleName,
     role_type: sanitizeRoleType(input.roleType),
-    card: compactMode
-      ? summarizeParameterCardText(card)
-      : {
-        name: normalizeScalarText(card.name),
-        raw_setting: normalizeScalarText(card.raw_setting || card.rawSetting),
-        gender: normalizeScalarText(card.gender),
-        age: Number.isFinite(Number(card.age)) ? Number(card.age) : null,
-        level: Number.isFinite(Number(card.level)) ? Number(card.level) : null,
-        level_desc: normalizeScalarText(card.level_desc || card.levelDesc),
-        personality: normalizeScalarText(card.personality),
-        appearance: normalizeScalarText(card.appearance),
-        voice: normalizeScalarText(card.voice),
-        skills: Array.isArray(card.skills)
-          ? card.skills.map((item: unknown) => normalizeScalarText(item)).filter(Boolean).slice(0, 8)
-          : [],
-        items: Array.isArray(card.items)
-          ? card.items.map((item: unknown) => normalizeScalarText(item)).filter(Boolean).slice(0, 8)
-          : [],
-        equipment: Array.isArray(card.equipment)
-          ? card.equipment.map((item: unknown) => normalizeScalarText(item)).filter(Boolean).slice(0, 8)
-          : [],
-        hp: Number.isFinite(Number(card.hp)) ? Number(card.hp) : null,
-        mp: Number.isFinite(Number(card.mp)) ? Number(card.mp) : null,
-        money: Number.isFinite(Number(card.money)) ? Number(card.money) : null,
-        other: Array.isArray(card.other)
-          ? card.other.map((item: unknown) => normalizeScalarText(item)).filter(Boolean).slice(0, 8)
-          : [],
-      },
+    card: compactMode ? summarizeParameterCardText(card) : detailedCard,
   };
 }
 
@@ -1313,30 +1321,60 @@ function buildCompactOrchestratorSections(payload: OrchestratorPromptPayload): A
     stringifyRecentDialogue(payload.recentDialogue),
     payload.latestPlayerMessage ? `用户待处理:${payload.latestPlayerMessage}` : "",
   ].filter(Boolean).join("\n");
+  const shouldShowEventSeed = !payload.currentEventSummary && !payload.currentEventFacts.length && Boolean(eventSeed);
   return [
     { title: "角色", content: rolesText || "无" },
     { title: "当前事件", content: currentEventLines || "kind:scene\nflow:chapter_content\nsummary:当前事件未命名" },
-    ...((!payload.currentEventSummary && !payload.currentEventFacts.length && eventSeed)
-      ? [{ title: "事件种子", content: eventSeed }]
-      : []),
+    ...(shouldShowEventSeed ? [{ title: "事件种子", content: eventSeed }] : []),
     { title: "最近对话", content: recentLines || "无" },
   ];
 }
 
 function buildOrchestratorPromptStats(payload: OrchestratorPromptPayload, compactMode: boolean): PromptStatRow[] {
-  const sections = compactMode
-    ? buildCompactOrchestratorSections(payload)
-    : [
-      { title: "世界", content: [payload.worldName ? `名称:${payload.worldName}` : "", payload.worldIntro ? `简介:${payload.worldIntro}` : ""].filter(Boolean).join("\n") || "无" },
-      { title: "章节内部提纲", content: [payload.chapterTitle ? `标题:${payload.chapterTitle}` : "", payload.chapterDirective ? `提纲摘录:${payload.chapterDirective}` : "", payload.chapterUserTurns ? `用户交互节点:${payload.chapterUserTurns}` : "", payload.chapterOpening ? `开场白:${payload.chapterOpening}` : ""].filter(Boolean).join("\n") || "无" },
+  const orchestratorCurrentEventIndexLine = payload.currentEventIndex != null ? `index:${payload.currentEventIndex}` : "";
+  const orchestratorWorldContent = [
+    payload.worldName ? `名称:${payload.worldName}` : "",
+    payload.worldIntro ? `简介:${payload.worldIntro}` : "",
+  ].filter(Boolean).join("\n") || "无";
+  const orchestratorChapterContent = [
+    payload.chapterTitle ? `标题:${payload.chapterTitle}` : "",
+    payload.chapterDirective ? `提纲摘录:${payload.chapterDirective}` : "",
+    payload.chapterUserTurns ? `用户交互节点:${payload.chapterUserTurns}` : "",
+    payload.chapterOpening ? `开场白:${payload.chapterOpening}` : "",
+  ].filter(Boolean).join("\n") || "无";
+  const orchestratorCurrentPhaseContent = [
+    `label:${payload.currentPhaseLabel || "未命名阶段"}`,
+    payload.currentPhaseGoal ? `goal:${payload.currentPhaseGoal}` : "",
+    `allowed_speakers:${payload.phaseAllowedSpeakers.length ? payload.phaseAllowedSpeakers.join("、") : "全部当前角色"}`,
+  ].filter(Boolean).join("\n");
+  const orchestratorCurrentEventContent = [
+    orchestratorCurrentEventIndexLine,
+    `kind:${payload.currentEventKind || "scene"}`,
+    `flow:${payload.currentEventFlowType || "chapter_content"}`,
+    `status:${payload.currentEventStatus || "active"}`,
+    `summary:${payload.currentEventSummary || "当前事件未命名"}`,
+    payload.currentEventFacts.length ? `facts:${payload.currentEventFacts.join("；")}` : "",
+    payload.currentEventMemorySummary ? `memory_summary:${payload.currentEventMemorySummary}` : "",
+    payload.currentEventMemoryFacts.length ? `memory_facts:${payload.currentEventMemoryFacts.join("；")}` : "",
+    payload.currentEventWindow ? `事件窗口:${payload.currentEventWindow}` : "",
+  ].filter(Boolean).join("\n");
+  const orchestratorStorySection = compactMode ? [] : [{ title: "剧情摘要", content: payload.storyState || "无" }];
+  let sections: Array<{ title: string; content: string }>;
+  if (compactMode) {
+    sections = buildCompactOrchestratorSections(payload);
+  } else {
+    sections = [
+      { title: "世界", content: orchestratorWorldContent },
+      { title: "章节内部提纲", content: orchestratorChapterContent },
       { title: "角色列表", content: payload.roles.map((role) => `- ${sanitizeRoleType(role.roleType)} | ${normalizeScalarText(role.name)} | ${describeRole(role)}`).join("\n") || "无" },
-      { title: "剧情摘要", content: payload.storyState || "无" },
-      { title: "当前阶段", content: [`label:${payload.currentPhaseLabel || "未命名阶段"}`, payload.currentPhaseGoal ? `goal:${payload.currentPhaseGoal}` : "", `allowed_speakers:${payload.phaseAllowedSpeakers.length ? payload.phaseAllowedSpeakers.join("、") : "全部当前角色"}`].filter(Boolean).join("\n") },
-      { title: "当前事件", content: [payload.currentEventIndex != null ? `index:${payload.currentEventIndex}` : "", `kind:${payload.currentEventKind || "scene"}`, `flow:${payload.currentEventFlowType || "chapter_content"}`, `status:${payload.currentEventStatus || "active"}`, `summary:${payload.currentEventSummary || "当前事件未命名"}`, payload.currentEventFacts.length ? `facts:${payload.currentEventFacts.join("；")}` : "", payload.currentEventMemorySummary ? `memory_summary:${payload.currentEventMemorySummary}` : "", payload.currentEventMemoryFacts.length ? `memory_facts:${payload.currentEventMemoryFacts.join("；")}` : "", payload.currentEventWindow ? `事件窗口:${payload.currentEventWindow}` : ""].filter(Boolean).join("\n") },
+      ...orchestratorStorySection,
+      { title: "当前阶段", content: orchestratorCurrentPhaseContent },
+      { title: "当前事件", content: orchestratorCurrentEventContent },
       { title: "回合状态", content: [`can_player_speak:${payload.turnState.canPlayerSpeak ? "true" : "false"}`, `expected_role_type:${sanitizeRoleType(payload.turnState.expectedRoleType)}`, `expected_role:${payload.turnState.expectedRole || "无"}`, `last_speaker_role_type:${sanitizeRoleType(payload.turnState.lastSpeakerRoleType)}`, `last_speaker:${payload.turnState.lastSpeaker || "无"}`].join("\n") },
       { title: "最近对话", content: payload.recentDialogue.length ? stringifyRecentDialogue(payload.recentDialogue) : "[]" },
       { title: "用户本轮输入", content: payload.latestPlayerMessage || "无" },
     ];
+  }
   return sections.map((section) => {
     const content = section.content || "无";
     return {
@@ -1350,6 +1388,7 @@ function buildOrchestratorPromptStats(payload: OrchestratorPromptPayload, compac
 
 // 把角色发言链路里的上下文拆成可读统计块，方便直接对比快路由和标准路由的 prompt 体积。
 function buildSpeakerPromptStats(payload: SpeakerPromptPayload, compactMode: boolean): PromptStatRow[] {
+  const speakerCurrentEventIndexLine = payload.currentEventIndex != null ? `index:${payload.currentEventIndex}` : "";
   const nextEventLines = [
     payload.nextEventIndex != null ? `index:${payload.nextEventIndex}` : "",
     payload.nextEventKind ? `kind:${payload.nextEventKind}` : "",
@@ -1359,17 +1398,40 @@ function buildSpeakerPromptStats(payload: SpeakerPromptPayload, compactMode: boo
     payload.nextEventFacts.length ? `facts:${payload.nextEventFacts.join("；")}` : "",
     payload.nextEventTransitionHint ? `transition_hint:${payload.nextEventTransitionHint}` : "",
   ].filter(Boolean).join("\n") || "无";
+  const speakerWorldContent = [
+    payload.worldName ? `名称:${payload.worldName}` : "",
+    payload.worldIntro ? `简介:${payload.worldIntro}` : "",
+  ].filter(Boolean).join("\n") || "无";
+  const speakerChapterContent = [
+    payload.chapterTitle ? `标题:${payload.chapterTitle}` : "",
+    payload.chapterContentHint ? `章节内容:${payload.chapterContentHint}` : "",
+    payload.chapterEndingConditionHint ? `章节结束条件:${payload.chapterEndingConditionHint}` : "",
+    payload.currentPhaseLabel ? `阶段:${payload.currentPhaseLabel}` : "",
+  ].filter(Boolean).join("\n") || "无";
+  const speakerCurrentEventContent = [
+    speakerCurrentEventIndexLine,
+    `kind:${payload.currentEventKind || "scene"}`,
+    payload.currentEventFlowType ? `flow:${payload.currentEventFlowType}` : "",
+    payload.currentEventStatus ? `status:${payload.currentEventStatus}` : "",
+    `summary:${payload.currentEventSummary || "当前事件未命名"}`,
+    payload.currentEventFacts.length ? `facts:${payload.currentEventFacts.join("；")}` : "",
+    payload.currentEventMemorySummary ? `memory_summary:${payload.currentEventMemorySummary}` : "",
+    payload.currentEventMemoryFacts.length ? `memory_facts:${payload.currentEventMemoryFacts.join("；")}` : "",
+    payload.currentEventWindow ? `window:${payload.currentEventWindow}` : "",
+  ].filter(Boolean).join("\n") || "无";
+  const speakerStorySections = compactMode ? [] : [{ title: "剧情摘要", content: payload.storyState || "无" }];
+  const speakerVisibleRoleSections = compactMode ? [] : [{ title: "其他可见角色", content: payload.otherRoles.length ? payload.otherRoles.join("、") : "无" }];
   const sections = [
-    { title: "世界", content: [payload.worldName ? `名称:${payload.worldName}` : "", payload.worldIntro ? `简介:${payload.worldIntro}` : ""].filter(Boolean).join("\n") || "无" },
-    { title: "章节", content: [payload.chapterTitle ? `标题:${payload.chapterTitle}` : "", payload.chapterContentHint ? `章节内容:${payload.chapterContentHint}` : "", payload.chapterEndingConditionHint ? `章节结束条件:${payload.chapterEndingConditionHint}` : "", payload.currentPhaseLabel ? `阶段:${payload.currentPhaseLabel}` : ""].filter(Boolean).join("\n") || "无" },
-    { title: "当前事件", content: [payload.currentEventIndex != null ? `index:${payload.currentEventIndex}` : "", `kind:${payload.currentEventKind || "scene"}`, payload.currentEventFlowType ? `flow:${payload.currentEventFlowType}` : "", payload.currentEventStatus ? `status:${payload.currentEventStatus}` : "", `summary:${payload.currentEventSummary || "当前事件未命名"}`, payload.currentEventFacts.length ? `facts:${payload.currentEventFacts.join("；")}` : "", payload.currentEventMemorySummary ? `memory_summary:${payload.currentEventMemorySummary}` : "", payload.currentEventMemoryFacts.length ? `memory_facts:${payload.currentEventMemoryFacts.join("；")}` : "", payload.currentEventWindow ? `window:${payload.currentEventWindow}` : ""].filter(Boolean).join("\n") || "无" },
+    { title: "世界", content: speakerWorldContent },
+    { title: "章节", content: speakerChapterContent },
+    { title: "当前事件", content: speakerCurrentEventContent },
     { title: "下一事件", content: nextEventLines },
     { title: "当前说话人", content: [`name:${payload.speakerName || "未命名角色"}`, `role_type:${payload.speakerRoleType || "unknown"}`, payload.speakerProfile || ""].filter(Boolean).join("\n") || "无" },
     { title: "本轮动机", content: payload.motive || "无" },
-    ...(!compactMode ? [{ title: "剧情摘要", content: payload.storyState || "无" }] : []),
+    ...speakerStorySections,
     { title: "最近对话", content: payload.recentDialogue.length ? stringifyRecentDialogue(payload.recentDialogue) : "[]" },
     { title: "用户最近输入", content: payload.latestPlayerMessage || "无" },
-    ...(!compactMode ? [{ title: "其他可见角色", content: payload.otherRoles.length ? payload.otherRoles.join("、") : "无" }] : []),
+    ...speakerVisibleRoleSections,
   ];
   return sections.map((section) => {
     const content = section.content || "无";
@@ -1380,6 +1442,75 @@ function buildSpeakerPromptStats(payload: SpeakerPromptPayload, compactMode: boo
       estimatedTokens: estimatePromptTokens(content),
     };
   });
+}
+
+// 把记忆管理链路里的上下文拆成可读统计块，便于直接判断“旧记忆为什么被覆盖了”。
+function buildMemoryCurrentEventContent(payload: {
+  currentEventIndex: number;
+  currentEventKind: string;
+  currentEventSummary: string;
+  currentEventFacts: string;
+  currentEventMemorySummary: string;
+  currentEventMemoryFacts: string;
+}): string {
+  return [
+    `index:${payload.currentEventIndex || 1}`,
+    `kind:${payload.currentEventKind || "scene"}`,
+    `summary:${payload.currentEventSummary || "当前事件未命名"}`,
+    payload.currentEventFacts ? `facts:${payload.currentEventFacts}` : "",
+    payload.currentEventMemorySummary ? `memory_summary:${payload.currentEventMemorySummary}` : "",
+    payload.currentEventMemoryFacts ? `memory_facts:${payload.currentEventMemoryFacts}` : "",
+  ].filter(Boolean).join("\n") || "无";
+}
+
+// 把紧凑模式的记忆调试块拆开，避免 buildMemoryPromptStats 里堆太多条件拼接。
+function buildCompactMemoryPromptSections(payload: {
+  currentMemory: string;
+  currentFacts: string;
+  currentEventContent: string;
+  eventDeltaText: string;
+  currentTags: string;
+  playerCardText: string;
+  npcCardsText: string;
+  recentDialogueText: string;
+}): Array<{ title: string; content: string }> {
+  return [
+    { title: "当前记忆", content: payload.currentMemory || "无" },
+    { title: "当前事实", content: payload.currentFacts || "无" },
+    { title: "当前事件", content: payload.currentEventContent },
+    { title: "事件增量", content: payload.eventDeltaText || "无" },
+    { title: "当前标签", content: payload.currentTags || "无" },
+    { title: "用户参数卡", content: payload.playerCardText },
+    { title: "相关NPC参数卡", content: payload.npcCardsText },
+    { title: "新增对话", content: payload.recentDialogueText },
+  ];
+}
+
+// 把完整模式的记忆调试块拆开，后面如果继续加统计项，不会把主函数再次堆高。
+function buildFullMemoryPromptSections(payload: {
+  worldName: string;
+  chapterTitle: string;
+  currentMemory: string;
+  currentFacts: string;
+  currentEventContent: string;
+  eventDeltaText: string;
+  currentTags: string;
+  playerCardText: string;
+  npcCardsText: string;
+  recentDialogueText: string;
+}): Array<{ title: string; content: string }> {
+  return [
+    { title: "世界", content: payload.worldName ? `名称:${payload.worldName}` : "无" },
+    { title: "章节", content: payload.chapterTitle ? `标题:${payload.chapterTitle}` : "无" },
+    { title: "当前事件", content: payload.currentEventContent },
+    { title: "事件增量", content: payload.eventDeltaText || "无" },
+    { title: "现有记忆摘要", content: payload.currentMemory || "无" },
+    { title: "当前事实", content: payload.currentFacts || "无" },
+    { title: "当前标签", content: payload.currentTags || "无" },
+    { title: "用户参数卡", content: payload.playerCardText },
+    { title: "相关NPC参数卡", content: payload.npcCardsText },
+    { title: "新增对话", content: payload.recentDialogueText },
+  ];
 }
 
 // 把记忆管理链路里的上下文拆成可读统计块，便于直接判断“旧记忆为什么被覆盖了”。
@@ -1400,49 +1531,33 @@ function buildMemoryPromptStats(payload: {
   playerCard: JsonRecord | null;
   npcCards: JsonRecord[];
 }, compactMode: boolean): PromptStatRow[] {
+  const currentEventContent = buildMemoryCurrentEventContent(payload);
+  const playerCardText = payload.playerCard ? JSON.stringify(payload.playerCard, null, 2) : "无";
+  const npcCardsText = payload.npcCards.length ? JSON.stringify(payload.npcCards, null, 2) : "[]";
+  const recentDialogueText = payload.recentDialogue.length ? stringifyRecentDialogue(payload.recentDialogue) : "[]";
   const sections = compactMode
-    ? [
-      { title: "当前记忆", content: payload.currentMemory || "无" },
-      { title: "当前事实", content: payload.currentFacts || "无" },
-      {
-        title: "当前事件",
-        content: [
-          `index:${payload.currentEventIndex || 1}`,
-          `kind:${payload.currentEventKind || "scene"}`,
-          `summary:${payload.currentEventSummary || "当前事件未命名"}`,
-          payload.currentEventFacts ? `facts:${payload.currentEventFacts}` : "",
-          payload.currentEventMemorySummary ? `memory_summary:${payload.currentEventMemorySummary}` : "",
-          payload.currentEventMemoryFacts ? `memory_facts:${payload.currentEventMemoryFacts}` : "",
-        ].filter(Boolean).join("\n") || "无",
-      },
-      { title: "事件增量", content: payload.eventDeltaText || "无" },
-      { title: "当前标签", content: payload.currentTags || "无" },
-      { title: "用户参数卡", content: payload.playerCard ? JSON.stringify(payload.playerCard, null, 2) : "无" },
-      { title: "相关NPC参数卡", content: payload.npcCards.length ? JSON.stringify(payload.npcCards, null, 2) : "[]" },
-      { title: "新增对话", content: payload.recentDialogue.length ? stringifyRecentDialogue(payload.recentDialogue) : "[]" },
-    ]
-    : [
-      { title: "世界", content: payload.worldName ? `名称:${payload.worldName}` : "无" },
-      { title: "章节", content: payload.chapterTitle ? `标题:${payload.chapterTitle}` : "无" },
-      {
-        title: "当前事件",
-        content: [
-          `index:${payload.currentEventIndex || 1}`,
-          `kind:${payload.currentEventKind || "scene"}`,
-          `summary:${payload.currentEventSummary || "当前事件未命名"}`,
-          payload.currentEventFacts ? `facts:${payload.currentEventFacts}` : "",
-          payload.currentEventMemorySummary ? `memory_summary:${payload.currentEventMemorySummary}` : "",
-          payload.currentEventMemoryFacts ? `memory_facts:${payload.currentEventMemoryFacts}` : "",
-        ].filter(Boolean).join("\n") || "无",
-      },
-      { title: "事件增量", content: payload.eventDeltaText || "无" },
-      { title: "现有记忆摘要", content: payload.currentMemory || "无" },
-      { title: "当前事实", content: payload.currentFacts || "无" },
-      { title: "当前标签", content: payload.currentTags || "无" },
-      { title: "用户参数卡", content: payload.playerCard ? JSON.stringify(payload.playerCard, null, 2) : "无" },
-      { title: "相关NPC参数卡", content: payload.npcCards.length ? JSON.stringify(payload.npcCards, null, 2) : "[]" },
-      { title: "新增对话", content: payload.recentDialogue.length ? stringifyRecentDialogue(payload.recentDialogue) : "[]" },
-    ];
+    ? buildCompactMemoryPromptSections({
+      currentMemory: payload.currentMemory,
+      currentFacts: payload.currentFacts,
+      currentEventContent,
+      eventDeltaText: payload.eventDeltaText,
+      currentTags: payload.currentTags,
+      playerCardText,
+      npcCardsText,
+      recentDialogueText,
+    })
+    : buildFullMemoryPromptSections({
+      worldName: payload.worldName,
+      chapterTitle: payload.chapterTitle,
+      currentMemory: payload.currentMemory,
+      currentFacts: payload.currentFacts,
+      currentEventContent,
+      eventDeltaText: payload.eventDeltaText,
+      currentTags: payload.currentTags,
+      playerCardText,
+      npcCardsText,
+      recentDialogueText,
+    });
   return sections.map((section) => {
     const content = section.content || "无";
     return {
@@ -1734,12 +1849,31 @@ function logSpeakerPromptStats(input: {
   console.log(input.systemPrompt +"\n \n userPrompt:\n"+input.userPrompt);
 }
 
+// 统一构造编排器事件种子，避免 compact 模式下重复写章节提纲拼接逻辑。
+function buildOrchestratorEventSeed(payload: OrchestratorPromptPayload): string {
+  return shortText(
+    [
+      payload.chapterDirective,
+      payload.chapterUserTurns,
+      payload.chapterOpening,
+    ].filter(Boolean).join("\n"),
+    160,
+  );
+}
+
+// 判断是否需要给编排器补事件种子，只在当前事件还没有摘要和事实时启用。
+function shouldAttachOrchestratorEventSeed(payload: OrchestratorPromptPayload): boolean {
+  const hasCurrentEventContent = Boolean(payload.currentEventSummary) || payload.currentEventFacts.length > 0;
+  return !hasCurrentEventContent;
+}
+
 function buildOrchestratorInputSnapshot(payload: OrchestratorPromptPayload, compactMode = false): JsonRecord {
   const roleList = payload.roles.map((role) => ({
     role_type: sanitizeRoleType(role.roleType),
     name: normalizeScalarText(role.name),
     profile: describeRole(role, compactMode),
   }));
+  const eventWindow = payload.currentEventWindow || "";
   const snapshot: JsonRecord = {
     world: {
       name: payload.worldName || "未命名世界",
@@ -1772,7 +1906,7 @@ function buildOrchestratorInputSnapshot(payload: OrchestratorPromptPayload, comp
       facts: payload.currentEventFacts,
       memory_summary: payload.currentEventMemorySummary || "",
       memory_facts: payload.currentEventMemoryFacts,
-      window: compactMode ? "" : (payload.currentEventWindow || ""),
+      window: eventWindow,
     },
     turn_state: {
       can_player_speak: payload.turnState.canPlayerSpeak,
@@ -1788,15 +1922,8 @@ function buildOrchestratorInputSnapshot(payload: OrchestratorPromptPayload, comp
     //如果 compactMode 为真，就把 snapshot.current_event.window 这个字段删掉。
     delete (snapshot.current_event as JsonRecord).window;
     delete (snapshot as JsonRecord).world;
-    if (!payload.currentEventSummary && !payload.currentEventFacts.length) {
-      (snapshot as JsonRecord).event_seed = shortText(
-        [
-          payload.chapterDirective,
-          payload.chapterUserTurns,
-          payload.chapterOpening,
-        ].filter(Boolean).join("\n"),
-        160,
-      );
+    if (shouldAttachOrchestratorEventSeed(payload)) {
+      (snapshot as JsonRecord).event_seed = buildOrchestratorEventSeed(payload);
     }
   }
   return snapshot;
@@ -1804,6 +1931,52 @@ function buildOrchestratorInputSnapshot(payload: OrchestratorPromptPayload, comp
 
 function buildOrchestratorUserPrompt(payload: OrchestratorPromptPayload, compactMode = false): string {
   return JSON.stringify(buildOrchestratorInputSnapshot(payload, compactMode), null, 2);
+}
+
+// 把角色发言提示词里的当前事件段独立出来，减少主提示词函数里的条件堆叠。
+function buildSpeakerCurrentEventLines(payload: {
+  currentEventIndex: number;
+  currentEventKind: string;
+  currentEventFlowType?: string;
+  currentEventStatus?: string;
+  currentEventSummary: string;
+  currentEventFacts: string[];
+  currentEventMemorySummary: string;
+  currentEventMemoryFacts: string[];
+  currentEventWindow?: string;
+}): string[] {
+  return [
+    `index: ${payload.currentEventIndex || 1}`,
+    `kind: ${payload.currentEventKind || "scene"}`,
+    payload.currentEventFlowType ? `flow: ${payload.currentEventFlowType}` : "",
+    payload.currentEventStatus ? `status: ${payload.currentEventStatus}` : "",
+    `summary: ${payload.currentEventSummary || "当前事件未命名"}`,
+    payload.currentEventFacts.length ? `facts: ${payload.currentEventFacts.join("；")}` : "",
+    payload.currentEventMemorySummary ? `memory_summary: ${payload.currentEventMemorySummary}` : "",
+    payload.currentEventMemoryFacts.length ? `memory_facts: ${payload.currentEventMemoryFacts.join("；")}` : "",
+    payload.currentEventWindow ? `window: ${payload.currentEventWindow}` : "",
+  ];
+}
+
+// 把角色发言提示词里的下一事件段独立出来，方便继续清理 Sonar 对内联条件的告警。
+function buildSpeakerNextEventLines(payload: {
+  nextEventIndex?: number;
+  nextEventKind?: string;
+  nextEventFlowType?: string;
+  nextEventStatus?: string;
+  nextEventSummary?: string;
+  nextEventFacts: string[];
+  nextEventTransitionHint?: string;
+}): string[] {
+  return [
+    payload.nextEventIndex != null ? `index: ${payload.nextEventIndex}` : "",
+    payload.nextEventKind ? `kind: ${payload.nextEventKind}` : "",
+    payload.nextEventFlowType ? `flow: ${payload.nextEventFlowType}` : "",
+    payload.nextEventStatus ? `status: ${payload.nextEventStatus}` : "",
+    payload.nextEventSummary ? `summary: ${payload.nextEventSummary}` : "",
+    payload.nextEventFacts.length ? `facts: ${payload.nextEventFacts.join("；")}` : "",
+    payload.nextEventTransitionHint ? `transition_hint: ${payload.nextEventTransitionHint}` : "",
+  ];
 }
 
 // 把当前说话人和上下文拼成角色发言提示词。
@@ -1839,6 +2012,9 @@ function buildSpeakerUserPrompt(payload: {
   recentDialogue: RecentDialogueTurn[];
   otherRoles: string[];
 }): string {
+  const currentEventLines = buildSpeakerCurrentEventLines(payload);
+  const nextEventLines = buildSpeakerNextEventLines(payload);
+  const visibleRolesText = payload.otherRoles.length ? payload.otherRoles.join("、") : "无";
   return [
     "[世界]",
     `名称: ${payload.worldName || "未命名世界"}`,
@@ -1853,24 +2029,10 @@ function buildSpeakerUserPrompt(payload: {
     `label: ${payload.currentPhaseLabel || "未命名阶段"}`,
     "",
     "[当前事件]",
-    `index: ${payload.currentEventIndex || 1}`,
-    `kind: ${payload.currentEventKind || "scene"}`,
-    payload.currentEventFlowType ? `flow: ${payload.currentEventFlowType}` : "",
-    payload.currentEventStatus ? `status: ${payload.currentEventStatus}` : "",
-    `summary: ${payload.currentEventSummary || "当前事件未命名"}`,
-    payload.currentEventFacts.length ? `facts: ${payload.currentEventFacts.join("；")}` : "",
-    payload.currentEventMemorySummary ? `memory_summary: ${payload.currentEventMemorySummary}` : "",
-    payload.currentEventMemoryFacts.length ? `memory_facts: ${payload.currentEventMemoryFacts.join("；")}` : "",
-    payload.currentEventWindow ? `window: ${payload.currentEventWindow}` : "",
+    ...currentEventLines,
     "",
     "[下一事件]",
-    payload.nextEventIndex != null ? `index: ${payload.nextEventIndex}` : "",
-    payload.nextEventKind ? `kind: ${payload.nextEventKind}` : "",
-    payload.nextEventFlowType ? `flow: ${payload.nextEventFlowType}` : "",
-    payload.nextEventStatus ? `status: ${payload.nextEventStatus}` : "",
-    payload.nextEventSummary ? `summary: ${payload.nextEventSummary}` : "",
-    payload.nextEventFacts.length ? `facts: ${payload.nextEventFacts.join("；")}` : "",
-    payload.nextEventTransitionHint ? `transition_hint: ${payload.nextEventTransitionHint}` : "",
+    ...nextEventLines,
     "",
     "[当前说话人]",
     `name: ${payload.speakerName}`,
@@ -1890,7 +2052,7 @@ function buildSpeakerUserPrompt(payload: {
     payload.latestPlayerMessage || "无",
     "",
     "[其他可见角色]",
-    payload.otherRoles.length ? payload.otherRoles.join("、") : "无",
+    visibleRolesText,
     "",
     "[输出要求]",
     "直接输出本轮真正展示给用户的一段正文，不要 JSON，不要字段名，不要代码块。",
@@ -3658,12 +3820,8 @@ export async function runStoryMemoryManager(input: {
       ? recentDialogueItems(memoryInputs.dialogueMessages, 4, 420)
       : recentDialogueItems(memoryInputs.dialogueMessages, 10, 1600),
     currentMemory: shortText(input.state.memorySummary ?? "", compactMode ? 160 : 320),
-    currentFacts: compactMode
-      ? uniqueTextList(Array.isArray(input.state.memoryFacts) ? input.state.memoryFacts : [], 5).join("；")
-      : uniqueTextList(Array.isArray(input.state.memoryFacts) ? input.state.memoryFacts : [], 8).join("；"),
-    currentTags: compactMode
-      ? uniqueTextList(Array.isArray(input.state.memoryTags) ? input.state.memoryTags : [], 6).join("；")
-      : uniqueTextList(Array.isArray(input.state.memoryTags) ? input.state.memoryTags : [], 12).join("；"),
+    currentFacts: buildLimitedMemoryText(input.state.memoryFacts, 5, 8, compactMode),
+    currentTags: buildLimitedMemoryText(input.state.memoryTags, 6, 12, compactMode),
     playerCard: roleCardSnapshots.playerCard
       ? buildMemoryRoleCardSummary(roleCardSnapshots.playerCard, compactMode)
       : null,
@@ -3807,12 +3965,13 @@ export async function runStoryMemoryManager(input: {
         totalMs: failedAt - totalStartedAt,
       },
     });
+    const errorMessage = err instanceof Error ? err.message : String(err);
     console.warn("[story:memory] error", {
       manufacturer: (promptAiConfig as any)?.manufacturer || "",
       model: (promptAiConfig as any)?.model || "",
-      message: (err as any)?.message || String(err),
+      message: errorMessage,
     });
-    throw createRuntimeModelError("memory", (err as any)?.message || String(err));
+    throw createRuntimeModelError("memory", errorMessage);
   }
 }
 
@@ -4033,6 +4192,12 @@ export function applyMemoryResultToState(state: JsonRecord, memory: MemoryManage
 // 将完整编排结果压缩成前端和日志都好读的摘要。
 export function summarizeNarrativePlan(result: OrchestratorResult | null | undefined): NarrativePlanSummary | null {
   if (!result) return null;
+  let normalizedSource: "fallback" | "rule" | "ai" = "ai";
+  if (result.source === "fallback") {
+    normalizedSource = "fallback";
+  } else if (result.source === "rule") {
+    normalizedSource = "rule";
+  }
   return {
     role: normalizeScalarText(result.role),
     roleType: sanitizeRoleType(result.roleType),
@@ -4044,11 +4209,7 @@ export function summarizeNarrativePlan(result: OrchestratorResult | null | undef
       ? result.memoryHints.map((item) => normalizeScalarText(item)).filter(Boolean)
       : [],
     triggerMemoryAgent: Boolean(result.triggerMemoryAgent),
-    source: result.source === "fallback"
-      ? "fallback"
-      : result.source === "rule"
-        ? "rule"
-        : "ai",
+    source: normalizedSource,
     eventAdjustMode: result.eventAdjustMode || "keep",
     eventIndex: Number.isFinite(Number(result.eventIndex)) ? Math.max(1, Number(result.eventIndex)) : 1,
     eventKind: result.eventKind || "scene",
