@@ -3100,6 +3100,17 @@ function hasConfiguredStageModel(input: unknown): boolean {
   return Boolean(normalizeScalarText((input as Record<string, unknown> | null)?.manufacturer));
 }
 
+// 根据 payload 模式选择编排 prompt，避免主流程里再次展开 compact/advanced 的回退顺序。
+function resolveOrchestratorPromptVariant(prompts: {
+  storyOrchestrator?: string;
+  storyOrchestratorCompact?: string;
+  storyOrchestratorAdvanced?: string;
+}, compactMode: boolean): string {
+  return compactMode
+    ? (prompts.storyOrchestratorCompact || prompts.storyOrchestrator || prompts.storyOrchestratorAdvanced || "")
+    : (prompts.storyOrchestratorAdvanced || prompts.storyOrchestrator || prompts.storyOrchestratorCompact || "");
+}
+
 // 根据编排出的下一事件类型推导发言器看到的下一步运行流。
 function resolveNextEventFlowType(nextEventKind: string): "chapter_ending_check" | "chapter_content" {
   return nextEventKind === "ending" ? "chapter_ending_check" : "chapter_content";
@@ -3118,6 +3129,399 @@ async function resolveTextStageModel(userId: number, primaryKey: string, fallbac
     }
   }
   throw new Error(`${stageModelLabel(primaryKey)}对接的模型未配置，请在设置中单独绑定`);
+}
+
+// 统一构造当前章节的提示词元信息，避免主编排函数里混杂数据清洗和流程控制。
+function buildOrchestratorChapterMeta(chapter: any): {
+  id: number;
+  title: string;
+  directive: string;
+  openingRole: string;
+  openingText: string;
+  backgroundPath: string;
+  bgmPath: string;
+} {
+  return {
+    id: Number(chapter?.id || 0),
+    title: normalizeScalarText(chapter?.title),
+    directive: chapterDirectiveText(chapter),
+    openingRole: normalizeScalarText(chapter?.openingRole),
+    openingText: normalizeScalarText(chapter?.openingText),
+    backgroundPath: normalizeScalarText(chapter?.backgroundPath),
+    bgmPath: normalizeScalarText(chapter?.bgmPath),
+  };
+}
+
+// 规则分支命中时，直接补齐当前事件上下文并返回，避免主流程里内联一大段 return 对象。
+// 这里处理的是“不需要再问模型”的硬规则结果，比如当前轮必须直接交还给用户。
+function buildResolvedRuleNarrativePlan(input: {
+  plan: {
+    role: string;
+    roleType: string;
+    motive: string;
+    memoryHints: string[];
+    triggerMemoryAgent: boolean;
+    stateDelta: JsonRecord;
+    awaitUser: boolean;
+    nextRole: string;
+    nextRoleType: string;
+    chapterOutcome: "continue" | "success" | "failed";
+    nextChapterId: number | null;
+    source: "ai" | "fallback" | "rule";
+  };
+  currentEvent: ReturnType<typeof readCurrentRuntimeEventContext>;
+  orchestratorRuntime: NarrativeRuntimeMeta;
+}): NarrativePlanResult {
+  return {
+    ...input.plan,
+    eventAdjustMode: input.plan.awaitUser ? "waiting_input" : "keep",
+    eventIndex: input.currentEvent.eventIndex,
+    eventKind: input.currentEvent.eventKind,
+    eventSummary: input.currentEvent.eventSummary,
+    eventFacts: input.currentEvent.eventFacts,
+    eventStatus: input.plan.awaitUser ? "waiting_input" : input.currentEvent.eventStatus,
+    orchestratorRuntime: input.orchestratorRuntime,
+  };
+}
+
+// 把“当前运行态”整理成编排模型能吃的 prompt payload。
+// 这里做的不是业务决策，而是上下文压缩：
+// 1. 哪些章节信息要给模型看
+// 2. 当前事件要保留哪些摘要/事实
+// 3. 近期对话、事件窗口、可发言角色要裁到什么规模
+function buildOrchestratorPromptPayload(input: {
+  world: any;
+  state: JsonRecord;
+  chapter: any;
+  recentMessages: RuntimeMessageInput[];
+  currentChapter: ReturnType<typeof buildOrchestratorChapterMeta>;
+  currentPhase: ChapterRuntimePhase | null;
+  currentEvent: ReturnType<typeof readCurrentRuntimeEventContext>;
+  roles: RuntimeStoryRole[];
+  turnState: RuntimeTurnState;
+  compactMode: boolean;
+  traceMeta?: JsonRecord;
+  playerMessage?: string;
+}): OrchestratorPromptPayload {
+  const promptEventSummary = buildPromptSafeEventSummary({
+    currentEventSummary: input.currentEvent.eventSummary,
+    currentPhaseLabel: normalizeScalarText(input.currentPhase?.label),
+    chapterDirective: input.currentChapter.directive,
+    limit: input.compactMode ? 72 : 96,
+  });
+  const promptEventFacts = buildPromptSafeEventFacts({
+    currentEventFacts: input.currentEvent.eventFacts,
+    chapterDirective: input.currentChapter.directive,
+    limit: input.compactMode ? 3 : 4,
+  });
+
+  // 这里保留的是“当前轮编排真正需要的章节信息”，不是整章原文。
+  // 目的就是让模型只盯住当前事件，不要被完整大纲带偏。
+  const payload: OrchestratorPromptPayload = {
+    worldName: normalizeScalarText(input.world?.name),
+    worldIntro: shortText(input.world?.intro, input.compactMode ? 120 : 240),
+    chapterTitle: input.currentChapter.title,
+    chapterDirective: buildPromptSafeChapterDirective({
+      chapterDirective: input.currentChapter.directive,
+      currentEventFlowType: input.currentEvent.eventFlowType,
+    }),
+    chapterUserTurns: shortText(
+      extractChapterUserInteractionText(input.currentChapter.directive),
+      input.compactMode ? 180 : 880,
+    ),
+    chapterOpening: input.compactMode
+      ? normalizeScalarText(input.currentChapter.openingText).slice(0, 80)
+      : shortText(input.currentChapter.openingText, 180),
+
+    // roles / wildcardRoles 用来告诉模型：当前阶段到底谁能说话，谁可以被当成兜底角色。
+    roles: input.roles,
+    wildcardRoles: input.roles
+      .filter((item) => roleActsAsWildcard(item))
+      .map((item) => item),
+    narratorActsAsWildcardFallback: input.roles.every((item) => !roleActsAsWildcard(item)),
+
+    // storyState 是长期记忆的压缩版；turnState 则是当前回合的硬状态。
+    storyState: input.compactMode ? shortText(summarizeStoryState(input.state), 180) : summarizeStoryState(input.state),
+    turnState: input.turnState,
+    currentPhaseLabel: normalizeScalarText(input.currentPhase?.label),
+    currentPhaseGoal: buildPromptSafePhaseGoal({
+      currentPhaseLabel: normalizeScalarText(input.currentPhase?.label),
+      currentEventSummary: input.currentEvent.eventSummary,
+      chapterDirective: input.currentChapter.directive,
+      limit: input.compactMode ? 72 : 96,
+    }),
+
+    // 当前事件是编排师最重要的上下文，所以先塞完整结构，再用下方两行覆盖成“安全摘要版”。
+    ...buildPromptEventContextPayload(input.currentEvent),
+    currentEventWindow: buildPromptSafeEventWindow({
+      currentEventWindow: input.compactMode
+        ? readRuntimeEventDigestWindowTextState(input.state, {
+          windowSize: 3,
+          includeMemory: false,
+          summaryLimit: 40,
+          factLimit: 1,
+        })
+        : readDefaultRuntimeEventDigestWindowTextState(input.state),
+      chapterDirective: input.currentChapter.directive,
+      currentEventFlowType: input.currentEvent.eventFlowType,
+      limit: input.compactMode ? 80 : 140,
+    }),
+    phaseAllowedSpeakers: Array.isArray(input.currentPhase?.allowedSpeakers) ? input.currentPhase.allowedSpeakers : [],
+
+    // recentDialogue / latestPlayerMessage 是这轮最直接的触发因素，决定模型怎么承接上下文。
+    recentDialogue: input.compactMode
+      ? recentDialogueItems(input.recentMessages, 10, 900)
+      : recentDialogueItems(input.recentMessages),
+    latestPlayerMessage: normalizeScalarText(input.playerMessage),
+    traceMeta: normalizeTraceMeta(input.traceMeta),
+  };
+
+  // 编排 prompt 只读取精简后的事件摘要与事实，避免把章节正文当成“当前事件”再次送进模型。
+  payload.currentEventSummary = promptEventSummary;
+  payload.currentEventFacts = promptEventFacts;
+  return payload;
+}
+
+// 解析编排模型的文本输出，统一抽取字段、规范化状态并生成最终计划。
+// 这个函数只做一件事：把模型吐出来的原始文本，转成运行时真正可执行的一轮计划。
+// 主函数里最难读的“字段提取 + 状态归一化 + 容错回退”都被收在这里。
+function buildAiNarrativePlanResult(input: {
+  rawText: string;
+  compactMode: boolean;
+  allowControlHints: boolean;
+  allowStateDelta: boolean;
+  roles: RuntimeStoryRole[];
+  turnState: ReturnType<typeof readRuntimeTurnState>;
+  currentPhase: ChapterRuntimePhase | null;
+  currentEvent: ReturnType<typeof readCurrentRuntimeEventContext>;
+  currentChapter: ReturnType<typeof buildOrchestratorChapterMeta>;
+  world: any;
+  state: JsonRecord;
+  orchestratorRuntime: NarrativeRuntimeMeta;
+  isSkip: boolean;
+}): NarrativePlanResult {
+  // 模型可能返回 JSON，也可能返回半结构化纯文本；这里两种都兼容。
+  const objectLike = parseJsonSafe<Record<string, unknown>>(input.rawText, {});
+  const objectRecord = asRecord(objectLike);
+  const hasObjectLike = hasRecordKeys(objectRecord);
+  const fieldMap = parseFieldMap(input.rawText);
+
+  // speaker / roleType 决定“这一轮到底让谁说话”。
+  // 如果模型只给了名字或只给了角色类型，也会尽量从当前 phase 可见角色里匹配。
+  const speaker = normalizeScalarText(
+    (hasObjectLike ? (objectLike.speaker ?? objectLike.role) : undefined)
+    || getPlainField(fieldMap, "speaker", "role"),
+  );
+  const roleType = sanitizeRoleType(
+    (hasObjectLike ? objectLike.roleType : undefined)
+    || getPlainField(fieldMap, "role_type", "roletype"),
+  );
+  const matchedRole = resolvePlannerSpeakerRole(input.roles, speaker, roleType);
+  const motive = normalizeGeneratedLine(
+    (hasObjectLike ? objectLike.motive : undefined)
+    || getPlainField(fieldMap, "motive"),
+    input.compactMode ? 100 : 160,
+  );
+  const awaitUser = parsePlainBoolean(
+    (hasObjectLike ? objectLike.awaitUser : undefined)
+    || getPlainField(fieldMap, "await_user", "awaituser"),
+  );
+  const rawNextRoleType = normalizeScalarText(
+    (hasObjectLike ? objectLike.nextRoleType : undefined)
+    || getPlainField(fieldMap, "next_role_type", "nextroletype"),
+  );
+  const rawNextRole = normalizeScalarText(
+    (hasObjectLike ? objectLike.nextSpeaker : undefined)
+    || getPlainField(fieldMap, "next_speaker", "nextspeaker"),
+  );
+  const nextRoleState = resolvePhaseAwareNextRole({
+    requestedNextRole: rawNextRole,
+    requestedNextRoleType: rawNextRoleType || matchedRole?.roleType || input.turnState.expectedRoleType,
+    awaitUser,
+    currentRole: matchedRole,
+    roles: input.roles,
+    world: input.world,
+  });
+  if (matchedRole && !isRoleAllowedInPhase(matchedRole, input.currentPhase)) {
+    throw createRuntimeModelError("orchestrator", "模型选择了当前阶段不允许发言的角色");
+  }
+
+  // chapterOutcome / nextChapterId 属于章节控制提示。
+  // 只有 allowControlHints 开启时，才允许模型真正影响章节推进。
+  const chapterOutcome = String(
+    (hasObjectLike ? objectLike.chapterOutcome : undefined)
+    || getPlainField(fieldMap, "chapter_outcome", "chapteroutcome")
+    || "continue",
+  ).trim().toLowerCase();
+  const nextChapterIdRaw = normalizeScalarText(
+    (hasObjectLike ? objectLike.nextChapterId : undefined)
+    || getPlainField(fieldMap, "next_chapter_id", "nextchapterid"),
+  );
+  const nextChapterId = Number(nextChapterIdRaw || 0);
+  const memoryHints = Array.isArray(objectLike?.memoryHints)
+    ? (objectLike as any).memoryHints.map((item: unknown) => normalizeScalarText(item)).filter(Boolean)
+    : parsePlainList(getPlainField(fieldMap, "memory_hints", "memoryhints"));
+  const triggerMemoryAgent = parsePlainBoolean(
+    (hasObjectLike ? objectLike.triggerMemoryAgent : undefined)
+    || getPlainField(fieldMap, "trigger_memory_agent", "triggermemoryagent"),
+  ) || memoryHints.length > 0;
+
+  if (DebugLogUtil.isDebugLogEnabled()) {
+    console.log(`[story:memory:runtime] triggerMemoryAgent=${triggerMemoryAgent}`);
+  }
+
+  // eventStatus / eventAdjustMode 决定这轮编排执行完以后，当前事件是保持、更新、等待输入，还是标记完成。
+  const rawEventAdjustMode = normalizeScalarText(
+    (hasObjectLike ? objectLike.eventAdjustMode : undefined)
+    || getPlainField(fieldMap, "event_adjust_mode", "eventadjustmode"),
+  ).toLowerCase();
+  const rawEventStatus = normalizeScalarText(
+    (hasObjectLike ? objectLike.eventStatus : undefined)
+    || getPlainField(fieldMap, "event_status", "eventstatus"),
+  );
+  const eventStatus: RuntimeCurrentEventState["status"] = rawEventStatus === "completed"
+    ? "completed"
+    : rawEventStatus === "waiting_input"
+      ? "waiting_input"
+      : rawEventStatus === "active"
+        ? "active"
+        : (awaitUser ? "waiting_input" : input.currentEvent.eventStatus);
+  const eventSummary = normalizeGeneratedLine(
+    (hasObjectLike ? objectLike.eventSummary : undefined)
+    || getPlainField(fieldMap, "event_summary", "eventsummary")
+    || input.currentEvent.eventSummary,
+    input.compactMode ? 80 : 120,
+  ) || input.currentEvent.eventSummary;
+  const eventFacts = uniqueTextList(
+    Array.isArray(objectLike?.eventFacts)
+      ? (objectLike as any).eventFacts
+      : parsePlainList(getPlainField(fieldMap, "event_facts", "eventfacts")),
+    4,
+  );
+  const eventAdjustMode: NarrativePlanResult["eventAdjustMode"] = rawEventAdjustMode === "completed"
+    ? "completed"
+    : rawEventAdjustMode === "waiting_input"
+      ? "waiting_input"
+      : rawEventAdjustMode === "update"
+        ? "update"
+        : rawEventAdjustMode === "keep"
+          ? "keep"
+          : eventStatus === "completed"
+            ? "completed"
+            : eventStatus === "waiting_input"
+              ? "waiting_input"
+              : eventSummary !== input.currentEvent.eventSummary
+                ? "update"
+                : "keep";
+  const rawStateDelta = (hasObjectLike && objectLike.stateDelta && typeof objectLike.stateDelta === "object" && !Array.isArray(objectLike.stateDelta))
+    ? asRecord(objectLike.stateDelta)
+    : parsePlainStateDelta(getPlainField(fieldMap, "state_delta", "statedelta"));
+  const stateDelta = sanitizeNarrativeStateDelta(rawStateDelta, {
+    allowStateDelta: input.allowStateDelta,
+  });
+
+  // 把模型给出的 success / failed / continue 规范成运行态可接受的枚举。
+  let normalizedOutcome: "failed" | "success" | "continue" = "continue";
+  if (input.allowControlHints) {
+    if (chapterOutcome === "failed") {
+      normalizedOutcome = "failed";
+    } else if (chapterOutcome === "success") {
+      normalizedOutcome = "success";
+    }
+  }
+  const normalizedNextChapterId = input.allowControlHints && Number.isFinite(nextChapterId) && nextChapterId > 0
+    ? nextChapterId
+    : null;
+  const pendingEndingGuide = input.state?.__pendingEndingGuide === true;
+  // 这里允许“模型不指定说话角色，但明确 await_user=true”的情况直接交还给用户。
+  // 这对“需要用户做选择/补信息”的章节节点很重要。
+  const canYieldDirectly = awaitUser && !matchedRole && !pendingEndingGuide;
+  if (motive && looksLikeDirectiveLeak(motive, input.currentChapter.directive, input.currentChapter.openingText)) {
+    throw createRuntimeModelError("orchestrator", "模型返回结构无效或泄漏了内部编排内容");
+  }
+
+  const resolvedEventFacts = eventFacts.length ? eventFacts : input.currentEvent.eventFacts;
+  if (matchedRole) {
+    // 正常分支：模型选中了一个当前阶段允许发言的角色。
+    if (pendingEndingGuide) {
+      input.state.__pendingEndingGuide = false;
+    }
+    if (!motive) {
+      throw createRuntimeModelError("orchestrator", "模型返回结构无效或缺少发言动机");
+    }
+    if (input.isSkip) {
+      return {
+        role: matchedRole.name,
+        roleType: sanitizeRoleType(matchedRole.roleType || "narrator"),
+        motive,
+        memoryHints,
+        triggerMemoryAgent,
+        stateDelta,
+        awaitUser: false,
+        nextRole: normalizeScalarText(nextRoleState.nextRole || matchedRole.name),
+        nextRoleType: sanitizeRoleType(nextRoleState.nextRoleType || matchedRole.roleType || "narrator"),
+        chapterOutcome: normalizedOutcome,
+        nextChapterId: normalizedNextChapterId,
+        source: "ai",
+        eventAdjustMode,
+        eventIndex: input.currentEvent.eventIndex,
+        eventKind: input.currentEvent.eventKind,
+        eventSummary,
+        eventFacts: resolvedEventFacts,
+        eventStatus,
+        orchestratorRuntime: input.orchestratorRuntime,
+      };
+    }
+    return {
+      role: matchedRole.name,
+      roleType: matchedRole.roleType,
+      motive,
+      memoryHints,
+      triggerMemoryAgent,
+      stateDelta,
+      awaitUser,
+      nextRole: nextRoleState.nextRole,
+      nextRoleType: nextRoleState.nextRoleType,
+      chapterOutcome: normalizedOutcome,
+      nextChapterId: normalizedNextChapterId,
+      source: "ai",
+      eventAdjustMode,
+      eventIndex: input.currentEvent.eventIndex,
+      eventKind: input.currentEvent.eventKind,
+      eventSummary,
+      eventFacts: resolvedEventFacts,
+      eventStatus,
+      orchestratorRuntime: input.orchestratorRuntime,
+    };
+  }
+  if (canYieldDirectly) {
+    // 用户回合分支：不生成 NPC/旁白正文，直接把操作权交还给用户。
+    if (pendingEndingGuide) {
+      input.state.__pendingEndingGuide = false;
+    }
+    return {
+      role: "",
+      roleType: "player",
+      motive: "",
+      memoryHints,
+      triggerMemoryAgent,
+      stateDelta,
+      awaitUser: true,
+      nextRole: nextRoleState.nextRole,
+      nextRoleType: nextRoleState.nextRoleType,
+      chapterOutcome: normalizedOutcome,
+      nextChapterId: normalizedNextChapterId,
+      source: "ai",
+      eventAdjustMode,
+      eventIndex: input.currentEvent.eventIndex,
+      eventKind: input.currentEvent.eventKind,
+      eventSummary,
+      eventFacts: resolvedEventFacts,
+      eventStatus,
+      orchestratorRuntime: input.orchestratorRuntime,
+    };
+  }
+  throw createRuntimeModelError("orchestrator", "模型返回结构无效或缺少可执行的角色编排");
 }
 
 // 调用模型生成当前角色的具体台词或旁白正文。
@@ -3469,83 +3873,42 @@ export async function runNarrativePlan(input: OrchestratorInput): Promise<Narrat
 
 // 调用编排模型，决定本轮谁说话、为什么说、以及是否轮到用户。
 async function doRunNarrativePlan(input: OrchestratorInput): Promise<NarrativePlanResult> {
+  // 第一段：准备编排所需的固定上下文。
+  // 这里把世界、章节、phase、当前事件、可发言角色和模型配置全部拉平，后面就只做决策。
   const prompts = await loadStoryPrompts();
   const allRoles = runtimeStoryRoles(input.world, input.state);
   const promptAiConfig = await resolveTextStageModel(input.userId, "storyOrchestratorModel");
   const compactMode = shouldUseCompactOrchestratorPayload(promptAiConfig);
   const orchestratorRuntime = resolveNarrativeRuntimeMeta("storyOrchestratorModel", promptAiConfig, compactMode);
-  const orchestratorPrompt = compactMode
-    ? (prompts.storyOrchestratorCompact || prompts.storyOrchestrator || prompts.storyOrchestratorAdvanced)
-    : (prompts.storyOrchestratorAdvanced || prompts.storyOrchestrator || prompts.storyOrchestratorCompact);
+  const orchestratorPrompt = resolveOrchestratorPromptVariant(prompts, compactMode);
   const allowControlHints = input.allowControlHints !== false;
   const allowStateDelta = input.allowStateDelta !== false;
   const turnState = readRuntimeTurnState(input.state, input.world);
   const currentPhase = readCurrentChapterPhase(input.chapter, input.state);
   const currentEvent = readCurrentRuntimeEventContext(input.chapter, input.state);
   const roles = filterRolesForPhase(allRoles, currentPhase);
-  const currentChapter = {
-    id: Number(input.chapter?.id || 0),
-    title: normalizeScalarText(input.chapter?.title),
-    directive: chapterDirectiveText(input.chapter),
-    openingRole: normalizeScalarText(input.chapter?.openingRole),
-    openingText: normalizeScalarText(input.chapter?.openingText),
-    backgroundPath: normalizeScalarText(input.chapter?.backgroundPath),
-    bgmPath: normalizeScalarText(input.chapter?.bgmPath),
-  };
-  const promptEventSummary = buildPromptSafeEventSummary({
-    currentEventSummary: currentEvent.eventSummary,
-    currentPhaseLabel: normalizeScalarText(currentPhase?.label),
-    chapterDirective: currentChapter.directive,
-    limit: compactMode ? 72 : 96,
-  });
-  const promptEventFacts = buildPromptSafeEventFacts({
-    currentEventFacts: currentEvent.eventFacts,
-    chapterDirective: currentChapter.directive,
-    limit: compactMode ? 3 : 4,
-  });
-  const payload = {
-    worldName: normalizeScalarText(input.world?.name),
-    worldIntro: shortText(input.world?.intro, compactMode ? 120 : 240),
-    chapterTitle: currentChapter.title,
-    chapterDirective: buildPromptSafeChapterDirective({
-      chapterDirective: currentChapter.directive,
-      currentEventFlowType: currentEvent.eventFlowType,
-    }),
-    chapterUserTurns: shortText(extractChapterUserInteractionText(currentChapter.directive), compactMode ? 180 : 880),
-    chapterOpening: compactMode ? normalizeScalarText(currentChapter.openingText).slice(0, 80) : shortText(currentChapter.openingText, 180),
+  const currentChapter = buildOrchestratorChapterMeta(input.chapter);
+  // 这里开始只保留“流程控制”：
+  // payload 的具体拼装细节已经全部挪到 buildOrchestratorPromptPayload 里。
+  const payload = buildOrchestratorPromptPayload({
+    world: input.world,
+    state: input.state,
+    chapter: input.chapter,
+    currentChapter,
+    currentPhase,
+    currentEvent,
     roles,
-    wildcardRoles: roles
-      .filter((item) => roleActsAsWildcard(item))
-      .map((item) => item),
-    narratorActsAsWildcardFallback: roles.every((item) => !roleActsAsWildcard(item)),
-    storyState: compactMode ? shortText(summarizeStoryState(input.state), 180) : summarizeStoryState(input.state),
+    recentMessages: input.recentMessages,
     turnState,
-    currentPhaseLabel: normalizeScalarText(currentPhase?.label),
-    currentPhaseGoal: buildPromptSafePhaseGoal({
-      currentPhaseLabel: normalizeScalarText(currentPhase?.label),
-      currentEventSummary: currentEvent.eventSummary,
-      chapterDirective: currentChapter.directive,
-      limit: compactMode ? 72 : 96,
-    }),
-    ...buildPromptEventContextPayload(currentEvent),
-    currentEventWindow: buildPromptSafeEventWindow({
-      currentEventWindow: compactMode
-        ? readRuntimeEventDigestWindowTextState(input.state, { windowSize: 3, includeMemory: false, summaryLimit: 40, factLimit: 1 })
-        : readDefaultRuntimeEventDigestWindowTextState(input.state),
-      chapterDirective: currentChapter.directive,
-      currentEventFlowType: currentEvent.eventFlowType,
-      limit: compactMode ? 80 : 140,
-    }),
-    phaseAllowedSpeakers: Array.isArray(currentPhase?.allowedSpeakers) ? currentPhase.allowedSpeakers : [],
-    recentDialogue: compactMode ? recentDialogueItems(input.recentMessages, 10, 900) : recentDialogueItems(input.recentMessages),
-    latestPlayerMessage: normalizeScalarText(input.playerMessage),
-    traceMeta: normalizeTraceMeta(input.traceMeta),
-  };
-  // 编排 prompt 只读取精简后的事件摘要与事实，避免把章节正文当成“当前事件”再次送进模型。
-  payload.currentEventSummary = promptEventSummary;
-  payload.currentEventFacts = promptEventFacts;
+    compactMode,
+    traceMeta: input.traceMeta,
+    playerMessage: input.playerMessage,
+  });
   const hasPlayerInput = payload.latestPlayerMessage.length > 0;
   const isSkip = payload.latestPlayerMessage === ".";
+
+  // 第二段：先走规则编排。
+  // 这一步专门拦“无需问模型也能确定答案”的情况，比如当前节点必须直接交还给用户。
   const ruleDecision = resolveRuleNarrativePlan({
     phase: currentPhase,
     state: input.state,
@@ -3573,18 +3936,15 @@ async function doRunNarrativePlan(input: OrchestratorInput): Promise<NarrativePl
       nextRole: ruleDecision.plan.nextRole,
       nextRoleType: ruleDecision.plan.nextRoleType,
     });
-    return {
-      ...ruleDecision.plan,
-      eventAdjustMode: ruleDecision.plan.awaitUser ? "waiting_input" : "keep",
-      eventIndex: currentEvent.eventIndex,
-      eventKind: currentEvent.eventKind,
-      eventSummary: currentEvent.eventSummary,
-      eventFacts: currentEvent.eventFacts,
-      eventStatus: ruleDecision.plan.awaitUser ? "waiting_input" : currentEvent.eventStatus,
+    return buildResolvedRuleNarrativePlan({
+      plan: ruleDecision.plan,
+      currentEvent,
       orchestratorRuntime,
-    };
+    });
   }
 
+  // 第三段：只有规则没命中，才真正去调编排模型。
+  // buildMs / invokeMs / totalMs 会分别记录 prompt 构建、模型调用和整轮总耗时。
   const totalStartedAt = Date.now();
   const buildStartedAt = Date.now();
   const systemPrompt = buildOrchestratorSystemPrompt(orchestratorPrompt, compactMode);
@@ -3595,8 +3955,7 @@ async function doRunNarrativePlan(input: OrchestratorInput): Promise<NarrativePl
   let orchestratorTokenUsage: { inputTokens?: number; outputTokens?: number; reasoningTokens?: number } | null = null;
   let orchestratorInvokeMs = 0;
   try {
-
-    // 发送请求 进行编排
+    // 发送请求进行编排，并在日志里打关键节点，方便排查是否重复调用。
     const invokeStartedAt = Date.now();
     logOrchestratorKeyNode("storyOrchestratorModel:invoke:start", input.traceMeta, {
       currentEventIndex: currentEvent.eventIndex,
@@ -3638,218 +3997,26 @@ async function doRunNarrativePlan(input: OrchestratorInput): Promise<NarrativePl
     const rawText = unwrapModelText((result as any)?.text || "");
     orchestratorRawText = rawText;
     orchestratorTokenUsage = (result as any)?.usage || null;
-    const objectLike = parseJsonSafe<Record<string, unknown>>(rawText, {});
-    const hasObjectLike = hasRecordKeys(asRecord(objectLike));
-    const fieldMap = parseFieldMap(rawText);
-    const speaker = normalizeScalarText(
-      (hasObjectLike ? (objectLike.speaker ?? objectLike.role) : undefined)
-      || getPlainField(fieldMap, "speaker", "role"),
-    );
-    const roleType = sanitizeRoleType(
-      (hasObjectLike ? objectLike.roleType : undefined)
-      || getPlainField(fieldMap, "role_type", "roletype"),
-    );
-    const matchedRole = resolvePlannerSpeakerRole(roles, speaker, roleType);
-    const motive = normalizeGeneratedLine(
-      (hasObjectLike ? objectLike.motive : undefined)
-      || getPlainField(fieldMap, "motive"),
-      compactMode ? 100 : 160,
-    );
-    const awaitUser = parsePlainBoolean(
-      (hasObjectLike ? objectLike.awaitUser : undefined)
-      || getPlainField(fieldMap, "await_user", "awaituser"),
-    );
-    const rawNextRoleType = normalizeScalarText(
-      (hasObjectLike ? objectLike.nextRoleType : undefined)
-      || getPlainField(fieldMap, "next_role_type", "nextroletype"),
-    );
-    const rawNextRole = normalizeScalarText(
-      (hasObjectLike ? objectLike.nextSpeaker : undefined)
-      || getPlainField(fieldMap, "next_speaker", "nextspeaker"),
-    );
-    const nextRoleState = resolvePhaseAwareNextRole({
-      requestedNextRole: rawNextRole,
-      requestedNextRoleType: rawNextRoleType || matchedRole?.roleType || turnState.expectedRoleType,
-      awaitUser,
-      currentRole: matchedRole,
-      roles,
-      world: input.world,
-    });
-    const nextRole = nextRoleState.nextRole;
-    const nextRoleType = nextRoleState.nextRoleType;
-    if (matchedRole && !isRoleAllowedInPhase(matchedRole, currentPhase)) {
-      throw createRuntimeModelError("orchestrator", "模型选择了当前阶段不允许发言的角色");
-    }
-    const chapterOutcome = String(
-      (hasObjectLike ? objectLike.chapterOutcome : undefined)
-      || getPlainField(fieldMap, "chapter_outcome", "chapteroutcome")
-      || "continue",
-    ).trim().toLowerCase();
-    const nextChapterIdRaw = normalizeScalarText(
-      (hasObjectLike ? objectLike.nextChapterId : undefined)
-      || getPlainField(fieldMap, "next_chapter_id", "nextchapterid"),
-    );
-    const nextChapterId = Number(nextChapterIdRaw || 0);
-    const memoryHints = Array.isArray(objectLike?.memoryHints)
-      ? (objectLike as any).memoryHints.map((item: unknown) => normalizeScalarText(item)).filter(Boolean)
-      : parsePlainList(getPlainField(fieldMap, "memory_hints", "memoryhints"));
-    const triggerMemoryAgent = parsePlainBoolean(
-      (hasObjectLike ? objectLike.triggerMemoryAgent : undefined)
-      || getPlainField(fieldMap, "trigger_memory_agent", "triggermemoryagent"),
-    ) || memoryHints.length > 0;
 
-    if (DebugLogUtil.isDebugLogEnabled()) {
-       console.log(`[story:memory:runtime] triggerMemoryAgent=${triggerMemoryAgent}`);
-    }
-
-    const rawEventAdjustMode = normalizeScalarText(
-      (hasObjectLike ? objectLike.eventAdjustMode : undefined)
-      || getPlainField(fieldMap, "event_adjust_mode", "eventadjustmode"),
-    ).toLowerCase();
-    const rawEventStatus = normalizeScalarText(
-      (hasObjectLike ? objectLike.eventStatus : undefined)
-      || getPlainField(fieldMap, "event_status", "eventstatus"),
-    );
-    const eventStatus: RuntimeCurrentEventState["status"] = rawEventStatus === "completed"
-      ? "completed"
-      : rawEventStatus === "waiting_input"
-        ? "waiting_input"
-        : rawEventStatus === "active"
-          ? "active"
-          : (awaitUser ? "waiting_input" : currentEvent.eventStatus);
-    const eventSummary = normalizeGeneratedLine(
-      (objectLike && Object.keys(objectLike).length ? objectLike.eventSummary : undefined)
-      || getPlainField(fieldMap, "event_summary", "eventsummary")
-      || currentEvent.eventSummary,
-      compactMode ? 80 : 120,
-    ) || currentEvent.eventSummary;
-    const eventFacts = uniqueTextList(
-      Array.isArray(objectLike?.eventFacts)
-        ? (objectLike as any).eventFacts
-        : parsePlainList(getPlainField(fieldMap, "event_facts", "eventfacts")),
-      4,
-    );
-    const eventAdjustMode: NarrativePlanResult["eventAdjustMode"] = rawEventAdjustMode === "completed"
-      ? "completed"
-      : rawEventAdjustMode === "waiting_input"
-        ? "waiting_input"
-        : rawEventAdjustMode === "update"
-          ? "update"
-          : rawEventAdjustMode === "keep"
-            ? "keep"
-            : eventStatus === "completed"
-              ? "completed"
-              : eventStatus === "waiting_input"
-                ? "waiting_input"
-                : eventSummary !== currentEvent.eventSummary
-                  ? "update"
-                  : "keep";
-    const rawStateDelta = (objectLike && objectLike.stateDelta && typeof objectLike.stateDelta === "object" && !Array.isArray(objectLike.stateDelta))
-      ? asRecord(objectLike.stateDelta)
-      : parsePlainStateDelta(getPlainField(fieldMap, "state_delta", "statedelta"));
-    const stateDelta = sanitizeNarrativeStateDelta(rawStateDelta, {
+    // 第四段：模型调用成功后，不在主函数里直接拆字段，而是交给专门的解析器统一处理。
+    return buildAiNarrativePlanResult({
+      rawText,
+      compactMode,
+      allowControlHints,
       allowStateDelta,
+      roles,
+      turnState,
+      currentPhase,
+      currentEvent,
+      currentChapter,
+      world: input.world,
+      state: input.state,
+      orchestratorRuntime,
+      isSkip,
     });
-
-    let normalizedOutcome: "failed" | "success" | "continue" = "continue";
-    if (allowControlHints) {
-      if (chapterOutcome === "failed") {
-        normalizedOutcome = "failed";
-      } else if (chapterOutcome === "success") {
-        normalizedOutcome = "success";
-      }
-    }
-    const normalizedNextChapterId = allowControlHints && Number.isFinite(nextChapterId) && nextChapterId > 0
-      ? nextChapterId
-      : null;
-    const pendingEndingGuide = input.state?.__pendingEndingGuide === true;
-    // “等待用户选择/输入”并不要求当前请求必须带着用户发言。
-    // 只要模型明确给出 await_user=true，就应该允许直接把回合交还给用户。
-    const canYieldDirectly = awaitUser && !matchedRole && !pendingEndingGuide;
-    if (motive && looksLikeDirectiveLeak(motive, currentChapter.directive, currentChapter.openingText)) {
-      throw createRuntimeModelError("orchestrator", "模型返回结构无效或泄漏了内部编排内容");
-    }
-
-    if (matchedRole) {
-      if (pendingEndingGuide) {
-        input.state.__pendingEndingGuide = false;
-      }
-      if (!motive) {
-        throw createRuntimeModelError("orchestrator", "模型返回结构无效或缺少发言动机");
-      }
-      if (isSkip) {
-      return {
-        role: matchedRole.name,
-        roleType: sanitizeRoleType(matchedRole.roleType || "narrator"),
-          motive,
-          memoryHints,
-          triggerMemoryAgent,
-          stateDelta,
-          awaitUser: false,
-          nextRole: normalizeScalarText(nextRole || matchedRole.name),
-          nextRoleType: sanitizeRoleType(nextRoleType || matchedRole.roleType || "narrator"),
-          chapterOutcome: normalizedOutcome,
-          nextChapterId: normalizedNextChapterId,
-          source: "ai",
-          eventAdjustMode,
-          eventIndex: currentEvent.eventIndex,
-          eventKind: currentEvent.eventKind,
-        eventSummary,
-        eventFacts: eventFacts.length ? eventFacts : currentEvent.eventFacts,
-        eventStatus,
-        orchestratorRuntime,
-      };
-    }
-    return {
-        role: matchedRole.name,
-        roleType: matchedRole.roleType,
-        motive,
-        memoryHints,
-        triggerMemoryAgent,
-        stateDelta,
-        awaitUser,
-        nextRole,
-        nextRoleType,
-        chapterOutcome: normalizedOutcome,
-        nextChapterId: normalizedNextChapterId,
-        source: "ai",
-        eventAdjustMode,
-        eventIndex: currentEvent.eventIndex,
-        eventKind: currentEvent.eventKind,
-      eventSummary,
-      eventFacts: eventFacts.length ? eventFacts : currentEvent.eventFacts,
-      eventStatus,
-      orchestratorRuntime,
-    };
-  }
-  if (canYieldDirectly) {
-      if (pendingEndingGuide) {
-        input.state.__pendingEndingGuide = false;
-      }
-      return {
-        role: "",
-        roleType: "player",
-        motive: "",
-        memoryHints,
-        triggerMemoryAgent,
-        stateDelta,
-        awaitUser: true,
-        nextRole,
-        nextRoleType,
-        chapterOutcome: normalizedOutcome,
-        nextChapterId: normalizedNextChapterId,
-        source: "ai",
-        eventAdjustMode,
-        eventIndex: currentEvent.eventIndex,
-        eventKind: currentEvent.eventKind,
-      eventSummary,
-      eventFacts: eventFacts.length ? eventFacts : currentEvent.eventFacts,
-      eventStatus,
-      orchestratorRuntime,
-    };
-  }
-    throw createRuntimeModelError("orchestrator", "模型返回结构无效或缺少可执行的角色编排");
   } catch (err) {
+    // 第五段：模型失败时，尽量保住剧情继续运行。
+    // 余额不足会直接抛给上层，其它错误则退回到 fallback 编排。
     orchestratorRuntimeError = err;
     const pendingEndingGuide = input.state?.__pendingEndingGuide === true;
     console.warn("[story:orchestrator] error", {
@@ -3878,6 +4045,7 @@ async function doRunNarrativePlan(input: OrchestratorInput): Promise<NarrativePl
       orchestratorRuntime,
     });
   } finally {
+    // 不论成功、失败还是 fallback，最后都统一打 prompt 体积和耗时日志。
     console.log("[orchestrator] request_chars=", systemPrompt.length + userPrompt.length);
     console.log("[orchestrator] systemPrompt.length=", systemPrompt.length);
     console.log("[orchestrator] userPrompt.length=", userPrompt.length);
