@@ -3594,7 +3594,6 @@ async function doRunNarrativePlan(input: OrchestratorInput): Promise<NarrativePl
   let orchestratorRawText = "";
   let orchestratorTokenUsage: { inputTokens?: number; outputTokens?: number; reasoningTokens?: number } | null = null;
   let orchestratorInvokeMs = 0;
-  const start = Date.now();
   try {
 
     // 发送请求 进行编排
