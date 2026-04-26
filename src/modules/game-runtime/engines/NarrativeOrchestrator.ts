@@ -72,6 +72,8 @@ export interface OrchestratorInput {
   traceMeta?: JsonRecord;
 }
 
+type NarrativePlanSource = "ai" | "fallback" | "rule";
+
 export interface NarrativePlanResult {
   role: string;
   roleType: string;
@@ -84,7 +86,7 @@ export interface NarrativePlanResult {
   nextRoleType: string;
   chapterOutcome: "continue" | "success" | "failed";
   nextChapterId: number | null;
-  source: "ai" | "fallback" | "rule";
+  source: NarrativePlanSource;
   eventAdjustMode: "keep" | "update" | "waiting_input" | "completed";
   eventIndex: number;
   eventKind: RuntimeCurrentEventState["kind"];
@@ -257,7 +259,7 @@ function estimatePromptTokens(text: string): number {
 }
 
 function normalizePromptStatContent(content: string): string {
-  return normalizeScalarText(content).replace(/\n/g, " ↩ ");
+  return normalizeScalarText(content).replaceAll("\n", " ↩ ");
 }
 
 // 按阶段包装模型异常，统一成前后端可读的错误信息。
@@ -828,6 +830,49 @@ function resolveEventFlowType(
   return fallbackFlowType;
 }
 
+// 校验 phase-aware digest 是否仍然指向当前 phase，避免旧事件摘要错误复用到新 phase。
+function matchesCurrentPhaseDigest(input: {
+  runtimeEventDigest: JsonRecord;
+  phaseDerivedEventIndex: number;
+  runtimeEvent: RuntimeCurrentEventState;
+  progress: JsonRecord;
+  currentPhase: ChapterRuntimePhase | null;
+  digestDynamicEvent: JsonRecord | null;
+}): boolean {
+  const expectedEventIndex = Number(
+    input.phaseDerivedEventIndex || input.runtimeEvent.index || input.progress.eventIndex || 0,
+  );
+  const digestEventIndex = Number(input.runtimeEventDigest.eventIndex || 0);
+  if (digestEventIndex !== expectedEventIndex) {
+    return false;
+  }
+  if (!input.currentPhase || !input.digestDynamicEvent) {
+    return true;
+  }
+  const digestPhaseId = String(input.digestDynamicEvent.phaseId || "").trim();
+  if (!digestPhaseId) {
+    return true;
+  }
+  return digestPhaseId === String(input.currentPhase.id || "").trim();
+}
+
+// 读取当前 phase 关联的用户节点和固定事件，减少主流程里的条件查找噪音。
+function resolveCurrentPhaseNarrativeContext(input: {
+  outline: JsonRecord;
+  currentPhase: ChapterRuntimePhase;
+}): { userNode: JsonRecord | null; fixedEvent: JsonRecord | null } {
+  const userNodes = Array.isArray(input.outline.userNodes) ? input.outline.userNodes as JsonRecord[] : [];
+  const fixedEvents = Array.isArray(input.outline.fixedEvents) ? input.outline.fixedEvents as JsonRecord[] : [];
+  const userNode = input.currentPhase.userNodeId
+    ? userNodes.find((item: JsonRecord) => item.id === input.currentPhase.userNodeId) || null
+    : null;
+  const fixedEvent = fixedEvents.find((item: JsonRecord) => {
+    return input.currentPhase.relatedFixedEventIds.includes(item.id)
+      || input.currentPhase.completionEventIds.includes(item.id);
+  }) || null;
+  return { userNode, fixedEvent };
+}
+
 function readCurrentRuntimeEventContext(chapter: any, state: JsonRecord): {
   eventIndex: number;
   eventKind: RuntimeCurrentEventState["kind"];
@@ -856,14 +901,14 @@ function readCurrentRuntimeEventContext(chapter: any, state: JsonRecord): {
   // 只要 phaseId 已经推进到新事件，就不能让旧 digest 再把编排上下文拉回旧事件。
   // 这里除了 eventIndex，还要校验 digest 对应的动态事件 phaseId 是否仍属于当前 phase。
   // 否则上一章 eventIndex=1 的摘要，会在下一章同样 eventIndex=1 时被误复用。
-  const digestMatchesCurrentEvent = Number(runtimeEventDigest.eventIndex || 0) === Number(
-    phaseDerivedEventIndex || runtimeEvent.index || progress.eventIndex || 0,
-  ) && (
-    !currentPhase
-    || !digestDynamicEvent
-    || !String(digestDynamicEvent.phaseId || "").trim()
-    || String(digestDynamicEvent.phaseId || "").trim() === String(currentPhase.id || "").trim()
-  );
+  const digestMatchesCurrentEvent = matchesCurrentPhaseDigest({
+    runtimeEventDigest,
+    phaseDerivedEventIndex,
+    runtimeEvent,
+    progress,
+    currentPhase,
+    digestDynamicEvent,
+  });
   if (runtimeEventDigest.eventSummary && digestMatchesCurrentEvent) {
     return {
       eventIndex: runtimeEventDigest.eventIndex,
@@ -877,19 +922,25 @@ function readCurrentRuntimeEventContext(chapter: any, state: JsonRecord): {
     };
   }
   if (isFreeChapterRuntimeMode(chapter)) {
+    const digestSummary = runtimeEventDigest.eventSummary || runtimeEvent.summary;
+    const digestEventFacts = Array.isArray(runtimeEventDigest.eventFacts) ? runtimeEventDigest.eventFacts : [];
+    const digestMemoryFacts = Array.isArray(runtimeEventDigest.memoryFacts) ? runtimeEventDigest.memoryFacts : [];
+    const resolvedEventSummary = digestMatchesCurrentEvent ? digestSummary : runtimeEvent.summary;
+    const resolvedEventFacts = digestMatchesCurrentEvent && digestEventFacts.length
+      ? digestEventFacts
+      : runtimeEvent.facts;
+    const resolvedMemorySummary = digestMatchesCurrentEvent ? runtimeEventDigest.memorySummary : "";
+    const resolvedMemoryFacts = digestMatchesCurrentEvent ? digestMemoryFacts : [];
+    const resolvedEventStatus = digestMatchesCurrentEvent ? runtimeEventDigest.eventStatus : runtimeEvent.status;
     return {
       eventIndex: runtimeEvent.index,
       eventKind: runtimeEvent.kind,
       eventFlowType: resolveEventFlowType(runtimeEvent.kind, "free_runtime"),
-      eventSummary: normalizeScalarText(
-        digestMatchesCurrentEvent ? (runtimeEventDigest.eventSummary || runtimeEvent.summary) : runtimeEvent.summary,
-      ),
-      eventFacts: digestMatchesCurrentEvent && Array.isArray(runtimeEventDigest.eventFacts) && runtimeEventDigest.eventFacts.length
-        ? runtimeEventDigest.eventFacts
-        : runtimeEvent.facts,
-      eventMemorySummary: normalizeScalarText(digestMatchesCurrentEvent ? runtimeEventDigest.memorySummary : ""),
-      eventMemoryFacts: digestMatchesCurrentEvent && Array.isArray(runtimeEventDigest.memoryFacts) ? runtimeEventDigest.memoryFacts : [],
-      eventStatus: (digestMatchesCurrentEvent ? runtimeEventDigest.eventStatus : runtimeEvent.status) || runtimeEvent.status || "active",
+      eventSummary: normalizeScalarText(resolvedEventSummary),
+      eventFacts: resolvedEventFacts,
+      eventMemorySummary: normalizeScalarText(resolvedMemorySummary),
+      eventMemoryFacts: resolvedMemoryFacts,
+      eventStatus: resolvedEventStatus || runtimeEvent.status || "active",
     };
   }
   if (!currentPhase) {
@@ -907,13 +958,10 @@ function readCurrentRuntimeEventContext(chapter: any, state: JsonRecord): {
       eventStatus: progress.eventStatus || runtimeEvent.status || "idle",
     };
   }
-  const userNode = currentPhase.userNodeId
-    ? (outline.userNodes || []).find((item) => item.id === currentPhase.userNodeId) || null
-    : null;
-  const fixedEvent = (outline.fixedEvents || []).find((item) => {
-    return currentPhase.relatedFixedEventIds.includes(item.id)
-      || currentPhase.completionEventIds.includes(item.id);
-  }) || null;
+  const { userNode, fixedEvent } = resolveCurrentPhaseNarrativeContext({
+    outline,
+    currentPhase,
+  });
   const eventSummary = shortText(
     currentPhase.targetSummary
       || userNode?.promptText
@@ -1157,7 +1205,7 @@ function buildPromptSafeEventWindow(input: {
 function normalizeGeneratedLine(input: unknown, limit = 220): string {
   const text = normalizeScalarText(input)
     .replace(/^["'“”]+|["'“”]+$/g, "")
-    .replace(/\r/g, "")
+    .replaceAll("\r", "")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
   if (!text) return "";
@@ -4024,7 +4072,7 @@ function sanitizeMemoryParameterCardPatch(input: unknown): JsonRecord {
   const patch: JsonRecord = {};
   const scalarKeys = ["raw_setting", "personality", "appearance", "voice", "gender", "level_desc"];
   scalarKeys.forEach((key) => {
-    const camelKey = key.replace(/_([a-z])/g, (_, char) => char.toUpperCase());
+    const camelKey = key.replaceAll(/_([a-z])/g, (_, char) => char.toUpperCase());
     const value = normalizeScalarText(raw[key] ?? raw[camelKey]);
     if (value) {
       patch[key] = value;
