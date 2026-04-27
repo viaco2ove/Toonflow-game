@@ -1532,25 +1532,384 @@ function resolveMiniGameCatalogSelection(state: JsonRecord, input: string): {
 function nextWerewolfPlayerPhase(session: JsonRecord): string {
   const hidden = asRecord(session.hidden_state);
   const roleMap = asRecord(hidden.role_map);
-  const playerName = scalarText(
-    asArray<JsonRecord>(session.participants).find((item) => item.role_type === "player")?.role_name,
-  ) || "用户";
-  const playerRole = scalarText(roleMap[playerName] || roleMap.player || roleMap["用户"] || roleMap["用户"] || "村民");
+  const playerName = werewolfPlayerName(session);
+  const playerRole = scalarText(roleMap[playerName] || roleMap.player || roleMap["用户"] || "村民");
   const dayCount = Number(asRecord(session.public_state).day_count || 1);
   if (dayCount <= 0) {
     asRecord(session.public_state).day_count = 1;
   }
+  if (!isWerewolfPlayerAlive(session)) return "day_discussion";
   if (playerRole === "狼人") return "night_wolf";
   if (playerRole === "预言家") return "night_seer";
   if (playerRole === "女巫") return "night_witch";
   return "day_discussion";
 }
 
+/**
+ * 统一读取狼人杀里的用户名称。
+ *
+ * 用途：
+ * - 避免同一文件里反复手写“从 participants 里找用户”的样板代码；
+ * - 让旁观、投票、夜晚结算都能稳定拿到同一个用户名。
+ */
+function werewolfPlayerName(session: JsonRecord): string {
+  return scalarText(
+    asArray<JsonRecord>(session.participants).find((item) => item.role_type === "player")?.role_name,
+  ) || "用户";
+}
+
+/**
+ * 读取用户在本局狼人杀中的身份。
+ *
+ * 用途：
+ * - 把“用户现在应该进入哪个夜晚阶段”统一从 role_map 推导；
+ * - 让旁观模式和起始阶段初始化不再各自重复解析身份。
+ */
+function werewolfPlayerRole(session: JsonRecord): string {
+  const hidden = asRecord(session.hidden_state);
+  const roleMap = asRecord(hidden.role_map);
+  const playerName = werewolfPlayerName(session);
+  return scalarText(roleMap[playerName] || roleMap.player || roleMap["用户"] || "村民") || "村民";
+}
+
+/**
+ * 判断用户当前是否还存活。
+ *
+ * 用途：
+ * - 用户出局后，不再允许继续发言和投票；
+ * - 由此切换到“继续旁观”模式，直到本局结算结束。
+ */
+function isWerewolfPlayerAlive(session: JsonRecord): boolean {
+  const publicState = asRecord(session.public_state);
+  const aliveList = asArray<string>(publicState.alive_list);
+  return aliveList.includes(werewolfPlayerName(session));
+}
+
+/**
+ * 按当前 alive_list 同步 participants 里的 alive 标记。
+ *
+ * 用途：
+ * - UI 面板和写回状态都依赖 participants.alive；
+ * - 如果只改 alive_list 不回写 participants，旁观和存活头像会继续显示旧状态。
+ */
+function syncWerewolfParticipantsAlive(session: JsonRecord) {
+  const publicState = asRecord(session.public_state);
+  const aliveSet = new Set(asArray<string>(publicState.alive_list).filter(Boolean));
+  session.participants = asArray<JsonRecord>(session.participants).map((item) => ({
+    ...item,
+    alive: aliveSet.has(scalarText(item.role_name)),
+  }));
+}
+
+/**
+ * 返回当前仍然存活、且属于指定身份的角色名列表。
+ *
+ * 用途：
+ * - 狼人、女巫、预言家的 NPC 自动行动都需要先确认该身份是否仍然存活；
+ * - 这里统一走 alive_list + role_map，避免遗漏“角色已经白天出局”的情况。
+ */
+function aliveWerewolfNamesByRole(session: JsonRecord, roleName: string): string[] {
+  const publicState = asRecord(session.public_state);
+  const roleMap = asRecord(asRecord(session.hidden_state).role_map);
+  return asArray<string>(publicState.alive_list).filter((name) => scalarText(roleMap[name]) === roleName);
+}
+
+/**
+ * 把数组按当前 session RNG 打乱。
+ *
+ * 用途：
+ * - 狼人杀身份分配不能再按固定顺序落到用户/NPC 身上；
+ * - 仍然复用现有种子队列，保证同局内随机过程可复现。
+ */
+function shuffleWerewolfItems<T>(session: JsonRecord, items: T[]): T[] {
+  const result = items.slice();
+  for (let index = result.length - 1; index > 0; index -= 1) {
+    const swapIndex = takeRng(session, 0, index);
+    const current = result[index];
+    result[index] = result[swapIndex] as T;
+    result[swapIndex] = current as T;
+  }
+  return result;
+}
+
+/**
+ * 清空上一夜残留的待结算字段。
+ *
+ * 用途：
+ * - 夜晚结算改成显式的 pending/save/poison 三段状态后，
+ *   每轮开始前必须先把旧目标清掉，避免上一轮数据串到下一轮。
+ */
+function resetWerewolfNightState(session: JsonRecord) {
+  const hidden = asRecord(session.hidden_state);
+  hidden.wolf_target = "";
+  hidden.saved_target = "";
+  hidden.poison_target = "";
+  hidden.seer_last_check = "";
+  hidden.seer_last_role = "";
+  session.hidden_state = hidden;
+}
+
+/**
+ * 统一应用狼人杀里的出局结果，并同步 alive/participants 状态。
+ *
+ * 用途：
+ * - 狼人击杀、女巫毒杀、白天票出都复用同一套名单更新逻辑；
+ * - 避免同一个角色重复写入 eliminated_list，或 alive_list/participants 不一致。
+ */
+function eliminateWerewolfTargets(session: JsonRecord, targets: string[]) {
+  const publicState = asRecord(session.public_state);
+  const uniqueTargets = Array.from(new Set(targets.map((item) => scalarText(item)).filter(Boolean)));
+  if (!uniqueTargets.length) return;
+  publicState.alive_list = asArray<string>(publicState.alive_list).filter((name) => !uniqueTargets.includes(name));
+  publicState.eliminated_list = Array.from(new Set([
+    ...asArray<string>(publicState.eliminated_list),
+    ...uniqueTargets,
+  ]));
+  session.public_state = publicState;
+  syncWerewolfParticipantsAlive(session);
+}
+
+/**
+ * 根据当前存活身份统一检查本局是否已经分出胜负。
+ *
+ * 用途：
+ * - 白天票出、夜晚刀人、女巫毒杀后都要立即检查；
+ * - 这样可以避免“其实已经满足胜负条件，但仍继续进入下一白天”的漏判。
+ */
+function evaluateWerewolfVictory(session: JsonRecord): string {
+  const publicState = asRecord(session.public_state);
+  const hidden = asRecord(session.hidden_state);
+  const roleMap = asRecord(hidden.role_map);
+  const aliveRoles = asArray<string>(publicState.alive_list).map((item) => scalarText(roleMap[item]));
+  const wolfAlive = aliveRoles.filter((item) => item === "狼人").length;
+  const othersAlive = aliveRoles.filter((item) => item && item !== "狼人").length;
+  if (wolfAlive <= 0) {
+    session.status = "finished";
+    session.phase = "settling";
+    session.result = "villager_win";
+    session.finish_reason = "所有狼人已出局";
+    return "村民阵营获胜，狼人全部出局。";
+  }
+  if (wolfAlive >= othersAlive) {
+    session.status = "finished";
+    session.phase = "settling";
+    session.result = "wolf_win";
+    session.finish_reason = "狼人数量已达到或超过其他存活人数";
+    return "狼人阵营获胜，人数优势已形成。";
+  }
+  return "";
+}
+
+/**
+ * 为狼人杀结算结果补齐统一的奖励和记忆写回。
+ *
+ * 用途：
+ * - 之前只有白天投票结束才会发奖励，夜晚直接分胜负时会漏掉；
+ * - 现在无论是白天还是夜晚结束，都会走同一套结算出口。
+ */
+function withWerewolfFinishReward(session: JsonRecord, result: MiniGameStepResult): MiniGameStepResult {
+  if (scalarText(session.status) !== "finished") return result;
+  const villagerWin = scalarText(session.result) === "villager_win";
+  return {
+    ...result,
+    rewardSummary: result.rewardSummary && Object.keys(result.rewardSummary).length
+      ? result.rewardSummary
+      : { exp: villagerWin ? 30 : 10, relation: villagerWin ? 3 : 1 },
+    writeback: result.writeback && Object.keys(result.writeback).length
+      ? result.writeback
+      : {
+          relationshipDelta: { party: villagerWin ? 3 : 1 },
+          playerAttributePatch: { exp: villagerWin ? 30 : 10 },
+          memoryAdd: [`狼人杀结果：${session.result}`],
+        },
+    memorySummary: scalarText(result.memorySummary) || `狼人杀一局结束：${session.result || result.narration}`,
+  };
+}
+
+/**
+ * 为 NPC 狼人在本轮夜晚挑选目标。
+ *
+ * 用途：
+ * - 当用户不是狼人时，夜晚击杀不能再只停留在 wolf_target 预填；
+ * - 这里会确保 target 只从非狼人、且仍存活的目标里产生。
+ */
+function resolveWerewolfNpcWolfTarget(session: JsonRecord) {
+  const hidden = asRecord(session.hidden_state);
+  if (scalarText(hidden.wolf_target)) return;
+  const publicState = asRecord(session.public_state);
+  const roleMap = asRecord(hidden.role_map);
+  const candidates = asArray<string>(publicState.alive_list).filter((name) => scalarText(roleMap[name]) !== "狼人");
+  if (!candidates.length) return;
+  hidden.wolf_target = candidates[takeRng(session, 0, candidates.length - 1)];
+  session.hidden_state = hidden;
+}
+
+/**
+ * 记录 NPC 预言家的查验结果，供局内状态和后续调试查看。
+ *
+ * 用途：
+ * - 预言家即使不是用户，也应该完整走一遍夜晚行动；
+ * - 这里只写 hidden_state，不直接公开给白天讨论文本。
+ */
+function resolveWerewolfNpcSeerCheck(session: JsonRecord) {
+  if (werewolfPlayerRole(session) === "预言家" && isWerewolfPlayerAlive(session)) return;
+  const seers = aliveWerewolfNamesByRole(session, "预言家");
+  if (!seers.length) return;
+  const seerName = seers[0] || "";
+  const publicState = asRecord(session.public_state);
+  const candidates = asArray<string>(publicState.alive_list).filter((name) => name && name !== seerName);
+  if (!candidates.length) return;
+  const hidden = asRecord(session.hidden_state);
+  const roleMap = asRecord(hidden.role_map);
+  const target = candidates[takeRng(session, 0, candidates.length - 1)];
+  hidden.seer_last_check = target;
+  hidden.seer_last_role = scalarText(roleMap[target]) || "村民";
+  hidden.seer_checks = [
+    ...asArray<any>(hidden.seer_checks),
+    { round: Number(session.round || 1), seer: seerName, target, role: hidden.seer_last_role },
+  ].slice(-8);
+  session.hidden_state = hidden;
+}
+
+/**
+ * 让 NPC 女巫在用户不是女巫时完成自动行动。
+ *
+ * 用途：
+ * - 夜晚闭环里，NPC 女巫必须能决定“救 / 不救 / 毒 / 不毒”；
+ * - 同时严格尊重解药和毒药的一次性次数限制。
+ */
+function resolveWerewolfNpcWitchTurn(session: JsonRecord) {
+  if (werewolfPlayerRole(session) === "女巫" && isWerewolfPlayerAlive(session)) return;
+  const witches = aliveWerewolfNamesByRole(session, "女巫");
+  if (!witches.length) return;
+  const hidden = asRecord(session.hidden_state);
+  const publicState = asRecord(session.public_state);
+  const target = scalarText(hidden.wolf_target);
+  const roleMap = asRecord(hidden.role_map);
+  if (target && !Boolean(hidden.witch_save_used) && scalarText(roleMap[target]) !== "狼人" && takeRng(session, 1, 100) <= 38) {
+    hidden.saved_target = target;
+    hidden.witch_save_used = true;
+  }
+  if (!Boolean(hidden.witch_poison_used) && takeRng(session, 1, 100) <= 22) {
+    const candidates = asArray<string>(publicState.alive_list).filter((name) => name && name !== witches[0]);
+    if (candidates.length) {
+      hidden.poison_target = candidates[takeRng(session, 0, candidates.length - 1)];
+      hidden.witch_poison_used = true;
+    }
+  }
+  session.hidden_state = hidden;
+}
+
+/**
+ * 统一结算一整夜的狼人击杀 / 女巫救人 / 女巫毒人。
+ *
+ * 用途：
+ * - 之前白天和夜晚分别散落在多个 phase 里直接改名单，导致逻辑容易漏；
+ * - 现在夜晚统一收口后，再一次性更新 last_night_result 和胜负状态。
+ */
+function settleWerewolfNight(session: JsonRecord): string {
+  const hidden = asRecord(session.hidden_state);
+  const publicState = asRecord(session.public_state);
+  const nightLines: string[] = [];
+  const eliminated: string[] = [];
+  const target = scalarText(hidden.wolf_target);
+  const savedTarget = scalarText(hidden.saved_target);
+  const poisonTarget = scalarText(hidden.poison_target);
+  if (target) {
+    if (savedTarget && savedTarget === target) {
+      nightLines.push(`昨夜 ${target} 遭到袭击，但被女巫救下。`);
+    } else {
+      eliminated.push(target);
+      nightLines.push(`昨夜 ${target} 被狼人袭击出局。`);
+    }
+  }
+  if (poisonTarget) {
+    eliminated.push(poisonTarget);
+    nightLines.push(`昨夜 ${poisonTarget} 被女巫毒杀。`);
+  }
+  eliminateWerewolfTargets(session, eliminated);
+  const victoryNarration = evaluateWerewolfVictory(session);
+  publicState.last_night_result = nightLines.length ? nightLines.join("") : "昨夜平安无事。";
+  session.public_state = publicState;
+  resetWerewolfNightState(session);
+  if (victoryNarration) return `${publicState.last_night_result}${victoryNarration}`;
+  session.phase = "day_discussion";
+  session.status = "active";
+  return `${publicState.last_night_result}${isWerewolfPlayerAlive(session) ? "白天讨论开始。" : "你已出局，当前进入旁观模式，白天讨论开始。"}`;
+}
+
+/**
+ * 在用户行动前后，把本轮夜晚剩余的 NPC 行动补齐。
+ *
+ * 用途：
+ * - 用户只负责自己身份对应的那一步；
+ * - 其余身份如果由 NPC 持有，必须在这里自动走完，才能形成完整的夜晚闭环。
+ */
+function finishWerewolfNightAfterPlayerAction(session: JsonRecord): string {
+  resolveWerewolfNpcSeerCheck(session);
+  resolveWerewolfNpcWitchTurn(session);
+  return settleWerewolfNight(session);
+}
+
+/**
+ * 准备新一轮狼人杀阶段。
+ *
+ * 用途：
+ * - 开局首夜和白天投票结束后都走这一套；
+ * - 如果用户是普通村民或已经出局，则自动把整晚走完，直接进入白天/旁观。
+ */
+function prepareWerewolfRound(session: JsonRecord, opening = false): string {
+  const publicState = asRecord(session.public_state);
+  publicState.day_count = Math.max(1, Number(session.round || 1));
+  session.public_state = publicState;
+  resetWerewolfNightState(session);
+  const playerRole = werewolfPlayerRole(session);
+  const playerAlive = isWerewolfPlayerAlive(session);
+  if (!playerAlive) {
+    resolveWerewolfNpcWolfTarget(session);
+    resolveWerewolfNpcSeerCheck(session);
+    resolveWerewolfNpcWitchTurn(session);
+    return settleWerewolfNight(session);
+  }
+  if (playerRole === "狼人") {
+    session.phase = "night_wolf";
+    session.status = "active";
+    return opening ? "首夜降临，你的狼人行动开始了。请选择今晚要袭击的目标。" : `夜幕再次降临，进入第 ${Number(session.round || 1)} 轮狼人行动。`;
+  }
+  resolveWerewolfNpcWolfTarget(session);
+  if (playerRole === "预言家") {
+    session.phase = "night_seer";
+    session.status = "active";
+    return opening ? "首夜降临，你可以选择一名角色进行查验。" : `夜幕再次降临，进入第 ${Number(session.round || 1)} 轮查验阶段。`;
+  }
+  resolveWerewolfNpcSeerCheck(session);
+  if (playerRole === "女巫") {
+    session.phase = "night_witch";
+    session.status = "active";
+    return opening ? "首夜降临，女巫请决定是否救人或下毒。" : `夜幕再次降临，进入第 ${Number(session.round || 1)} 轮女巫阶段。`;
+  }
+  resolveWerewolfNpcWitchTurn(session);
+  return settleWerewolfNight(session);
+}
+
 function werewolfOptions(session: JsonRecord): MiniGameActionOption[] {
   const phase = normalizePhase(session.phase, "day_discussion");
   const publicState = asRecord(session.public_state);
   const aliveList = asArray<string>(publicState.alive_list);
-  const selectable = aliveList.filter((item) => item && item !== "用户" && item !== "用户");
+  const playerName = werewolfPlayerName(session);
+  const playerAlive = aliveList.includes(playerName);
+  const selectable = aliveList.filter((item) => item && item !== playerName);
+  if (!playerAlive && scalarText(session.status) !== "finished") {
+    return [
+      {
+        action_id: "spectate_continue",
+        label: "继续旁观",
+        desc: phase === "day_vote" ? "继续旁观本轮投票结算" : "继续旁观后续讨论与投票",
+        aliases: ["旁观继续", "继续旁观", "继续", "看下去"],
+      },
+      { action_id: "view_record", label: "查看记录", desc: "查看昨夜结果与公开记录", aliases: ["查看状态", "状态", "查看局势"] },
+    ];
+  }
   if (phase === "night_wolf") {
     return [
       ...selectable.map((item) => ({
@@ -1578,7 +1937,8 @@ function werewolfOptions(session: JsonRecord): MiniGameActionOption[] {
   if (phase === "night_witch") {
     const lastNightTarget = scalarText(asRecord(session.hidden_state).wolf_target);
     const options: MiniGameActionOption[] = [];
-    if (lastNightTarget) {
+    const hidden = asRecord(session.hidden_state);
+    if (lastNightTarget && !Boolean(hidden.witch_save_used)) {
       options.push({
         action_id: `save:${lastNightTarget}`,
         label: `救${lastNightTarget}`,
@@ -1586,13 +1946,17 @@ function werewolfOptions(session: JsonRecord): MiniGameActionOption[] {
         aliases: [`解药${lastNightTarget}`, `救人${lastNightTarget}`],
       });
     }
+    if (!Boolean(hidden.witch_poison_used)) {
+      options.push(
+        ...selectable.map((item) => ({
+          action_id: `poison:${item}`,
+          label: `毒${item}`,
+          desc: `使用毒药淘汰 ${item}`,
+          aliases: [`下毒${item}`, `毒杀${item}`],
+        })),
+      );
+    }
     options.push(
-      ...selectable.map((item) => ({
-        action_id: `poison:${item}`,
-        label: `毒${item}`,
-        desc: `使用毒药淘汰 ${item}`,
-        aliases: [`下毒${item}`, `毒杀${item}`],
-      })),
       { action_id: "skip_witch", label: "双跳过", desc: "本轮不救人也不下毒", aliases: ["跳过女巫", "不救不毒", "跳过"] },
       { action_id: "view_status", label: "查看记录", desc: "查看已公开记录", aliases: ["查看状态", "状态", "查看局势"] },
     );
@@ -1615,21 +1979,6 @@ function werewolfOptions(session: JsonRecord): MiniGameActionOption[] {
     { action_id: "begin_vote", label: "进入投票", desc: "结束讨论并进入投票", aliases: ["开始投票", "投票阶段", "结束讨论"] },
     { action_id: "view_record", label: "查看记录", desc: "查看公开死亡与投票记录", aliases: ["查看状态", "状态", "查看局势"] },
   ];
-}
-
-function resolveWerewolfNightNpc(session: JsonRecord) {
-  const hidden = asRecord(session.hidden_state);
-  const publicState = asRecord(session.public_state);
-  const aliveList = asArray<string>(publicState.alive_list);
-  const playerName = asArray<JsonRecord>(session.participants).find((item) => item.role_type === "player")?.role_name || "用户";
-  const candidates = aliveList.filter((item) => item !== playerName);
-  if (!scalarText(hidden.wolf_target) && candidates.length) {
-    hidden.wolf_target = candidates[takeRng(session, 0, candidates.length - 1)];
-  }
-  if (!Array.isArray(hidden.seer_checks)) hidden.seer_checks = [];
-  if (!Array.isArray(publicState.public_vote_history)) publicState.public_vote_history = [];
-  session.hidden_state = hidden;
-  session.public_state = publicState;
 }
 
 function ensureWerewolfNpcState(session: JsonRecord) {
@@ -1723,10 +2072,9 @@ function chooseWerewolfNpcVoteTarget(session: JsonRecord, voterName: string, can
 function resolveWerewolfVoteRound(session: JsonRecord, playerVote: string): { votedOut: string; narration: string } {
   ensureWerewolfNpcState(session);
   const publicState = asRecord(session.public_state);
-  const playerName = scalarText(
-    asArray<JsonRecord>(session.participants).find((item) => item.role_type === "player")?.role_name,
-  ) || "用户";
+  const playerName = werewolfPlayerName(session);
   const aliveList = asArray<string>(publicState.alive_list).filter(Boolean);
+  const playerAlive = aliveList.includes(playerName);
   const voteCount = new Map<string, number>();
   const voteDetails: string[] = [];
   const pushVote = (voter: string, target: string) => {
@@ -1734,9 +2082,9 @@ function resolveWerewolfVoteRound(session: JsonRecord, playerVote: string): { vo
     voteCount.set(target, Number(voteCount.get(target) || 0) + 1);
     voteDetails.push(`${voter} 投给了 ${target}`);
   };
-  if (playerVote && playerVote !== "弃票") {
+  if (playerAlive && playerVote && playerVote !== "弃票") {
     pushVote(playerName, playerVote);
-  } else {
+  } else if (playerAlive) {
     voteDetails.push(`${playerName} 选择弃票`);
   }
   aliveList
@@ -1766,7 +2114,7 @@ function resolveWerewolfVoteRound(session: JsonRecord, playerVote: string): { vo
     revoteCount.set(target, Number(revoteCount.get(target) || 0) + 1);
     revoteDetails.push(`${voter} 在复投时投给了 ${target}`);
   };
-  if (playerVote && tied.includes(playerVote)) {
+  if (playerAlive && playerVote && tied.includes(playerVote)) {
     pushRevote(playerName, playerVote);
   }
   aliveList
@@ -1786,7 +2134,6 @@ function resolveWerewolfVoteRound(session: JsonRecord, playerVote: string): { vo
 
 function finalizeWerewolfVote(session: JsonRecord, votedOut: string): string {
   const publicState = asRecord(session.public_state);
-  const hidden = asRecord(session.hidden_state);
   const noElimination = !scalarText(votedOut) || scalarText(votedOut) === "无人出局";
   const aliveList = noElimination
     ? asArray<string>(publicState.alive_list)
@@ -1797,35 +2144,18 @@ function finalizeWerewolfVote(session: JsonRecord, votedOut: string): string {
   }
   publicState.alive_list = aliveList;
   publicState.eliminated_list = eliminatedList;
+  syncWerewolfParticipantsAlive(session);
   const history = asArray<any>(publicState.public_vote_history);
   history.push({ round: Number(session.round || 1), votedOut: scalarText(votedOut) || "无人出局" });
   publicState.public_vote_history = history.slice(-10);
   publicState.last_night_result = noElimination ? "本轮无人出局" : `白天投票淘汰：${votedOut}`;
-  const roleMap = asRecord(hidden.role_map);
-  const aliveRoles = aliveList.map((item) => scalarText(roleMap[item]));
-  const wolfAlive = aliveRoles.filter((item) => item === "狼人").length;
-  const othersAlive = aliveRoles.filter((item) => item && item !== "狼人").length;
-  if (wolfAlive <= 0) {
-    session.status = "finished";
-    session.phase = "settling";
-    session.result = "villager_win";
-    session.finish_reason = "所有狼人已出局";
-    return "村民阵营获胜，狼人全部出局。";
-  }
-  if (wolfAlive >= othersAlive) {
-    session.status = "finished";
-    session.phase = "settling";
-    session.result = "wolf_win";
-    session.finish_reason = "狼人数量已达到或超过其他存活人数";
-    return "狼人阵营获胜，人数优势已形成。";
-  }
+  const victoryNarration = evaluateWerewolfVictory(session);
+  if (victoryNarration) return victoryNarration;
   session.round = Number(session.round || 1) + 1;
-  session.phase = nextWerewolfPlayerPhase(session);
-  session.status = "active";
-  resolveWerewolfNightNpc(session);
+  const nextRoundNarration = prepareWerewolfRound(session);
   return noElimination
-    ? `两轮投票都未能形成结果，本轮无人出局。天亮后将进入第 ${session.round} 轮。`
-    : `${votedOut} 被票出局。天亮后将进入第 ${session.round} 轮。`;
+    ? `两轮投票都未能形成结果，本轮无人出局。${nextRoundNarration}`
+    : `${votedOut} 被票出局。${nextRoundNarration}`;
 }
 
 function werewolfStep(session: JsonRecord, actionId: string): MiniGameStepResult {
@@ -1833,63 +2163,106 @@ function werewolfStep(session: JsonRecord, actionId: string): MiniGameStepResult
   const publicState = asRecord(session.public_state);
   const hidden = asRecord(session.hidden_state);
   const roleMap = asRecord(hidden.role_map);
-  const playerName = asArray<JsonRecord>(session.participants).find((item) => item.role_type === "player")?.role_name || "用户";
+  const playerName = werewolfPlayerName(session);
+  const playerAlive = isWerewolfPlayerAlive(session);
   if (!Array.isArray(publicState.alive_list) || !publicState.alive_list.length) {
     publicState.alive_list = asArray<JsonRecord>(session.participants).filter((item) => item.alive !== false).map((item) => item.role_name);
+  }
+  if (actionId === "view_record" || actionId === "view_status") {
+    const history = asArray<any>(publicState.public_vote_history)
+      .map((item) => `第${item.round}轮：${item.votedOut}`)
+      .join("；");
+    return {
+      narration: `当前存活：${asArray<string>(publicState.alive_list).join("、")}。昨夜结果：${scalarText(publicState.last_night_result) || "暂无"}。公开记录：${history || "暂无"}。`,
+      resultTags: ["view_record"],
+    };
+  }
+  if (!playerAlive) {
+    if (actionId === "spectate_continue") {
+      if (phase === "day_vote") {
+        const voteRound = resolveWerewolfVoteRound(session, "");
+        const narration = `${voteRound.narration}${finalizeWerewolfVote(session, voteRound.votedOut)}`;
+        return withWerewolfFinishReward(session, { narration, resultTags: ["spectator_continue", "vote"] });
+      }
+      if (phase === "day_discussion") {
+        session.phase = "day_vote";
+        return {
+          narration: `${buildWerewolfDiscussionNarration(session, false)}你已出局，本轮将以旁观身份观看投票结算。`,
+          resultTags: ["spectator_continue", "discussion"],
+        };
+      }
+      return withWerewolfFinishReward(session, {
+        narration: finishWerewolfNightAfterPlayerAction(session),
+        resultTags: ["spectator_continue"],
+      });
+    }
+    return { narration: "你已经出局，本局只能继续旁观或查看记录。", resultTags: ["spectator_blocked"] };
   }
   if (phase === "night_wolf") {
     if (actionId.startsWith("kill:")) {
       const target = actionId.slice(5);
       hidden.wolf_target = target;
-      session.phase = "day_announce";
-      const aliveList = asArray<string>(publicState.alive_list).filter((item) => item !== target);
-      publicState.alive_list = aliveList;
-      publicState.eliminated_list = [...asArray<string>(publicState.eliminated_list), target];
-      publicState.last_night_result = `昨夜 ${target} 倒下。`;
-      session.phase = "day_discussion";
-      return { narration: `夜色退去，昨夜 ${target} 被袭击出局。白天讨论开始。`, resultTags: ["night_kill"] };
+      return withWerewolfFinishReward(session, {
+        narration: finishWerewolfNightAfterPlayerAction(session),
+        resultTags: ["night_kill"],
+      });
     }
     if (actionId === "skip_kill") {
-      publicState.last_night_result = "昨夜平安无事。";
-      session.phase = "day_discussion";
-      return { narration: "你选择空刀，昨夜平安无事。现在进入白天讨论。", resultTags: ["skip_kill"] };
+      hidden.wolf_target = "";
+      return withWerewolfFinishReward(session, {
+        narration: finishWerewolfNightAfterPlayerAction(session),
+        resultTags: ["skip_kill"],
+      });
     }
   }
   if (phase === "night_seer") {
     if (actionId.startsWith("check:")) {
       const target = actionId.slice(6);
       const targetRole = scalarText(roleMap[target]) || "村民";
-      session.phase = "day_discussion";
-      publicState.last_night_result = `你查验了 ${target}。`;
-      return { narration: `你查验了 ${target}，对方阵营为：${targetRole}。天亮后进入白天讨论。`, resultTags: ["seer_check"] };
+      hidden.seer_last_check = target;
+      hidden.seer_last_role = targetRole;
+      return withWerewolfFinishReward(session, {
+        narration: `你查验了 ${target}，对方阵营为：${targetRole}。${finishWerewolfNightAfterPlayerAction(session)}`,
+        resultTags: ["seer_check"],
+      });
     }
     if (actionId === "skip_check") {
-      session.phase = "day_discussion";
-      return { narration: "你放弃了本轮查验。天亮后进入白天讨论。", resultTags: ["skip_check"] };
+      return withWerewolfFinishReward(session, {
+        narration: finishWerewolfNightAfterPlayerAction(session),
+        resultTags: ["skip_check"],
+      });
     }
   }
   if (phase === "night_witch") {
     if (actionId.startsWith("save:")) {
       const target = actionId.slice(5);
-      publicState.alive_list = Array.from(new Set([...asArray<string>(publicState.alive_list), target]));
-      publicState.eliminated_list = asArray<string>(publicState.eliminated_list).filter((item) => item !== target);
-      publicState.last_night_result = `昨夜 ${target} 被救下。`;
+      if (Boolean(hidden.witch_save_used)) {
+        return { narration: "你的解药已经在之前用掉了，本局不能再次救人。", resultTags: ["invalid"] };
+      }
+      hidden.saved_target = target;
       hidden.witch_save_used = true;
-      session.phase = "day_discussion";
-      return { narration: `你出手救下了 ${target}。天亮后进入白天讨论。`, resultTags: ["witch_save"] };
+      return withWerewolfFinishReward(session, {
+        narration: finishWerewolfNightAfterPlayerAction(session),
+        resultTags: ["witch_save"],
+      });
     }
     if (actionId.startsWith("poison:")) {
       const target = actionId.slice(7);
-      publicState.alive_list = asArray<string>(publicState.alive_list).filter((item) => item !== target);
-      publicState.eliminated_list = [...asArray<string>(publicState.eliminated_list), target];
-      publicState.last_night_result = `昨夜 ${target} 被女巫毒杀。`;
+      if (Boolean(hidden.witch_poison_used)) {
+        return { narration: "你的毒药已经在之前用掉了，本局不能再次下毒。", resultTags: ["invalid"] };
+      }
+      hidden.poison_target = target;
       hidden.witch_poison_used = true;
-      session.phase = "day_discussion";
-      return { narration: `你对 ${target} 使用了毒药。天亮后进入白天讨论。`, resultTags: ["witch_poison"] };
+      return withWerewolfFinishReward(session, {
+        narration: finishWerewolfNightAfterPlayerAction(session),
+        resultTags: ["witch_poison"],
+      });
     }
     if (actionId === "skip_witch") {
-      session.phase = "day_discussion";
-      return { narration: "你本轮没有使用解药或毒药。天亮后进入白天讨论。", resultTags: ["skip_witch"] };
+      return withWerewolfFinishReward(session, {
+        narration: finishWerewolfNightAfterPlayerAction(session),
+        resultTags: ["skip_witch"],
+      });
     }
   }
   if (phase === "day_discussion") {
@@ -1922,22 +2295,12 @@ function werewolfStep(session: JsonRecord, actionId: string): MiniGameStepResult
       const voteTarget = actionId.slice(5);
       const voteRound = resolveWerewolfVoteRound(session, voteTarget);
       const narration = `${voteRound.narration}${finalizeWerewolfVote(session, voteRound.votedOut)}`;
-      const rewardSummary = session.status === "finished"
-        ? { exp: session.result === "villager_win" ? 30 : 10, relation: session.result === "villager_win" ? 3 : 1 }
-        : {};
-      const writeback = session.status === "finished"
-        ? {
-            relationshipDelta: { party: session.result === "villager_win" ? 3 : 1 },
-            playerAttributePatch: { exp: session.result === "villager_win" ? 30 : 10 },
-            memoryAdd: [`狼人杀结果：${session.result}`],
-          }
-        : {};
-      return { narration, resultTags: ["vote"], rewardSummary, writeback, memorySummary: `狼人杀一局结束：${session.result || narration}` };
+      return withWerewolfFinishReward(session, { narration, resultTags: ["vote"] });
     }
     if (actionId === "abstain") {
       const voteRound = resolveWerewolfVoteRound(session, "弃票");
       const narration = `${voteRound.narration}${finalizeWerewolfVote(session, voteRound.votedOut)}`;
-      return { narration, resultTags: ["abstain"] };
+      return withWerewolfFinishReward(session, { narration, resultTags: ["abstain"] });
     }
     if (actionId === "view_record") {
       const history = asArray<any>(publicState.public_vote_history)
@@ -2456,15 +2819,7 @@ const RULEBOOKS: Record<string, MiniGameRulebook> = {
     setup: (ctx, sessionId, entrySource) => {
       const participants = buildParticipants(ctx, 5);
       const names = participants.map((item) => String(item.role_name || "")).filter(Boolean);
-      const roles = ["狼人", "预言家", "女巫", "村民", "村民"];
-      const roleMap: Record<string, string> = {};
-      names.forEach((name, index) => {
-        roleMap[name] = roles[index] || "村民";
-      });
-      const player = participants.find((item) => item.role_type === "player");
-      if (player && !roleMap[player.role_name]) {
-        roleMap[player.role_name] = "村民";
-      }
+      const rngSeed = `${ctx.world?.id || 0}:${ctx.chapter?.id || 0}:werewolf:${sessionId}`;
       const session: JsonRecord = {
         session_id: sessionId,
         game_type: "werewolf",
@@ -2486,17 +2841,21 @@ const RULEBOOKS: Record<string, MiniGameRulebook> = {
           last_night_result: "首夜尚未开始。",
         }),
         hidden_state: {
-          role_map: roleMap,
+          role_map: {},
           wolf_target: "",
+          saved_target: "",
+          poison_target: "",
+          seer_last_check: "",
+          seer_last_role: "",
           seer_checks: [],
           witch_save_used: false,
           witch_poison_used: false,
         },
         resource_state: {},
         rng_state: {
-          seed: `${ctx.world?.id || 0}:${ctx.chapter?.id || 0}:werewolf:${sessionId}`,
+          seed: rngSeed,
           cursor: 0,
-          queue: buildRngQueue(`${ctx.world?.id || 0}:${ctx.chapter?.id || 0}:werewolf:${sessionId}`),
+          queue: buildRngQueue(rngSeed),
         },
         action_log_ids: [],
         result: "ongoing",
@@ -2507,8 +2866,15 @@ const RULEBOOKS: Record<string, MiniGameRulebook> = {
         can_quit: true,
         resume_token: `resume_${sessionId}`,
       };
+      const roleMap: Record<string, string> = {};
+      const shuffledRoles = shuffleWerewolfItems(session, ["狼人", "预言家", "女巫", "村民", "村民"]);
+      names.forEach((name, index) => {
+        roleMap[name] = shuffledRoles[index] || "村民";
+      });
+      asRecord(session.hidden_state).role_map = roleMap;
       session.phase = nextWerewolfPlayerPhase(session);
-      resolveWerewolfNightNpc(session);
+      const openingNarration = prepareWerewolfRound(session, true);
+      asRecord(session.public_state).opening_narration = openingNarration;
       return session;
     },
     options: werewolfOptions,
@@ -2915,7 +3281,8 @@ function buildStartNarration(rulebook: MiniGameRulebook, session: JsonRecord): s
     const player = asArray<JsonRecord>(session.participants).find((item) => item.role_type === "player");
     const roleMap = asRecord(asRecord(session.hidden_state).role_map);
     const playerRole = scalarText(roleMap[player?.role_name || "用户"]) || "村民";
-    return `小游戏已开始：${rulebook.displayName}。你的身份是 ${playerRole}。当前阶段：${scalarText(session.phase)}。请直接输入“发言”“进入投票”“投票某人”“查验某人”“救某人”等动作。`;
+    const openingNarration = scalarText(publicState.opening_narration);
+    return `小游戏已开始：${rulebook.displayName}。你的身份是 ${playerRole}。当前阶段：${scalarText(session.phase)}。${openingNarration}请直接输入“发言”“进入投票”“投票某人”“查验某人”“救某人”等动作。`;
   }
   if (rulebook.gameType === "fishing") {
     return `你来到 ${scalarText(publicState.site_name) || "水边"}，准备开始钓鱼。现在可以直接输入“抛竿”“收杆”或“继续钓鱼”。`;

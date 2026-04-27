@@ -1064,8 +1064,12 @@ event_facts:`,
             "# 角色发言\n" +
             "你不能改变说话人，不能泄漏内部编排内容。\n" +
             "# 旁白发言\n" +
-            "如果当前发言角色是旁白，你要引导故事继续，说明场景情况，人物行为，引导角色发言等。提示用户可以做什么。 \n" +
-            "如果存在万能角色如万能角色，某男子，某女子你应该让他们说话而不是帮他们说话。\n",
+            "## 如果当前发言角色是旁白，你要引导故事继续，说明场景情况，人物行为，引导角色发言等。提示用户可以做什么。 \n" +
+            "## 如果存在万能角色如万能角色，某男子，某女子你应该让他们说话而不是帮他们说话。\n" +
+            "## 你可以根据当前对话内容，判断是否给予用户经验值\n" +
+            "战胜敌人=敌人等级*50 经验值\n" +
+            "钓鱼 随机经验值（小于用户等级*50）\n" +
+            "完成任务 随机经验值（小于用户等级*50）\n",
       },
       {
         code: "story-memory",
@@ -1092,9 +1096,25 @@ event_facts:`,
             "### 满蓝：基础蓝量100 + 等级*10 + 特殊物品或者技能加成，如物品里的蓝量属性点(2)\n" +
             "### 攻击力：基础攻击力10 + 等级*10 + 特殊物品或者技能加成，如物品里的攻击点属性点(2)\n" +
             "### 防御力：基础防御1 + 等级*10 + 特殊物品或者技能加成，如物品里的防御点属性点(2)\n" +
+            "### 经验值和升级：\n" +
+                "角色卡可包含 exp、next_level_exp，二者必须是数字。\n" +
+                "默认 next_level_exp = level * 100。\n" +
+                "当明确获得经验时，累加 exp；若 exp >= next_level_exp，则升级：\n" +
+                "level + 1，exp 扣除旧 next_level_exp，next_level_exp = 新 level * 100，hp/mp 按满血满蓝公式恢复。\n" +
+                "大量经验可连续升级。模糊成长不改 exp，只写入 other。" +
+            "### 当用户最新输入以 `@记忆管理` 开头时，该输入视为对长期记忆和角色参数卡的直接管理指令，不需要等待旁白确认。\n" +
+            "`@记忆管理` 指令优先级高于普通剧情对话、旁白确认和当前事件推进。\n" +
+            "如果 `@记忆管理` 后面包含明确状态变化、物品变化、技能变化、身份变化、数值变化，则记忆管理器必须直接更新 summary、facts、tags 和对应参数卡 patch。\n" +
+            "示例：\n" +
+            "  - `@记忆管理 睡觉恢复`\n" +
+            "  - 视为玩家已通过睡觉恢复状态\n" +
+            "  - 必须写入 facts 或 player_card_patch.other\n" +
+            "  - hp/mp 必须是数值，文字只写入 other参数" +
             "## 输出必须是一个 JSON 对象，字段固定为：summary, facts, tags, player_card_patch, npc_card_patches。\n" +
-            "player_card_patch 和 npc_card_patches.patch 只允许这些字段：raw_setting, personality, appearance, voice, skills, items, equipment, other, gender, age, level, level_desc, hp, mp, money。\n" +
-            "其中 age、level、hp、mp、money 必须是数字；如果只是想表达“已恢复”“斗气更凝实”“状态转好”，请写到 other，不要写进 hp/mp。",
+            "player_card_patch 和 npc_card_patches.patch 只允许这些字段：\n" +
+            "raw_setting, personality, appearance, voice, skills, items, equipment, other, gender, age, level, level_desc, exp, next_level_exp, hp, mp, money。\n" +
+            "其中 age、level、exp、next_level_exp、hp、mp、money 必须是数字；\n" +
+            "如果只是想表达“已恢复”“斗气更凝实”“状态转好”“经验提升”，请写到 other，不要写进 hp/mp/exp。",
       },
       {
         code: "story-chapter",

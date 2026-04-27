@@ -23,6 +23,33 @@ import u from "@/utils";
 const router = express.Router();
 
 /**
+ * 根据正式会话状态构造结束弹窗标题。
+ *
+ * 用途：
+ * - 正式游玩和二次进入会话时，都统一由服务端给出“是否需要弹窗”的权威结论；
+ * - 前端只负责展示，不再自行猜测失败状态对应的提示文案。
+ */
+function buildSessionEndDialog(status: string): string | null {
+  const normalized = String(status || "").trim().toLowerCase();
+  if (["failed", "dead", "lose", "loss"].includes(normalized)) return "结束条件失败";
+  return null;
+}
+
+/**
+ * 根据正式会话状态构造结束弹窗详情。
+ *
+ * 用途：
+ * - 让“章节失败”在首次失败和再次进入会话时看到相同说明；
+ * - 避免前端因为缺少细节，只能显示一句空泛的“当前故事已失败”。
+ */
+function buildSessionEndDialogDetail(status: string, chapterTitle?: string | null): string {
+  const endDialog = buildSessionEndDialog(status);
+  if (!endDialog) return "";
+  const normalizedChapterTitle = String(chapterTitle || "当前章节").trim() || "当前章节";
+  return `章节《${normalizedChapterTitle}》结束条件失败。当前故事已结束，可继续查看当前记录，或返回历史重新开始。`;
+}
+
+/**
  * 统一返回故事运行态信息。
  * 该接口专门承载故事设定、当前章节事件和调试锚点等非台词数据，
  * 用来替代 /streamlines和/orchestration 里原先的大杂烩响应。
@@ -69,13 +96,16 @@ export default router.post(
         const chapter = activeChapterId
           ? await db("t_storyChapter").where({ id: activeChapterId }).first()
           : null;
+        const sessionStatus = String(sessionRow.status || "active").trim() || "active";
         // storyInfo 是前端故事设定/事件面板的权威来源。
         // 这里必须用章节行数据回填标题，防止旧 state.chapterTitle 残留为别的章节名。
         activeState.chapterId = activeChapterId || 0;
         activeState.chapterTitle = String(chapter?.title || "").trim() || String(activeState.chapterTitle || "").trim();
         const eventView = readDefaultRuntimeEventViewState(activeState);
+        const sessionEndDialog = buildSessionEndDialog(sessionStatus);
         return res.status(200).send(success({
           worldId: Number(sessionRow.worldId || 0),
+          status: sessionStatus,
           chapterId: activeChapterId,
           chapterTitle: String(chapter?.title || activeState.chapterTitle || ""),
           state: activeState,
@@ -84,6 +114,8 @@ export default router.post(
           currentEventDigest: eventView.currentEventDigest,
           eventDigestWindow: eventView.eventDigestWindow,
           eventDigestWindowText: eventView.eventDigestWindowText,
+          endDialog: sessionEndDialog,
+          endDialogDetail: buildSessionEndDialogDetail(sessionStatus, chapter?.title || activeState.chapterTitle),
         }));
       }
 

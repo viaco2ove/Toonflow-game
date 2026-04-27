@@ -6,6 +6,10 @@ import os from "node:os";
 import path from "node:path";
 import { v4 as uuidv4 } from "uuid";
 import { z } from "zod";
+import {
+  LOCAL_BIREFNET_MANUFACTURER,
+  LOCAL_MODNET_MANUFACTURER,
+} from "@/lib/localAvatarMatting";
 import { runLocalBiRefNetMatting } from "@/lib/localAvatarMatting";
 import { validateFields } from "@/middleware/middleware";
 import { error, success } from "@/lib/responseFormat";
@@ -87,6 +91,12 @@ type VideoAvatarJob = {
 
 type ProgressReporter = (progress: number, message: string) => void;
 
+type VideoAnimationOptions = {
+  durationSeconds: number;
+  fps: number;
+  frameOutputSide: number;
+};
+
 const VIDEO_AVATAR_JOB_TTL_MS = 30 * 60 * 1000;
 const videoAvatarJobs = new Map<number, VideoAvatarJob>();
 const videoAvatarQueue: VideoAvatarJob[] = [];
@@ -114,10 +124,15 @@ function debugAvatarVideoRuntime(step: string, payload?: Record<string, unknown>
  * `VIDEO_TO_ANIMATION_MULTIPLIED_SPEED=3` 表示同时抠 3 帧，
  * 不减少抽帧数量，也不改变动图 FPS，避免质量和动作完整度下降。
  */
-function getVideoMattingConcurrency(): number {
-  const rawValue = Number(String(process.env.VIDEO_TO_ANIMATION_MULTIPLIED_SPEED || "").trim());
-  if (!Number.isFinite(rawValue) || rawValue <= 0) return DEFAULT_VIDEO_MATTING_CONCURRENCY;
-  return Math.max(DEFAULT_VIDEO_MATTING_CONCURRENCY, Math.min(MAX_VIDEO_MATTING_CONCURRENCY, Math.round(rawValue)));
+function getVideoMattingConcurrency(config?: ImageAiConfig | null): number {
+  const rawValue = readVideoAnimationEnvNumber(
+    config,
+    "VIDEO_TO_ANIMATION_MULTIPLIED_SPEED",
+    DEFAULT_VIDEO_MATTING_CONCURRENCY,
+    DEFAULT_VIDEO_MATTING_CONCURRENCY,
+    MAX_VIDEO_MATTING_CONCURRENCY,
+  );
+  return Math.round(rawValue);
 }
 
 /**
@@ -130,18 +145,71 @@ function readBoundedEnvNumber(envName: string, defaultValue: number, minValue: n
 }
 
 /**
- * 读取视频转动图的质量配置。
+ * 根据当前头像分离配置推断视频转动图应该使用的本地模型档位。
+ *
+ * 用途：
+ * - `local_modnet` 明确走 MODNet 专属环境变量；
+ * - 兼容旧数据里“manufacturer 还是 local_birefnet，但 model 已经是 modnet-*”的过渡状态；
+ * - 非本地模型或未配置时回退到通用环境变量。
  */
-function getVideoAnimationOptions(): { durationSeconds: number; fps: number; frameOutputSide: number } {
+function resolveVideoAnimationEnvProfile(config?: ImageAiConfig | null): "MODNet" | "BIREFNET" | "" {
+  const manufacturer = readConfigString(config, "manufacturer").trim().toLowerCase();
+  const model = readConfigString(config, "model").trim().toLowerCase();
+  if (manufacturer === LOCAL_MODNET_MANUFACTURER || model.startsWith("modnet")) return "MODNet";
+  if (manufacturer === LOCAL_BIREFNET_MANUFACTURER) return "BIREFNET";
+  return "";
+}
+
+/**
+ * 读取单个视频动图参数，并优先命中 MODNet / BiRefNet 专属环境变量。
+ *
+ * 例如：
+ * - MODNet 优先读 `GIF_FPS_MODNet`
+ * - BiRefNet 优先读 `GIF_FPS_BIREFNET`
+ * - 其他方案则回退读旧的 `GIF_FPS`
+ */
+function readVideoAnimationEnvNumber(
+  config: ImageAiConfig | null | undefined,
+  baseEnvName: string,
+  defaultValue: number,
+  minValue: number,
+  maxValue: number,
+): number {
+  const profile = resolveVideoAnimationEnvProfile(config);
+  const profileEnvName = profile ? `${baseEnvName}_${profile}` : "";
+  if (profileEnvName) {
+    const profileValue = readBoundedEnvNumber(profileEnvName, Number.NaN, minValue, maxValue);
+    if (Number.isFinite(profileValue)) return profileValue;
+  }
+  return readBoundedEnvNumber(baseEnvName, defaultValue, minValue, maxValue);
+}
+
+/**
+ * 读取视频转动图的质量配置。
+ *
+ * 这里会根据当前抠图模型选择不同的环境变量档位：
+ * - MODNet 走 `*_MODNet`
+ * - BiRefNet 走 `*_BIREFNET`
+ * - 其他模型仍然兼容旧的通用变量
+ */
+function getVideoAnimationOptions(config?: ImageAiConfig | null): VideoAnimationOptions {
   return {
-    durationSeconds: readBoundedEnvNumber(
+    durationSeconds: readVideoAnimationEnvNumber(
+      config,
       "MAX_GIF_DURATION_SECONDS",
       DEFAULT_MAX_GIF_DURATION_SECONDS,
       MIN_VIDEO_DURATION_SECONDS,
       MAX_VIDEO_DURATION_SECONDS,
     ),
-    fps: Math.round(readBoundedEnvNumber("GIF_FPS", DEFAULT_GIF_FPS, MIN_VIDEO_FPS, MAX_VIDEO_FPS)),
-    frameOutputSide: Math.round(readBoundedEnvNumber(
+    fps: Math.round(readVideoAnimationEnvNumber(
+      config,
+      "GIF_FPS",
+      DEFAULT_GIF_FPS,
+      MIN_VIDEO_FPS,
+      MAX_VIDEO_FPS,
+    )),
+    frameOutputSide: Math.round(readVideoAnimationEnvNumber(
+      config,
       "FRAME_OUTPUT_SIDE",
       DEFAULT_FRAME_OUTPUT_SIDE,
       MIN_FRAME_OUTPUT_SIDE,
@@ -488,9 +556,10 @@ async function extractVideoFrames(
   ffmpegPath: string,
   inputPath: string,
   framesDir: string,
+  config?: ImageAiConfig | null,
 ): Promise<string[]> {
   const startedAt = Date.now();
-  const { durationSeconds, fps, frameOutputSide } = getVideoAnimationOptions();
+  const { durationSeconds, fps, frameOutputSide } = getVideoAnimationOptions(config);
   const framePattern = path.join(framesDir, "frame_%04d.png");
   await runFfmpeg(ffmpegPath, [
     "-y",
@@ -585,9 +654,9 @@ async function renderSemanticAvatarAssets(
     fs.mkdir(matteFramesDir, { recursive: true }),
   ]);
 
-  const mattingConcurrency = getVideoMattingConcurrency();
-  const { fps } = getVideoAnimationOptions();
-  const framePaths = await extractVideoFrames(ffmpegPath, inputPath, rawFramesDir);
+  const mattingConcurrency = getVideoMattingConcurrency(config);
+  const { fps } = getVideoAnimationOptions(config);
+  const framePaths = await extractVideoFrames(ffmpegPath, inputPath, rawFramesDir, config);
   const concurrencyMessage = mattingConcurrency > 1 ? `（并发 ${mattingConcurrency} 帧）` : "";
   reportProgress?.(12, `已抽取 ${framePaths.length} 帧${concurrencyMessage}，开始逐帧抠图`);
   debugAvatarVideoRuntime("semantic:frames:ready", {
@@ -739,6 +808,7 @@ async function renderLegacyAvatarAssets(
   inputPath: string,
   tempDir: string,
   preferGifOutput: boolean,
+  config?: ImageAiConfig | null,
   reportProgress?: ProgressReporter,
 ): Promise<{ animatedPath: string; animatedExt: string; backgroundPath: string }> {
   const startedAt = Date.now();
@@ -746,7 +816,7 @@ async function renderLegacyAvatarAssets(
   const webpPath = path.join(tempDir, "avatar.webp");
   const gifPath = path.join(tempDir, "avatar.gif");
   const backgroundPath = path.join(tempDir, "background.png");
-  const { durationSeconds, fps } = getVideoAnimationOptions();
+  const { durationSeconds, fps } = getVideoAnimationOptions(config);
 
   const cropBg = `scale=${AVATAR_BG_SIDE}:${AVATAR_BG_SIDE}:force_original_aspect_ratio=increase:flags=lanczos,crop=${AVATAR_BG_SIDE}:${AVATAR_BG_SIDE}`;
   const cropAnimatedBase = `fps=${fps},scale=${AVATAR_GIF_SIDE}:${AVATAR_GIF_SIDE}:force_original_aspect_ratio=increase:flags=lanczos,crop=${AVATAR_GIF_SIDE}:${AVATAR_GIF_SIDE}`;
@@ -875,19 +945,20 @@ async function processVideoAvatarJob(job: VideoAvatarJob): Promise<void> {
   updateVideoAvatarJob(job, 1, "开始处理视频头像");
 
   try {
-    const animationOptions = getVideoAnimationOptions();
+    const avatarMattingConfig = await resolveAvatarMattingConfig(job.userId);
+    const animationOptions = getVideoAnimationOptions(avatarMattingConfig);
     debugAvatarVideoRuntime("request:start", {
       taskId: job.taskId,
       userId: job.userId,
       projectId: job.normalizedProjectId,
       fileName: job.fileName,
       preferGif: job.preferGif,
-      mattingConcurrency: getVideoMattingConcurrency(),
+      mattingConcurrency: getVideoMattingConcurrency(avatarMattingConfig),
+      animationEnvProfile: resolveVideoAnimationEnvProfile(avatarMattingConfig) || "DEFAULT",
       ...animationOptions,
     });
     updateVideoAvatarJob(job, 5, "视频文件已入队，开始读取头像抠图配置");
 
-    const avatarMattingConfig = await resolveAvatarMattingConfig(job.userId);
     const semanticMattingEnabled = supportsSemanticVideoMatting(avatarMattingConfig);
     debugAvatarVideoRuntime("matting:config", {
       taskId: job.taskId,
@@ -900,7 +971,7 @@ async function processVideoAvatarJob(job: VideoAvatarJob): Promise<void> {
     const reportProgress: ProgressReporter = (progress, message) => updateVideoAvatarJob(job, progress, message);
     const assetResult = semanticMattingEnabled
       ? await renderSemanticAvatarAssets(job.ffmpegPath, job.inputPath, job.tempDir, job.preferGif, avatarMattingConfig, reportProgress)
-      : await renderLegacyAvatarAssets(job.ffmpegPath, job.inputPath, job.tempDir, job.preferGif, reportProgress);
+      : await renderLegacyAvatarAssets(job.ffmpegPath, job.inputPath, job.tempDir, job.preferGif, avatarMattingConfig, reportProgress);
 
     if (!semanticMattingEnabled) {
       console.warn("[convertAvatarVideoToGif] avatar matting config missing, fallback to legacy colorkey", {

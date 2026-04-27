@@ -151,6 +151,30 @@ function extractJsonTextField(rawJsonText, field) {
 }
 
 /**
+ * 从日志里的对话 JSON 片段提取用户输入内容。
+ *
+ * 用途：
+ * - `story:memory:stats | 新增对话 |` 会带一段 JSON 数组，但当前摘要脚本没有消费它；
+ * - 这里直接按 roleType=player + eventType=on_message 抽取用户输入；
+ * - 过滤掉 `@记忆管理` 这类内部提示，尽量只保留真实用户发言。
+ */
+function extractUserMessagesFromDialogueJson(rawJsonText) {
+  const normalized = String(rawJsonText || "");
+  if (!normalized) return [];
+  const compact = normalized.replace(/↩/g, "\n");
+  const blockPattern = /\{[\s\S]*?"roleType"\s*:\s*"player"[\s\S]*?"eventType"\s*:\s*"on_message"[\s\S]*?"content"\s*:\s*"([^"]*)"[\s\S]*?\}/g;
+  const results = [];
+  let matched;
+  while ((matched = blockPattern.exec(compact)) !== null) {
+    const content = String(matched[1] || "").trim();
+    if (!content) continue;
+    if (content.startsWith("@记忆管理")) continue;
+    results.push(content);
+  }
+  return Array.from(new Set(results));
+}
+
+/**
  * 转义正则特殊字符，避免日志字段名导致匹配异常。
  */
 function escapeRegExp(input) {
@@ -299,6 +323,14 @@ function generateEventChainSummaryMarkdown(logFilePath, outputMarkdownPath) {
       assignEntryField("triggerMemoryAgent", extractAfter(line, "triggerMemoryAgent="));
       continue;
     }
+    if (line.includes("[story:memory:stats] | 新增对话 | ")) {
+      const dialogueJson = extractTableContent(line, "新增对话");
+      const userMessages = extractUserMessagesFromDialogueJson(dialogueJson);
+      if (userMessages.length > 0) {
+        assignEntryField("userInput", userMessages.join("；"));
+      }
+      continue;
+    }
     if (!currentEntry) continue;
     if (line.includes("[story:streamlines:stats] | 本轮动机 | ")) {
       currentEntry.motive = stripTrailingTableStats(extractTableContent(line, "本轮动机"));
@@ -370,6 +402,7 @@ function generateEventChainSummaryMarkdown(logFilePath, outputMarkdownPath) {
         `  - chapterTitle: ${chapterTitle}`,
       ];
       if (entry.orchestratorResponse) linesForEntry.push(`  - 返回了，${entry.orchestratorResponse}`);
+      if (entry.userInput) linesForEntry.push(`  - 用户输入：${entry.userInput}`);
       if (entry.triggerMemoryAgent) linesForEntry.push(`  - 记忆管理触发：${entry.triggerMemoryAgent}`);
       if (entry.motive) linesForEntry.push(`  - 本轮动机，${entry.motive}`);
       if (entry.speech) linesForEntry.push(`  - 台词： ${entry.speech}`);
