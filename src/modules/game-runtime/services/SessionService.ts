@@ -539,6 +539,89 @@ async function applySessionUserEventProgress(params: {
   syncChapterProgressWithRuntime(params.chapter, params.state);
 }
 
+/**
+ * 在正式 `/game/orchestration` 前，对“最近一条已落库消息”补做一次事件进度检测。
+ *
+ * 用途：
+ * - 之前事件进度 AI 只在用户消息提交时运行，旁白/NPC 自动续写不会触发；
+ * - 当旁白已经把当前事件推进到“等待用户输入”时，后端若不先检测，就会继续错误编排下一句旁白；
+ * - 这里在真正进入编排前补一刀，命中 `waiting_input` 后立即把输入权交还给用户。
+ */
+async function applySessionPreOrchestrationEventProgress(params: {
+  userId: number;
+  world: any;
+  chapter: any;
+  state: Record<string, any>;
+  recentMessages: RuntimeMessageInput[];
+  traceMeta?: Record<string, any>;
+}): Promise<void> {
+  const latestRecentMessage = params.recentMessages[params.recentMessages.length - 1];
+  const latestMessageId = Number(latestRecentMessage?.messageId || 0);
+  const latestRoleType = String(latestRecentMessage?.roleType || "").trim().toLowerCase();
+  const latestEventType = String(latestRecentMessage?.eventType || "").trim();
+  const latestContent = String(latestRecentMessage?.content || "").trim();
+  if (!params.chapter || !latestMessageId || !latestContent) {
+    return;
+  }
+  if (latestEventType === "on_opening") {
+    return;
+  }
+  if (latestRoleType === "player" && latestEventType === "on_message") {
+    return;
+  }
+  const progressCursor = Number(params.state?.orchestrationEventProgressMessageId || 0);
+  if (progressCursor === latestMessageId) {
+    return;
+  }
+
+  const resolution = await evaluateEventProgressByAi({
+    userId: params.userId,
+    chapter: params.chapter,
+    state: params.state,
+    messageContent: latestContent,
+    messageRole: String(latestRecentMessage?.role || ""),
+    messageRoleType: String(latestRecentMessage?.roleType || ""),
+    eventType: latestEventType,
+    recentMessages: params.recentMessages,
+    traceMeta: {
+      ...(params.traceMeta || {}),
+      stage: "pre_orchestration",
+      latestMessageId,
+    },
+  });
+  params.state.orchestrationEventProgressMessageId = latestMessageId;
+  if (!resolution) {
+    return;
+  }
+
+  const progressApplied = applyAiEventProgressResolution({
+    chapter: params.chapter,
+    state: params.state,
+    resolution,
+  });
+  syncChapterProgressWithRuntime(params.chapter, params.state);
+  if (DebugLogUtil.isDebugLogEnabled()) {
+    DebugLogUtil.logEventProgressResolution("story:event_progress:stats", {
+      chapter: params.chapter,
+      currentEventIndex: Number(params.state?.chapterProgress?.eventIndex || params.state?.currentEventDigest?.eventIndex || 0),
+      currentPhaseId: params.state?.chapterProgress?.phaseId,
+      currentPhaseLabel: params.state?.chapterProgress?.phaseId,
+      ended: resolution?.ended,
+      eventStatus: resolution?.eventStatus,
+      nextEventIndex: Number(readNextEventProgressHint(params.chapter, params.state)?.index || 0),
+      nextEventSummary: readNextEventProgressHint(params.chapter, params.state)?.summary,
+    });
+  }
+  if (progressApplied.enteredUserPhase || resolution.eventStatus === "waiting_input") {
+    allowPlayerTurn(
+      params.state,
+      params.world,
+      String(latestRecentMessage?.roleType || "narrator"),
+      String(latestRecentMessage?.role || params.state.narrator?.name || "旁白"),
+    );
+  }
+}
+
 function readMemoryCursorMessageId(state: Record<string, any>): number {
   const cursor = parseJsonMaybe(state?.memoryCursor);
   const id = Number(cursor.lastMessageId || 0);
@@ -2195,6 +2278,17 @@ export async function orchestrateSessionTurn(sessionIdInput: string): Promise<Se
   if (!recentMessages.length) {
     return buildChapterStartPlan(chapter);
   }
+  await applySessionPreOrchestrationEventProgress({
+    userId: currentUserId,
+    world,
+    chapter,
+    state,
+    recentMessages,
+    traceMeta: {
+      ...requestTrace,
+      route: "/game/orchestration",
+    },
+  });
   if (canPlayerSpeakNow(state, world)) {
     return finalizeOrchestrationResult({
       sessionId,
