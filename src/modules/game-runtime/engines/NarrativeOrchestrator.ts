@@ -2153,6 +2153,8 @@ function buildCompactMemoryOutputExampleLines(): string[] {
       tags: ["标签1"],
       player_card_patch: {
         level: 2,
+        exp: 30,
+        next_level_exp: 200,
         items: ["新获得物品"],
         other: ["新的长期状态"],
       },
@@ -2167,7 +2169,7 @@ function buildCompactMemoryOutputExampleLines(): string[] {
         },
       ],
     }, null, 2),
-    "注意：patch 只允许这些字段：raw_setting, personality, appearance, voice, skills, items, equipment, other, gender, age, level, level_desc, hp, mp, money。",
+    "注意：patch 只允许这些字段：raw_setting, personality, appearance, voice, skills, items, equipment, other, gender, age, level, level_desc, exp, next_level_exp, hp, mp, money。",
     "没有变化就返回空对象 {} 或空数组 []。",
   ];
 }
@@ -2206,6 +2208,8 @@ function buildFullMemoryOutputExampleLines(): string[] {
       tags: ["标签1", "标签2"],
       player_card_patch: {
         level: 2,
+        exp: 40,
+        next_level_exp: 200,
         level_desc: "斗之气2星",
         skills: ["新技能"],
         items: ["新物品"],
@@ -2222,9 +2226,47 @@ function buildFullMemoryOutputExampleLines(): string[] {
         },
       ],
     }, null, 2),
-    "只允许使用这些 patch 字段：raw_setting, personality, appearance, voice, skills, items, equipment, other, gender, age, level, level_desc, hp, mp, money。",
+    "只允许使用这些 patch 字段：raw_setting, personality, appearance, voice, skills, items, equipment, other, gender, age, level, level_desc, exp, next_level_exp, hp, mp, money。",
     "如果没有参数卡变化，player_card_patch 返回 {}，npc_card_patches 返回 []。",
   ];
+}
+
+/**
+ * 构造记忆管理 system prompt。
+ *
+ * 用途：
+ * - 运行时必须优先复用数据库里的 `story-memory` 提示词，避免和 initDB/fixDB 种子文案分裂；
+ * - 当数据库里没有可用提示词时，才回退到这里的保底版本。
+ */
+function buildMemorySystemPrompt(promptFromDb: unknown): string {
+  const promptText = normalizeScalarText(promptFromDb);
+  if (promptText) {
+    return promptText;
+  }
+  return [
+    "你是记忆管理器。",
+    "你负责管理整个故事的长期记忆，不只更新剧情摘要，还要维护角色动态参数卡。",
+    "你要根据当前记忆、事件状态、最近对话和角色参数卡，提炼对后续剧情真正有用的新信息，合并重复、修正冲突，并识别用户与 NPC 的长期状态变化。",
+    "角色动态参数卡也是记忆的一部分；当对话中出现等级变化、物品获得/失去、技能成长、装备变化、身份变化或长期状态变化时，必须输出参数卡 patch。",
+    "不要生成剧情正文，不要输出代码块。",
+    "### 血量和蓝的恢复（hp 和 mp）",
+    "用户住宿、睡觉和吃下恢复药物等可以恢复血量和蓝到充盈满血满蓝，hp 和 mp 必须直接输出数字，不能写“已恢复”“满了”“充盈”等中文状态。",
+    "### 满血",
+    "基础血量100 + 等级*10 + 特殊物品或者技能加成。",
+    "### 满蓝",
+    "基础蓝量100 + 等级*10 + 特殊物品或者技能加成。",
+    "### 经验值和升级",
+    "角色卡可包含 exp、next_level_exp，二者必须是数字。",
+    "默认 next_level_exp = level * 100。",
+    "当明确获得经验时，累加 exp；若 exp >= next_level_exp，则升级：level + 1，exp 扣除旧 next_level_exp，next_level_exp = 新 level * 100，hp/mp 按满血满蓝公式恢复。",
+    "大量经验可连续升级。模糊成长不改 exp，只写入 other。",
+    "### @记忆管理 规则",
+    "当用户最新输入以 `@记忆管理` 开头时，该输入视为对长期记忆和角色参数卡的直接管理指令，不需要等待旁白确认。",
+    "如果 `@记忆管理` 后面包含明确状态变化、物品变化、技能变化、身份变化、数值变化，则必须直接更新 summary、facts、tags 和对应参数卡 patch。",
+    "输出必须是一个 JSON 对象，字段固定为：summary, facts, tags, player_card_patch, npc_card_patches。",
+    "player_card_patch 和 npc_card_patches.patch 只允许这些字段：raw_setting, personality, appearance, voice, skills, items, equipment, other, gender, age, level, level_desc, exp, next_level_exp, hp, mp, money。",
+    "其中 age、level、exp、next_level_exp、hp、mp、money 必须是数字；如果只是想表达“已恢复”“斗气更凝实”“状态转好”“经验提升”，请写到 other，不要写进 hp/mp/exp。",
+  ].join("\n");
 }
 
 // 把当前说话人和上下文拼成角色发言提示词。
@@ -4179,29 +4221,7 @@ export async function runStoryMemoryManager(input: {
       : null,
     npcCards: roleCardSnapshots.npcCards.map((item) => buildMemoryRoleCardSummary(item, compactMode)),
   };
-  const systemPrompt = compactMode
-    ? [
-      "你是记忆管理器。",
-      "你负责更新整个故事的长期记忆，包括剧情摘要、关键事实、标签，以及角色动态参数卡。",
-      "优先保留新变化、修正冲突、合并重复信息。",
-      "不要写剧情正文，不要输出代码块。",
-      "严格输出一个 JSON 对象。",
-      "字段固定为 summary, facts, tags, player_card_patch, npc_card_patches。",
-      "player_card_patch 和 npc_card_patches.patch 只允许这些字段：raw_setting, personality, appearance, voice, skills, items, equipment, other, gender, age, level, level_desc, hp, mp, money。",
-      "age、level、hp、mp、money 必须输出数字；不要写“已恢复”“充盈”“满了”这类中文状态。",
-      "如果只是表达状态变化，如“已恢复”“斗气更凝实”“状态转好”，请写到 other，不要写进 hp/mp。",
-    ].join("\n")
-    : [
-      prompts.storyMemory,
-      "输出要求：",
-      "1. 你负责管理整个故事记忆，不只更新摘要，还要维护角色动态参数卡。",
-      "2. 只提炼对后续剧情有用的事实和长期变化。",
-      "3. 不写剧情正文，不要代码块。",
-      "4. 严格输出一个 JSON 对象，字段固定为：summary, facts, tags, player_card_patch, npc_card_patches。",
-      "5. player_card_patch 和 npc_card_patches.patch 只允许这些字段：raw_setting, personality, appearance, voice, skills, items, equipment, other, gender, age, level, level_desc, hp, mp, money。",
-      "6. age、level、hp、mp、money 必须输出数字；不要写“已恢复”“充盈”“满了”这类中文状态。",
-      "7. 如果只是表达状态变化，如“已恢复”“斗气更凝实”“状态转好”，请写到 other，不要写进 hp/mp。",
-    ].filter(Boolean).join("\n\n");
+  const systemPrompt = buildMemorySystemPrompt(prompts.storyMemory);
   const userPrompt = buildMemoryUserPrompt(payload, compactMode);
   const buildFinishedAt = Date.now();
   let tokenUsage: { inputTokens?: number; outputTokens?: number; reasoningTokens?: number } | null = null;
@@ -4334,12 +4354,16 @@ function buildDefaultRoleParameterCardForMemory(input: {
 }): JsonRecord {
   const role = asRecord(input.role);
   const currentCard = asRecord(role.parameterCardJson);
+  const levelValue = Number.isFinite(Number(currentCard.level)) ? Number(currentCard.level) : 1;
+  const nextLevelExpValue = Number.isFinite(Number(currentCard.next_level_exp ?? currentCard.nextLevelExp))
+    ? Number(currentCard.next_level_exp ?? currentCard.nextLevelExp)
+    : (levelValue * 100);
   return {
     name: normalizeScalarText(currentCard.name || role.name || input.fallbackName || "用户") || "用户",
     raw_setting: normalizeScalarText(currentCard.raw_setting || currentCard.rawSetting || role.description),
     gender: normalizeScalarText(currentCard.gender),
     age: Number.isFinite(Number(currentCard.age)) ? Number(currentCard.age) : null,
-    level: Number.isFinite(Number(currentCard.level)) ? Number(currentCard.level) : 1,
+    level: levelValue,
     level_desc: normalizeScalarText(currentCard.level_desc || currentCard.levelDesc) || "初入此界",
     personality: normalizeScalarText(currentCard.personality),
     appearance: normalizeScalarText(currentCard.appearance),
@@ -4353,6 +4377,8 @@ function buildDefaultRoleParameterCardForMemory(input: {
     equipment: Array.isArray(currentCard.equipment)
       ? currentCard.equipment.map((item: unknown) => normalizeScalarText(item)).filter(Boolean)
       : [],
+    exp: Number.isFinite(Number(currentCard.exp)) ? Number(currentCard.exp) : 0,
+    next_level_exp: Math.max(levelValue * 100, nextLevelExpValue),
     hp: Number.isFinite(Number(currentCard.hp)) ? Number(currentCard.hp) : 100,
     mp: Number.isFinite(Number(currentCard.mp)) ? Number(currentCard.mp) : 0,
     money: Number.isFinite(Number(currentCard.money)) ? Number(currentCard.money) : 0,
@@ -4360,6 +4386,63 @@ function buildDefaultRoleParameterCardForMemory(input: {
       ? currentCard.other.map((item: unknown) => normalizeScalarText(item)).filter(Boolean)
       : [],
   };
+}
+
+/**
+ * 根据等级计算默认升级阈值。
+ *
+ * 用途：
+ * - 经验值系统默认采用 `level * 100` 的升级门槛；
+ * - 统一封装后，剧情记忆链和小游戏写回链都能复用同一套规则。
+ */
+function resolveDefaultNextLevelExp(level: number): number {
+  return Math.max(100, Math.max(1, Math.floor(level)) * 100);
+}
+
+/**
+ * 根据等级计算升级后的满血满蓝值。
+ *
+ * 用途：
+ * - 经验升级时要自动回满血蓝；
+ * - 当前参数卡里没有独立的“最大血蓝”字段，这里先按基础公式落地。
+ */
+function resolveLevelFullResource(level: number): number {
+  return 100 + Math.max(1, Math.floor(level)) * 10;
+}
+
+/**
+ * 统一整理参数卡中的经验、升级阈值和升级结果。
+ *
+ * 用途：
+ * - 记忆管理器可能直接返回 exp / next_level_exp，也可能一次给出大量经验；
+ * - 这里负责连续升级、扣减旧阈值，并在升级后自动把 hp/mp 恢复到当前等级满值。
+ */
+function normalizeParameterCardExperienceProgress(cardInput: JsonRecord): JsonRecord {
+  const card = { ...cardInput };
+  const rawLevel = Number(card.level);
+  let level = Number.isFinite(rawLevel) && rawLevel > 0 ? Math.floor(rawLevel) : 1;
+  let exp = Math.max(0, Number(card.exp || 0));
+  let nextLevelExp = Number(card.next_level_exp);
+  if (!Number.isFinite(nextLevelExp) || nextLevelExp <= 0) {
+    nextLevelExp = resolveDefaultNextLevelExp(level);
+  }
+  nextLevelExp = Math.max(resolveDefaultNextLevelExp(level), nextLevelExp);
+  let leveledUp = false;
+  while (exp >= nextLevelExp) {
+    exp -= nextLevelExp;
+    level += 1;
+    nextLevelExp = resolveDefaultNextLevelExp(level);
+    leveledUp = true;
+  }
+  card.level = level;
+  card.exp = exp;
+  card.next_level_exp = nextLevelExp;
+  if (leveledUp) {
+    const fullResource = resolveLevelFullResource(level);
+    card.hp = fullResource;
+    card.mp = fullResource;
+  }
+  return card;
 }
 
 // 只允许记忆管理器改动一小组安全字段，避免模型胡乱污染整个参数卡。
@@ -4374,9 +4457,10 @@ function sanitizeMemoryParameterCardPatch(input: unknown): JsonRecord {
       patch[key] = value;
     }
   });
-  const numericKeys = ["age", "level", "hp", "mp", "money"];
+  const numericKeys = ["age", "level", "exp", "next_level_exp", "hp", "mp", "money"];
   numericKeys.forEach((key) => {
-    const numericValue = Number(raw[key]);
+    const camelKey = key.replaceAll(/_([a-z])/g, (_, char) => char.toUpperCase());
+    const numericValue = Number(raw[key] ?? raw[camelKey]);
     if (Number.isFinite(numericValue)) {
       patch[key] = numericValue;
     }
@@ -4420,7 +4504,7 @@ function mergeMemoryParameterCardPatch(baseCard: JsonRecord, patchInput: unknown
     }
     nextCard[key] = value;
   });
-  return nextCard;
+  return normalizeParameterCardExperienceProgress(nextCard);
 }
 
 // 把记忆摘要、事实和标签以长期信息形式补进用户 patch，避免模型只更新摘要不更新参数卡。

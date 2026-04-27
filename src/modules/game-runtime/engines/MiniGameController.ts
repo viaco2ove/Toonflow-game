@@ -421,12 +421,105 @@ function normalizeMiniGameActionText(input: unknown): string {
 function createPlayerParameterCard(state: JsonRecord) {
   const player = asRecord(state.player);
   const card = asRecord(player.parameterCardJson);
+  const rawCardLevel = Number(card.level);
+  const cardLevel = Number.isFinite(rawCardLevel) && rawCardLevel > 0 ? Math.floor(rawCardLevel) : 1;
+  const currentNextLevelExp = Number(card.next_level_exp);
+  card.level = cardLevel;
+  card.exp = Math.max(0, Number(card.exp || 0));
+  card.next_level_exp = Number.isFinite(currentNextLevelExp) && currentNextLevelExp > 0
+    ? Math.max(cardLevel * 100, currentNextLevelExp)
+    : (cardLevel * 100);
+  card.hp = Number.isFinite(Number(card.hp)) ? Number(card.hp) : 100;
+  card.mp = Number.isFinite(Number(card.mp)) ? Number(card.mp) : 0;
+  card.money = Number.isFinite(Number(card.money)) ? Number(card.money) : 0;
   card.skills = uniqueTexts(asArray<string>(card.skills));
   card.items = uniqueTexts(asArray<string>(card.items));
   card.equipment = uniqueTexts(asArray<string>(card.equipment));
   player.parameterCardJson = card;
   state.player = player;
   return card;
+}
+
+/**
+ * 计算小游戏参数卡默认升级阈值。
+ *
+ * 用途：
+ * - 小游戏里的经验增长统一按 `level * 100` 规则处理；
+ * - 避免每个小游戏单独维护自己的升级阈值公式。
+ */
+function resolveMiniGameNextLevelExp(level: number): number {
+  return Math.max(100, Math.max(1, Math.floor(level)) * 100);
+}
+
+/**
+ * 计算小游戏参数卡默认满血满蓝值。
+ *
+ * 用途：
+ * - 当小游戏奖励触发升级时，需要把 hp/mp 恢复到当前等级满值；
+ * - 当前参数卡没有独立 max 字段，这里按基础公式统一回填。
+ */
+function resolveMiniGameFullResource(level: number): number {
+  return 100 + Math.max(1, Math.floor(level)) * 10;
+}
+
+/**
+ * 规范化小游戏参数卡里的经验与升级进度。
+ *
+ * 用途：
+ * - 支持小游戏直接写入 exp / next_level_exp；
+ * - 当经验累计跨过阈值时，自动连续升级并恢复 hp/mp。
+ */
+function normalizeMiniGameParameterCardProgress(cardInput: JsonRecord): { card: JsonRecord; levelUps: number } {
+  const card = { ...cardInput };
+  const rawLevel = Number(card.level);
+  let level = Number.isFinite(rawLevel) && rawLevel > 0 ? Math.floor(rawLevel) : 1;
+  let exp = Math.max(0, Number(card.exp || 0));
+  let nextLevelExp = Number(card.next_level_exp);
+  if (!Number.isFinite(nextLevelExp) || nextLevelExp <= 0) {
+    nextLevelExp = resolveMiniGameNextLevelExp(level);
+  }
+  nextLevelExp = Math.max(resolveMiniGameNextLevelExp(level), nextLevelExp);
+  let levelUps = 0;
+  while (exp >= nextLevelExp) {
+    exp -= nextLevelExp;
+    level += 1;
+    nextLevelExp = resolveMiniGameNextLevelExp(level);
+    levelUps += 1;
+  }
+  card.level = level;
+  card.exp = exp;
+  card.next_level_exp = nextLevelExp;
+  if (levelUps > 0) {
+    const fullResource = resolveMiniGameFullResource(level);
+    card.hp = fullResource;
+    card.mp = fullResource;
+  }
+  return { card, levelUps };
+}
+
+/**
+ * 读取当前用户等级，供小游戏经验奖励计算复用。
+ *
+ * 用途：
+ * - 钓鱼这类奖励要参考“当前等级 * 50”的上限；
+ * - 统一从参数卡读取，避免各小游戏散落着不同的兜底值。
+ */
+function readMiniGamePlayerLevel(state: JsonRecord): number {
+  const card = createPlayerParameterCard(state);
+  return Math.max(1, Number(card.level || 1));
+}
+
+/**
+ * 生成钓鱼小游戏的随机经验奖励。
+ *
+ * 用途：
+ * - 奖励上限遵循“低于当前等级 * 50”的规则；
+ * - 仍通过当前局内 RNG 生成，保证每次钓鱼结果存在波动。
+ */
+function resolveFishingExpGain(playerLevelInput: number, session: JsonRecord): number {
+  const playerLevel = Math.max(1, Math.floor(playerLevelInput));
+  const maxExp = Math.max(10, playerLevel * 50 - 1);
+  return takeRng(session, Math.min(10, maxExp), maxExp);
 }
 
 function appendParameterCardList(state: JsonRecord, key: "skills" | "items" | "equipment", additions: string[]) {
@@ -1001,9 +1094,9 @@ async function resolveBattleActionByAgent(
 
 /**
  * 为战斗胜利生成写回补丁。
- * 这里统一处理奖励金钱、物品、升级概率，以及战后回满血蓝。
+ * 这里统一处理奖励金钱、物品、战斗经验，以及战后回满血蓝。
  */
-function buildBattleVictoryWriteback(session: JsonRecord, levelUp: boolean): JsonRecord {
+function buildBattleVictoryWriteback(session: JsonRecord, battleExpGain: number): JsonRecord {
   const publicState = asRecord(session.public_state);
   const allEnemies = asArray<JsonRecord>(publicState.enemy_list).map((item) => asRecord(item));
   const totalMoney = allEnemies.reduce((sum, enemy) => sum + Number(enemy.reward_money || 0), 0);
@@ -1014,14 +1107,14 @@ function buildBattleVictoryWriteback(session: JsonRecord, levelUp: boolean): Jso
     inventoryAdd: rewardItems.map((item) => ({ kind: "loot", name: item })),
     playerParameterPatch: {
       money: totalMoney,
+      exp: battleExpGain,
       hp: Number(publicState.user_max_hp || 0),
       mp: Number(publicState.user_max_mp || 0),
-      level: levelUp ? 1 : 0,
     },
     memoryAdd: [
       `完成战斗：${allEnemies.map((enemy) => scalarText(enemy.name)).filter(Boolean).join("、")}`,
+      `战斗获得经验：${battleExpGain}`,
       ...(rewardItems.length ? [`获得战利品：${rewardItems.join("、")}`] : []),
-      ...(levelUp ? ["战斗结束后完成了一次升级"] : []),
     ],
   };
 }
@@ -1032,9 +1125,9 @@ function buildBattleVictoryWriteback(session: JsonRecord, levelUp: boolean): Jso
  */
 function finalizeBattleVictory(session: JsonRecord): MiniGameStepResult {
   const publicState = asRecord(session.public_state);
-  const levelUp = takeRng(session, 0, 99) < 35;
   const allEnemies = asArray<JsonRecord>(publicState.enemy_list).map((item) => asRecord(item));
   const totalMoney = allEnemies.reduce((sum, enemy) => sum + Number(enemy.reward_money || 0), 0);
+  const battleExpGain = allEnemies.reduce((sum, enemy) => sum + Math.max(1, Number(enemy.level || 1)) * 50, 0);
   const rewardItems = uniqueTexts(
     allEnemies.flatMap((enemy) => asArray<string>(enemy.reward_items).map((item) => scalarText(item)).filter(Boolean)),
   );
@@ -1044,15 +1137,15 @@ function finalizeBattleVictory(session: JsonRecord): MiniGameStepResult {
   session.finish_reason = "全部敌人已被击败";
   publicState.user_hp = Number(publicState.user_max_hp || 0);
   publicState.user_mp = Number(publicState.user_max_mp || 0);
-  publicState.last_result = `战斗结束，已击败全部敌人，获得 ${totalMoney} 金钱${rewardItems.length ? ` 与 ${rewardItems.join("、")}` : ""}${levelUp ? "，并触发升级。" : "。"} `;
+  publicState.last_result = `战斗结束，已击败全部敌人，获得 ${totalMoney} 金钱、${battleExpGain} 经验${rewardItems.length ? ` 与 ${rewardItems.join("、")}` : ""}。`;
   session.public_state = publicState;
   return {
-    narration: `旁白播报战报：你已经击败全部敌人。${rewardItems.length ? `本次战利品为 ${rewardItems.join("、")}。` : ""}获得 ${totalMoney} 金钱。${levelUp ? "同时，你在战斗中突破瓶颈，等级提升了一级。" : ""}战斗结束后，你的气血与法力都已经恢复到最佳状态。`,
+    narration: `旁白播报战报：你已经击败全部敌人。${rewardItems.length ? `本次战利品为 ${rewardItems.join("、")}。` : ""}获得 ${totalMoney} 金钱与 ${battleExpGain} 经验。战斗结束后，你的气血与法力都已经恢复到最佳状态。`,
     speakerRole: "旁白",
     speakerRoleType: "narrator",
     resultTags: ["success", "battle_victory"],
-    rewardSummary: { money: totalMoney, items: rewardItems, levelUp },
-    writeback: buildBattleVictoryWriteback(session, levelUp),
+    rewardSummary: { money: totalMoney, items: rewardItems, exp: battleExpGain },
+    writeback: buildBattleVictoryWriteback(session, battleExpGain),
     memorySummary: `战斗胜利：击败 ${allEnemies.map((enemy) => scalarText(enemy.name)).filter(Boolean).join("、")}`,
   };
 }
@@ -1710,17 +1803,18 @@ function evaluateWerewolfVictory(session: JsonRecord): string {
 function withWerewolfFinishReward(session: JsonRecord, result: MiniGameStepResult): MiniGameStepResult {
   if (scalarText(session.status) !== "finished") return result;
   const villagerWin = scalarText(session.result) === "villager_win";
+  const expGain = villagerWin ? 30 : 10;
   return {
     ...result,
     rewardSummary: result.rewardSummary && Object.keys(result.rewardSummary).length
       ? result.rewardSummary
-      : { exp: villagerWin ? 30 : 10, relation: villagerWin ? 3 : 1 },
+      : { exp: expGain, relation: villagerWin ? 3 : 1 },
     writeback: result.writeback && Object.keys(result.writeback).length
       ? result.writeback
       : {
           relationshipDelta: { party: villagerWin ? 3 : 1 },
-          playerAttributePatch: { exp: villagerWin ? 30 : 10 },
-          memoryAdd: [`狼人杀结果：${session.result}`],
+          playerParameterPatch: { exp: expGain },
+          memoryAdd: [`狼人杀结果：${session.result}`, `狼人杀获得经验：${expGain}`],
         },
     memorySummary: scalarText(result.memorySummary) || `狼人杀一局结束：${session.result || result.narration}`,
   };
@@ -2369,6 +2463,7 @@ function resolveFishingRound(session: JsonRecord, siteName: string): MiniGameSte
   const publicState = asRecord(session.public_state);
   const hidden = asRecord(session.hidden_state);
   const roll = Number(hidden.encounter_roll || takeRng(session, 1, 100));
+  const fishingExpGain = Math.max(10, Number(publicState.exp_reward || 0));
   session.phase = "result";
   if (roll <= 38) {
     publicState.current_status = "空竿";
@@ -2389,16 +2484,19 @@ function resolveFishingRound(session: JsonRecord, siteName: string): MiniGameSte
   hidden.reward_kind = reward.kind;
   publicState.current_status = reward.narrationType === "宝物" ? "钓到宝物" : "钓到鱼获";
   publicState.last_reward = reward.name;
-  publicState.last_result = reward.narrationType === "宝物" ? `钓到宝物：${reward.name}` : `钓到：${reward.name}`;
+  publicState.last_result = reward.narrationType === "宝物"
+    ? `钓到宝物：${reward.name}，获得 ${fishingExpGain} 经验`
+    : `钓到：${reward.name}，获得 ${fishingExpGain} 经验`;
   return {
     narration: reward.narrationType === "宝物"
-      ? `你把鱼钩抛进 ${siteName}，水面猛地一晃，你顺势收杆，意外捞到了 ${reward.name}，已放入物品。你可以继续钓鱼，或输入 #退出 结束当前钓鱼。`
-      : `你把鱼钩抛进 ${siteName}，鱼漂一沉，你顺势收杆，钓到了 ${reward.name}，已放入物品。你可以继续钓鱼，或输入 #退出 结束当前钓鱼。`,
+      ? `你把鱼钩抛进 ${siteName}，水面猛地一晃，你顺势收杆，意外捞到了 ${reward.name}，已放入物品，并获得了 ${fishingExpGain} 经验。你可以继续钓鱼，或输入 #退出 结束当前钓鱼。`
+      : `你把鱼钩抛进 ${siteName}，鱼漂一沉，你顺势收杆，钓到了 ${reward.name}，已放入物品，并获得了 ${fishingExpGain} 经验。你可以继续钓鱼，或输入 #退出 结束当前钓鱼。`,
     resultTags: ["cast", "success", reward.kind],
-    rewardSummary: { loot: reward.name },
+    rewardSummary: { loot: reward.name, exp: fishingExpGain },
     writeback: {
       inventoryAdd: [{ kind: reward.kind, name: reward.name, rarity: reward.rarity }],
-      memoryAdd: [`钓鱼收获：${reward.name}`],
+      playerParameterPatch: { exp: fishingExpGain },
+      memoryAdd: [`钓鱼收获：${reward.name}`, `钓鱼获得经验：${fishingExpGain}`],
     },
     memorySummary: `钓鱼成功，收获 ${reward.name}`,
   };
@@ -2433,6 +2531,7 @@ function fishingStep(session: JsonRecord, actionId: string): MiniGameStepResult 
       }
       publicState.last_result = "";
       publicState.last_reward = "";
+      publicState.exp_reward = resolveFishingExpGain(Math.max(1, Number(publicState.user_level || 1)), session);
       hidden.encounter_roll = takeRng(session, 1, 100);
       return resolveFishingRound(session, siteName);
     }
@@ -2861,7 +2960,7 @@ const RULEBOOKS: Record<string, MiniGameRulebook> = {
         result: "ongoing",
         finish_reason: "",
         reward_preview: {},
-        writeback_whitelist: ["relationship_state", "event_pool.done", "memory_state.mid_term"],
+        writeback_whitelist: ["player_state.parameter_card", "relationship_state", "event_pool.done", "memory_state.mid_term"],
         can_suspend: true,
         can_quit: true,
         resume_token: `resume_${sessionId}`,
@@ -2903,6 +3002,8 @@ const RULEBOOKS: Record<string, MiniGameRulebook> = {
       participants: buildParticipants(ctx, 1),
       public_state: buildSimplePublicState({
         site_name: "当前水域",
+        user_level: readMiniGamePlayerLevel(ctx.state),
+        exp_reward: 0,
         current_status: "准备抛竿",
         last_result: "",
         last_reward: "",
@@ -2910,7 +3011,7 @@ const RULEBOOKS: Record<string, MiniGameRulebook> = {
       hidden_state: { target_fish_name: "", encounter_roll: 0, fish_rarity: "", reward_kind: "" },
       resource_state: {},
       rng_state: { seed: `${ctx.world?.id || 0}:${ctx.chapter?.id || 0}:fishing:${sessionId}`, cursor: 0, queue: buildRngQueue(`${ctx.world?.id || 0}:${ctx.chapter?.id || 0}:fishing:${sessionId}`) },
-      action_log_ids: [], result: "ongoing", finish_reason: "", reward_preview: {}, writeback_whitelist: ["player_state.inventory", "memory_state.mid_term"], can_suspend: true, can_quit: true, resume_token: `resume_${sessionId}`,
+      action_log_ids: [], result: "ongoing", finish_reason: "", reward_preview: {}, writeback_whitelist: ["player_state.parameter_card", "player_state.inventory", "memory_state.mid_term"], can_suspend: true, can_quit: true, resume_token: `resume_${sessionId}`,
     }),
     options: fishingOptions,
     applyAction: fishingStep,
@@ -3189,14 +3290,21 @@ function applyMiniGameWriteback(state: JsonRecord, writeback: JsonRecord) {
   if (Object.keys(playerParameterPatch).length && allow("player_state.parameter_card")) {
     const player = asRecord(state.player);
     const card = createPlayerParameterCard(state);
+    let shouldNormalizeProgress = false;
     Object.entries(playerParameterPatch).forEach(([key, value]) => {
       const current = Number(card[key] ?? 0);
-      const next = typeof value === "number" && ["money", "level"].includes(key)
+      const next = typeof value === "number" && ["money", "level", "exp"].includes(key)
         ? current + Number(value)
         : value;
       card[key] = next;
+      if (["level", "exp", "next_level_exp"].includes(key)) {
+        shouldNormalizeProgress = true;
+      }
     });
-    player.parameterCardJson = card;
+    const normalizedCard = shouldNormalizeProgress
+      ? normalizeMiniGameParameterCardProgress(card).card
+      : card;
+    player.parameterCardJson = normalizedCard;
     state.player = player;
   }
   const playerAttributePatch = asRecord(writeback.playerAttributePatch);

@@ -83,12 +83,13 @@ function isLikelyItem(token: string): boolean {
 function buildDefaultPlayerParameterCard(state: JsonRecord): JsonRecord {
   const player = asRecord(state.player);
   const current = asRecord(player.parameterCardJson);
+  const level = Number.isFinite(Number(current.level)) ? Math.max(1, Number(current.level)) : 1;
   return {
     name: scalarText(current.name || player.name || "用户") || "用户",
     raw_setting: scalarText(current.raw_setting || current.rawSetting),
     gender: scalarText(current.gender),
     age: Number.isFinite(Number(current.age)) ? Number(current.age) : null,
-    level: Number.isFinite(Number(current.level)) ? Number(current.level) : 1,
+    level,
     level_desc: scalarText(current.level_desc || current.levelDesc) || "初入此界",
     personality: scalarText(current.personality),
     appearance: scalarText(current.appearance),
@@ -96,11 +97,38 @@ function buildDefaultPlayerParameterCard(state: JsonRecord): JsonRecord {
     skills: Array.isArray(current.skills) ? current.skills.map((item: unknown) => scalarText(item)).filter(Boolean) : [],
     items: Array.isArray(current.items) ? current.items.map((item: unknown) => scalarText(item)).filter(Boolean) : [],
     equipment: Array.isArray(current.equipment) ? current.equipment.map((item: unknown) => scalarText(item)).filter(Boolean) : [],
+    exp: Number.isFinite(Number(current.exp)) ? Number(current.exp) : 0,
+    next_level_exp: Number.isFinite(Number(current.next_level_exp)) ? Number(current.next_level_exp) : (level * 100),
     hp: Number.isFinite(Number(current.hp)) ? Number(current.hp) : 100,
     mp: Number.isFinite(Number(current.mp)) ? Number(current.mp) : 0,
     money: Number.isFinite(Number(current.money)) ? Number(current.money) : 0,
     other: Array.isArray(current.other) ? current.other.map((item: unknown) => scalarText(item)).filter(Boolean) : [],
   };
+}
+
+/**
+ * 判断显式记忆指令是否表达了“休息恢复”一类确定性状态恢复。
+ *
+ * 用途：
+ * - `@记忆管理 睡觉恢复` 这类输入不该完全依赖模型自由发挥；
+ * - 命中后直接本地把 hp/mp 恢复到当前等级满值，保证结果稳定可复现。
+ */
+function isRestorationDirective(body: string): boolean {
+  const text = scalarText(body);
+  if (!text) return false;
+  return /(睡觉|睡眠|休息|住宿|住店|过夜|调息|恢复)/.test(text)
+    && /(恢复|回满|满血|满蓝|充盈|睡觉恢复|调息恢复|休息恢复)/.test(text);
+}
+
+/**
+ * 计算当前等级下的满血满蓝值。
+ *
+ * 用途：
+ * - 显式恢复指令会直接把 hp/mp 拉到当前等级满值；
+ * - 与记忆管理提示词里的默认公式保持一致。
+ */
+function resolveDirectiveFullResource(level: number): number {
+  return 100 + Math.max(1, Math.floor(level)) * 10;
 }
 
 /**
@@ -165,6 +193,12 @@ export function applyExplicitMemoryDirectiveToPlayerCard(state: JsonRecord, mess
 
   const player = asRecord(state.player);
   const nextCard = buildDefaultPlayerParameterCard(state);
+  if (isRestorationDirective(body)) {
+    const fullResource = resolveDirectiveFullResource(Number(nextCard.level || 1));
+    nextCard.hp = fullResource;
+    nextCard.mp = fullResource;
+    addedOther.push("睡觉恢复");
+  }
   nextCard.skills = uniqueTexts([...nextCard.skills, ...addedSkills]);
   nextCard.items = uniqueTexts([...nextCard.items, ...addedItems]);
   nextCard.equipment = uniqueTexts([...nextCard.equipment, ...addedEquipment]);
