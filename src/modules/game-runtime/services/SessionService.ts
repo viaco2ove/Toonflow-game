@@ -786,6 +786,32 @@ function buildSessionExpectedSpeaker(state: Record<string, any>) {
   };
 }
 
+/**
+ * 为“当前已轮到用户输入”的正式会话编排结果构造一个最小计划。
+ *
+ * 用途：
+ * - `/game/orchestration` 必须稳定返回 `role/roleType/motive/awaitUser`；
+ * - 之前 waiting_input 分支直接回 `plan: null`，前端就会拿到空角色、空类型；
+ * - 这里显式返回“用户可输入”的计划，避免把正常等待用户误渲染成空编排结果。
+ */
+function buildWaitingForUserSessionPlan(state: Record<string, any>): SessionNarrativePlanResult {
+  const playerName = String(state.player?.name || "用户").trim() || "用户";
+  return buildSessionPlanResult({
+    role: "用户",
+    roleType: "player",
+    motive: `等待${playerName}输入下一步行动`,
+    awaitUser: true,
+    nextRole: "",
+    nextRoleType: "",
+    source: "rule",
+    triggerMemoryAgent: false,
+    eventType: "on_waiting_input",
+    presetContent: "",
+    eventAdjustMode: "waiting_input",
+    eventStatus: "waiting_input",
+  })!;
+}
+
 function buildSessionPlanResult(plan: ({
   role?: unknown;
   roleType?: unknown;
@@ -2297,7 +2323,8 @@ export async function orchestrateSessionTurn(sessionIdInput: string): Promise<Se
       expectedRole: "",
       expectedRoleType: "",
       command: null,
-      plan: null,
+      // 命中 waiting_input 时，要明确告诉前端“现在轮到用户”，不能再回空 plan。
+      plan: buildWaitingForUserSessionPlan(state),
     });
   }
 
