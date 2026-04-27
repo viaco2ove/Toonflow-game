@@ -1299,19 +1299,22 @@ function createBasicParameterCard(input: {
   const inferredAge = inferAgeFromText(rawSetting);
   const gender = normalizeEditorText(existing.gender) || inferredGender;
   const age = normalizeOptionalNumber(existing.age) ?? inferredAge;
-  const level = normalizeOptionalNumber(existing.level);
+  const level = normalizeOptionalNumber(existing.level) ?? 1;
   const levelDesc = normalizeEditorText(existing.level_desc ?? (existing as any).levelDesc)
     || extractParameterCardText(rawSetting, [/境界\s*[:：]\s*([^\n，。；;]+)/, /等级(?:称号)?\s*[:：]\s*([^\n，。；;]+)/, /修为\s*[:：]\s*([^\n，。；;]+)/]);
   const hp = normalizeOptionalNumber(existing.hp);
   const mp = normalizeOptionalNumber(existing.mp);
   const money = normalizeOptionalNumber(existing.money);
+  const exp = normalizeOptionalNumber((existing as any).exp) ?? 0;
+  const nextLevelExp = normalizeOptionalNumber((existing as any).next_level_exp ?? (existing as any).nextLevelExp)
+    ?? (level * 100);
   const next: JsonRecord = {
     ...existing,
     name: name || "",
     raw_setting: rawSetting || "",
     gender: gender || "",
     age,
-    level: level ?? 1,
+    level,
     level_desc: levelDesc || "初入此界",
     personality: normalizeEditorText(existing.personality)
       || extractParameterCardText(rawSetting, [/性格\s*[:：]\s*([^\n]+)/, /特点\s*[:：]\s*([^\n]+)/]),
@@ -1321,6 +1324,8 @@ function createBasicParameterCard(input: {
     skills: normalizeStringList(existing.skills),
     items: normalizeStringList(existing.items),
     equipment: normalizeStringList(existing.equipment),
+    exp,
+    next_level_exp: Math.max(level * 100, nextLevelExp),
     hp: hp ?? 100,
     mp: mp ?? 0,
     money: money ?? 0,
@@ -1329,6 +1334,7 @@ function createBasicParameterCard(input: {
 
   delete (next as any).rawSetting;
   delete (next as any).levelDesc;
+  delete (next as any).nextLevelExp;
   return next;
 }
 
