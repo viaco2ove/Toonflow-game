@@ -109,7 +109,7 @@ function readString(input) {
  * 从表格日志里提取中间内容列。
  */
 function extractTableContent(line, label) {
-  const pattern = new RegExp(`\\| ${escapeRegExp(label)} \\| (.*) \\| \\d+ \\|`);
+  const pattern = new RegExp(`\\| ${escapeRegExp(label)} \\| (.*?) \\| (?:\\d+|-) \\|(?: (?:\\d+|-) \\|)?$`);
   const matched = line.match(pattern);
   return matched && matched[1] ? matched[1].trim() : "";
 }
@@ -133,6 +133,13 @@ function extractField(text, field) {
     .find((item) => item.startsWith(`${field}:`))
     ?.slice(field.length + 1)
     .trim() || "";
+}
+
+/**
+ * 清理表格列被误吞进来的尾部统计值，避免摘要里出现 `| 152` 这类脏后缀。
+ */
+function stripTrailingTableStats(text) {
+  return String(text || "").replace(/\s+\|\s+\d+\s*$/, "").trim();
 }
 
 /**
@@ -238,16 +245,35 @@ function generateEventChainSummaryMarkdown(logFilePath, outputMarkdownPath) {
           sessionId: readString(payload.sessionId),
           debugRuntimeKey: readString(payload.debugRuntimeKey),
         };
+        const node = readString(payload.node);
+        if (node === "session_opening:first_dialogue_preset") {
+          assignEntryField(
+            "orchestratorResponse",
+            `opening_first_dialogue_preset role=${readString(payload.role)} roleType=${readString(payload.roleType)} awaitUser=${readString(payload.awaitUser)}`,
+          );
+        }
       }
     }
     if (line.includes("[story:orchestrator:stats] | 当前事件 | ")) {
+      pushCurrentEntry();
+      const currentEventText = extractTableContent(line, "当前事件");
+        currentEntry = applyContextToEntry({
+          ...currentContext,
+          ...pendingEntryPatch,
+          currentEventIndex: extractField(currentEventText, "index"),
+          currentEventSummary: stripTrailingTableStats(extractField(currentEventText, "summary") || currentEventText),
+        });
+      pendingEntryPatch = {};
+      continue;
+    }
+    if (!currentEntry && line.includes("[story:streamlines:stats] | 当前事件 | ")) {
       pushCurrentEntry();
       const currentEventText = extractTableContent(line, "当前事件");
       currentEntry = applyContextToEntry({
         ...currentContext,
         ...pendingEntryPatch,
         currentEventIndex: extractField(currentEventText, "index"),
-        currentEventSummary: extractField(currentEventText, "summary") || currentEventText,
+        currentEventSummary: stripTrailingTableStats(extractField(currentEventText, "summary") || currentEventText),
       });
       pendingEntryPatch = {};
       continue;
@@ -275,7 +301,7 @@ function generateEventChainSummaryMarkdown(logFilePath, outputMarkdownPath) {
     }
     if (!currentEntry) continue;
     if (line.includes("[story:streamlines:stats] | 本轮动机 | ")) {
-      currentEntry.motive = extractTableContent(line, "本轮动机");
+      currentEntry.motive = stripTrailingTableStats(extractTableContent(line, "本轮动机"));
       continue;
     }
     if (line.includes("[story:streamlines:stats] | 返回内容 | ")) {

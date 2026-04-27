@@ -457,6 +457,7 @@ export async function enforceResourceIsolation(req: Request, res: Response, next
       "/game/introduction",
       "/game/orchestration",
       "/game/streamlines",
+      "/game/streamlines/introduction",
     ]);
     const sessionId = String((req.body || {}).sessionId ?? (req.query || {}).sessionId ?? "").trim();
     if (sessionId && sessionScopedGamePaths.has(path)) {

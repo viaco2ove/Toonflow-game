@@ -1073,23 +1073,35 @@ function extractDirectiveSpeechIdentity(input: string): { speaker: string; acted
   };
 }
 
+// 把“说话者 + 饰演身份 + 正文”重新拼回接近章节原文的结构，
+// 避免 `@旁白：（饰演X）...` 被压坏成 `@旁白，饰演X：...` 这类歧义摘要。
+function formatDirectiveSpeechIdentity(input: {
+  speaker: string;
+  actedRole: string;
+  body: string;
+}): string {
+  const normalizedBody = normalizeScalarText(input.body)
+    .replace(/\s+/g, " ")
+    .trim();
+  const speakerPrefix = input.speaker ? `@${input.speaker}` : "";
+  const actedRolePrefix = input.actedRole ? `（饰演${input.actedRole}）` : "";
+  if (speakerPrefix && actedRolePrefix && normalizedBody) {
+    return `${speakerPrefix}：${actedRolePrefix}${normalizedBody}`;
+  }
+  if (speakerPrefix && normalizedBody) {
+    return `${speakerPrefix}：${normalizedBody}`;
+  }
+  if (actedRolePrefix && normalizedBody) {
+    return `${actedRolePrefix}${normalizedBody}`;
+  }
+  return speakerPrefix || actedRolePrefix || normalizedBody;
+}
+
 // 将章节正文类文本压缩成事件摘要，同时保留“谁在说 / 以谁身份说”的关键约束。
 function summarizeDirectiveLikeText(input: unknown, limit = 72): string {
   const paragraphs = directiveParagraphs(input)
     .map((item) => extractDirectiveSpeechIdentity(item))
-    .map(({ speaker, actedRole, body }) => {
-      const normalizedBody = normalizeScalarText(body)
-        .replace(/\s+/g, " ")
-        .replace(/[：:]\s*/g, "，")
-        .trim();
-      const identityParts = [
-        speaker ? `@${speaker}` : "",
-        actedRole ? `饰演${actedRole}` : "",
-      ].filter(Boolean);
-      const identityText = identityParts.join("，");
-      if (identityText && normalizedBody) return `${identityText}：${normalizedBody}`;
-      return identityText || normalizedBody;
-    })
+    .map((item) => formatDirectiveSpeechIdentity(item))
     .filter(Boolean);
   if (!paragraphs.length) return "";
   const summary = paragraphs
@@ -1107,19 +1119,7 @@ function summarizeDirectiveLikeText(input: unknown, limit = 72): string {
 function summarizeDirectiveLikeTextFull(input: unknown): string {
   const paragraphs = directiveParagraphs(input)
     .map((item) => extractDirectiveSpeechIdentity(item))
-    .map(({ speaker, actedRole, body }) => {
-      const normalizedBody = normalizeScalarText(body)
-        .replace(/\s+/g, " ")
-        .replace(/[：:]\s*/g, "，")
-        .trim();
-      const identityParts = [
-        speaker ? `@${speaker}` : "",
-        actedRole ? `饰演${actedRole}` : "",
-      ].filter(Boolean);
-      const identityText = identityParts.join("，");
-      if (identityText && normalizedBody) return `${identityText}：${normalizedBody}`;
-      return identityText || normalizedBody;
-    })
+    .map((item) => formatDirectiveSpeechIdentity(item))
     .filter(Boolean);
   return paragraphs
     .join("；")
