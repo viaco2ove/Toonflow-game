@@ -109,6 +109,15 @@ export default router.post(
         const exists = result.local_birefnet.some((model) => String(model?.value || "") === item.value);
         if (!exists) result.local_birefnet.push(item);
       }
+
+      const localModNetDefaults = [
+        { label: "modnet-photographic-portrait", value: "modnet-photographic-portrait" },
+      ];
+      if (!result.local_modnet) result.local_modnet = [];
+      for (const item of localModNetDefaults) {
+        const exists = result.local_modnet.some((model) => String(model?.value || "") === item.value);
+        if (!exists) result.local_modnet.push(item);
+      }
     }
 
     res.status(200).send(success(result));

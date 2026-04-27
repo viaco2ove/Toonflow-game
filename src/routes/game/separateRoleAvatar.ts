@@ -6,7 +6,12 @@ import { v4 as uuidv4 } from "uuid";
 import { z } from "zod";
 import { validateFields } from "@/middleware/middleware";
 import { error, success } from "@/lib/responseFormat";
-import { LOCAL_BIREFNET_MANUFACTURER, getLocalAvatarMattingStatus, runLocalBiRefNetMatting } from "@/lib/localAvatarMatting";
+import {
+  LOCAL_BIREFNET_MANUFACTURER,
+  LOCAL_MODNET_MANUFACTURER,
+  getLocalAvatarMattingStatus,
+  runLocalBiRefNetMatting,
+} from "@/lib/localAvatarMatting";
 import u from "@/utils";
 
 const router = express.Router();
@@ -424,7 +429,8 @@ export function isVolcengineAvatarMattingConfig(config: ImageAiConfig | null | u
 }
 
 export function isLocalBiRefNetAvatarMattingConfig(config: ImageAiConfig | null | undefined): config is ImageAiConfig {
-  return String(config?.manufacturer || "").trim().toLowerCase() === LOCAL_BIREFNET_MANUFACTURER;
+  const manufacturer = String(config?.manufacturer || "").trim().toLowerCase();
+  return manufacturer === LOCAL_BIREFNET_MANUFACTURER || manufacturer === LOCAL_MODNET_MANUFACTURER;
 }
 
 function normalizeBriaBaseUrl(baseURL?: string): string {
@@ -1130,6 +1136,7 @@ async function runLocalBiRefNetAvatarMattingJob(
   config: ImageAiConfig,
 ): Promise<SeparateRoleAvatarResult> {
   const modelName = String(config.model || "").trim();
+  const localModelLabel = modelName.toLowerCase().startsWith("modnet") ? "MODNet" : "BiRefNet";
   const [status, mattingInput] = await Promise.all([
     getLocalAvatarMattingStatus({
       manufacturer: config.manufacturer,
@@ -1138,19 +1145,19 @@ async function runLocalBiRefNetAvatarMattingJob(
     normalizeRoleSourceForMatting(normalizedInput),
   ]);
   if (status.status !== "installed") {
-    throw new Error(`${status.message || "本地 BiRefNet 尚未安装"}。请先在设置 > 模型配置 > 头像分离里完成安装`);
+    throw new Error(`${status.message || `本地 ${localModelLabel} 尚未安装`}。请先在设置 > 模型配置 > 头像分离里完成安装`);
   }
   let foregroundRaw: Buffer;
   try {
     foregroundRaw = await runLocalBiRefNetMatting(mattingInput, modelName);
   } catch (err) {
-    throw new Error(`本地 BiRefNet 前景分离失败: ${u.error(err).message}`);
+    throw new Error(`本地 ${localModelLabel} 前景分离失败: ${u.error(err).message}`);
   }
   let backgroundBuffer: Buffer;
   try {
     backgroundBuffer = await createApproximateBackgroundLayer(mattingInput, foregroundRaw);
   } catch (err) {
-    throw new Error(`本地 BiRefNet 背景构建失败: ${u.error(err).message}`);
+    throw new Error(`本地 ${localModelLabel} 背景构建失败: ${u.error(err).message}`);
   }
   const foregroundBuffer = await normalizeForegroundLayer(foregroundRaw, { skipChromaKey: true });
   return await saveSeparatedRoleAvatarFiles(payload, foregroundBuffer, backgroundBuffer);

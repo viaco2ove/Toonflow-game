@@ -60,6 +60,9 @@
 [README.V1.md](README.V1.md)
 ---
 
+## 本地模型安装
+[本地头像分离模型安装.md](md/modeapi/image/%E6%9C%AC%E5%9C%B0%E5%A4%B4%E5%83%8F%E5%88%86%E7%A6%BB%E6%A8%A1%E5%9E%8B%E5%AE%89%E8%A3%85.md)
+
 # 🚀 安装
 
 ## 前置条件

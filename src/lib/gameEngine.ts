@@ -1368,11 +1368,19 @@ function hasUsableParameterCard(input: unknown): boolean {
 function mergeRuntimeRoleWithStoryRole(storyRole: JsonRecord, runtimeRoleRaw: unknown, fallbackName?: string): JsonRecord {
   const runtimeRole = parseJsonSafe<JsonRecord>(runtimeRoleRaw, {});
   const runtimeAttributes = parseJsonSafe<JsonRecord>(runtimeRole.attributes, {});
+  const latestStoryAvatarPath = normalizeEditorText(storyRole.avatarPath);
+  const latestStoryAvatarBgPath = normalizeEditorText(storyRole.avatarBgPath);
+  const runtimeAvatarPath = normalizeEditorText(runtimeRole.avatarPath);
+  const runtimeAvatarBgPath = normalizeEditorText(runtimeRole.avatarBgPath);
   const merged: JsonRecord = {
     ...storyRole,
     ...runtimeRole,
     name: normalizeEditorText(runtimeRole.name) || normalizeEditorText(storyRole.name) || fallbackName || "",
     roleType: normalizeEditorText(runtimeRole.roleType) || normalizeEditorText(storyRole.roleType),
+    // 角色头像属于故事静态资源，重新发布后应该优先吃最新故事配置，
+    // 不能继续被旧 session state 里的 runtime 快照反向覆盖成历史头像。
+    avatarPath: latestStoryAvatarPath || runtimeAvatarPath,
+    avatarBgPath: latestStoryAvatarBgPath || runtimeAvatarBgPath,
     attributes: {
       ...parseJsonSafe<JsonRecord>(storyRole.attributes, {}),
       ...runtimeAttributes,
