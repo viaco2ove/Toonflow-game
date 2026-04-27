@@ -393,7 +393,8 @@ async function ensureBiRefNetRunnerScript(): Promise<void> {
 
 /**
  * 生成 MODNet 的本地推理脚本。
- * 这里沿用官方 ONNX demo 的预处理/后处理逻辑，并输出 alpha matte PNG，后续仍复用现有前景/背景层构建链路。
+ * 这里沿用官方 ONNX demo 的预处理/后处理逻辑，但最终必须输出“带透明通道的前景 PNG”，
+ * 不能只吐灰度 matte；否则后续会把黑底白影误当成角色前景，直接把头像效果做坏。
  */
 async function ensureModNetRunnerScript(): Promise<void> {
   const script = [
@@ -435,7 +436,7 @@ async function ensureModNetRunnerScript(): Promise<void> {
     "    normalized = (np.asarray(resized).astype(np.float32) - 127.5) / 127.5",
     "    tensor = np.transpose(normalized, (2, 0, 1))",
     "    tensor = np.expand_dims(tensor, axis=0).astype('float32')",
-    "    return tensor, im_w, im_h",
+    "    return image, tensor, im_w, im_h",
     "",
     "def run_inference(session, tensor):",
     "    input_name = session.get_inputs()[0].name",
@@ -443,10 +444,12 @@ async function ensureModNetRunnerScript(): Promise<void> {
     "    result = session.run([output_name], {input_name: tensor})",
     "    return np.squeeze(result[0])",
     "",
-    "def save_matte(matte, output_path, width, height):",
+    "def save_foreground(image, matte, output_path, width, height):",
     "    matte = np.clip(matte * 255.0, 0, 255).astype('uint8')",
-    "    output = Image.fromarray(matte, mode='L').resize((width, height), Image.Resampling.BILINEAR)",
-    "    output.save(output_path)",
+    "    alpha = Image.fromarray(matte, mode='L').resize((width, height), Image.Resampling.BILINEAR)",
+    "    rgba = image.convert('RGBA')",
+    "    rgba.putalpha(alpha)",
+    "    rgba.save(output_path)",
     "",
     "def main():",
     "    parser = argparse.ArgumentParser()",
@@ -470,10 +473,10 @@ async function ensureModNetRunnerScript(): Promise<void> {
     "    if not input_path.exists():",
     "        raise FileNotFoundError(str(input_path))",
     "",
-    "    tensor, width, height = prepare_input(input_path)",
+    "    image, tensor, width, height = prepare_input(input_path)",
     "    matte = run_inference(session, tensor)",
     "    output_path.parent.mkdir(parents=True, exist_ok=True)",
-    "    save_matte(matte, output_path, width, height)",
+    "    save_foreground(image, matte, output_path, width, height)",
     "    print(json.dumps({'ok': True, 'output': str(output_path)}))",
     "",
     "if __name__ == '__main__':",
@@ -759,6 +762,9 @@ export async function runLocalBiRefNetMatting(input: Buffer, model?: string | nu
   try {
     await fs.writeFile(inputPath, input);
     if (isLocalModNetModelName(resolvedModel)) {
+      // MODNet runner 曾经输出过灰度 matte。
+      // 这里运行前强制重写脚本，确保本地旧安装态也能拿到最新的透明前景实现。
+      await ensureModNetRunnerScript();
       await runManagedBiRefNetPython([
         getModNetRunnerScriptPath(),
         "--model-path",
