@@ -2177,15 +2177,17 @@ function buildCompactMemoryOutputExampleLines(): string[] {
 // 构造 full 记忆管理提示词的世界与章节区块，减少主函数里的基础上下文拼接。
 function buildMemoryWorldChapterLines(payload: {
   worldName: string;
+  worldIntro: string;
   chapterTitle: string;
 }): string[] {
   return [
     "[世界]",
     `名称: ${payload.worldName || "未命名世界"}`,
+    payload.worldIntro ? `简介: ${payload.worldIntro}` : "",
     "",
     "[章节]",
     `标题: ${payload.chapterTitle || "未命名章节"}`,
-  ];
+  ].filter(Boolean);
 }
 
 // 构造 full 记忆管理任务说明，便于后续单独调 prompt 而不影响主结构。
@@ -2347,6 +2349,7 @@ function buildSpeakerUserPrompt(payload: {
 // 把最近对话和现有记忆拼成记忆管理提示词。
 function buildMemoryUserPrompt(payload: {
   worldName: string;
+  worldIntro: string;
   chapterTitle: string;
   currentEventIndex: number;
   currentEventKind: string;
@@ -2368,6 +2371,13 @@ function buildMemoryUserPrompt(payload: {
     const taskLines = buildCompactMemoryTaskLines();
     const outputExampleLines = buildCompactMemoryOutputExampleLines();
     return [
+      "[世界]",
+      `名称: ${payload.worldName || "未命名世界"}`,
+      payload.worldIntro ? `简介: ${payload.worldIntro}` : "",
+      "",
+      "[章节]",
+      `标题: ${payload.chapterTitle || "未命名章节"}`,
+      "",
       "[当前记忆]",
       payload.currentMemory || "无",
       "",
@@ -3261,7 +3271,7 @@ function buildOrchestratorPromptPayload(input: {
   // 目的就是让模型只盯住当前事件，不要被完整大纲带偏。
   const payload: OrchestratorPromptPayload = {
     worldName: normalizeScalarText(input.world?.name),
-    worldIntro: shortText(input.world?.intro, input.compactMode ? 120 : 240),
+    worldIntro: shortText(input.world?.intro, input.compactMode ? 600 : 1200),
     chapterTitle: input.currentChapter.title,
     chapterDirective: buildPromptSafeChapterDirective({
       chapterDirective: input.currentChapter.directive,
@@ -4207,6 +4217,9 @@ export async function runStoryMemoryManager(input: {
   });
   const payload = {
     worldName: normalizeScalarText(input.world?.name),
+    // 记忆管理同样需要看到世界级背景，否则它只能根据局部章节和最近对话压缩记忆，
+    // 很容易漏掉“当前事件为何重要”以及长期标签该如何贴合世界设定。
+    worldIntro: shortText(input.world?.intro, compactMode ? 2400 : 4800),
     chapterTitle: normalizeScalarText(input.chapter?.title),
     ...buildPromptEventContextTextPayload(currentEvent, compactMode),
     eventDeltaText: buildMemoryEventDeltaText(memoryInputs.eventDeltaMessages, compactMode),

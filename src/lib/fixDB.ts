@@ -1114,7 +1114,7 @@ event_facts:`,
             "player_card_patch 和 npc_card_patches.patch 只允许这些字段：\n" +
             "raw_setting, personality, appearance, voice, skills, items, equipment, other, gender, age, level, level_desc, exp, next_level_exp, hp, mp, money。\n" +
             "其中 age、level、exp、next_level_exp、hp、mp、money 必须是数字；\n" +
-            "如果只是想表达“已恢复”“斗气更凝实”“状态转好”“经验提升”，请写到 other，不要写进 hp/mp/exp。",
+            "如果只是想表达“已恢复”“斗气更凝实”“状态转好”“经验提升”，请写到 other，不要写进 hp/mp/exp。\n" ,
       },
       {
         code: "story-chapter",
