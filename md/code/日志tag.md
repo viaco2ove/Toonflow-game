@@ -1,5 +1,11 @@
 # 安卓端
 [tag_vue] 模拟浏览器输出日志和变量
+[tag_vue] [runtime_chat]
+[tag_vue] [story_flow]
+[tag_vue] [network]
+[tag_vue] [layout]
+[tag_vue] [network] [orchestrator]
+[tag_vue] [voice]
 
 # 后端
 ## LOG_LEVEL=DEBUG 时 输出的日志
