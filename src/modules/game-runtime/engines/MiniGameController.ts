@@ -3605,11 +3605,6 @@ const RULEBOOKS: Record<string, MiniGameRulebook> = {
       const practices = collectCultivationPracticeTargetsFromCard(playerCard);
       const skills = asArray<string>(playerCard.skills).map((item) => parseLeveledPracticeName(item).name);
       const mentors = collectCultivationMentorNames(ctx);
-      const requestedMineral = scalarText(ctx.playerMessage)
-        .replace(/#?挖矿|采矿|下矿/gu, "")
-        .replace(/[，。！？!?,；;：:\s]/gu, "")
-        .slice(0, 12);
-      const targetMineral = requestedMineral || "铁矿";
       return {
         session_id: sessionId,
         game_type: "cultivation",
@@ -3753,6 +3748,11 @@ const RULEBOOKS: Record<string, MiniGameRulebook> = {
     ruleSummary: "首次进入默认折叠面板，旁白询问目标矿物与是否需要陪练。挖矿获得目标矿物，并有概率获得宝物。",
     setup: (ctx, sessionId, entrySource) => {
       const mentors = collectCultivationMentorNames(ctx);
+      const requestedMineral = scalarText(ctx.playerMessage)
+        .replace(/#?挖矿|采矿|下矿/gu, "")
+        .replace(/[，。！？!?,；;：:\s]/gu, "")
+        .slice(0, 12);
+      const targetMineral = requestedMineral || "铁矿";
       return {
         session_id: sessionId,
         game_type: "mining",
