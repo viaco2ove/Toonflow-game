@@ -1105,6 +1105,9 @@ function buildBattleVictoryWriteback(session: JsonRecord, battleExpGain: number)
   );
   return {
     inventoryAdd: rewardItems.map((item) => ({ kind: "loot", name: item })),
+    // 战利品除了进入背包，还要同步进参数卡物品栏，
+    // 避免剧情文本与角色详情出现“拿到了但卡面没有”的割裂。
+    parameterCardItemAdd: rewardItems,
     playerParameterPatch: {
       money: totalMoney,
       exp: battleExpGain,
@@ -2495,6 +2498,9 @@ function resolveFishingRound(session: JsonRecord, siteName: string): MiniGameSte
     rewardSummary: { loot: reward.name, exp: fishingExpGain },
     writeback: {
       inventoryAdd: [{ kind: reward.kind, name: reward.name, rarity: reward.rarity }],
+      // 钓鱼奖励不仅要进入全局 inventory，也要同步进入参数卡物品栏。
+      // 否则旁白会说“已放入物品”，但角色详情里的参数卡 items 仍然看不到收获。
+      parameterCardItemAdd: [reward.name],
       playerParameterPatch: { exp: fishingExpGain },
       memoryAdd: [`钓鱼收获：${reward.name}`, `钓鱼获得经验：${fishingExpGain}`],
     },
@@ -2605,6 +2611,9 @@ function cultivationStep(session: JsonRecord, actionId: string): MiniGameStepRes
           resultTags: ["success", "breakthrough"],
           rewardSummary: { exp: 60, realmProgress: 1, insight: 20 },
           writeback: {
+            // 修炼小游戏原本只累计 resources 里的修炼经验，主参数卡经验值不会跟着涨。
+            // 这里同步写回 exp，保证成长条件、角色详情和旁白文案使用同一套经验数据。
+            playerParameterPatch: { exp: 60 },
             playerAttributePatch: { cultivationExp: 60, realmProgress: 1, cultivationInsight: 20 },
             flagsPatch: { cultivation_breakthrough: true, cultivation_insight_awake: true },
             memoryAdd: ["修炼突破成功", "修炼时获得新感悟"],
@@ -2644,6 +2653,7 @@ function cultivationStep(session: JsonRecord, actionId: string): MiniGameStepRes
       resultTags: ["finish"],
       rewardSummary: { exp: expGain, insight: insightGain },
       writeback: {
+        playerParameterPatch: { exp: expGain },
         playerAttributePatch: { cultivationExp: expGain, cultivationInsight: insightGain },
         memoryAdd: ["一次稳妥收功的修炼", "修炼收功后整理出新的感悟"],
       },
@@ -2687,7 +2697,11 @@ function researchStep(session: JsonRecord, actionId: string): MiniGameStepResult
         narration: `你整理完最后一版蓝图，${skillName} 研发成功。`,
         resultTags: ["success"],
         rewardSummary: { unlock: skillName },
-        writeback: { flagsPatch: { [`skill_unlock_${skillName}`]: true }, memoryAdd: [`研发完成：${skillName}`] },
+        writeback: {
+          parameterCardSkillAdd: [skillName],
+          flagsPatch: { [`skill_unlock_${skillName}`]: true },
+          memoryAdd: [`研发完成：${skillName}`],
+        },
         memorySummary: `研发技能成功：${skillName}`,
       };
     }
@@ -2741,13 +2755,19 @@ function alchemyStep(session: JsonRecord, actionId: string): MiniGameStepResult 
     session.result = quality >= 70 ? "success" : quality >= 45 ? "partial" : "failed";
     session.finish_reason = session.result === "success" ? "成功成丹" : session.result === "partial" ? "勉强成丹" : "炼制失败";
     const pillName = quality >= 85 ? "上品丹药" : quality >= 70 ? "成品丹药" : quality >= 45 ? "残次丹药" : "报废药液";
-    return {
-      narration: session.result === "failed" ? "你尝试凝丹，但药液失稳，最终炼制失败。" : `炉火渐稳，最终凝出了一枚 ${pillName}。`,
-      resultTags: [session.result],
-      rewardSummary: session.result === "failed" ? {} : { item: pillName },
-      writeback: session.result === "failed" ? { memoryAdd: ["一次失败的炼药尝试"] } : { inventoryAdd: [{ kind: "pill", name: pillName }], memoryAdd: [`炼制获得：${pillName}`] },
-      memorySummary: session.result === "failed" ? "炼药失败" : `炼药完成：${pillName}`,
-    };
+      return {
+        narration: session.result === "failed" ? "你尝试凝丹，但药液失稳，最终炼制失败。" : `炉火渐稳，最终凝出了一枚 ${pillName}。`,
+        resultTags: [session.result],
+        rewardSummary: session.result === "failed" ? {} : { item: pillName },
+        writeback: session.result === "failed"
+          ? { memoryAdd: ["一次失败的炼药尝试"] }
+          : {
+            inventoryAdd: [{ kind: "pill", name: pillName }],
+            parameterCardItemAdd: [pillName],
+            memoryAdd: [`炼制获得：${pillName}`],
+          },
+        memorySummary: session.result === "failed" ? "炼药失败" : `炼药完成：${pillName}`,
+      };
   } else return { narration: "当前无法执行该动作。", resultTags: ["invalid"] };
 
   if (Number(publicState.heat || 0) - Number(hidden.target_heat || 65) > 20) {
@@ -2814,11 +2834,17 @@ function miningStep(session: JsonRecord, actionId: string): MiniGameStepResult {
     session.phase = "settling";
     session.result = Number(publicState.bag_load || 0) > 0 ? "success" : "partial";
     session.finish_reason = "主动撤离";
+    const oreAmount = Math.max(1, Math.floor(Number(publicState.bag_load || 0) / 10));
+    const oreItemName = `矿石×${oreAmount}`;
     return {
       narration: "你选择及时撤离，把当前矿石安全带离了矿区。",
       resultTags: ["leave"],
-      rewardSummary: { ore: Math.max(1, Math.floor(Number(publicState.bag_load || 0) / 10)) },
-      writeback: { inventoryAdd: [{ kind: "ore", amount: Math.max(1, Math.floor(Number(publicState.bag_load || 0) / 10)) }], memoryAdd: ["矿区采掘后安全撤离"] },
+      rewardSummary: { ore: oreAmount },
+      writeback: {
+        inventoryAdd: [{ kind: "ore", amount: oreAmount }],
+        parameterCardItemAdd: [oreItemName],
+        memoryAdd: ["矿区采掘后安全撤离"],
+      },
       memorySummary: "挖矿后主动撤离",
     };
   } else return { narration: "当前无法执行该动作。", resultTags: ["invalid"] };
@@ -2836,7 +2862,18 @@ function miningStep(session: JsonRecord, actionId: string): MiniGameStepResult {
     session.result = "success";
     session.finish_reason = "矿脉采尽";
     const oreAmount = Math.max(2, Math.floor(Number(publicState.bag_load || 0) / 8));
-    return { narration: "你成功采空了这条矿脉，带走了一批矿石。", resultTags: ["success"], rewardSummary: { ore: oreAmount }, writeback: { inventoryAdd: [{ kind: "ore", amount: oreAmount }], memoryAdd: ["采尽了一条矿脉"] }, memorySummary: "挖矿成功，采尽矿脉" };
+    const oreItemName = `矿石×${oreAmount}`;
+    return {
+      narration: "你成功采空了这条矿脉，带走了一批矿石。",
+      resultTags: ["success"],
+      rewardSummary: { ore: oreAmount },
+      writeback: {
+        inventoryAdd: [{ kind: "ore", amount: oreAmount }],
+        parameterCardItemAdd: [oreItemName],
+        memoryAdd: ["采尽了一条矿脉"],
+      },
+      memorySummary: "挖矿成功，采尽矿脉",
+    };
   }
   session.round = Number(session.round || 1) + 1;
   return { narration: `矿脉剩余 ${publicState.vein_hp}，危险度 ${publicState.danger}，负重 ${publicState.bag_load}。`, resultTags: [actionId] };

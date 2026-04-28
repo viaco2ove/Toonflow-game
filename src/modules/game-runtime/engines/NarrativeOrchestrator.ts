@@ -572,6 +572,11 @@ function summarizeParameterCardText(input: unknown): string {
     Array.isArray(card.skills) && card.skills.length ? `技能:${card.skills.map((item: unknown) => normalizeScalarText(item)).filter(Boolean).slice(0, 3).join("、")}` : "",
     Array.isArray(card.items) && card.items.length ? `物品:${card.items.map((item: unknown) => normalizeScalarText(item)).filter(Boolean).slice(0, 3).join("、")}` : "",
     Array.isArray(card.equipment) && card.equipment.length ? `装备:${card.equipment.map((item: unknown) => normalizeScalarText(item)).filter(Boolean).slice(0, 3).join("、")}` : "",
+    // 经验值与升级阈值会直接影响成长线判断，记忆管理即使在 compact 模式下也必须看到这两个字段。
+    Number.isFinite(Number(card.exp)) ? `经验值:${Number(card.exp)}` : "",
+    Number.isFinite(Number(card.next_level_exp ?? card.nextLevelExp))
+      ? `下一级所需经验:${Number(card.next_level_exp ?? card.nextLevelExp)}`
+      : "",
     Number.isFinite(Number(card.hp)) ? `血量:${Number(card.hp)}` : "",
     Number.isFinite(Number(card.mp)) ? `蓝量:${Number(card.mp)}` : "",
     Number.isFinite(Number(card.money)) ? `金钱:${Number(card.money)}` : "",
@@ -620,7 +625,19 @@ function buildMemoryRoleCardSummary(input: {
   roleType: string;
   card: JsonRecord;
 }, compactMode: boolean): JsonRecord {
-  const card = asRecord(input.card);
+  // 首轮开场或旧存档恢复时，运行态里可能暂时还没有完整参数卡；
+  // 这里统一补一张保底卡，避免 compact prompt 把 `card` 压成空串，导致记忆管理像在“盲开局”。
+  const rawCard = asRecord(input.card);
+  const card = hasRecordKeys(rawCard)
+    ? rawCard
+    : buildDefaultRoleParameterCardForMemory({
+      role: {
+        name: input.roleName,
+        roleType: input.roleType,
+        parameterCardJson: rawCard,
+      },
+      fallbackName: input.roleName,
+    });
   const detailedCard = {
     name: normalizeScalarText(card.name),
     raw_setting: normalizeScalarText(card.raw_setting || card.rawSetting),
@@ -634,6 +651,8 @@ function buildMemoryRoleCardSummary(input: {
     skills: normalizeCardTextList(card.skills),
     items: normalizeCardTextList(card.items),
     equipment: normalizeCardTextList(card.equipment),
+    exp: normalizeOptionalCardNumber(card.exp),
+    next_level_exp: normalizeOptionalCardNumber(card.next_level_exp ?? card.nextLevelExp),
     hp: normalizeOptionalCardNumber(card.hp),
     mp: normalizeOptionalCardNumber(card.mp),
     money: normalizeOptionalCardNumber(card.money),
