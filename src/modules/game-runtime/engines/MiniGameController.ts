@@ -323,6 +323,8 @@ function buildMiniGameUiStateItems(session: JsonRecord, rulebook: MiniGameRulebo
   if (rulebook.gameType === "research_skill") {
     return [
       { key: "目标技能", value: scalarText(publicState.target_skill_name) || "待输入" },
+      { key: "本次消耗", value: `${Number(publicState.cost_money || 5)} 金币` },
+      { key: "可选陪练", value: asArray<string>(publicState.available_mentors).join("、") || "可独自研发" },
       { key: "当前方案", value: scalarText(publicState.last_plan) || "暂无" },
       { key: "本次结果", value: scalarText(publicState.last_result) || "待评估" },
       { key: "建议调整", value: scalarText(publicState.last_advice) || "暂无" },
@@ -331,6 +333,9 @@ function buildMiniGameUiStateItems(session: JsonRecord, rulebook: MiniGameRulebo
   if (rulebook.gameType === "alchemy") {
     return [
       { key: "目标丹药", value: scalarText(publicState.recipe_name) || "待输入" },
+      { key: "默认药方", value: asArray<string>(publicState.known_recipes).join("、") || "回复丹药方（lv1）" },
+      { key: "炼药能力", value: asArray<string>(publicState.alchemy_skills).join("、") || "药草提纯术（lv1）" },
+      { key: "等级限制", value: `只能炼制 lv${Number(publicState.user_level || 1)} 及以下丹药` },
       { key: "炼制方案", value: scalarText(publicState.last_formula) || "暂无" },
       { key: "本次结果", value: scalarText(publicState.last_result) || "待评估" },
       { key: "建议调整", value: scalarText(publicState.last_advice) || "暂无" },
@@ -339,6 +344,9 @@ function buildMiniGameUiStateItems(session: JsonRecord, rulebook: MiniGameRulebo
   if (rulebook.gameType === "upgrade_equipment") {
     return [
       { key: "目标装备", value: scalarText(publicState.equip_name) || "当前装备" },
+      { key: "可用材料", value: asArray<string>(publicState.available_materials).join("、") || "暂无矿石/强化石" },
+      { key: "强化术", value: `lv${Number(publicState.strengthen_skill_level || 1)}` },
+      { key: "等级限制", value: `用户 lv${Number(publicState.user_level || 1)} 以内` },
       { key: "升级方案", value: scalarText(publicState.last_plan) || "暂无" },
       { key: "当前等级", value: scalarText(publicState.current_level) || "0" },
       { key: "本次结果", value: scalarText(publicState.last_result) || "待评估" },
@@ -362,6 +370,12 @@ function buildMiniGamePhaseLabel(session: JsonRecord, rulebook: MiniGameRulebook
     if (phase === "result") return "本轮结束";
     if (phase === "settling") return "已结束";
   }
+  if (rulebook.gameType === "cultivation") {
+    if (phase === "choose_practice") return "选择修炼";
+    if (phase === "gather_qi") return "修炼中";
+    if (phase === "breakthrough") return "冲关";
+    if (phase === "settling") return "已结束";
+  }
   if (isTextInputMiniGame(rulebook.gameType)) {
     if (phase === "await_input") return "等待方案";
     if (phase === "result") return "已评估";
@@ -378,22 +392,22 @@ function buildMiniGameInputHint(rulebook: MiniGameRulebook): string {
     return "直接输入动作，例如“抛竿”“收杆”“继续钓鱼”，#退出 可强制退出小游戏";
   }
   if (rulebook.gameType === "cultivation") {
-    return "直接输入动作，例如“吐纳”“观想”“稳息”“服丹”“冲关”“收功”，#退出 可强制退出小游戏";
+    return "直接输入修炼目标、陪练角色或动作，例如“基础功法”“需要陪练”“吐纳”“冲关”“收功”，#退出 可强制退出小游戏";
   }
   if (rulebook.gameType === "mining") {
-    return "直接输入动作，例如“勘探”“开采”“精挖”“支护”“清障”“休息”“撤离”，#退出 可强制退出小游戏";
+    return "先说要挖什么、是否需要陪练；之后输入“勘探”“开采”“精挖”“支护”“撤离”，#退出 可强制退出小游戏";
   }
   if (rulebook.gameType === "battle") {
     return "直接输入战斗动作，例如“攻击暴风狼”“施展灭魔步攻击”“防御”“调息回气”，#退出 可强制退出小游戏";
   }
   if (rulebook.gameType === "research_skill") {
-    return "直接输入技能名称、思路或调整方案，#退出 可强制退出小游戏";
+    return "直接输入要研发的技能、研发思路、是否需要陪练；每次消耗5金币，#退出 可强制退出小游戏";
   }
   if (rulebook.gameType === "alchemy") {
-    return "直接输入药方、药材搭配或火候思路，#退出 可强制退出小游戏";
+    return "直接输入药方、药材搭配或火候思路；默认可炼回复丹（lv1），每次消耗1金币，#退出 可强制退出小游戏";
   }
   if (rulebook.gameType === "upgrade_equipment") {
-    return "直接输入装备名称和强化方案，#退出 可强制退出小游戏";
+    return "直接输入装备/技能名称、强化方案、是否找人协助；装备消耗材料和1金币，技能消耗20金币，#退出 可强制退出小游戏";
   }
   return "";
 }
@@ -522,6 +536,80 @@ function resolveFishingExpGain(playerLevelInput: number, session: JsonRecord): n
   return takeRng(session, Math.min(10, maxExp), maxExp);
 }
 
+/**
+ * 生成修炼小游戏的单次经验奖励。
+ *
+ * 用途：
+ * - 用户每修炼一次都要立刻获得经验；
+ * - 奖励必须随机且低于“当前等级 * 50”，避免低等级时一次动作给得过猛。
+ */
+function resolveCultivationExpGain(playerLevelInput: number, session: JsonRecord): number {
+  const playerLevel = Math.max(1, Math.floor(playerLevelInput));
+  const maxExp = Math.max(1, playerLevel * 50 - 1);
+  return takeRng(session, 1, maxExp);
+}
+
+/**
+ * 从“技能名(lv1)”或“技能名（lv1）”里拆出基础名称和等级。
+ *
+ * 用途：
+ * - 参数卡早期技能通常是字符串列表，没有专门等级结构；
+ * - 修炼时需要在保留原列表结构的前提下更新对应技能/功法等级。
+ */
+function parseLeveledPracticeName(input: string): { name: string; level: number } {
+  const text = scalarText(input);
+  const match = text.match(/^(.*?)[（(]\s*lv\s*(\d+)\s*[）)]$/iu);
+  if (!match) return { name: text, level: 1 };
+  return {
+    name: scalarText(match[1]),
+    level: Math.max(1, Number(match[2] || 1)),
+  };
+}
+
+function formatLeveledPracticeName(name: string, level: number): string {
+  return `${scalarText(name)}（lv${Math.max(1, Math.floor(level))}）`;
+}
+
+/**
+ * 收集当前参数卡可修炼的功法/技能。
+ *
+ * 用途：
+ * - 如果参数卡有技能、功法字段，则优先让用户修炼已有内容；
+ * - 如果什么都没有，回退到基础功法、基础体术、基础冥想。
+ */
+function collectCultivationPracticeTargetsFromCard(cardInput: JsonRecord): string[] {
+  const card = asRecord(cardInput);
+  const explicitMethods = [
+    ...asArray<string>(card.methods),
+    ...asArray<string>(card.cultivationMethods),
+    ...asArray<string>(card.cultivation_methods),
+    ...asArray<string>(card.gongfa),
+  ];
+  const skills = asArray<string>(card.skills);
+  const otherMethods = asArray<string>(card.other)
+    .filter((item) => /功法|心法|体术|冥想|诀|经|法/u.test(scalarText(item)));
+  const learned = uniqueTexts([...explicitMethods, ...skills, ...otherMethods])
+    .map((item) => parseLeveledPracticeName(item).name)
+    .filter(Boolean);
+  return learned.length ? learned : ["基础功法", "基础体术", "基础冥想"];
+}
+
+/**
+ * 读取可作为陪练/指导的角色名。
+ *
+ * 用途：
+ * - 修炼开场需要询问是否需要陪练；
+ * - 需要陪练时，用户可以直接输入角色名选择指导者。
+ */
+function collectCultivationMentorNames(ctx: MiniGameControllerInput): string[] {
+  return uniqueTexts(
+    worldRoles(ctx.world)
+      .filter((item) => item.roleType === "npc")
+      .map((item) => scalarText(item.name))
+      .filter(Boolean),
+  ).slice(0, 8);
+}
+
 function appendParameterCardList(state: JsonRecord, key: "skills" | "items" | "equipment", additions: string[]) {
   const next = uniqueTexts([
     ...asArray<string>(createPlayerParameterCard(state)[key]),
@@ -530,6 +618,23 @@ function appendParameterCardList(state: JsonRecord, key: "skills" | "items" | "e
   const player = asRecord(state.player);
   const card = createPlayerParameterCard(state);
   card[key] = next;
+  player.parameterCardJson = card;
+  state.player = player;
+}
+
+/**
+ * 从参数卡列表里移除一批条目。
+ *
+ * 用途：
+ * - 升级装备、炼药等小游戏需要扣除材料；
+ * - 参数卡仍以字符串列表存储物品/技能/装备，这里统一做最小侵入式删除。
+ */
+function removeParameterCardListEntries(state: JsonRecord, key: "skills" | "items" | "equipment", removals: string[]) {
+  const removeSet = new Set(uniqueTexts(removals));
+  if (!removeSet.size) return;
+  const player = asRecord(state.player);
+  const card = createPlayerParameterCard(state);
+  card[key] = uniqueTexts(asArray<string>(card[key]).filter((item) => !removeSet.has(scalarText(item))));
   player.parameterCardJson = card;
   state.player = player;
 }
@@ -547,12 +652,183 @@ function replaceParameterCardEquipment(state: JsonRecord, fromName: string, toNa
   state.player = player;
 }
 
+/**
+ * 替换参数卡里的技能名称。
+ *
+ * 用途：
+ * - 升级技能时需要把旧技能名替换成新等级名；
+ * - 保留原有字符串列表结构，避免为了小游戏单独引入新的技能表结构。
+ */
+function replaceParameterCardSkill(state: JsonRecord, fromName: string, toName: string) {
+  const player = asRecord(state.player);
+  const card = createPlayerParameterCard(state);
+  const current = uniqueTexts(asArray<string>(card.skills));
+  const next = current.map((item) => (item === fromName ? toName : item));
+  if (!next.includes(toName)) {
+    next.push(toName);
+  }
+  card.skills = uniqueTexts(next);
+  player.parameterCardJson = card;
+  state.player = player;
+}
+
+/**
+ * 将单次修炼成果同步到参数卡。
+ *
+ * 用途：
+ * - 每次修炼后立即更新经验、功法/技能进度；
+ * - 参数卡仍兼容旧的字符串列表，同时额外维护 cultivation_progress 供后续精确结算。
+ */
+function applyCultivationPracticePatch(state: JsonRecord, patch: JsonRecord) {
+  const target = scalarText(patch.target);
+  if (!target) return;
+  const expGain = Math.max(0, Math.floor(Number(patch.expGain || 0)));
+  const player = asRecord(state.player);
+  const card = createPlayerParameterCard(state);
+  const progress = asRecord(card.cultivation_progress);
+  const currentEntry = asRecord(progress[target]);
+  let practiceLevel = Math.max(1, Number(currentEntry.level || 1));
+  let practiceExp = Math.max(0, Number(currentEntry.exp || 0)) + expGain;
+  let levelUps = 0;
+  while (practiceExp >= practiceLevel * 50) {
+    practiceExp -= practiceLevel * 50;
+    practiceLevel += 1;
+    levelUps += 1;
+  }
+  progress[target] = {
+    kind: scalarText(patch.kind) || scalarText(currentEntry.kind) || "method",
+    level: practiceLevel,
+    exp: practiceExp,
+    updatedAt: nowTs(),
+  };
+  card.cultivation_progress = progress;
+
+  const updateList = (key: "skills" | "other") => {
+    const current = uniqueTexts(asArray<string>(card[key]));
+    const nextName = formatLeveledPracticeName(target, practiceLevel);
+    const index = current.findIndex((item) => parseLeveledPracticeName(item).name === target);
+    if (index >= 0) {
+      current[index] = nextName;
+    } else {
+      current.push(nextName);
+    }
+    card[key] = uniqueTexts(current);
+  };
+  const skillNames = asArray<string>(card.skills).map((item) => parseLeveledPracticeName(item).name);
+  updateList(skillNames.includes(target) || scalarText(patch.kind) === "skill" ? "skills" : "other");
+  if (levelUps > 0) {
+    card.last_cultivation_reward = `${target}提升到lv${practiceLevel}`;
+  }
+  player.parameterCardJson = card;
+  state.player = player;
+}
+
 function collectPlayerEquipmentNames(state: JsonRecord): string[] {
   const card = createPlayerParameterCard(state);
   const fromInventory = asArray<JsonRecord>(state.inventory)
     .map((item) => scalarText(item.name || item.itemName || item.title))
     .filter(Boolean);
   return uniqueTexts([...asArray<string>(card.equipment), ...fromInventory]);
+}
+
+/**
+ * 收集当前用户可识别的物品名。
+ *
+ * 用途：
+ * - 研发技能时计算与现有技能/物品的关联度；
+ * - 升级装备、炼药时判断是否具备所需材料。
+ */
+function collectPlayerItemNames(state: JsonRecord): string[] {
+  const card = createPlayerParameterCard(state);
+  const fromInventory = asArray<JsonRecord>(state.inventory)
+    .map((item) => scalarText(item.name || item.itemName || item.title))
+    .filter(Boolean);
+  return uniqueTexts([...asArray<string>(card.items), ...fromInventory]);
+}
+
+/**
+ * 读取当前参数卡里的金币数量。
+ *
+ * 用途：
+ * - 研发技能、炼药、升级装备都会消耗金币；
+ * - 所有小游戏统一从参数卡 money 字段扣费，避免各自读散落字段。
+ */
+function readMiniGamePlayerMoney(state: JsonRecord): number {
+  const card = createPlayerParameterCard(state);
+  return Math.max(0, Math.floor(Number(card.money || 0)));
+}
+
+/**
+ * 读取指定技能/术法的等级；未显式写等级时按默认等级处理。
+ *
+ * 用途：
+ * - “药草提纯术”“装备强化术”属于默认基础能力；
+ * - 参数卡仍兼容“技能名”或“技能名（lv2）”两种写法。
+ */
+function readNamedPracticeLevel(state: JsonRecord, targetName: string, defaultLevel = 0): number {
+  const card = createPlayerParameterCard(state);
+  const allEntries = [
+    ...asArray<string>(card.skills),
+    ...asArray<string>(card.other),
+    ...asArray<string>(card.items),
+  ];
+  const found = allEntries
+    .map((item) => parseLeveledPracticeName(item))
+    .find((item) => item.name === targetName);
+  return Math.max(defaultLevel, Math.max(0, Number(found?.level || 0)));
+}
+
+/**
+ * 判断用户是否持有指定物品。
+ *
+ * 用途：
+ * - 升级装备需要矿石或强化石；
+ * - 炼药需要对应药方/药材时，可统一走包含判断。
+ */
+function hasPlayerItemLike(state: JsonRecord, keyword: string): boolean {
+  const normalizedKeyword = scalarText(keyword);
+  if (!normalizedKeyword) return false;
+  return collectPlayerItemNames(state).some((item) => scalarText(item).includes(normalizedKeyword));
+}
+
+/**
+ * 从全局 inventory 中移除匹配名称的一批物品。
+ *
+ * 用途：
+ * - 扣除升级材料时，不能只改参数卡 items，还要同步到真实 inventory；
+ * - 当前 inventory 不一定有 stack/count，这里按首个同名条目逐个扣除。
+ */
+function removeInventoryEntriesByNames(state: JsonRecord, removals: string[]) {
+  const queue = uniqueTexts(removals);
+  if (!queue.length) return;
+  const inventory = asArray<JsonRecord>(state.inventory).slice();
+  queue.forEach((targetName) => {
+    const index = inventory.findIndex((item) => {
+      const itemName = scalarText(item.name || item.itemName || item.title);
+      return itemName === targetName || itemName.includes(targetName) || targetName.includes(itemName);
+    });
+    if (index >= 0) {
+      inventory.splice(index, 1);
+    }
+  });
+  state.inventory = inventory;
+}
+
+/**
+ * 统计研发文本和现有技能/物品的关联命中数。
+ *
+ * 用途：
+ * - 研发技能文档要求“与已有技能和物品关系越近成功率越高”；
+ * - 这里按文本包含做轻量关联，不额外引入复杂语义向量。
+ */
+function countAssetSynergyHits(text: string, assetNames: string[]): number {
+  const normalized = normalizeInlineText(text);
+  if (!normalized) return 0;
+  return uniqueTexts(assetNames).reduce((count, name) => {
+    const simple = scalarText(name).replace(/[（(].*?[）)]/gu, "").trim();
+    if (!simple) return count;
+    return normalized.includes(simple) ? count + 1 : count;
+  }, 0);
 }
 
 function simpleSlug(input: string): string {
@@ -593,6 +869,8 @@ function inferPotionName(text: string): string {
 
 function parseEquipmentLevel(name: string): number {
   const text = scalarText(name);
+  const lvMatch = text.match(/(?:lv|LV)\s*(\d+)/u);
+  if (lvMatch?.[1]) return Number(lvMatch[1] || 0);
   const levelMatch = text.match(/(\d+)级/u);
   if (levelMatch?.[1]) return Number(levelMatch[1] || 0);
   const plusMatch = text.match(/\+(\d+)$/u);
@@ -609,12 +887,14 @@ function upgradeEquipmentName(name: string, affix = ""): string {
   const current = scalarText(name);
   const level = parseEquipmentLevel(current);
   let next = current;
-  if (/(\d+)级/u.test(current)) {
+  if (/(?:lv|LV)\s*(\d+)/u.test(current)) {
+    next = current.replace(/(?:lv|LV)\s*(\d+)/u, `lv${level + 1}`);
+  } else if (/(\d+)级/u.test(current)) {
     next = current.replace(/(\d+)级/u, `${level + 1}级`);
   } else if (/\+\d+$/u.test(current)) {
     next = current.replace(/\+(\d+)$/u, `+${level + 1}`);
   } else {
-    next = `${current}${level + 1}级`;
+    next = `${current}（lv${level + 1}）`;
   }
   return affix && !next.includes(affix) ? `${next}（${affix}）` : next;
 }
@@ -1324,8 +1604,30 @@ function evaluateResearchSkillInput(session: JsonRecord, input: MiniGameControll
   const publicState = asRecord(session.public_state);
   const plan = normalizeInlineText(input.playerMessage);
   const skillName = inferSkillName(plan) || "新技能蓝图";
+  const currentMoney = readMiniGamePlayerMoney(input.state);
+  if (currentMoney < 5) {
+    session.status = "finished";
+    session.phase = "settling";
+    session.result = "failed";
+    session.finish_reason = "金币不足";
+    publicState.last_result = "研发失败：金币不足";
+    publicState.last_advice = "研发技能每次会消耗 5 金币，先准备足够资金再来。";
+    return {
+      narration: "我检查了你的研发准备。当前金币不足 5，无法继续研发技能。",
+      resultTags: ["failed", "insufficient_money"],
+      memorySummary: "研发技能失败：金币不足",
+    };
+  }
+  const synergyHits = countAssetSynergyHits(
+    plan,
+    [
+      ...asArray<string>(createPlayerParameterCard(input.state).skills),
+      ...collectPlayerItemNames(input.state),
+    ],
+  );
+  const mentorBonus = /陪练|指点|协助|一起|帮我/u.test(plan) ? 8 : 0;
   const keywordHits = countKeywordHits(plan, ["技能", "招式", "术式", "原理", "控制", "连招", "测试", "稳定", "改良", "回路", "法阵", "压缩"]);
-  const score = clamp(20 + Math.min(24, Math.floor(plan.length / 4)) + keywordHits * 7 + takeRng(session, 0, 22), 0, 100);
+  const score = clamp(20 + Math.min(24, Math.floor(plan.length / 4)) + keywordHits * 7 + synergyHits * 9 + mentorBonus + takeRng(session, 0, 22), 0, 100);
   publicState.target_skill_name = skillName;
   publicState.last_plan = plan;
   publicState.last_result = score >= 68 ? `成功研发：${skillName}` : score >= 48 ? `保留了 ${skillName} 的技能碎片` : "研发失败";
@@ -1342,6 +1644,7 @@ function evaluateResearchSkillInput(session: JsonRecord, input: MiniGameControll
       rewardSummary: { unlock: skillName },
       writeback: {
         parameterCardSkillAdd: [skillName],
+        playerParameterPatch: { money: -5 },
         flagsPatch: { [`skill_unlock_${simpleSlug(skillName)}`]: true },
         memoryAdd: [`研发技能成功：${skillName}`],
       },
@@ -1356,6 +1659,7 @@ function evaluateResearchSkillInput(session: JsonRecord, input: MiniGameControll
       resultTags: ["partial"],
       rewardSummary: { fragment: skillName },
       writeback: {
+        playerParameterPatch: { money: -5 },
         flagsPatch: { [`skill_fragment_${simpleSlug(skillName)}`]: true },
         memoryAdd: [`研发得到技能碎片：${skillName}`],
       },
@@ -1367,7 +1671,7 @@ function evaluateResearchSkillInput(session: JsonRecord, input: MiniGameControll
   return {
     narration: `我检查了你的研发方案。研发失败，暂时还无法稳定成型；${publicState.last_advice}`,
     resultTags: ["failed"],
-    writeback: { memoryAdd: ["一次失败的技能研发尝试"] },
+    writeback: { playerParameterPatch: { money: -5 }, memoryAdd: ["一次失败的技能研发尝试"] },
     memorySummary: "研发技能失败",
   };
 }
@@ -1376,8 +1680,39 @@ function evaluateAlchemyInput(session: JsonRecord, input: MiniGameControllerInpu
   const publicState = asRecord(session.public_state);
   const formula = normalizeInlineText(input.playerMessage);
   const recipeName = inferPotionName(formula);
+  const userLevel = readMiniGamePlayerLevel(input.state);
+  const inferredRecipeLevel = Math.max(1, Number((formula.match(/(?:lv|LV|等级)\s*(\d+)/u)?.[1]) || 1));
+  const currentMoney = readMiniGamePlayerMoney(input.state);
+  if (currentMoney < 1) {
+    session.status = "finished";
+    session.phase = "settling";
+    session.result = "failed";
+    session.finish_reason = "金币不足";
+    publicState.last_result = "炼药失败：金币不足";
+    publicState.last_advice = "炼药每次至少消耗 1 金币，先准备炉火开销再来。";
+    return {
+      narration: "我检查了你的炼药准备。当前金币不足 1，无法开炉炼药。",
+      resultTags: ["failed", "insufficient_money"],
+      memorySummary: "炼药失败：金币不足",
+    };
+  }
+  if (inferredRecipeLevel > userLevel) {
+    session.status = "finished";
+    session.phase = "settling";
+    session.result = "failed";
+    session.finish_reason = "丹药等级过高";
+    publicState.last_result = "炼药失败：丹药等级过高";
+    publicState.last_advice = `当前只能炼制不高于用户等级的丹药。你现在是 lv${userLevel}。`;
+    return {
+      narration: `我检查了你的炼药方案。当前丹药等级 lv${inferredRecipeLevel} 超过了你自身等级 lv${userLevel}，本次无法成炉。`,
+      resultTags: ["failed", "level_limited"],
+      memorySummary: "炼药失败：超出等级限制",
+    };
+  }
+  const herbSkillLevel = readNamedPracticeLevel(input.state, "药草提纯术", 1);
+  const hasStarterRecipe = recipeName.includes("回复丹") || formula.includes("回复丹") || formula.includes("丹方");
   const keywordHits = countKeywordHits(formula, ["药材", "主药", "辅药", "药引", "火候", "提纯", "稳炉", "搅拌", "融合", "凝丹", "文火", "武火"]);
-  const score = clamp(18 + Math.min(26, Math.floor(formula.length / 4)) + keywordHits * 7 + takeRng(session, 0, 24), 0, 100);
+  const score = clamp(18 + Math.min(26, Math.floor(formula.length / 4)) + keywordHits * 7 + herbSkillLevel * 6 + (hasStarterRecipe ? 10 : 0) + takeRng(session, 0, 24), 0, 100);
   publicState.recipe_name = recipeName;
   publicState.last_formula = formula;
   publicState.last_result = score >= 68 ? `炼成上品${recipeName}` : score >= 50 ? `勉强炼成${recipeName}` : "炼制失败";
@@ -1396,6 +1731,7 @@ function evaluateAlchemyInput(session: JsonRecord, input: MiniGameControllerInpu
       writeback: {
         inventoryAdd: [{ kind: "pill", name: pillName }],
         parameterCardItemAdd: [pillName],
+        playerParameterPatch: { money: -1 },
         memoryAdd: [`炼药获得：${pillName}`],
       },
       memorySummary: `炼药完成：${pillName}`,
@@ -1406,7 +1742,7 @@ function evaluateAlchemyInput(session: JsonRecord, input: MiniGameControllerInpu
   return {
     narration: `我检查了你的炼药方案。炼药失败；${publicState.last_advice}`,
     resultTags: ["failed"],
-    writeback: { memoryAdd: ["一次失败的炼药尝试"] },
+    writeback: { playerParameterPatch: { money: -1 }, memoryAdd: ["一次失败的炼药尝试"] },
     memorySummary: "炼药失败",
   };
 }
@@ -1414,6 +1750,49 @@ function evaluateAlchemyInput(session: JsonRecord, input: MiniGameControllerInpu
 function evaluateEquipmentInput(session: JsonRecord, input: MiniGameControllerInput): MiniGameStepResult {
   const publicState = asRecord(session.public_state);
   const plan = normalizeInlineText(input.playerMessage);
+  const currentMoney = readMiniGamePlayerMoney(input.state);
+  const userLevel = readMiniGamePlayerLevel(input.state);
+  const strengthenSkillLevel = readNamedPracticeLevel(input.state, "装备强化术", 1);
+  const skillCandidates = asArray<string>(createPlayerParameterCard(input.state).skills);
+  const matchedSkill = skillCandidates.find((item) => {
+    const parsed = parseLeveledPracticeName(item);
+    return plan.includes(parsed.name) || parsed.name.includes(plan);
+  }) || "";
+  if (matchedSkill) {
+    if (currentMoney < 20) {
+      return {
+        narration: "我检查了你的升级方案。升级技能需要 20 金币，你当前资金不足。",
+        resultTags: ["failed", "insufficient_money"],
+        memorySummary: "升级技能失败：金币不足",
+      };
+    }
+    const parsedSkill = parseLeveledPracticeName(matchedSkill);
+    if (parsedSkill.level >= userLevel) {
+      return {
+        narration: `我检查了你的升级方案。${parsedSkill.name} 已达到你当前等级上限 lv${userLevel}，暂时无法继续升级。`,
+        resultTags: ["failed", "level_limited"],
+        memorySummary: "升级技能失败：达到等级上限",
+      };
+    }
+    const nextSkillName = formatLeveledPracticeName(parsedSkill.name, parsedSkill.level + 1);
+    session.status = "finished";
+    session.phase = "settling";
+    session.result = "success";
+    session.finish_reason = "升级技能成功";
+    publicState.last_result = `技能升级成功：${nextSkillName}`;
+    publicState.last_advice = "技能已经提升，建议尽快进行实战检验。";
+    return {
+      narration: `我检查了你的升级方案。恭喜你成功把 ${parsedSkill.name} 提升到了 ${nextSkillName}。`,
+      resultTags: ["success", "skill_upgrade"],
+      rewardSummary: { skill: nextSkillName },
+      writeback: {
+        parameterCardSkillReplace: [{ from: matchedSkill, to: nextSkillName }],
+        playerParameterPatch: { money: -20 },
+        memoryAdd: [`技能升级成功：${nextSkillName}`],
+      },
+      memorySummary: `技能升级成功：${nextSkillName}`,
+    };
+  }
   const candidates = collectPlayerEquipmentNames(input.state);
   const matched = matchEquipmentName(plan, candidates);
   publicState.last_plan = plan;
@@ -1436,6 +1815,44 @@ function evaluateEquipmentInput(session: JsonRecord, input: MiniGameControllerIn
       memorySummary: "升级装备失败：未找到目标装备",
     };
   }
+  if (currentMoney < 1) {
+    session.status = "finished";
+    session.phase = "settling";
+    session.result = "failed";
+    session.finish_reason = "金币不足";
+    publicState.last_result = "升级失败：金币不足";
+    publicState.last_advice = "升级装备每次至少需要 1 金币。";
+    return {
+      narration: "我检查了你的升级方案。当前金币不足 1，无法启动强化流程。",
+      resultTags: ["failed", "insufficient_money"],
+      memorySummary: "升级装备失败：金币不足",
+    };
+  }
+  const currentEquipmentLevel = parseEquipmentLevel(matched);
+  if (currentEquipmentLevel >= userLevel) {
+    return {
+      narration: `我检查了你的升级方案。${matched} 升级后会超过你当前等级 lv${userLevel}，现在无法继续强化。`,
+      resultTags: ["failed", "level_limited"],
+      memorySummary: `升级装备失败：${matched} 超出用户等级`,
+    };
+  }
+  if (currentEquipmentLevel >= strengthenSkillLevel) {
+    return {
+      narration: `我检查了你的升级方案。你当前的装备强化术仅为 lv${strengthenSkillLevel}，还不足以继续强化 ${matched}。`,
+      resultTags: ["failed", "skill_limited"],
+      memorySummary: `升级装备失败：${matched} 超出强化术等级`,
+    };
+  }
+  if (!hasPlayerItemLike(input.state, "矿石") && !hasPlayerItemLike(input.state, "强化石")) {
+    return {
+      narration: "我检查了你的升级方案。当前缺少矿石或强化石，无法完成这次强化。",
+      resultTags: ["failed", "missing_material"],
+      memorySummary: "升级装备失败：缺少强化材料",
+    };
+  }
+  const consumedMaterial = hasPlayerItemLike(input.state, "强化石")
+    ? (collectPlayerItemNames(input.state).find((item) => item.includes("强化石")) || "强化石")
+    : (collectPlayerItemNames(input.state).find((item) => item.includes("矿石")) || "矿石");
   const keywordHits = countKeywordHits(plan, ["加热", "锻打", "校正", "淬火", "注灵", "强化", "附魔", "稳固", "炉温", "灵石"]);
   const score = clamp(20 + Math.min(24, Math.floor(plan.length / 4)) + keywordHits * 7 + takeRng(session, 0, 22), 0, 100);
   const affix = extractAffix(plan);
@@ -1451,6 +1868,9 @@ function evaluateEquipmentInput(session: JsonRecord, input: MiniGameControllerIn
       rewardSummary: { equipment: upgraded },
       writeback: {
         parameterCardEquipmentReplace: [{ from: matched, to: upgraded }],
+        parameterCardItemRemove: [consumedMaterial],
+        inventoryRemoveNames: [consumedMaterial],
+        playerParameterPatch: { money: -1 },
         flagsPatch: { equipment_upgrade_success: true },
         memoryAdd: [`装备升级成功：${upgraded}`],
       },
@@ -1464,7 +1884,12 @@ function evaluateEquipmentInput(session: JsonRecord, input: MiniGameControllerIn
   return {
     narration: `我检查了你的升级方案。升级失败；${publicState.last_advice}`,
     resultTags: ["failed"],
-    writeback: { memoryAdd: [`一次失败的装备升级尝试：${matched}`] },
+    writeback: {
+      parameterCardItemRemove: [consumedMaterial],
+      inventoryRemoveNames: [consumedMaterial],
+      playerParameterPatch: { money: -1 },
+      memoryAdd: [`一次失败的装备升级尝试：${matched}`],
+    },
     memorySummary: `装备升级失败：${matched}`,
   };
 }
@@ -2550,11 +2975,30 @@ function fishingStep(session: JsonRecord, actionId: string): MiniGameStepResult 
   return { narration: "当前阶段无法执行该动作。", resultTags: ["invalid"] };
 }
 
-function cultivationOptions(): MiniGameActionOption[] {
+function cultivationOptions(session?: JsonRecord): MiniGameActionOption[] {
+  const publicState = asRecord(session?.public_state);
+  const targets = uniqueTexts(asArray<string>(publicState.available_practices));
+  const mentors = uniqueTexts(asArray<string>(publicState.available_mentors));
+  const targetOptions = targets.map((item) => ({
+    action_id: `train:${item}`,
+    label: item,
+    desc: `修炼${item}`,
+    aliases: [`修炼${item}`, `运行${item}`, `练${item}`],
+  }));
+  const mentorOptions = mentors.map((item) => ({
+    action_id: `mentor:${item}`,
+    label: item,
+    desc: `选择${item}作为陪练或指导`,
+    aliases: [`选择${item}`, `${item}陪练`, `让${item}指导`, `请${item}指导`],
+  }));
   return [
-    { action_id: "breathe", label: "吐纳", desc: "积攒灵气", aliases: ["吸收灵气", "运转灵气"] },
-    { action_id: "visualize", label: "观想", desc: "提升感悟", aliases: ["冥想", "参悟"] },
-    { action_id: "steady", label: "稳息", desc: "稳定心神", aliases: ["稳固气息", "稳住心神"] },
+    ...targetOptions,
+    { action_id: "choose_mentor", label: "需要陪练", desc: "查看可选陪练角色", aliases: ["需要陪练", "找陪练", "有人指导吗", "让人指导"] },
+    { action_id: "no_mentor", label: "不需要陪练", desc: "独自修炼", aliases: ["不用陪练", "不需要陪练", "自己修炼", "独自修炼"] },
+    ...mentorOptions,
+    { action_id: "breathe", label: "吐纳", desc: "修炼基础功法并积攒灵气", aliases: ["吸收灵气", "运转灵气"] },
+    { action_id: "visualize", label: "观想", desc: "修炼基础冥想并提升感悟", aliases: ["冥想", "参悟"] },
+    { action_id: "steady", label: "稳息", desc: "修炼基础体术并稳定心神", aliases: ["稳固气息", "稳住心神"] },
     { action_id: "take_pill", label: "服丹", desc: "短时提高灵气", aliases: ["吃丹药", "服用丹药"] },
     { action_id: "breakthrough", label: "冲关", desc: "尝试突破当前瓶颈", aliases: ["突破", "尝试突破"] },
     { action_id: "finish", label: "收功", desc: "安全结束本轮修炼", aliases: ["结束修炼", "停下修炼"] },
@@ -2564,23 +3008,91 @@ function cultivationOptions(): MiniGameActionOption[] {
 function cultivationStep(session: JsonRecord, actionId: string): MiniGameStepResult {
   const publicState = asRecord(session.public_state);
   const hidden = asRecord(session.hidden_state);
+  const currentTarget = () => scalarText(publicState.current_method) || scalarText(asArray<string>(publicState.available_practices)[0]) || "基础功法";
+  const practiceKind = (target: string) => (asArray<string>(publicState.available_skills).includes(target) ? "skill" : "method");
+  const buildPracticeReward = (target: string, expGain: number, kind: string) => ({
+    playerParameterPatch: { exp: expGain },
+    cultivationPracticePatch: { target, kind, expGain },
+    playerAttributePatch: { cultivationExp: expGain },
+    memoryAdd: [`修炼${target}获得经验：${expGain}`],
+  });
+  const trainTarget = (targetInput: string, narrationPrefix: string, resultTag: string): MiniGameStepResult => {
+    const target = scalarText(targetInput) || currentTarget();
+    const kind = practiceKind(target);
+    const expGain = resolveCultivationExpGain(Number(publicState.user_level || 1), session);
+    const practiceProgress = asRecord(publicState.practice_progress);
+    const currentProgress = asRecord(practiceProgress[target]);
+    let practiceLevel = Math.max(1, Number(currentProgress.level || 1));
+    let practiceExp = Math.max(0, Number(currentProgress.exp || 0)) + expGain;
+    let levelUps = 0;
+    while (practiceExp >= practiceLevel * 50) {
+      practiceExp -= practiceLevel * 50;
+      practiceLevel += 1;
+      levelUps += 1;
+    }
+    practiceProgress[target] = { kind, level: practiceLevel, exp: practiceExp };
+    publicState.current_method = target;
+    publicState.last_reward = `${target}经验+${expGain}`;
+    publicState.practice_progress = practiceProgress;
+    session.phase = "gather_qi";
+    session.round = Number(session.round || 1) + 1;
+    const levelText = levelUps > 0
+      ? `${target}提升到lv${practiceLevel}`
+      : `${target}等级暂未变化`;
+    return {
+      narration: `${narrationPrefix}经验+${expGain}，${levelText}。`,
+      resultTags: [resultTag, "practice_reward"],
+      rewardSummary: { exp: expGain, practice: target, practiceLevel, levelUps },
+      writeback: buildPracticeReward(target, expGain, kind),
+      memorySummary: `修炼${target}获得经验 ${expGain}`,
+    };
+  };
   const add = (field: string, delta: number, min = 0, max = 100) => {
     publicState[field] = clamp(Number(publicState[field] || 0) + delta, min, max);
   };
   const addHidden = (field: string, delta: number, min = 0, max = 100) => {
     hidden[field] = clamp(Number(hidden[field] || 0) + delta, min, max);
   };
+  if (actionId.startsWith("train:")) {
+    const target = scalarText(actionId.slice("train:".length));
+    return trainTarget(target, `你开始运转${target}。`, "train");
+  }
+  if (actionId.startsWith("mentor:")) {
+    const mentor = scalarText(actionId.slice("mentor:".length));
+    publicState.mentor = mentor;
+    publicState.last_result = `${mentor}将为本轮修炼提供指导。`;
+    return {
+      narration: `${mentor}已准备陪练和指导。现在请选择修炼目标：${asArray<string>(publicState.available_practices).join("、") || "基础功法、基础体术、基础冥想"}。`,
+      resultTags: ["mentor_selected"],
+    };
+  }
+  if (actionId === "choose_mentor") {
+    const mentors = asArray<string>(publicState.available_mentors);
+    return {
+      narration: mentors.length
+        ? `可以选择这些角色陪练或指导：${mentors.join("、")}。如果不需要陪练，直接说“不需要陪练”。`
+        : "当前没有可选陪练角色。你可以直接选择基础功法、基础体术或基础冥想开始修炼。",
+      resultTags: ["mentor_prompt"],
+    };
+  }
+  if (actionId === "no_mentor") {
+    publicState.mentor = "无";
+    return {
+      narration: `本轮独自修炼。请选择修炼目标：${asArray<string>(publicState.available_practices).join("、") || "基础功法、基础体术、基础冥想"}。`,
+      resultTags: ["mentor_skipped"],
+    };
+  }
   if (actionId === "breathe") {
-    add("qi", 18); add("fatigue", 8); addHidden("deviation_risk", 4); session.round = Number(session.round || 1) + 1;
-    return { narration: `你沉心吐纳，体内灵气逐渐汇聚。当前灵气 ${publicState.qi}。`, resultTags: ["breathe"] };
+    add("qi", 18); add("fatigue", 8); addHidden("deviation_risk", 4);
+    return trainTarget("基础功法", `你沉心吐纳，体内灵气逐渐汇聚。当前灵气 ${publicState.qi}。`, "breathe");
   }
   if (actionId === "visualize") {
-    add("insight", 15); add("fatigue", 6); addHidden("deviation_risk", 3); session.round = Number(session.round || 1) + 1;
-    return { narration: `你凝神观想，灵识澄澈了几分。感悟提升至 ${publicState.insight}。`, resultTags: ["visualize"] };
+    add("insight", 15); add("fatigue", 6); addHidden("deviation_risk", 3);
+    return trainTarget("基础冥想", `你凝神观想，灵识澄澈了几分。感悟提升至 ${publicState.insight}。`, "visualize");
   }
   if (actionId === "steady") {
-    add("stability", 18); addHidden("deviation_risk", -12); session.round = Number(session.round || 1) + 1;
-    return { narration: `你收束气息，心境重新稳定。稳定度上升到 ${publicState.stability}。`, resultTags: ["steady"] };
+    add("stability", 18); addHidden("deviation_risk", -12);
+    return trainTarget("基础体术", `你收束气息，心境重新稳定。稳定度上升到 ${publicState.stability}。`, "steady");
   }
   if (actionId === "take_pill") {
     if (hidden.pill_used) {
@@ -2797,6 +3309,32 @@ function miningOptions(): MiniGameActionOption[] {
   ];
 }
 
+/**
+ * 结算挖矿产物，基础产物永远是目标矿物，稀有掉落按风险积累和随机值触发。
+ *
+ * 用途：
+ * - 文档要求“挖矿后获得目标矿物，偶尔会挖出各种宝物”；
+ * - 这里把目标矿物和稀有宝物统一转成参数卡/背包可写回的物品名。
+ */
+function resolveMiningRewards(session: JsonRecord, oreAmount: number): { itemNames: string[]; inventoryAdd: JsonRecord[]; rareItem: string } {
+  const publicState = asRecord(session.public_state);
+  const hidden = asRecord(session.hidden_state);
+  const targetOre = scalarText(publicState.target_mineral) || scalarText(publicState.mine_name) || "矿石";
+  const oreItemName = `${targetOre}×${Math.max(1, Math.floor(oreAmount))}`;
+  const rarePool = ["灵晶碎片", "古旧矿镐", "伴生火髓", "强化石", "低阶矿脉宝箱"];
+  const rareScore = Number(hidden.rare_drop_roll || 0) + takeRng(session, 1, 100);
+  const rareItem = rareScore >= 110 ? rarePool[takeRng(session, 0, rarePool.length - 1)] || "强化石" : "";
+  const itemNames = rareItem ? [oreItemName, rareItem] : [oreItemName];
+  return {
+    itemNames,
+    inventoryAdd: [
+      { kind: "ore", name: targetOre, amount: Math.max(1, Math.floor(oreAmount)) },
+      ...(rareItem ? [{ kind: "treasure", name: rareItem, amount: 1 }] : []),
+    ],
+    rareItem,
+  };
+}
+
 function miningStep(session: JsonRecord, actionId: string): MiniGameStepResult {
   const publicState = asRecord(session.public_state);
   const hidden = asRecord(session.hidden_state);
@@ -2835,14 +3373,14 @@ function miningStep(session: JsonRecord, actionId: string): MiniGameStepResult {
     session.result = Number(publicState.bag_load || 0) > 0 ? "success" : "partial";
     session.finish_reason = "主动撤离";
     const oreAmount = Math.max(1, Math.floor(Number(publicState.bag_load || 0) / 10));
-    const oreItemName = `矿石×${oreAmount}`;
+    const rewards = resolveMiningRewards(session, oreAmount);
     return {
-      narration: "你选择及时撤离，把当前矿石安全带离了矿区。",
+      narration: `你选择及时撤离，把当前矿物安全带离了矿区。${rewards.rareItem ? `这次还额外挖出了 ${rewards.rareItem}。` : ""}`,
       resultTags: ["leave"],
-      rewardSummary: { ore: oreAmount },
+      rewardSummary: { ore: oreAmount, rare: rewards.rareItem },
       writeback: {
-        inventoryAdd: [{ kind: "ore", amount: oreAmount }],
-        parameterCardItemAdd: [oreItemName],
+        inventoryAdd: rewards.inventoryAdd,
+        parameterCardItemAdd: rewards.itemNames,
         memoryAdd: ["矿区采掘后安全撤离"],
       },
       memorySummary: "挖矿后主动撤离",
@@ -2862,14 +3400,14 @@ function miningStep(session: JsonRecord, actionId: string): MiniGameStepResult {
     session.result = "success";
     session.finish_reason = "矿脉采尽";
     const oreAmount = Math.max(2, Math.floor(Number(publicState.bag_load || 0) / 8));
-    const oreItemName = `矿石×${oreAmount}`;
+    const rewards = resolveMiningRewards(session, oreAmount);
     return {
-      narration: "你成功采空了这条矿脉，带走了一批矿石。",
+      narration: `你成功采空了这条矿脉，带走了一批目标矿物。${rewards.rareItem ? `矿脉深处还掉出了 ${rewards.rareItem}。` : ""}`,
       resultTags: ["success"],
-      rewardSummary: { ore: oreAmount },
+      rewardSummary: { ore: oreAmount, rare: rewards.rareItem },
       writeback: {
-        inventoryAdd: [{ kind: "ore", amount: oreAmount }],
-        parameterCardItemAdd: [oreItemName],
+        inventoryAdd: rewards.inventoryAdd,
+        parameterCardItemAdd: rewards.itemNames,
         memoryAdd: ["采尽了一条矿脉"],
       },
       memorySummary: "挖矿成功，采尽矿脉",
@@ -3062,24 +3600,57 @@ const RULEBOOKS: Record<string, MiniGameRulebook> = {
     triggerTags: ["#修炼"],
     passivePatterns: [/修炼/, /开始修炼/, /闭关/, /冲关/],
     ruleSummary: "围绕灵气、感悟、稳定与疲劳做管理。贸然冲关会提高偏差风险。",
-    setup: (ctx, sessionId, entrySource) => ({
-      session_id: sessionId,
-      game_type: "cultivation",
-      rulebook_version: "1.0",
-      status: "active",
-      phase: "gather_qi",
-      round: 1,
-      sub_turn: 0,
-      entry_source: entrySource,
-      chapter_id: Number(ctx.chapter?.id || 0) || null,
-      scene_id: scalarText(ctx.chapter?.title) || "quiet_room",
-      participants: buildParticipants(ctx, 1),
-      public_state: buildSimplePublicState({ qi: 20, insight: 15, stability: 60, fatigue: 0, breakthrough_progress: 0, current_method: "基础吐纳法" }),
-      hidden_state: { deviation_risk: 10, bonus_event_roll: 0, environment_bonus: 5, bottleneck_level: 1, pill_used: false },
-      resource_state: {},
-      rng_state: { seed: `${ctx.world?.id || 0}:${ctx.chapter?.id || 0}:cultivation:${sessionId}`, cursor: 0, queue: buildRngQueue(`${ctx.world?.id || 0}:${ctx.chapter?.id || 0}:cultivation:${sessionId}`) },
-      action_log_ids: [], result: "ongoing", finish_reason: "", reward_preview: {}, writeback_whitelist: ["player_state.resources", "player_state.flags", "memory_state.mid_term"], can_suspend: true, can_quit: true, resume_token: `resume_${sessionId}`,
-    }),
+    setup: (ctx, sessionId, entrySource) => {
+      const playerCard = createPlayerParameterCard(ctx.state);
+      const practices = collectCultivationPracticeTargetsFromCard(playerCard);
+      const skills = asArray<string>(playerCard.skills).map((item) => parseLeveledPracticeName(item).name);
+      const mentors = collectCultivationMentorNames(ctx);
+      const requestedMineral = scalarText(ctx.playerMessage)
+        .replace(/#?挖矿|采矿|下矿/gu, "")
+        .replace(/[，。！？!?,；;：:\s]/gu, "")
+        .slice(0, 12);
+      const targetMineral = requestedMineral || "铁矿";
+      return {
+        session_id: sessionId,
+        game_type: "cultivation",
+        rulebook_version: "1.0",
+        status: "active",
+        phase: "choose_practice",
+        round: 1,
+        sub_turn: 0,
+        entry_source: entrySource,
+        chapter_id: Number(ctx.chapter?.id || 0) || null,
+        scene_id: scalarText(ctx.chapter?.title) || "quiet_room",
+        participants: buildParticipants(ctx, Math.max(1, Math.min(3, mentors.length + 1))),
+        public_state: buildSimplePublicState({
+          qi: 20,
+          insight: 15,
+          stability: 60,
+          fatigue: 0,
+          breakthrough_progress: 0,
+          current_method: "",
+          mentor: "",
+          available_practices: practices,
+          available_skills: skills,
+          available_mentors: mentors,
+          practice_progress: asRecord(playerCard.cultivation_progress),
+          user_level: Math.max(1, Number(playerCard.level || 1)),
+          last_reward: "",
+          last_result: "等待选择修炼目标",
+        }),
+        hidden_state: { deviation_risk: 10, bonus_event_roll: 0, environment_bonus: 5, bottleneck_level: 1, pill_used: false },
+        resource_state: {},
+        rng_state: { seed: `${ctx.world?.id || 0}:${ctx.chapter?.id || 0}:cultivation:${sessionId}`, cursor: 0, queue: buildRngQueue(`${ctx.world?.id || 0}:${ctx.chapter?.id || 0}:cultivation:${sessionId}`) },
+        action_log_ids: [],
+        result: "ongoing",
+        finish_reason: "",
+        reward_preview: {},
+        writeback_whitelist: ["player_state.parameter_card", "player_state.resources", "player_state.flags", "memory_state.mid_term"],
+        can_suspend: true,
+        can_quit: true,
+        resume_token: `resume_${sessionId}`,
+      };
+    },
     options: cultivationOptions,
     applyAction: cultivationStep,
   },
@@ -3091,31 +3662,40 @@ const RULEBOOKS: Record<string, MiniGameRulebook> = {
     phaseOrder: ["await_input", "result", "settling"],
     triggerTags: ["#研发技能"],
     passivePatterns: [/研发技能/, /研发.*技能/, /自创招式/, /开发技能/],
-    ruleSummary: "旁白先交代研发目标，随后直接输入技能名称、原理与测试思路。系统会判断成功、半成功或失败，并给出建议。",
-    setup: (ctx, sessionId, entrySource) => ({
-      session_id: sessionId,
-      game_type: "research_skill",
-      rulebook_version: "1.0",
-      status: "active",
-      phase: "await_input",
-      round: 1,
-      sub_turn: 0,
-      entry_source: entrySource,
-      chapter_id: Number(ctx.chapter?.id || 0) || null,
-      scene_id: scalarText(ctx.chapter?.title) || "workbench",
-      participants: buildParticipants(ctx, 1),
-      public_state: buildSimplePublicState({
-        target_skill_name: "新技能蓝图",
-        complexity: 2,
-        last_plan: "",
-        last_result: "",
-        last_advice: "",
-      }),
-      hidden_state: { inspiration_roll: 0, failure_threshold: 60, synergy_bonus: 0, mentor_bonus: 0 },
-      resource_state: {},
-      rng_state: { seed: `${ctx.world?.id || 0}:${ctx.chapter?.id || 0}:research_skill:${sessionId}`, cursor: 0, queue: buildRngQueue(`${ctx.world?.id || 0}:${ctx.chapter?.id || 0}:research_skill:${sessionId}`) },
-      action_log_ids: [], result: "ongoing", finish_reason: "", reward_preview: {}, writeback_whitelist: ["player_state.parameter_card", "player_state.flags", "memory_state.mid_term"], can_suspend: true, can_quit: true, resume_token: `resume_${sessionId}`,
-    }),
+    ruleSummary: "首次进入默认折叠面板，旁白询问研发技能与是否需要陪练。每次消耗5金币；与已有技能/物品关联越强，成功率越高。",
+    setup: (ctx, sessionId, entrySource) => {
+      const playerCard = createPlayerParameterCard(ctx.state);
+      const mentors = collectCultivationMentorNames(ctx);
+      return {
+        session_id: sessionId,
+        game_type: "research_skill",
+        rulebook_version: "1.0",
+        status: "active",
+        phase: "await_input",
+        round: 1,
+        sub_turn: 0,
+        entry_source: entrySource,
+        chapter_id: Number(ctx.chapter?.id || 0) || null,
+        scene_id: scalarText(ctx.chapter?.title) || "workbench",
+        participants: buildParticipants(ctx, Math.max(1, Math.min(3, mentors.length + 1))),
+        public_state: buildSimplePublicState({
+          target_skill_name: "新技能蓝图",
+          complexity: 2,
+          cost_money: 5,
+          available_mentors: mentors,
+          reference_skills: asArray<string>(playerCard.skills),
+          reference_items: asArray<string>(playerCard.items),
+          panel_default_collapsed: true,
+          last_plan: "",
+          last_result: "",
+          last_advice: "",
+        }),
+        hidden_state: { inspiration_roll: 0, failure_threshold: 60, synergy_bonus: 0, mentor_bonus: 0 },
+        resource_state: {},
+        rng_state: { seed: `${ctx.world?.id || 0}:${ctx.chapter?.id || 0}:research_skill:${sessionId}`, cursor: 0, queue: buildRngQueue(`${ctx.world?.id || 0}:${ctx.chapter?.id || 0}:research_skill:${sessionId}`) },
+        action_log_ids: [], result: "ongoing", finish_reason: "", reward_preview: {}, writeback_whitelist: ["player_state.parameter_card", "player_state.flags", "memory_state.mid_term"], can_suspend: true, can_quit: true, resume_token: `resume_${sessionId}`,
+      };
+    },
     options: researchOptions,
     applyAction: researchStep,
   },
@@ -3127,30 +3707,38 @@ const RULEBOOKS: Record<string, MiniGameRulebook> = {
     phaseOrder: ["await_input", "result", "settling"],
     triggerTags: ["#炼药"],
     passivePatterns: [/炼药/, /炼丹/, /开炉炼药/],
-    ruleSummary: "旁白先说明当前丹炉局势，随后直接输入药方、药材搭配和火候思路。系统会评估成丹结果并给出建议。",
-    setup: (ctx, sessionId, entrySource) => ({
-      session_id: sessionId,
-      game_type: "alchemy",
-      rulebook_version: "1.0",
-      status: "active",
-      phase: "await_input",
-      round: 1,
-      sub_turn: 0,
-      entry_source: entrySource,
-      chapter_id: Number(ctx.chapter?.id || 0) || null,
-      scene_id: scalarText(ctx.chapter?.title) || "alchemy_furnace",
-      participants: buildParticipants(ctx, 1),
-      public_state: buildSimplePublicState({
-        recipe_name: "基础丹方",
-        last_formula: "",
-        last_result: "",
-        last_advice: "",
-      }),
-      hidden_state: { recipe_name: "基础丹方", target_heat: 65 },
-      resource_state: {},
-      rng_state: { seed: `${ctx.world?.id || 0}:${ctx.chapter?.id || 0}:alchemy:${sessionId}`, cursor: 0, queue: buildRngQueue(`${ctx.world?.id || 0}:${ctx.chapter?.id || 0}:alchemy:${sessionId}`) },
-      action_log_ids: [], result: "ongoing", finish_reason: "", reward_preview: {}, writeback_whitelist: ["player_state.inventory", "player_state.parameter_card", "memory_state.mid_term"], can_suspend: true, can_quit: true, resume_token: `resume_${sessionId}`,
-    }),
+    ruleSummary: "用户默认拥有回复丹药方（lv1）与药草提纯术（lv1）。只能炼制不高于自身等级的丹药，每次炼药消耗1金币。",
+    setup: (ctx, sessionId, entrySource) => {
+      const playerCard = createPlayerParameterCard(ctx.state);
+      return {
+        session_id: sessionId,
+        game_type: "alchemy",
+        rulebook_version: "1.0",
+        status: "active",
+        phase: "await_input",
+        round: 1,
+        sub_turn: 0,
+        entry_source: entrySource,
+        chapter_id: Number(ctx.chapter?.id || 0) || null,
+        scene_id: scalarText(ctx.chapter?.title) || "alchemy_furnace",
+        participants: buildParticipants(ctx, 1),
+        public_state: buildSimplePublicState({
+          recipe_name: "回复丹药方（lv1）",
+          known_recipes: uniqueTexts(["回复丹药方（lv1）", ...asArray<string>(playerCard.items).filter((item) => /丹方|药方/u.test(item))]),
+          alchemy_skills: uniqueTexts(["药草提纯术（lv1）", ...asArray<string>(playerCard.skills).filter((item) => item.includes("提纯") || item.includes("炼药"))]),
+          user_level: Math.max(1, Number(playerCard.level || 1)),
+          cost_money: 1,
+          panel_default_collapsed: true,
+          last_formula: "",
+          last_result: "",
+          last_advice: "",
+        }),
+        hidden_state: { recipe_name: "回复丹药方（lv1）", target_heat: 65 },
+        resource_state: {},
+        rng_state: { seed: `${ctx.world?.id || 0}:${ctx.chapter?.id || 0}:alchemy:${sessionId}`, cursor: 0, queue: buildRngQueue(`${ctx.world?.id || 0}:${ctx.chapter?.id || 0}:alchemy:${sessionId}`) },
+        action_log_ids: [], result: "ongoing", finish_reason: "", reward_preview: {}, writeback_whitelist: ["player_state.inventory", "player_state.parameter_card", "memory_state.mid_term"], can_suspend: true, can_quit: true, resume_token: `resume_${sessionId}`,
+      };
+    },
     options: alchemyOptions,
     applyAction: alchemyStep,
   },
@@ -3162,25 +3750,28 @@ const RULEBOOKS: Record<string, MiniGameRulebook> = {
     phaseOrder: ["survey", "excavate", "risk_check", "haul", "settling"],
     triggerTags: ["#挖矿"],
     passivePatterns: [/挖矿/, /采矿/, /下矿/],
-    ruleSummary: "危险度越高、稳定度越低，坍塌风险越大。优先允许用户带伤撤离，不直接破坏主线。",
-    setup: (ctx, sessionId, entrySource) => ({
-      session_id: sessionId,
-      game_type: "mining",
-      rulebook_version: "1.0",
-      status: "active",
-      phase: "survey",
-      round: 1,
-      sub_turn: 0,
-      entry_source: entrySource,
-      chapter_id: Number(ctx.chapter?.id || 0) || null,
-      scene_id: scalarText(ctx.chapter?.title) || "mine",
-      participants: buildParticipants(ctx, 1),
-      public_state: buildSimplePublicState({ mine_name: "当前矿脉", vein_hp: 100, stability: 60, danger: 10, player_stamina: 100, tool_durability: 100, bag_load: 0 }),
-      hidden_state: { ore_table: ["铁矿", "铜矿", "灵石"], rare_drop_roll: 0, weakness_point: false, collapse_threshold: 75 },
-      resource_state: {},
-      rng_state: { seed: `${ctx.world?.id || 0}:${ctx.chapter?.id || 0}:mining:${sessionId}`, cursor: 0, queue: buildRngQueue(`${ctx.world?.id || 0}:${ctx.chapter?.id || 0}:mining:${sessionId}`) },
-      action_log_ids: [], result: "ongoing", finish_reason: "", reward_preview: {}, writeback_whitelist: ["player_state.inventory", "player_state.resources", "memory_state.mid_term"], can_suspend: true, can_quit: true, resume_token: `resume_${sessionId}`,
-    }),
+    ruleSummary: "首次进入默认折叠面板，旁白询问目标矿物与是否需要陪练。挖矿获得目标矿物，并有概率获得宝物。",
+    setup: (ctx, sessionId, entrySource) => {
+      const mentors = collectCultivationMentorNames(ctx);
+      return {
+        session_id: sessionId,
+        game_type: "mining",
+        rulebook_version: "1.0",
+        status: "active",
+        phase: "survey",
+        round: 1,
+        sub_turn: 0,
+        entry_source: entrySource,
+        chapter_id: Number(ctx.chapter?.id || 0) || null,
+        scene_id: scalarText(ctx.chapter?.title) || "mine",
+        participants: buildParticipants(ctx, Math.max(1, Math.min(3, mentors.length + 1))),
+        public_state: buildSimplePublicState({ mine_name: "当前矿脉", target_mineral: targetMineral, available_mentors: mentors, panel_default_collapsed: true, vein_hp: 100, stability: 60, danger: 10, player_stamina: 100, tool_durability: 100, bag_load: 0 }),
+        hidden_state: { ore_table: ["铁矿", "铜矿", "灵石"], rare_drop_roll: 0, weakness_point: false, collapse_threshold: 75 },
+        resource_state: {},
+        rng_state: { seed: `${ctx.world?.id || 0}:${ctx.chapter?.id || 0}:mining:${sessionId}`, cursor: 0, queue: buildRngQueue(`${ctx.world?.id || 0}:${ctx.chapter?.id || 0}:mining:${sessionId}`) },
+        action_log_ids: [], result: "ongoing", finish_reason: "", reward_preview: {}, writeback_whitelist: ["player_state.inventory", "player_state.parameter_card", "player_state.resources", "memory_state.mid_term"], can_suspend: true, can_quit: true, resume_token: `resume_${sessionId}`,
+      };
+    },
     options: miningOptions,
     applyAction: miningStep,
   },
@@ -3259,33 +3850,43 @@ const RULEBOOKS: Record<string, MiniGameRulebook> = {
     phaseOrder: ["await_input", "result", "settling"],
     triggerTags: ["#升级装备"],
     passivePatterns: [/升级装备/, /强化装备/, /锻造装备/],
-    ruleSummary: "旁白先说明锻造场景，随后直接输入要强化的装备和方案。系统会给出成功、失败或改进建议，并写回装备结果。",
-    setup: (ctx, sessionId, entrySource) => ({
-      session_id: sessionId,
-      game_type: "upgrade_equipment",
-      rulebook_version: "1.0",
-      status: "active",
-      phase: "await_input",
-      round: 1,
-      sub_turn: 0,
-      entry_source: entrySource,
-      chapter_id: Number(ctx.chapter?.id || 0) || null,
-      scene_id: scalarText(ctx.chapter?.title) || "forge",
-      participants: buildParticipants(ctx, 1),
-      public_state: buildSimplePublicState({
-        equip_id: "equip_current",
-        equip_name: "当前装备",
-        equip_type: "武器",
-        current_level: 0,
-        last_plan: "",
-        last_result: "",
-        last_advice: "",
-      }),
-      hidden_state: { optimal_heat_min: 60, optimal_heat_max: 80, failure_risk: 20, bonus_affix_roll: 0 },
-      resource_state: {},
-      rng_state: { seed: `${ctx.world?.id || 0}:${ctx.chapter?.id || 0}:upgrade_equipment:${sessionId}`, cursor: 0, queue: buildRngQueue(`${ctx.world?.id || 0}:${ctx.chapter?.id || 0}:upgrade_equipment:${sessionId}`) },
-      action_log_ids: [], result: "ongoing", finish_reason: "", reward_preview: {}, writeback_whitelist: ["player_state.parameter_card", "player_state.flags", "memory_state.mid_term"], can_suspend: true, can_quit: true, resume_token: `resume_${sessionId}`,
-    }),
+    ruleSummary: "首次进入默认折叠面板，旁白询问要升级的装备与是否需要协助。装备升级消耗矿石/强化石和1金币；技能升级消耗20金币。",
+    setup: (ctx, sessionId, entrySource) => {
+      const playerCard = createPlayerParameterCard(ctx.state);
+      const mentors = collectCultivationMentorNames(ctx);
+      return {
+        session_id: sessionId,
+        game_type: "upgrade_equipment",
+        rulebook_version: "1.0",
+        status: "active",
+        phase: "await_input",
+        round: 1,
+        sub_turn: 0,
+        entry_source: entrySource,
+        chapter_id: Number(ctx.chapter?.id || 0) || null,
+        scene_id: scalarText(ctx.chapter?.title) || "forge",
+        participants: buildParticipants(ctx, Math.max(1, Math.min(3, mentors.length + 1))),
+        public_state: buildSimplePublicState({
+          equip_id: "equip_current",
+          equip_name: "当前装备",
+          equip_type: "武器",
+          current_level: 0,
+          user_level: Math.max(1, Number(playerCard.level || 1)),
+          strengthen_skill_level: readNamedPracticeLevel(ctx.state, "装备强化术", 1),
+          available_equipment: collectPlayerEquipmentNames(ctx.state),
+          available_materials: collectPlayerItemNames(ctx.state).filter((item) => item.includes("矿石") || item.includes("强化石")),
+          available_mentors: mentors,
+          panel_default_collapsed: true,
+          last_plan: "",
+          last_result: "",
+          last_advice: "",
+        }),
+        hidden_state: { optimal_heat_min: 60, optimal_heat_max: 80, failure_risk: 20, bonus_affix_roll: 0 },
+        resource_state: {},
+        rng_state: { seed: `${ctx.world?.id || 0}:${ctx.chapter?.id || 0}:upgrade_equipment:${sessionId}`, cursor: 0, queue: buildRngQueue(`${ctx.world?.id || 0}:${ctx.chapter?.id || 0}:upgrade_equipment:${sessionId}`) },
+        action_log_ids: [], result: "ongoing", finish_reason: "", reward_preview: {}, writeback_whitelist: ["player_state.inventory", "player_state.parameter_card", "player_state.flags", "memory_state.mid_term"], can_suspend: true, can_quit: true, resume_token: `resume_${sessionId}`,
+      };
+    },
     options: forgeOptions,
     applyAction: forgeStep,
   },
@@ -3313,6 +3914,14 @@ function applyMiniGameWriteback(state: JsonRecord, writeback: JsonRecord) {
   if (parameterCardItemAdd.length && allow("player_state.parameter_card")) {
     appendParameterCardList(state, "items", parameterCardItemAdd);
   }
+  const parameterCardItemRemove = uniqueTexts(asArray<string>(writeback.parameterCardItemRemove));
+  if (parameterCardItemRemove.length && allow("player_state.parameter_card")) {
+    removeParameterCardListEntries(state, "items", parameterCardItemRemove);
+  }
+  const inventoryRemoveNames = uniqueTexts(asArray<string>(writeback.inventoryRemoveNames));
+  if (inventoryRemoveNames.length && allow("player_state.inventory")) {
+    removeInventoryEntriesByNames(state, inventoryRemoveNames);
+  }
   const parameterCardEquipmentReplace = asArray<JsonRecord>(writeback.parameterCardEquipmentReplace);
   if (parameterCardEquipmentReplace.length && allow("player_state.parameter_card")) {
     parameterCardEquipmentReplace.forEach((item) => {
@@ -3320,6 +3929,16 @@ function applyMiniGameWriteback(state: JsonRecord, writeback: JsonRecord) {
       const toName = scalarText(item.to);
       if (fromName && toName) {
         replaceParameterCardEquipment(state, fromName, toName);
+      }
+    });
+  }
+  const parameterCardSkillReplace = asArray<JsonRecord>(writeback.parameterCardSkillReplace);
+  if (parameterCardSkillReplace.length && allow("player_state.parameter_card")) {
+    parameterCardSkillReplace.forEach((item) => {
+      const fromName = scalarText(item.from);
+      const toName = scalarText(item.to);
+      if (fromName && toName) {
+        replaceParameterCardSkill(state, fromName, toName);
       }
     });
   }
@@ -3343,6 +3962,10 @@ function applyMiniGameWriteback(state: JsonRecord, writeback: JsonRecord) {
       : card;
     player.parameterCardJson = normalizedCard;
     state.player = player;
+  }
+  const cultivationPracticePatch = asRecord(writeback.cultivationPracticePatch);
+  if (Object.keys(cultivationPracticePatch).length && allow("player_state.parameter_card")) {
+    applyCultivationPracticePatch(state, cultivationPracticePatch);
   }
   const playerAttributePatch = asRecord(writeback.playerAttributePatch);
   if (Object.keys(playerAttributePatch).length && allow("player_state.resources")) {
@@ -3432,14 +4055,53 @@ function buildStartNarration(rulebook: MiniGameRulebook, session: JsonRecord): s
   if (rulebook.gameType === "fishing") {
     return `你来到 ${scalarText(publicState.site_name) || "水边"}，准备开始钓鱼。现在可以直接输入“抛竿”“收杆”或“继续钓鱼”。`;
   }
+  if (rulebook.gameType === "cultivation") {
+    const practices = asArray<string>(publicState.available_practices).join("、") || "基础功法、基础体术、基础冥想";
+    const mentors = asArray<string>(publicState.available_mentors).join("、");
+    return [
+      "修炼开始。你想修炼什么？是否需要陪练或指导？",
+      `当前可修炼：${practices}。`,
+      mentors ? `可选陪练：${mentors}。` : "当前没有可选陪练，也可以独自修炼。",
+      "直接输入修炼目标、角色名，或输入“不需要陪练”。",
+    ].join("");
+  }
   if (rulebook.gameType === "research_skill") {
-    return "研发技能开始了。直接输入技能名称、研发思路和测试方案，我会立即帮你判断能否成型。";
+    const mentors = asArray<string>(publicState.available_mentors).join("、");
+    return [
+      "研发技能开始了。你准备研发什么技能？是否需要陪练或角色协助？",
+      "每次研发会消耗 5 金币；技能与已有物品、技能关联越强，成功率越高。",
+      mentors ? `可选陪练：${mentors}。` : "当前没有可选陪练，也可以独自研发。",
+      "直接输入技能名、研发原理、测试方式和是否需要陪练。",
+    ].join("");
   }
   if (rulebook.gameType === "alchemy") {
-    return "炼药开始了。直接输入药方、药材搭配和火候思路，我会立刻检查这次能否成丹。";
+    const recipes = asArray<string>(publicState.known_recipes).join("、") || "回复丹药方（lv1）";
+    return [
+      "炼药开始了。你准备炼什么丹药？",
+      `当前默认药方：${recipes}；默认能力：药草提纯术（lv1）。`,
+      `只能炼制不高于自身等级 lv${Number(publicState.user_level || 1)} 的丹药，每次炼药消耗 1 金币。`,
+      "直接输入药方、药材搭配、提纯方式和火候思路。",
+    ].join("");
+  }
+  if (rulebook.gameType === "mining") {
+    const mentors = asArray<string>(publicState.available_mentors).join("、");
+    return [
+      "挖矿开始了。你准备挖什么矿物？是否需要陪练或角色协助？",
+      mentors ? `可选陪练：${mentors}。` : "当前没有可选陪练，也可以独自挖矿。",
+      "挖矿会获得目标矿物，并有概率挖出宝物。直接输入目标矿物或“勘探”“开采”“精挖”“撤离”。",
+    ].join("");
   }
   if (rulebook.gameType === "upgrade_equipment") {
-    return "升级装备开始了。直接输入你要强化的装备和方案，我会立即检查这次强化是否成功。";
+    const mentors = asArray<string>(publicState.available_mentors).join("、");
+    const equipment = asArray<string>(publicState.available_equipment).join("、") || "暂无装备";
+    const materials = asArray<string>(publicState.available_materials).join("、") || "暂无矿石/强化石";
+    return [
+      "升级装备开始了。你准备升级什么装备或技能？是否需要找人协助？",
+      `可升级装备：${equipment}；可用材料：${materials}。`,
+      `装备升级需要矿石/强化石和 1 金币，且等级不能超过用户 lv${Number(publicState.user_level || 1)} 与装备强化术 lv${Number(publicState.strengthen_skill_level || 1)}。技能升级消耗 20 金币，最高到用户当前等级。`,
+      mentors ? `可选协助角色：${mentors}。` : "当前没有可选协助角色，也可以独自强化。",
+      "直接输入装备/技能名称、强化方案和是否需要协助。",
+    ].join("");
   }
   if (rulebook.gameType === "battle") {
     const publicState = asRecord(session.public_state);
@@ -3537,19 +4199,21 @@ function buildStatusNarration(root: JsonRecord, rulebook: MiniGameRulebook): str
     ].filter(Boolean).join("");
   }
   if (rulebook.gameType === "cultivation") {
-    return `修炼状态：第 ${Number(session.round || 1)} 轮。可直接输入“吐纳”“观想”“稳息”“服丹”“冲关”“收功”。`;
+    const practices = asArray<string>(publicState.available_practices).join("、") || "基础功法、基础体术、基础冥想";
+    const mentor = scalarText(publicState.mentor) || "未选择";
+    return `修炼状态：第 ${Number(session.round || 1)} 轮。当前目标：${scalarText(publicState.current_method) || "未选择"}；陪练：${mentor}。可选修炼：${practices}。`;
   }
   if (rulebook.gameType === "mining") {
-    return `挖矿状态：矿脉剩余 ${Number(publicState.vein_hp || 0)}，危险度 ${Number(publicState.danger || 0)}。可直接输入“勘探”“开采”“精挖”“支护”“清障”“休息”“撤离”。`;
+    return `挖矿状态：目标矿物 ${scalarText(publicState.target_mineral) || "铁矿"}，矿脉剩余 ${Number(publicState.vein_hp || 0)}，危险度 ${Number(publicState.danger || 0)}。可直接输入“勘探”“开采”“精挖”“支护”“清障”“休息”“撤离”。`;
   }
   if (rulebook.gameType === "research_skill") {
-    return `研发状态：${scalarText(publicState.last_result) || "等待方案"}。${scalarText(publicState.last_advice) || "直接输入技能名称、原理和测试思路。"}。`;
+    return `研发状态：${scalarText(publicState.last_result) || "等待方案"}。每次消耗 5 金币；${scalarText(publicState.last_advice) || "直接输入技能名称、原理、测试思路和是否需要陪练。"}。`;
   }
   if (rulebook.gameType === "alchemy") {
-    return `炼药状态：${scalarText(publicState.last_result) || "等待方案"}。${scalarText(publicState.last_advice) || "直接输入药材搭配、火候与凝丹思路。"}。`;
+    return `炼药状态：${scalarText(publicState.last_result) || "等待方案"}。默认回复丹药方（lv1）和药草提纯术（lv1）；${scalarText(publicState.last_advice) || "直接输入药材搭配、火候与凝丹思路。"}。`;
   }
   if (rulebook.gameType === "upgrade_equipment") {
-    return `强化状态：${scalarText(publicState.last_result) || "等待方案"}。${scalarText(publicState.last_advice) || "直接输入装备名称以及加热、锻打、注灵方案。"}。`;
+    return `强化状态：${scalarText(publicState.last_result) || "等待方案"}。装备强化术 lv${Number(publicState.strengthen_skill_level || 1)}；${scalarText(publicState.last_advice) || "直接输入装备/技能名称以及加热、锻打、注灵方案。"}。`;
   }
   if (rulebook.gameType === "battle") {
     return `战斗状态：${scalarText(publicState.last_result) || "双方已经进入交战状态。"}${battleStatusSummary(session)}`;
@@ -3565,19 +4229,19 @@ function buildRuleNarration(rulebook: MiniGameRulebook): string {
     return "钓鱼规则：通过聊天框直接输入“抛竿”“收杆”“继续钓鱼”等动作推进。可能空竿，也可能钓到鱼或宝物；有收获会直接加入物品。";
   }
   if (rulebook.gameType === "cultivation") {
-    return "修炼规则：通过聊天框直接输入“吐纳”“观想”“稳息”“服丹”“冲关”“收功”等动作，系统会根据当前灵气、感悟和稳定度结算结果。";
+    return "修炼规则：先选择修炼功法、技能或基础修炼方向，也可以选择是否需要陪练。每次修炼都会立即获得随机经验并写回角色参数卡。";
   }
   if (rulebook.gameType === "mining") {
-    return "挖矿规则：通过聊天框直接输入“勘探”“开采”“精挖”“支护”“清障”“休息”“撤离”等动作，系统会实时更新矿脉剩余、危险度和负重。";
+    return "挖矿规则：首次进入默认折叠面板，旁白询问目标矿物和是否需要陪练。通过聊天框输入“勘探”“开采”“精挖”“支护”“撤离”等动作，结算时获得目标矿物，并有概率获得宝物。";
   }
   if (rulebook.gameType === "research_skill") {
-    return "研发技能规则：直接输入技能名称、原理、测试方式和改良思路。我会判断是成功研发、保留碎片还是失败，并把结果写回角色参数或记忆。";
+    return "研发技能规则：首次进入默认折叠面板，旁白询问要研发的技能和是否需要陪练。每次研发消耗 5 金币；与已有技能和物品关联越强，成功率越高。";
   }
   if (rulebook.gameType === "alchemy") {
-    return "炼药规则：直接输入药方、药材搭配、火候与稳炉思路。我会判断是成丹、勉强成丹还是失败，并把结果写回背包和参数卡。";
+    return "炼药规则：默认拥有回复丹药方（lv1）和药草提纯术（lv1）。只能炼制不高于自身等级的丹药，每次炼药消耗 1 金币，成功后写回药品。";
   }
   if (rulebook.gameType === "upgrade_equipment") {
-    return "升级装备规则：直接输入目标装备和强化方案。我会判断升级结果，并把新装备名称或失败记录写回角色参数。";
+    return "升级装备规则：首次进入默认折叠面板，旁白询问要升级的装备和是否需要协助。装备升级需要矿石/强化石和 1 金币，等级不能超过用户等级和装备强化术等级；技能升级消耗 20 金币，最高到用户当前等级。";
   }
   if (rulebook.gameType === "battle") {
     return "战斗规则：通过文字输入攻击、技能、防御和回气推进战斗。系统会实时更新敌我血量与法力；击败全部敌人后会结算战利品、金钱、升级概率，并在战后恢复用户血量与法力。";
