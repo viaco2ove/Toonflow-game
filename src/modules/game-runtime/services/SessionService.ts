@@ -1636,6 +1636,21 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
           lastSpeakerRoleType: "player",
           lastSpeaker: roleValue,
         });
+        /**
+         * 任务接取后立即刷新一次记忆。
+         *
+         * 用途：
+         * - 让“正在执行的任务”立刻写入记忆摘要/事实和用户参数卡相关上下文；
+         * - 避免用户刚接任务时，记忆管理还停留在接任务前的状态。
+         */
+        await refreshStoryMemoryBestEffort({
+          userId: currentUserId,
+          world,
+          chapter: currentChapter,
+          state,
+          recentMessages: recentMessagesForProgress,
+        });
+        setMemoryCursor(state, messageId, nowTs());
         syncChapterProgressWithRuntime(currentChapter, state);
       }
     } else {

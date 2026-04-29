@@ -14,6 +14,8 @@ import {
 import { DebugLogUtil } from "@/utils/debugLogUtil";
 import u from "@/utils";
 
+const FREE_TASK_MINI_GAME_TYPE = "task";
+
 /**
  * 自由章节任务候选项。
  *
@@ -47,12 +49,176 @@ interface FreeChapterTaskBlueprint {
 }
 
 /**
+ * 当前执行任务在参数卡里的展示结构。
+ *
+ * 用途：
+ * - 角色详情需要直接展示“用户正在做什么任务”；
+ * - 结构化保留标题、目标、成功/失败条件，便于后续记忆管理和调试复用。
+ */
+interface ExecutingTaskCardValue {
+  title: string;
+  category: string;
+  objective: string;
+  process: string[];
+  successConditions: string[];
+  failureConditions: string[];
+  status: "doing" | "aborted" | "completed";
+}
+
+/**
  * 对单值文本做最小归一化，过滤 null / undefined / 空串。
  */
 function scalarText(input: unknown): string {
   const text = String(input ?? "").trim();
   if (!text || text === "null" || text === "undefined") return "";
   return text;
+}
+
+/**
+ * 把未知输入安全转成对象，避免多处重复判空。
+ */
+function asRecord(input: unknown): JsonRecord {
+  return input && typeof input === "object" && !Array.isArray(input)
+    ? input as JsonRecord
+    : {};
+}
+
+/**
+ * 把任务卡片压成一行可读文本，供参数卡和记忆摘要直接展示。
+ */
+function formatExecutingTaskSummary(task: ExecutingTaskCardValue): string {
+  const title = scalarText(task.title);
+  const objective = scalarText(task.objective);
+  const statusLabel = task.status === "aborted"
+    ? "已放弃"
+    : task.status === "completed"
+      ? "已完成"
+      : "进行中";
+  return [`${title}`, objective ? `目标：${objective}` : "", `状态：${statusLabel}`]
+    .filter(Boolean)
+    .join("｜");
+}
+
+/**
+ * 读取或创建用户参数卡。
+ *
+ * 用途：
+ * - 自由章节任务会直接把“正在执行的任务”写进参数卡；
+ * - 这里统一兜底参数卡对象，避免每次都手动创建。
+ */
+function ensurePlayerParameterCard(state: JsonRecord): JsonRecord {
+  const player = asRecord(state.player);
+  const card = asRecord(player.parameterCardJson);
+  player.parameterCardJson = card;
+  state.player = player;
+  return card;
+}
+
+/**
+ * 把“当前正在执行的任务”同步到用户参数卡。
+ *
+ * 用途：
+ * - 角色详情和记忆管理都能直接从参数卡看到用户当前任务；
+ * - 任务退出/完成时也能统一清理或改状态。
+ */
+function setExecutingTaskCardValue(state: JsonRecord, task: ExecutingTaskCardValue | null): void {
+  const card = ensurePlayerParameterCard(state);
+  if (!task) {
+    delete card.executing_task;
+    delete card.executingTask;
+    return;
+  }
+  card.executing_task = {
+    title: task.title,
+    category: task.category,
+    objective: task.objective,
+    process: task.process,
+    successConditions: task.successConditions,
+    failureConditions: task.failureConditions,
+    status: task.status,
+    summary: formatExecutingTaskSummary(task),
+  };
+}
+
+/**
+ * 将当前任务写入任务面板运行态，复用小游戏面板展示任务信息。
+ *
+ * 用途：
+ * - 用户接任务后直接复用现有 miniGame 面板，不再额外造一套“任务面板”；
+ * - 但任务本身不拦截普通输入，只用面板展示当前任务状态，并通过 #退出 放弃任务。
+ */
+function setFreeTaskMiniGameState(input: {
+  state: JsonRecord;
+  blueprint: FreeChapterTaskBlueprint;
+  option: FreeChapterTaskOption;
+  eventIndex: number;
+}): void {
+  const root = asRecord(input.state.miniGame);
+  root.rulebook = {
+    gameType: FREE_TASK_MINI_GAME_TYPE,
+    displayName: "任务",
+    version: "v1",
+  };
+  root.session = {
+    game_type: FREE_TASK_MINI_GAME_TYPE,
+    status: "active",
+    phase: "执行中",
+    round: 1,
+    event_index: input.eventIndex,
+    can_suspend: false,
+    can_quit: true,
+    public_state: {
+      task_title: input.blueprint.taskTitle,
+      task_category: scalarText(input.option.category) || "自由任务",
+      task_description: scalarText(input.option.description),
+      current_objective: input.blueprint.objective,
+      process_steps: input.blueprint.process,
+      success_conditions: input.blueprint.successConditions,
+      failure_conditions: input.blueprint.failureConditions,
+      current_status: "进行中",
+    },
+    writeback_whitelist: [],
+  };
+  root.writeback = {};
+  root.memorySummary = `正在执行任务：${input.blueprint.taskTitle}`;
+  root.ui = {
+    narration: scalarText(input.blueprint.eventSummary),
+    phase_label: "任务进行中",
+    rule_summary: "当前处于任务执行状态。直接输入你的行动推进任务；输入 #退出 视为放弃当前任务并退出任务面板。",
+    accepts_text_input: true,
+    input_hint: "当前正在执行任务。直接输入你的行动推进任务；输入 #退出 可放弃当前任务。",
+    state_items: [
+      { key: "任务标题", value: input.blueprint.taskTitle },
+      { key: "任务分类", value: scalarText(input.option.category) || "自由任务" },
+      { key: "当前目标", value: input.blueprint.objective },
+      { key: "推进过程", value: input.blueprint.process.join("；") },
+      { key: "成功条件", value: input.blueprint.successConditions.join("；") },
+      { key: "失败条件", value: input.blueprint.failureConditions.join("；") },
+    ],
+  };
+  input.state.miniGame = root;
+}
+
+/**
+ * 清空任务面板运行态。
+ *
+ * 用途：
+ * - 任务被放弃或结束后，面板不能继续残留在会话里；
+ * - 复用小游戏面板时，必须明确把 task 类型运行态回收干净。
+ */
+function clearFreeTaskMiniGameState(state: JsonRecord): void {
+  const root = asRecord(state.miniGame);
+  const session = asRecord(root.session);
+  if (scalarText(session.game_type) !== FREE_TASK_MINI_GAME_TYPE) {
+    return;
+  }
+  root.session = {};
+  root.rulebook = {};
+  root.ui = {};
+  root.writeback = {};
+  root.memorySummary = "";
+  root.actionLog = [];
+  state.miniGame = root;
 }
 
 /**
@@ -281,6 +447,13 @@ function buildFallbackFreeChapterTaskBlueprint(option: FreeChapterTaskOption): F
 }
 
 /**
+ * 读取当前正在执行的自由章节任务。
+ */
+function readActiveFreeTaskState(state: JsonRecord): JsonRecord {
+  return asRecord(asRecord(state.vars).activeFreeTask);
+}
+
+/**
  * 判断故事编排模型是否已配置。
  */
 function hasConfiguredNarrativeModel(input: unknown): boolean {
@@ -462,8 +635,8 @@ function applyFreeChapterTaskBlueprintToState(input: {
     summary: eventSummary,
     runtimeFacts: eventFacts,
     summarySource: input.blueprint.source === "ai" ? "ai" : "system",
-    memorySummary: "",
-    memoryFacts: [],
+    memorySummary: `当前正在执行任务：${input.blueprint.taskTitle}`,
+    memoryFacts: eventFacts,
     status: "active",
     allowedRoles: [],
     userNodeId: "",
@@ -477,6 +650,8 @@ function applyFreeChapterTaskBlueprintToState(input: {
     eventFacts,
     eventStatus: "active",
     summarySource: input.blueprint.source === "ai" ? "ai" : "system",
+    memorySummary: `当前正在执行任务：${input.blueprint.taskTitle}`,
+    memoryFacts: eventFacts,
     updateTime: nowTs(),
   });
   const vars = typeof input.state.vars === "object" && input.state.vars && !Array.isArray(input.state.vars)
@@ -495,7 +670,97 @@ function applyFreeChapterTaskBlueprintToState(input: {
     updateTime: nowTs(),
   };
   input.state.vars = vars;
+  setExecutingTaskCardValue(input.state, {
+    title: input.blueprint.taskTitle,
+    category: scalarText(input.option.category) || "自由任务",
+    objective: input.blueprint.objective,
+    process: input.blueprint.process,
+    successConditions: input.blueprint.successConditions,
+    failureConditions: input.blueprint.failureConditions,
+    status: "doing",
+  });
+  setFreeTaskMiniGameState({
+    state: input.state,
+    blueprint: input.blueprint,
+    option: input.option,
+    eventIndex,
+  });
   syncRuntimeCurrentEventFromChapterProgress(input.state);
+}
+
+/**
+ * 放弃当前自由章节任务。
+ *
+ * 用途：
+ * - 用户在“任务面板”里输入 #退出 时，视为主动放弃当前任务；
+ * - 需要同步更新参数卡、当前事件摘要和任务面板状态。
+ */
+export function abandonActiveFreeChapterTaskEvent(state: JsonRecord): JsonRecord | null {
+  const activeTask = readActiveFreeTaskState(state);
+  const title = scalarText(activeTask.title);
+  const objective = scalarText(activeTask.objective);
+  const eventIndex = Number(activeTask.eventIndex || 0);
+  if (!title || !eventIndex) {
+    clearFreeTaskMiniGameState(state);
+    setExecutingTaskCardValue(state, null);
+    return null;
+  }
+  const failureFacts = [
+    `任务标题：${title}`,
+    `当前目标：${objective || "未设置"}`,
+    "任务状态：已放弃",
+    "失败判定：用户主动输入 #退出，视为放弃当前任务",
+  ];
+  const currentProgress = readChapterProgressState(state);
+  if (Number(currentProgress.eventIndex || 0) === eventIndex) {
+    setChapterProgressState(state, {
+      ...currentProgress,
+      eventSummary: `@旁白：任务【${title}】已放弃。`,
+      eventStatus: "completed",
+      pendingGoal: "自由剧情",
+    });
+  }
+  upsertRuntimeDynamicEventState(state, {
+    eventIndex,
+    phaseId: "",
+    kind: "scene",
+    flowType: "free_runtime",
+    summary: `@旁白：任务【${title}】已放弃。`,
+    runtimeFacts: failureFacts,
+    summarySource: "system",
+    memorySummary: `已放弃任务：${title}`,
+    memoryFacts: failureFacts,
+    status: "completed",
+    allowedRoles: [],
+    userNodeId: "",
+    updateTime: nowTs(),
+  });
+  upsertRuntimeEventDigestState(state, {
+    eventIndex,
+    eventKind: "scene",
+    eventFlowType: "free_runtime",
+    eventSummary: `@旁白：任务【${title}】已放弃。`,
+    eventFacts: failureFacts,
+    eventStatus: "completed",
+    summarySource: "system",
+    memorySummary: `已放弃任务：${title}`,
+    memoryFacts: failureFacts,
+    updateTime: nowTs(),
+  });
+  const vars = asRecord(state.vars);
+  vars.activeFreeTask = {
+    ...activeTask,
+    status: "aborted",
+    updateTime: nowTs(),
+  };
+  state.vars = vars;
+  setExecutingTaskCardValue(state, null);
+  clearFreeTaskMiniGameState(state);
+  syncRuntimeCurrentEventFromChapterProgress(state);
+  return {
+    title,
+    objective,
+  };
 }
 
 /**
