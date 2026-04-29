@@ -11,6 +11,7 @@ import {
   resolveMiniGameIntentByAi,
   resolveMiniGameModel,
 } from "@/modules/game-runtime/services/MiniGameIntentService";
+import { abandonActiveFreeChapterTaskEvent } from "@/modules/game-runtime/services/FreeChapterTaskService";
 
 export interface MiniGameActionOption {
   action_id: string;
@@ -327,6 +328,17 @@ function summarizePublicState(publicState: JsonRecord): string {
 
 function buildMiniGameUiStateItems(session: JsonRecord, rulebook: MiniGameRulebook): JsonRecord[] {
   const publicState = asRecord(session.public_state);
+  if (rulebook.gameType === "task") {
+    return [
+      { key: "任务标题", value: scalarText(publicState.task_title) || "当前任务" },
+      { key: "任务分类", value: scalarText(publicState.task_category) || "自由任务" },
+      { key: "当前目标", value: scalarText(publicState.current_objective) || "待推进" },
+      { key: "推进过程", value: asArray<string>(publicState.process_steps).join("；") || "暂无" },
+      { key: "成功条件", value: asArray<string>(publicState.success_conditions).join("；") || "暂无" },
+      { key: "失败条件", value: asArray<string>(publicState.failure_conditions).join("；") || "暂无" },
+      { key: "当前状态", value: scalarText(publicState.current_status) || "进行中" },
+    ].filter((item) => scalarText(item.value));
+  }
   if (rulebook.gameType === "battle") {
     const enemyList = asArray<JsonRecord>(publicState.enemy_list)
       .map((item) => asRecord(item))
@@ -386,6 +398,9 @@ function buildMiniGameUiStateItems(session: JsonRecord, rulebook: MiniGameRulebo
 
 function buildMiniGamePhaseLabel(session: JsonRecord, rulebook: MiniGameRulebook): string {
   const phase = scalarText(session.phase);
+  if (rulebook.gameType === "task") {
+    return phase || "任务进行中";
+  }
   if (rulebook.gameType === "battle") {
     if (phase === "encounter") return "交战中";
     if (phase === "settling") return "已结算";
@@ -411,6 +426,9 @@ function buildMiniGamePhaseLabel(session: JsonRecord, rulebook: MiniGameRulebook
 }
 
 function buildMiniGameInputHint(rulebook: MiniGameRulebook): string {
+  if (rulebook.gameType === "task") {
+    return "当前正在执行任务。直接输入你的行动推进任务；输入 #退出 可放弃当前任务。";
+  }
   if (rulebook.gameType === "werewolf") {
     return "直接输入动作，例如“发言”“进入投票”“投票萧炎”“查验美杜莎”“救萧炎”，#退出 可强制退出小游戏";
   }
@@ -2345,7 +2363,9 @@ function isForceQuitMiniGameCommand(input: string): boolean {
 }
 
 function availableMiniGameCatalog() {
-  return Object.values(RULEBOOKS).map((rulebook, index) => ({
+  return Object.values(RULEBOOKS)
+    .filter((rulebook) => rulebook.triggerTags.length > 0)
+    .map((rulebook, index) => ({
     index: index + 1,
     gameType: rulebook.gameType,
     displayName: rulebook.displayName,
@@ -2356,7 +2376,7 @@ function availableMiniGameCatalog() {
       ...rulebook.triggerTags.map((tag) => tag.replace(/^#/, "")),
     ].map((item) => scalarText(item)).filter(Boolean),
     ruleSummary: scalarText(rulebook.ruleSummary),
-  }));
+    }));
 }
 
 function openMiniGameCatalog(state: JsonRecord): JsonRecord {
@@ -3914,6 +3934,53 @@ function buildSimplePublicState(fields: Record<string, any>): JsonRecord {
 }
 
 const RULEBOOKS: Record<string, MiniGameRulebook> = {
+  task: {
+    gameType: "task",
+    displayName: "任务",
+    version: "1.0",
+    goal: "推进当前已接取任务，直到完成或主动退出",
+    phaseOrder: ["active", "settling"],
+    triggerTags: [],
+    passivePatterns: [],
+    ruleSummary: "当前处于任务执行状态。直接输入你的行动推进任务；输入 #退出 视为放弃当前任务。",
+    /**
+     * 任务面板只复用小游戏容器展示信息，不通过这里初始化正式任务内容。
+     */
+    setup: (_ctx, sessionId, entrySource) => ({
+      session_id: sessionId,
+      game_type: "task",
+      rulebook_version: "1.0",
+      status: "active",
+      phase: "执行中",
+      round: 1,
+      sub_turn: 0,
+      entry_source: entrySource,
+      public_state: {},
+      hidden_state: {},
+      resource_state: {},
+      rng_state: {},
+      action_log_ids: [],
+      result: "ongoing",
+      finish_reason: "",
+      reward_preview: {},
+      writeback_whitelist: [],
+      can_suspend: false,
+      can_quit: true,
+      resume_token: `task_${sessionId}`,
+    }),
+    /**
+     * 任务面板不提供固定按钮，用户通过自然语言推进。
+     */
+    options: () => [],
+    /**
+     * 任务推进不在小游戏控制器里结算，这里只保留兜底说明。
+     */
+    applyAction: () => ({
+      narration: "当前任务需要通过直接输入行动来推进。",
+      resultTags: ["task_passthrough"],
+      memorySummary: "任务面板保持中",
+    }),
+  },
   werewolf: {
     gameType: "werewolf",
     displayName: "狼人杀",
@@ -4932,12 +4999,17 @@ export async function handleMiniGameTurn(input: MiniGameControllerInput): Promis
       intercepted: true,
       resultTags: ["force_quit"],
     });
+    const abandonedTask = rulebook.gameType === "task"
+      ? abandonActiveFreeChapterTaskEvent(state)
+      : null;
     activeSession.status = "aborted";
     activeSession.phase = "settling";
     activeSession.result = "aborted";
     activeSession.finish_reason = "用户使用 #退出 强制结束小游戏";
     activeSession.pending_exit = false;
-    const narration = `你已强制退出 ${rulebook.displayName}，当前可继续回到主线剧情。`;
+    const narration = abandonedTask
+      ? `你已放弃任务【${scalarText(abandonedTask.title) || "当前任务"}】，当前可继续回到主线剧情。`
+      : `你已强制退出 ${rulebook.displayName}，当前可继续回到主线剧情。`;
     refreshRuntimeUi(root, narration, rulebook);
     // 生成退出播报后，立刻清空小游戏运行态，避免后续普通输入再次被旧小游戏上下文误触发。
     clearMiniGameSession(root);
@@ -4954,6 +5026,15 @@ export async function handleMiniGameTurn(input: MiniGameControllerInput): Promis
         meta: buildMiniGameMeta(root),
       },
     };
+  }
+  /**
+   * “任务”只复用小游戏面板展示信息。
+   *
+   * 这里故意不拦截普通文本输入，让任务推进继续走主线的事件进度检测与编排流程。
+   * 只有显式输入 #退出 时，才把它当作“放弃当前任务”处理。
+   */
+  if (rulebook.gameType === "task" && !controlAction && !isForceQuitMiniGameCommand(input.playerMessage)) {
+    return null;
   }
   if (scalarText(activeSession.status) === "suspended") {
     logMiniGameAction({
