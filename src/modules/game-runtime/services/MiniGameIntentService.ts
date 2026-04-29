@@ -63,7 +63,7 @@ async function loadMiniGamePrompt(gameType: string): Promise<string> {
  *
  * 这样即使还没专门配置小游戏模型，也能先跑起来。
  */
-async function resolveMiniGameModel(userId: number) {
+export async function resolveMiniGameModel(userId: number) {
   const primary = await u.getPromptAi("storyMiniGameModel", userId);
   if (String((primary as Record<string, unknown> | null)?.manufacturer || "").trim()) {
     return primary;

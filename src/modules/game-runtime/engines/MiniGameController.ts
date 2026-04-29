@@ -7,7 +7,10 @@ import {
 } from "@/lib/gameEngine";
 import { worldRoles } from "@/modules/game-runtime/engines/NarrativeOrchestrator";
 import { DebugLogUtil } from "@/utils/debugLogUtil";
-import { resolveMiniGameIntentByAi } from "@/modules/game-runtime/services/MiniGameIntentService";
+import {
+  resolveMiniGameIntentByAi,
+  resolveMiniGameModel,
+} from "@/modules/game-runtime/services/MiniGameIntentService";
 
 export interface MiniGameActionOption {
   action_id: string;
@@ -65,6 +68,7 @@ interface MiniGameStepResult {
   narration: string;
   speakerRole?: string;
   speakerRoleType?: string;
+  mentorSpeech?: MiniGameMentorSpeechRequest;
   messages?: Array<{
     role: string;
     roleType: string;
@@ -76,6 +80,14 @@ interface MiniGameStepResult {
   rewardSummary?: JsonRecord;
   writeback?: JsonRecord;
   memorySummary?: string;
+}
+
+interface MiniGameMentorSpeechRequest {
+  mentor: string;
+  gameType: string;
+  target: string;
+  direction: string;
+  narration: string;
 }
 
 const CONTROL_ALIASES: Record<string, string[]> = {
@@ -138,6 +150,20 @@ function scalarText(input: unknown): string {
   if (!text) return "";
   if (text === "null" || text === "undefined") return "";
   return text;
+}
+
+/**
+ * 截断发送给模型或日志的长文本。
+ *
+ * 用途：
+ * - 保留足够上下文让模型判断角色语气；
+ * - 避免把整章内容、完整参数卡无限制塞进一次请求。
+ */
+function limitText(input: unknown, maxLength: number): string {
+  const text = scalarText(input);
+  if (!text) return "";
+  if (text.length <= maxLength) return text;
+  return `${text.slice(0, Math.max(0, maxLength - 1))}…`;
 }
 
 function gameSessionId(gameType: string) {
@@ -630,62 +656,301 @@ function collectCultivationMentorNames(ctx: MiniGameControllerInput): string[] {
   ).slice(0, 8);
 }
 
-/**
- * 生成陪练角色的局内发言。
- *
- * 用途：
- * - 用户选择陪练/协助角色后，不能只由旁白代述；
- * - 小游戏返回多消息时，会先展示角色台词，再展示旁白结算。
- */
-function buildMentorMiniGameSpeech(mentor: string, gameType: string, target: string): string {
-  const roleName = scalarText(mentor) || "对方";
-  const targetText = scalarText(target) || "当前目标";
-  if (gameType === "cultivation") {
-    return `“我会在旁护法并指点你。先稳住气息，按${targetText}的路数运转，不要急于强冲。”`;
-  }
-  if (gameType === "research_skill") {
-    return `“我会帮你校验这个思路。先把${targetText}的核心原理说清，再做试招。”`;
-  }
-  if (gameType === "mining") {
-    return `“我会留意矿道变化。你专心处理${targetText}，危险升高时立刻撤。”`;
-  }
-  if (gameType === "alchemy") {
-    return `“我会帮你看住火候和药性。炼制${targetText}时先稳炉，再考虑凝丹。”`;
-  }
-  if (gameType === "upgrade_equipment") {
-    return `“我来帮你稳住材料和火候。${targetText}不要急着定型，先确认承受极限。”`;
-  }
-  return `“我会协助你完成${targetText}。”`;
-}
+const miniGameMentorSpeechSchema = {
+  content: z.string().describe("该角色的一句自然台词，只输出角色会说的话，不带角色名前缀"),
+};
 
 /**
- * 组合陪练角色台词与旁白播报。
+ * 记录需要由大模型生成的陪练角色台词请求。
  *
  * 用途：
- * - 先保留旁白的小游戏结算信息；
- * - 再让用户选择的 NPC 发言，兼容只展示最后一条生成消息的客户端。
+ * - 小游戏状态机只负责计算结果和写回；
+ * - 角色台词在统一出口生成，避免把固定模板散落到每个玩法里。
  */
-function buildMentorMiniGameMessages(
-  ctx: MiniGameControllerInput,
+function buildMentorMiniGameSpeechRequest(
   mentor: string,
   gameType: string,
   target: string,
   narration: string,
-): MiniGameStepResult["messages"] {
+): MiniGameMentorSpeechRequest | undefined {
   const roleName = scalarText(mentor);
   if (!roleName || roleName === "无") return undefined;
+  return {
+    mentor: roleName,
+    gameType: scalarText(gameType),
+    target: scalarText(target) || "当前目标",
+    direction: resolveMentorSpeechDirection(gameType, target, narration),
+    narration,
+  };
+}
+
+/**
+ * 生成角色回复方向，提供给模型作为语义约束。
+ *
+ * 用途：
+ * - 告诉模型该角色此刻应该做“指导、提醒、确认、安抚”等哪类回应；
+ * - 不把具体台词写死，避免每轮重复相同句子。
+ */
+function resolveMentorSpeechDirection(gameType: string, target: string, narration: string): string {
+  const targetText = scalarText(target) || "当前目标";
+  const narrationText = scalarText(narration);
+  if (/失败|不足|无法|缺少|报废/u.test(narrationText)) {
+    return `围绕${targetText}给出一次符合角色性格的失败原因提醒或下一步调整建议。`;
+  }
+  if (/成功|获得|提升|经验\+/u.test(narrationText)) {
+    return `围绕${targetText}对本轮成果作出符合角色性格的鼓励、确认或专业点评。`;
+  }
+  if (gameType === "cultivation") return `以陪练或护法身份指导用户继续修炼${targetText}，可提醒节奏、气息或风险。`;
+  if (gameType === "mining") return `以协助者身份提醒用户处理${targetText}相关的矿道风险、开采节奏或撤离判断。`;
+  if (gameType === "alchemy") return `以协助者身份提醒用户处理${targetText}相关的火候、药性或凝丹节奏。`;
+  if (gameType === "research_skill") return `以协助者身份点评${targetText}的技能思路、试招方向或稳定性。`;
+  if (gameType === "upgrade_equipment") return `以协助者身份点评${targetText}的强化材料、承载极限或成型节奏。`;
+  return `围绕${targetText}给出一句符合角色性格的协助回应。`;
+}
+
+/**
+ * 兜底生成一条不写死具体玩法内容的角色台词。
+ *
+ * 用途：
+ * - 大模型不可用时，小游戏不能因为台词生成失败而卡住；
+ * - 兜底只表达“继续协助”，具体状态仍以旁白结算为准。
+ */
+function fallbackMentorMiniGameSpeech(request: MiniGameMentorSpeechRequest): string {
+  const targetText = scalarText(request.target) || "当前目标";
+  return `“我会配合你处理${targetText}，先按当前节奏稳住，不要急。”`;
+}
+
+/**
+ * 读取当前状态里的角色参数卡。
+ *
+ * 用途：
+ * - 让陪练发言按角色设定走，而不是泛化成旁白语气；
+ * - 运行态参数卡优先，世界静态角色作为补充。
+ */
+function collectMiniGameRoleCards(ctx: MiniGameControllerInput, mentor: string): JsonRecord[] {
+  const runtimeRoles: JsonRecord[] = [];
+  const pushRuntimeRole = (role: JsonRecord, fallbackRoleType: string) => {
+    const name = scalarText(role.name);
+    if (!name) return;
+    runtimeRoles.push({
+      name,
+      roleType: scalarText(role.roleType) || fallbackRoleType,
+      parameterCardJson: asRecord(role.parameterCardJson),
+      description: limitText(role.description, 500),
+      voice: limitText(role.voice, 120),
+    });
+  };
+  pushRuntimeRole(asRecord(ctx.state.player), "player");
+  pushRuntimeRole(asRecord(ctx.state.narrator), "narrator");
+  Object.values(asRecord(ctx.state.npcs)).forEach((item) => pushRuntimeRole(asRecord(item), "npc"));
+
+  const staticRoles = worldRoles(ctx.world).map((item) => ({
+    name: scalarText(item.name),
+    roleType: scalarText(item.roleType),
+    parameterCardJson: asRecord((item as JsonRecord).parameterCardJson),
+    description: limitText((item as JsonRecord).description, 500),
+    voice: limitText((item as JsonRecord).voice, 120),
+  }));
+  const byName = new Map<string, JsonRecord>();
+  [...staticRoles, ...runtimeRoles].forEach((item) => {
+    const name = scalarText(item.name);
+    if (name) byName.set(name, item);
+  });
+  const sorted = Array.from(byName.values()).sort((left, right) => {
+    if (left.name === mentor) return -1;
+    if (right.name === mentor) return 1;
+    if (left.roleType === "player") return -1;
+    if (right.roleType === "player") return 1;
+    return 0;
+  });
+  return sorted.map((item) => ({
+    name: item.name,
+    roleType: item.roleType,
+    description: item.description,
+    voice: item.voice,
+    parameterCardJson: limitText(JSON.stringify(item.parameterCardJson || {}), 1800),
+  }));
+}
+
+/**
+ * 整理最近台词列表。
+ *
+ * 用途：
+ * - 模型需要知道上一轮谁说了什么，避免重复刚刚说过的句子；
+ * - 只保留末尾若干条，控制请求体大小。
+ */
+function buildMiniGameRecentDialogue(ctx: MiniGameControllerInput): JsonRecord[] {
+  return asArray<Record<string, any>>(ctx.recentMessages)
+    .slice(-12)
+    .map((item) => ({
+      role: scalarText(item.role),
+      roleType: scalarText(item.roleType),
+      content: limitText(item.content, 260),
+    }))
+    .filter((item) => scalarText(item.content));
+}
+
+/**
+ * 读取小游戏台词生成所需的全局背景。
+ *
+ * 用途：
+ * - 将世界介绍、章节内容和记忆摘要发给模型；
+ * - 让角色发言贴合当前世界观和章节环境。
+ */
+function buildMiniGameGlobalContext(ctx: MiniGameControllerInput): JsonRecord {
+  return {
+    worldName: scalarText(ctx.world?.name || ctx.world?.title || ctx.world?.worldName),
+    worldIntro: limitText(ctx.world?.intro || ctx.world?.description || ctx.world?.worldIntro, 1200),
+    chapterTitle: scalarText(ctx.chapter?.title || ctx.chapter?.chapterTitle),
+    chapterContent: limitText(ctx.chapter?.content, 1600),
+    memorySummary: limitText(ctx.state.memorySummary, 900),
+    memoryFacts: asArray<string>(ctx.state.memoryFacts).slice(-12),
+    memoryTags: asArray<string>(ctx.state.memoryTags).slice(-16),
+  };
+}
+
+/**
+ * 组装小游戏角色台词生成提示。
+ *
+ * 用途：
+ * - 明确模型只负责角色台词，不允许改奖励、经验、状态和结算；
+ * - 提供小游戏规则、台词列表、角色参数卡和全局背景。
+ */
+function buildMiniGameMentorSpeechPrompt(
+  ctx: MiniGameControllerInput,
+  rulebook: MiniGameRulebook,
+  root: JsonRecord,
+  request: MiniGameMentorSpeechRequest,
+): string {
+  const session = asRecord(root.session);
+  return JSON.stringify({
+    task: "为小游戏中的陪练/协助角色生成一句台词",
+    constraints: [
+      "只输出该角色会说的一句台词，不要带角色名前缀。",
+      "不要改写旁白结算，不要新增经验、物品、伤害、金币、等级等数值。",
+      "不要重复最近台词，尤其不要复读同一句指导话。",
+      "长度不超过80个中文字符。",
+    ],
+    currentMiniGame: {
+      gameType: rulebook.gameType,
+      displayName: rulebook.displayName,
+      goal: rulebook.goal,
+      phaseOrder: rulebook.phaseOrder,
+      ruleSummary: rulebook.ruleSummary,
+      status: scalarText(session.status),
+      phase: scalarText(session.phase),
+      round: Number(session.round || 0),
+      publicState: asRecord(session.public_state),
+    },
+    speechRequest: request,
+    latestUserInput: limitText(ctx.playerMessage, 260),
+    narratorSettlement: limitText(request.narration, 600),
+    recentDialogue: buildMiniGameRecentDialogue(ctx),
+    globalContext: buildMiniGameGlobalContext(ctx),
+    roleParameterCards: collectMiniGameRoleCards(ctx, request.mentor),
+  }, null, 2);
+}
+
+/**
+ * 解析角色在当前故事里的类型。
+ *
+ * 用途：
+ * - 生成多消息时需要正确的 roleType；
+ * - 运行态角色表优先，避免把叙述者或用户误标成 NPC。
+ */
+function resolveMiniGameRoleType(ctx: MiniGameControllerInput, roleName: string): string {
+  const target = scalarText(roleName);
+  if (!target) return "npc";
+  const runtimeRoles = [
+    asRecord(ctx.state.player),
+    asRecord(ctx.state.narrator),
+    ...Object.values(asRecord(ctx.state.npcs)).map((item) => asRecord(item)),
+  ];
+  const runtimeMatched = runtimeRoles.find((item) => scalarText(item.name) === target);
+  if (runtimeMatched) return scalarText(runtimeMatched.roleType) || "npc";
+  const worldMatched = worldRoles(ctx.world).find((item) => scalarText(item.name) === target);
+  return scalarText(worldMatched?.roleType) || "npc";
+}
+
+/**
+ * 调用大模型生成陪练角色台词。
+ *
+ * 用途：
+ * - 替换原来的写死模板；
+ * - 失败时返回兜底台词，保证小游戏状态机不会被台词生成阻断。
+ */
+async function generateMiniGameMentorSpeech(
+  ctx: MiniGameControllerInput,
+  rulebook: MiniGameRulebook,
+  root: JsonRecord,
+  request: MiniGameMentorSpeechRequest,
+): Promise<string> {
+  try {
+    const modelConfig = await resolveMiniGameModel(ctx.userId);
+    const prompt = buildMiniGameMentorSpeechPrompt(ctx, rulebook, root, request);
+    const result = await u.ai.text.invoke(
+      {
+        usageType: "小游戏角色台词",
+        usageRemark: `${request.gameType}:${request.mentor}`,
+        usageMeta: {
+          stage: "storyMiniGameSpeech",
+          gameType: request.gameType,
+          mentor: request.mentor,
+          target: request.target,
+        },
+        output: miniGameMentorSpeechSchema,
+        messages: [
+          {
+            role: "system",
+            content: "你是互动故事小游戏的角色台词生成器。必须严格基于输入的小游戏规则、近期台词、角色参数卡和全局背景，生成指定角色的一句自然回应。你不能改动程序结算事实。",
+          },
+          { role: "user", content: prompt },
+        ],
+        maxRetries: 0,
+      },
+      modelConfig as any,
+    );
+    const rawObject = (result as any)?.object ?? (typeof result === "object" ? result : null);
+    const content = limitText((rawObject as JsonRecord | null)?.content, 120);
+    if (content) return content;
+  } catch (error) {
+    if (DebugLogUtil.isDebugLogEnabled()) {
+      console.log(`[story:mini_game:speech:error] ${String((error as Error)?.message || error || "")}`);
+    }
+  }
+  return fallbackMentorMiniGameSpeech(request);
+}
+
+/**
+ * 统一构建小游戏返回的多消息。
+ *
+ * 用途：
+ * - 原有战斗等显式 messages 保持原样；
+ * - 陪练台词在这里统一调用模型，旁白结算和角色台词一起返回给客户端。
+ */
+async function resolveMiniGameStepMessages(
+  ctx: MiniGameControllerInput,
+  rulebook: MiniGameRulebook,
+  root: JsonRecord,
+  step: MiniGameStepResult,
+): Promise<MiniGameStepResult["messages"]> {
+  if (step.messages?.length) return step.messages;
+  if (!step.mentorSpeech) return undefined;
+  const roleName = scalarText(step.mentorSpeech.mentor);
+  if (!roleName) return undefined;
+  const mentorContent = await generateMiniGameMentorSpeech(ctx, rulebook, root, step.mentorSpeech);
   return [
     {
       role: scalarText(ctx.world?.narratorRole?.name) || "旁白",
       roleType: "narrator",
       eventType: "on_mini_game",
-      content: narration,
+      content: step.mentorSpeech.narration,
     },
     {
       role: roleName,
-      roleType: "npc",
+      roleType: resolveMiniGameRoleType(ctx, roleName),
       eventType: "on_mini_game",
-      content: buildMentorMiniGameSpeech(roleName, gameType, target),
+      content: mentorContent,
     },
   ];
 }
@@ -1702,7 +1967,7 @@ function evaluateResearchSkillInput(session: JsonRecord, input: MiniGameControll
   const mentor = resolveMentionedMentor(publicState, plan);
   const withMentorMessages = (step: MiniGameStepResult): MiniGameStepResult => ({
     ...step,
-    messages: buildMentorMiniGameMessages(input, mentor, "research_skill", skillName, step.narration),
+    mentorSpeech: buildMentorMiniGameSpeechRequest(mentor, "research_skill", skillName, step.narration),
   });
   const currentMoney = readMiniGamePlayerMoney(input.state);
   if (currentMoney < 5) {
@@ -1783,7 +2048,7 @@ function evaluateAlchemyInput(session: JsonRecord, input: MiniGameControllerInpu
   const mentor = resolveMentionedMentor(publicState, formula);
   const withMentorMessages = (step: MiniGameStepResult): MiniGameStepResult => ({
     ...step,
-    messages: buildMentorMiniGameMessages(input, mentor, "alchemy", recipeName, step.narration),
+    mentorSpeech: buildMentorMiniGameSpeechRequest(mentor, "alchemy", recipeName, step.narration),
   });
   const userLevel = readMiniGamePlayerLevel(input.state);
   const inferredRecipeLevel = Math.max(1, Number((formula.match(/(?:lv|LV|等级)\s*(\d+)/u)?.[1]) || 1));
@@ -1858,7 +2123,7 @@ function evaluateEquipmentInput(session: JsonRecord, input: MiniGameControllerIn
   const mentor = resolveMentionedMentor(publicState, plan);
   const withMentorMessages = (target: string, step: MiniGameStepResult): MiniGameStepResult => ({
     ...step,
-    messages: buildMentorMiniGameMessages(input, mentor, "upgrade_equipment", target, step.narration),
+    mentorSpeech: buildMentorMiniGameSpeechRequest(mentor, "upgrade_equipment", target, step.narration),
   });
   const currentMoney = readMiniGamePlayerMoney(input.state);
   const userLevel = readMiniGamePlayerLevel(input.state);
@@ -3163,7 +3428,7 @@ function cultivationStep(session: JsonRecord, actionId: string, ctx: MiniGameCon
     const mentor = currentMentor();
     return {
       narration,
-      messages: buildMentorMiniGameMessages(ctx, mentor, "cultivation", target, narration),
+      mentorSpeech: buildMentorMiniGameSpeechRequest(mentor, "cultivation", target, narration),
       resultTags: [resultTag, "practice_reward"],
       rewardSummary: { exp: expGain, practice: target, practiceLevel, levelUps },
       writeback: buildPracticeReward(target, expGain, kind),
@@ -3476,8 +3741,7 @@ function miningStep(session: JsonRecord, actionId: string, ctx: MiniGameControll
   };
   const withMentorMessages = (step: MiniGameStepResult): MiniGameStepResult => ({
     ...step,
-    messages: buildMentorMiniGameMessages(
-      ctx,
+    mentorSpeech: buildMentorMiniGameSpeechRequest(
       currentMentor(),
       "mining",
       scalarText(publicState.target_mineral) || "当前矿物",
@@ -3493,7 +3757,7 @@ function miningStep(session: JsonRecord, actionId: string, ctx: MiniGameControll
     const narration = `${mentor}已准备协助你挖矿。你可以继续输入“勘探”“开采”“精挖”“支护”或“撤离”。`;
     return {
       narration,
-      messages: buildMentorMiniGameMessages(ctx, mentor, "mining", scalarText(publicState.target_mineral) || "当前矿物", narration),
+      mentorSpeech: buildMentorMiniGameSpeechRequest(mentor, "mining", scalarText(publicState.target_mineral) || "当前矿物", narration),
       resultTags: ["mentor_selected"],
     };
   }
@@ -4863,6 +5127,7 @@ export async function handleMiniGameTurn(input: MiniGameControllerInput): Promis
       ? "on_mini_game_finish"
       : "on_mini_game";
     const stepMeta = buildMiniGameMeta(root);
+    const stepMessages = await resolveMiniGameStepMessages(input, rulebook, root, step);
     return {
       intercepted: true,
       runtime: root,
@@ -4873,7 +5138,7 @@ export async function handleMiniGameTurn(input: MiniGameControllerInput): Promis
         content: narration,
         meta: stepMeta,
       },
-      messages: step.messages?.length ? attachMiniGameMeta(step.messages, stepMeta) : undefined,
+      messages: stepMessages?.length ? attachMiniGameMeta(stepMessages, stepMeta) : undefined,
     };
   }
   const ruleActionId = normalizeActionId(input.playerMessage, options);
@@ -4970,6 +5235,7 @@ export async function handleMiniGameTurn(input: MiniGameControllerInput): Promis
     ? "on_mini_game_finish"
     : "on_mini_game";
   const stepMeta = buildMiniGameMeta(root);
+  const stepMessages = await resolveMiniGameStepMessages(input, rulebook, root, step);
   return {
     intercepted: true,
     runtime: root,
@@ -4980,6 +5246,6 @@ export async function handleMiniGameTurn(input: MiniGameControllerInput): Promis
       content: narration,
       meta: stepMeta,
     },
-    messages: step.messages?.length ? attachMiniGameMeta(step.messages, stepMeta) : undefined,
+    messages: stepMessages?.length ? attachMiniGameMeta(stepMessages, stepMeta) : undefined,
   };
 }

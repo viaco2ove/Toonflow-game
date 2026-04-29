@@ -404,7 +404,9 @@ function isNonEventHeading(input: string): boolean {
 function extractRuntimeSections(input: unknown): Array<{ heading: string; body: string }> {
   const text = normalizeEditorText(input);
   if (!text) return [];
-  const headingRegex = /^##\s*(.+)$/gm;
+  // 只识别二级标题 `##` 作为运行时 section。
+  // `###` 常用于 `## 非事件` 说明块内部的子标题，不能被误切成独立事件。
+  const headingRegex = /^##(?!#)\s*(.+)$/gm;
   const sections: Array<{ heading: string; body: string }> = [];
   const matches = Array.from(text.matchAll(headingRegex));
   for (let i = 0; i < matches.length; i += 1) {

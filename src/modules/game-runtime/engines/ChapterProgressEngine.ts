@@ -565,13 +565,29 @@ function ensureFreeChapterDynamicEventState(
   const normalizedEventIndex = Number.isFinite(Number(requestedEventIndex))
     ? Math.max(minimumEventIndex, Number(requestedEventIndex))
     : Math.max(minimumEventIndex, Number(runtimeEvent.index || current.eventIndex || 1));
+  const rawEventStatus = String(extraPatch.eventStatus || current.eventStatus || "active").trim().toLowerCase();
+  // 自由章节切入动态事件时要保留 waiting_input / completed 状态，
+  // 不能一律重置成 active，否则 UI 会继续显示“处理中”，并触发多余自动编排。
+  const eventStatus: "idle" | "active" | "waiting_input" | "completed" = rawEventStatus === "completed"
+    ? "completed"
+    : rawEventStatus === "waiting_input"
+      ? "waiting_input"
+      : rawEventStatus === "idle"
+        ? "idle"
+        : "active";
+  const eventSummary = String(
+    extraPatch.eventSummary
+    || runtimeEvent.summary
+    || current.eventSummary
+    || (eventStatus === "waiting_input" ? "自由剧情已开启，等待用户输入下一步行动" : ""),
+  ).trim();
   setChapterProgressState(state, {
     phaseId: "",
     phaseIndex: -1,
     eventIndex: normalizedEventIndex,
     eventKind: "scene",
-    eventSummary: "",
-    eventStatus: "active",
+    eventSummary,
+    eventStatus,
     userNodeId: "",
     userNodeIndex: -1,
     userNodeStatus: "idle",
@@ -582,12 +598,12 @@ function ensureFreeChapterDynamicEventState(
     eventIndex: normalizedEventIndex,
     phaseId: "",
     kind: "scene",
-    summary: "",
+    summary: eventSummary,
     runtimeFacts: [],
     summarySource: "system",
     memorySummary: "",
     memoryFacts: [],
-    status: "active",
+    status: eventStatus,
     allowedRoles: [],
     userNodeId: "",
     updateTime: 0,
@@ -702,7 +718,19 @@ export function readNextEventProgressHint(chapter: any, state: JsonRecord): {
     current.phaseIndex,
   );
   const nextPhase = nextPhaseInfo.phase;
-  if (!nextPhase) {
+  // resolveNextPhaseFromGraph 在候选为空时会回退到“当前首个未完成 phase”。
+  // 对“读取下一事件提示”来说，这会把最后一个静态事件错误地回成它自己，
+  // 进而让编排模型误以为还要继续重复当前引导内容。
+  const hasRealNextPhase = Boolean(
+    nextPhase
+    && String(nextPhase.id || "").trim()
+    && String(nextPhase.id || "").trim() !== String(current.phaseId || "").trim()
+    && Number(nextPhaseInfo.phaseIndex) !== Number(current.phaseIndex),
+  );
+  if (!hasRealNextPhase) {
+    if (isFreeChapterRuntimeMode(chapter)) {
+      return null;
+    }
     if (hasChapterEndingEvent(chapter, outline)) {
       const endingSummary = buildEndingEventSummary(chapter, outline);
       return {
@@ -716,12 +744,13 @@ export function readNextEventProgressHint(chapter: any, state: JsonRecord): {
     }
     return null;
   }
-  const nextLabel = String(nextPhase.label || "").trim();
-  const nextSummary = String(nextPhase.targetSummary || nextLabel || "").trim();
+  const resolvedNextPhase = nextPhase as ChapterRuntimePhase;
+  const nextLabel = String(resolvedNextPhase.label || "").trim();
+  const nextSummary = String(resolvedNextPhase.targetSummary || nextLabel || "").trim();
   return {
     index: Math.max(1, nextPhaseInfo.phaseIndex + 1),
-    kind: String(nextPhase.kind || "scene").trim() || "scene",
-    phaseId: String(nextPhase.id || "").trim(),
+    kind: String(resolvedNextPhase.kind || "scene").trim() || "scene",
+    phaseId: String(resolvedNextPhase.id || "").trim(),
     label: nextLabel,
     summary: nextSummary,
     transitionHint: `当前事件完成后应进入事件${Math.max(1, nextPhaseInfo.phaseIndex + 1)}：${nextSummary || nextLabel || "未命名事件"}`,
@@ -1686,11 +1715,17 @@ export function applyAiEventProgressResolution(input: {
         input.chapter,
         input.state,
         Math.max(outline.phases.length + 1, current.eventIndex + 1),
-        { completedEvents },
+        {
+          completedEvents,
+          eventStatus: "waiting_input",
+          eventSummary: progressSummary || currentEvent.summary || "自由剧情已开启，等待用户输入下一步行动",
+        },
       );
       return {
         phaseChanged: true,
-        enteredUserPhase: false,
+        // 自由章节静态引导收尾后，应立即把控制权交还给用户，
+        // 避免继续自动编排，把“任务推荐/任务选择”来回重复说多遍。
+        enteredUserPhase: true,
       };
     }
     if (hasChapterEndingEvent(input.chapter, outline)) {
