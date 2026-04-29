@@ -571,6 +571,22 @@ function formatLeveledPracticeName(name: string, level: number): string {
 }
 
 /**
+ * 生成修炼目标的短别名。
+ *
+ * 用途：
+ * - 参数卡物品里常见“炼炎决早期功法”这类长名称；
+ * - 用户实际会输入“运行炼炎决”，需要能稳定命中同一个修炼目标。
+ */
+function buildPracticeTargetAliases(target: string): string[] {
+  const name = parseLeveledPracticeName(target).name;
+  const shortName = name
+    .replace(/（.*?）|\(.*?\)/gu, "")
+    .replace(/早期功法|配套功法|功法|心法|身法|法诀|斗技|技能/gu, "")
+    .trim();
+  return uniqueTexts([name, shortName].filter(Boolean));
+}
+
+/**
  * 收集当前参数卡可修炼的功法/技能。
  *
  * 用途：
@@ -586,9 +602,13 @@ function collectCultivationPracticeTargetsFromCard(cardInput: JsonRecord): strin
     ...asArray<string>(card.gongfa),
   ];
   const skills = asArray<string>(card.skills);
+  const itemMethods = [
+    ...asArray<string>(card.items),
+    ...asArray<string>(card.equipment),
+  ].filter((item) => /功法|心法|体术|冥想|诀|经|法/u.test(scalarText(item)));
   const otherMethods = asArray<string>(card.other)
     .filter((item) => /功法|心法|体术|冥想|诀|经|法/u.test(scalarText(item)));
-  const learned = uniqueTexts([...explicitMethods, ...skills, ...otherMethods])
+  const learned = uniqueTexts([...explicitMethods, ...skills, ...itemMethods, ...otherMethods])
     .map((item) => parseLeveledPracticeName(item).name)
     .filter(Boolean);
   return learned.length ? learned : ["基础功法", "基础体术", "基础冥想"];
@@ -608,6 +628,81 @@ function collectCultivationMentorNames(ctx: MiniGameControllerInput): string[] {
       .map((item) => scalarText(item.name))
       .filter(Boolean),
   ).slice(0, 8);
+}
+
+/**
+ * 生成陪练角色的局内发言。
+ *
+ * 用途：
+ * - 用户选择陪练/协助角色后，不能只由旁白代述；
+ * - 小游戏返回多消息时，会先展示角色台词，再展示旁白结算。
+ */
+function buildMentorMiniGameSpeech(mentor: string, gameType: string, target: string): string {
+  const roleName = scalarText(mentor) || "对方";
+  const targetText = scalarText(target) || "当前目标";
+  if (gameType === "cultivation") {
+    return `“我会在旁护法并指点你。先稳住气息，按${targetText}的路数运转，不要急于强冲。”`;
+  }
+  if (gameType === "research_skill") {
+    return `“我会帮你校验这个思路。先把${targetText}的核心原理说清，再做试招。”`;
+  }
+  if (gameType === "mining") {
+    return `“我会留意矿道变化。你专心处理${targetText}，危险升高时立刻撤。”`;
+  }
+  if (gameType === "alchemy") {
+    return `“我会帮你看住火候和药性。炼制${targetText}时先稳炉，再考虑凝丹。”`;
+  }
+  if (gameType === "upgrade_equipment") {
+    return `“我来帮你稳住材料和火候。${targetText}不要急着定型，先确认承受极限。”`;
+  }
+  return `“我会协助你完成${targetText}。”`;
+}
+
+/**
+ * 组合陪练角色台词与旁白播报。
+ *
+ * 用途：
+ * - 先保留旁白的小游戏结算信息；
+ * - 再让用户选择的 NPC 发言，兼容只展示最后一条生成消息的客户端。
+ */
+function buildMentorMiniGameMessages(
+  ctx: MiniGameControllerInput,
+  mentor: string,
+  gameType: string,
+  target: string,
+  narration: string,
+): MiniGameStepResult["messages"] {
+  const roleName = scalarText(mentor);
+  if (!roleName || roleName === "无") return undefined;
+  return [
+    {
+      role: scalarText(ctx.world?.narratorRole?.name) || "旁白",
+      roleType: "narrator",
+      eventType: "on_mini_game",
+      content: narration,
+    },
+    {
+      role: roleName,
+      roleType: "npc",
+      eventType: "on_mini_game",
+      content: buildMentorMiniGameSpeech(roleName, gameType, target),
+    },
+  ];
+}
+
+/**
+ * 从用户文本里识别已点名的陪练/协助角色。
+ *
+ * 用途：
+ * - 文本型小游戏不会走按钮动作列表；
+ * - 仍需要在“云韵帮我研发/强化”这类输入里让角色出场发言。
+ */
+function resolveMentionedMentor(publicState: JsonRecord, input: unknown): string {
+  const text = normalizeInlineText(input);
+  if (!text) return "";
+  return uniqueTexts(asArray<string>(publicState.available_mentors))
+    .find((name) => text.includes(name))
+    || "";
 }
 
 function appendParameterCardList(state: JsonRecord, key: "skills" | "items" | "equipment", additions: string[]) {
@@ -1604,6 +1699,11 @@ function evaluateResearchSkillInput(session: JsonRecord, input: MiniGameControll
   const publicState = asRecord(session.public_state);
   const plan = normalizeInlineText(input.playerMessage);
   const skillName = inferSkillName(plan) || "新技能蓝图";
+  const mentor = resolveMentionedMentor(publicState, plan);
+  const withMentorMessages = (step: MiniGameStepResult): MiniGameStepResult => ({
+    ...step,
+    messages: buildMentorMiniGameMessages(input, mentor, "research_skill", skillName, step.narration),
+  });
   const currentMoney = readMiniGamePlayerMoney(input.state);
   if (currentMoney < 5) {
     session.status = "finished";
@@ -1638,7 +1738,7 @@ function evaluateResearchSkillInput(session: JsonRecord, input: MiniGameControll
   if (score >= 68) {
     session.result = "success";
     session.finish_reason = "研发技能成功";
-    return {
+    return withMentorMessages({
       narration: `我检查了你的研发方案。恭喜你获得技能《${skillName}》；理论闭环和稳定性都已经成立，已经可以记入角色参数。`,
       resultTags: ["success"],
       rewardSummary: { unlock: skillName },
@@ -1649,12 +1749,12 @@ function evaluateResearchSkillInput(session: JsonRecord, input: MiniGameControll
         memoryAdd: [`研发技能成功：${skillName}`],
       },
       memorySummary: `研发技能成功：${skillName}`,
-    };
+    });
   }
   if (score >= 48) {
     session.result = "partial";
     session.finish_reason = "得到技能碎片";
-    return {
+    return withMentorMessages({
       narration: `我检查了你的研发方案。你已经摸到了《${skillName}》的雏形，但还差最后一口气；${publicState.last_advice}`,
       resultTags: ["partial"],
       rewardSummary: { fragment: skillName },
@@ -1664,22 +1764,27 @@ function evaluateResearchSkillInput(session: JsonRecord, input: MiniGameControll
         memoryAdd: [`研发得到技能碎片：${skillName}`],
       },
       memorySummary: `研发半成功：${skillName}`,
-    };
+    });
   }
   session.result = "failed";
   session.finish_reason = "研发失败";
-  return {
+  return withMentorMessages({
     narration: `我检查了你的研发方案。研发失败，暂时还无法稳定成型；${publicState.last_advice}`,
     resultTags: ["failed"],
     writeback: { playerParameterPatch: { money: -5 }, memoryAdd: ["一次失败的技能研发尝试"] },
     memorySummary: "研发技能失败",
-  };
+  });
 }
 
 function evaluateAlchemyInput(session: JsonRecord, input: MiniGameControllerInput): MiniGameStepResult {
   const publicState = asRecord(session.public_state);
   const formula = normalizeInlineText(input.playerMessage);
   const recipeName = inferPotionName(formula);
+  const mentor = resolveMentionedMentor(publicState, formula);
+  const withMentorMessages = (step: MiniGameStepResult): MiniGameStepResult => ({
+    ...step,
+    messages: buildMentorMiniGameMessages(input, mentor, "alchemy", recipeName, step.narration),
+  });
   const userLevel = readMiniGamePlayerLevel(input.state);
   const inferredRecipeLevel = Math.max(1, Number((formula.match(/(?:lv|LV|等级)\s*(\d+)/u)?.[1]) || 1));
   const currentMoney = readMiniGamePlayerMoney(input.state);
@@ -1690,11 +1795,11 @@ function evaluateAlchemyInput(session: JsonRecord, input: MiniGameControllerInpu
     session.finish_reason = "金币不足";
     publicState.last_result = "炼药失败：金币不足";
     publicState.last_advice = "炼药每次至少消耗 1 金币，先准备炉火开销再来。";
-    return {
+    return withMentorMessages({
       narration: "我检查了你的炼药准备。当前金币不足 1，无法开炉炼药。",
       resultTags: ["failed", "insufficient_money"],
       memorySummary: "炼药失败：金币不足",
-    };
+    });
   }
   if (inferredRecipeLevel > userLevel) {
     session.status = "finished";
@@ -1703,11 +1808,11 @@ function evaluateAlchemyInput(session: JsonRecord, input: MiniGameControllerInpu
     session.finish_reason = "丹药等级过高";
     publicState.last_result = "炼药失败：丹药等级过高";
     publicState.last_advice = `当前只能炼制不高于用户等级的丹药。你现在是 lv${userLevel}。`;
-    return {
+    return withMentorMessages({
       narration: `我检查了你的炼药方案。当前丹药等级 lv${inferredRecipeLevel} 超过了你自身等级 lv${userLevel}，本次无法成炉。`,
       resultTags: ["failed", "level_limited"],
       memorySummary: "炼药失败：超出等级限制",
-    };
+    });
   }
   const herbSkillLevel = readNamedPracticeLevel(input.state, "药草提纯术", 1);
   const hasStarterRecipe = recipeName.includes("回复丹") || formula.includes("回复丹") || formula.includes("丹方");
@@ -1724,7 +1829,7 @@ function evaluateAlchemyInput(session: JsonRecord, input: MiniGameControllerInpu
     session.result = score >= 68 ? "success" : "partial";
     session.finish_reason = "炼药完成";
     const pillName = score >= 68 ? recipeName : `粗炼${recipeName}`;
-    return {
+    return withMentorMessages({
       narration: `我检查了你的炼药方案。恭喜你获得药品《${pillName}》；丹炉状态和药性融合都达到了成药标准。`,
       resultTags: [score >= 68 ? "success" : "partial"],
       rewardSummary: { item: pillName },
@@ -1735,21 +1840,26 @@ function evaluateAlchemyInput(session: JsonRecord, input: MiniGameControllerInpu
         memoryAdd: [`炼药获得：${pillName}`],
       },
       memorySummary: `炼药完成：${pillName}`,
-    };
+    });
   }
   session.result = "failed";
   session.finish_reason = "炼药失败";
-  return {
+  return withMentorMessages({
     narration: `我检查了你的炼药方案。炼药失败；${publicState.last_advice}`,
     resultTags: ["failed"],
     writeback: { playerParameterPatch: { money: -1 }, memoryAdd: ["一次失败的炼药尝试"] },
     memorySummary: "炼药失败",
-  };
+  });
 }
 
 function evaluateEquipmentInput(session: JsonRecord, input: MiniGameControllerInput): MiniGameStepResult {
   const publicState = asRecord(session.public_state);
   const plan = normalizeInlineText(input.playerMessage);
+  const mentor = resolveMentionedMentor(publicState, plan);
+  const withMentorMessages = (target: string, step: MiniGameStepResult): MiniGameStepResult => ({
+    ...step,
+    messages: buildMentorMiniGameMessages(input, mentor, "upgrade_equipment", target, step.narration),
+  });
   const currentMoney = readMiniGamePlayerMoney(input.state);
   const userLevel = readMiniGamePlayerLevel(input.state);
   const strengthenSkillLevel = readNamedPracticeLevel(input.state, "装备强化术", 1);
@@ -1781,7 +1891,7 @@ function evaluateEquipmentInput(session: JsonRecord, input: MiniGameControllerIn
     session.finish_reason = "升级技能成功";
     publicState.last_result = `技能升级成功：${nextSkillName}`;
     publicState.last_advice = "技能已经提升，建议尽快进行实战检验。";
-    return {
+    return withMentorMessages(parsedSkill.name, {
       narration: `我检查了你的升级方案。恭喜你成功把 ${parsedSkill.name} 提升到了 ${nextSkillName}。`,
       resultTags: ["success", "skill_upgrade"],
       rewardSummary: { skill: nextSkillName },
@@ -1791,7 +1901,7 @@ function evaluateEquipmentInput(session: JsonRecord, input: MiniGameControllerIn
         memoryAdd: [`技能升级成功：${nextSkillName}`],
       },
       memorySummary: `技能升级成功：${nextSkillName}`,
-    };
+    });
   }
   const candidates = collectPlayerEquipmentNames(input.state);
   const matched = matchEquipmentName(plan, candidates);
@@ -1862,7 +1972,7 @@ function evaluateEquipmentInput(session: JsonRecord, input: MiniGameControllerIn
     const upgraded = upgradeEquipmentName(matched, affix);
     publicState.last_result = `升级成功：${upgraded}`;
     publicState.last_advice = "建议再进行一次实战检验，确认附魔是否稳定。";
-    return {
+    return withMentorMessages(matched, {
       narration: `我检查了你的升级方案。恭喜你升级成功，${matched} 已提升为 ${upgraded}。`,
       resultTags: [score >= 78 ? "perfect" : "success"],
       rewardSummary: { equipment: upgraded },
@@ -1875,13 +1985,13 @@ function evaluateEquipmentInput(session: JsonRecord, input: MiniGameControllerIn
         memoryAdd: [`装备升级成功：${upgraded}`],
       },
       memorySummary: `装备升级成功：${upgraded}`,
-    };
+    });
   }
   session.result = "failed";
   session.finish_reason = "升级装备失败";
   publicState.last_result = "升级失败";
   publicState.last_advice = buildTextMiniGameAdvice("upgrade_equipment", plan);
-  return {
+  return withMentorMessages(matched, {
     narration: `我检查了你的升级方案。升级失败；${publicState.last_advice}`,
     resultTags: ["failed"],
     writeback: {
@@ -1891,7 +2001,7 @@ function evaluateEquipmentInput(session: JsonRecord, input: MiniGameControllerIn
       memoryAdd: [`一次失败的装备升级尝试：${matched}`],
     },
     memorySummary: `装备升级失败：${matched}`,
-  };
+  });
 }
 
 function gameTypeChinese(gameType: string): string {
@@ -2983,7 +3093,7 @@ function cultivationOptions(session?: JsonRecord): MiniGameActionOption[] {
     action_id: `train:${item}`,
     label: item,
     desc: `修炼${item}`,
-    aliases: [`修炼${item}`, `运行${item}`, `练${item}`],
+    aliases: buildPracticeTargetAliases(item).flatMap((alias) => [`修炼${alias}`, `运行${alias}`, `练${alias}`, alias]),
   }));
   const mentorOptions = mentors.map((item) => ({
     action_id: `mentor:${item}`,
@@ -3005,11 +3115,21 @@ function cultivationOptions(session?: JsonRecord): MiniGameActionOption[] {
   ];
 }
 
-function cultivationStep(session: JsonRecord, actionId: string): MiniGameStepResult {
+function cultivationStep(session: JsonRecord, actionId: string, ctx: MiniGameControllerInput): MiniGameStepResult {
   const publicState = asRecord(session.public_state);
   const hidden = asRecord(session.hidden_state);
   const currentTarget = () => scalarText(publicState.current_method) || scalarText(asArray<string>(publicState.available_practices)[0]) || "基础功法";
   const practiceKind = (target: string) => (asArray<string>(publicState.available_skills).includes(target) ? "skill" : "method");
+  const currentMentor = () => {
+    const mentor = scalarText(publicState.mentor);
+    return mentor && mentor !== "无" ? mentor : "";
+  };
+  const findMentionedPracticeTarget = (text: string): string => {
+    const source = normalizeInlineText(text);
+    return asArray<string>(publicState.available_practices)
+      .find((item) => buildPracticeTargetAliases(item).some((alias) => source.includes(alias)))
+      || "";
+  };
   const buildPracticeReward = (target: string, expGain: number, kind: string) => ({
     playerParameterPatch: { exp: expGain },
     cultivationPracticePatch: { target, kind, expGain },
@@ -3039,8 +3159,11 @@ function cultivationStep(session: JsonRecord, actionId: string): MiniGameStepRes
     const levelText = levelUps > 0
       ? `${target}提升到lv${practiceLevel}`
       : `${target}等级暂未变化`;
+    const narration = `${narrationPrefix}经验+${expGain}，${levelText}。`;
+    const mentor = currentMentor();
     return {
-      narration: `${narrationPrefix}经验+${expGain}，${levelText}。`,
+      narration,
+      messages: buildMentorMiniGameMessages(ctx, mentor, "cultivation", target, narration),
       resultTags: [resultTag, "practice_reward"],
       rewardSummary: { exp: expGain, practice: target, practiceLevel, levelUps },
       writeback: buildPracticeReward(target, expGain, kind),
@@ -3061,10 +3184,9 @@ function cultivationStep(session: JsonRecord, actionId: string): MiniGameStepRes
     const mentor = scalarText(actionId.slice("mentor:".length));
     publicState.mentor = mentor;
     publicState.last_result = `${mentor}将为本轮修炼提供指导。`;
-    return {
-      narration: `${mentor}已准备陪练和指导。现在请选择修炼目标：${asArray<string>(publicState.available_practices).join("、") || "基础功法、基础体术、基础冥想"}。`,
-      resultTags: ["mentor_selected"],
-    };
+    const explicitTarget = findMentionedPracticeTarget(ctx.playerMessage);
+    const target = explicitTarget || currentTarget();
+    return trainTarget(target, `${mentor}为你护法，你开始运转${target}。`, "mentor_train");
   }
   if (actionId === "choose_mentor") {
     const mentors = asArray<string>(publicState.available_mentors);
@@ -3297,8 +3419,18 @@ function alchemyStep(session: JsonRecord, actionId: string): MiniGameStepResult 
   return { narration: `火候 ${publicState.heat}，纯度 ${publicState.purity}，融合 ${publicState.fusion}，毒性 ${publicState.toxicity}。`, resultTags: [actionId] };
 }
 
-function miningOptions(): MiniGameActionOption[] {
+function miningOptions(session?: JsonRecord): MiniGameActionOption[] {
+  const publicState = asRecord(session?.public_state);
+  const mentorOptions = uniqueTexts(asArray<string>(publicState.available_mentors)).map((item) => ({
+    action_id: `mentor:${item}`,
+    label: item,
+    desc: `选择${item}协助挖矿`,
+    aliases: [`选择${item}`, `${item}陪练`, `${item}协助`, `让${item}帮忙`, `请${item}帮忙`],
+  }));
   return [
+    { action_id: "choose_mentor", label: "需要陪练", desc: "查看可选协助角色", aliases: ["需要陪练", "找陪练", "需要协助", "找人帮忙"] },
+    { action_id: "no_mentor", label: "不需要陪练", desc: "独自挖矿", aliases: ["不用陪练", "不需要陪练", "自己挖", "独自挖矿"] },
+    ...mentorOptions,
     { action_id: "survey", label: "勘探", desc: "寻找矿脉弱点", aliases: ["探矿", "查看矿脉"] },
     { action_id: "excavate", label: "开采", desc: "稳定开采矿脉", aliases: ["挖矿", "挖掘"] },
     { action_id: "careful_excavate", label: "精挖", desc: "提高稀有掉率", aliases: ["精细开采", "慢慢挖"] },
@@ -3335,16 +3467,53 @@ function resolveMiningRewards(session: JsonRecord, oreAmount: number): { itemNam
   };
 }
 
-function miningStep(session: JsonRecord, actionId: string): MiniGameStepResult {
+function miningStep(session: JsonRecord, actionId: string, ctx: MiniGameControllerInput): MiniGameStepResult {
   const publicState = asRecord(session.public_state);
   const hidden = asRecord(session.hidden_state);
+  const currentMentor = () => {
+    const mentor = scalarText(publicState.mentor);
+    return mentor && mentor !== "无" ? mentor : "";
+  };
+  const withMentorMessages = (step: MiniGameStepResult): MiniGameStepResult => ({
+    ...step,
+    messages: buildMentorMiniGameMessages(
+      ctx,
+      currentMentor(),
+      "mining",
+      scalarText(publicState.target_mineral) || "当前矿物",
+      step.narration,
+    ),
+  });
   const add = (field: string, delta: number, min = 0, max = 160) => {
     publicState[field] = clamp(Number(publicState[field] || 0) + delta, min, max);
   };
+  if (actionId.startsWith("mentor:")) {
+    const mentor = scalarText(actionId.slice("mentor:".length));
+    publicState.mentor = mentor;
+    const narration = `${mentor}已准备协助你挖矿。你可以继续输入“勘探”“开采”“精挖”“支护”或“撤离”。`;
+    return {
+      narration,
+      messages: buildMentorMiniGameMessages(ctx, mentor, "mining", scalarText(publicState.target_mineral) || "当前矿物", narration),
+      resultTags: ["mentor_selected"],
+    };
+  }
+  if (actionId === "choose_mentor") {
+    const mentors = asArray<string>(publicState.available_mentors);
+    return {
+      narration: mentors.length
+        ? `可以选择这些角色协助挖矿：${mentors.join("、")}。如果不需要协助，直接说“不需要陪练”。`
+        : "当前没有可选协助角色。你可以直接输入“勘探”“开采”或“撤离”。",
+      resultTags: ["mentor_prompt"],
+    };
+  }
+  if (actionId === "no_mentor") {
+    publicState.mentor = "无";
+    return { narration: "本轮独自挖矿。你可以输入“勘探”“开采”“精挖”“支护”或“撤离”。", resultTags: ["mentor_skipped"] };
+  }
   if (actionId === "survey") {
     hidden.weakness_point = true;
     session.round = Number(session.round || 1) + 1;
-    return { narration: "你仔细勘探矿脉，找到了更容易下镐的薄弱点。", resultTags: ["survey"] };
+    return withMentorMessages({ narration: "你仔细勘探矿脉，找到了更容易下镐的薄弱点。", resultTags: ["survey"] });
   }
   if (actionId === "excavate") {
     const bonus = hidden.weakness_point ? 12 : 0;
@@ -3374,7 +3543,7 @@ function miningStep(session: JsonRecord, actionId: string): MiniGameStepResult {
     session.finish_reason = "主动撤离";
     const oreAmount = Math.max(1, Math.floor(Number(publicState.bag_load || 0) / 10));
     const rewards = resolveMiningRewards(session, oreAmount);
-    return {
+    return withMentorMessages({
       narration: `你选择及时撤离，把当前矿物安全带离了矿区。${rewards.rareItem ? `这次还额外挖出了 ${rewards.rareItem}。` : ""}`,
       resultTags: ["leave"],
       rewardSummary: { ore: oreAmount, rare: rewards.rareItem },
@@ -3384,7 +3553,7 @@ function miningStep(session: JsonRecord, actionId: string): MiniGameStepResult {
         memoryAdd: ["矿区采掘后安全撤离"],
       },
       memorySummary: "挖矿后主动撤离",
-    };
+    });
   } else return { narration: "当前无法执行该动作。", resultTags: ["invalid"] };
 
   if (Number(publicState.danger || 0) >= 70 && (Number(publicState.stability || 0) <= 20 || takeRng(session, 1, 100) <= Number(publicState.danger || 0) - 50)) {
@@ -3392,7 +3561,7 @@ function miningStep(session: JsonRecord, actionId: string): MiniGameStepResult {
     session.phase = "settling";
     session.result = "failed";
     session.finish_reason = "矿脉坍塌";
-    return { narration: "矿道突然坍塌，你只能狼狈撤出，损失了不少采集成果。", resultTags: ["failed", "collapse"], writeback: { playerAttributePatch: { staminaLoss: 20 }, memoryAdd: ["一次危险的矿脉坍塌"] }, memorySummary: "挖矿时遭遇坍塌" };
+    return withMentorMessages({ narration: "矿道突然坍塌，你只能狼狈撤出，损失了不少采集成果。", resultTags: ["failed", "collapse"], writeback: { playerAttributePatch: { staminaLoss: 20 }, memoryAdd: ["一次危险的矿脉坍塌"] }, memorySummary: "挖矿时遭遇坍塌" });
   }
   if (Number(publicState.vein_hp || 0) <= 0) {
     session.status = "finished";
@@ -3401,7 +3570,7 @@ function miningStep(session: JsonRecord, actionId: string): MiniGameStepResult {
     session.finish_reason = "矿脉采尽";
     const oreAmount = Math.max(2, Math.floor(Number(publicState.bag_load || 0) / 8));
     const rewards = resolveMiningRewards(session, oreAmount);
-    return {
+    return withMentorMessages({
       narration: `你成功采空了这条矿脉，带走了一批目标矿物。${rewards.rareItem ? `矿脉深处还掉出了 ${rewards.rareItem}。` : ""}`,
       resultTags: ["success"],
       rewardSummary: { ore: oreAmount, rare: rewards.rareItem },
@@ -3411,10 +3580,10 @@ function miningStep(session: JsonRecord, actionId: string): MiniGameStepResult {
         memoryAdd: ["采尽了一条矿脉"],
       },
       memorySummary: "挖矿成功，采尽矿脉",
-    };
+    });
   }
   session.round = Number(session.round || 1) + 1;
-  return { narration: `矿脉剩余 ${publicState.vein_hp}，危险度 ${publicState.danger}，负重 ${publicState.bag_load}。`, resultTags: [actionId] };
+  return withMentorMessages({ narration: `矿脉剩余 ${publicState.vein_hp}，危险度 ${publicState.danger}，负重 ${publicState.bag_load}。`, resultTags: [actionId] });
 }
 
 function forgeOptions(session?: JsonRecord): MiniGameActionOption[] {
@@ -3705,6 +3874,7 @@ const RULEBOOKS: Record<string, MiniGameRulebook> = {
     ruleSummary: "用户默认拥有回复丹药方（lv1）与药草提纯术（lv1）。只能炼制不高于自身等级的丹药，每次炼药消耗1金币。",
     setup: (ctx, sessionId, entrySource) => {
       const playerCard = createPlayerParameterCard(ctx.state);
+      const mentors = collectCultivationMentorNames(ctx);
       return {
         session_id: sessionId,
         game_type: "alchemy",
@@ -3716,13 +3886,14 @@ const RULEBOOKS: Record<string, MiniGameRulebook> = {
         entry_source: entrySource,
         chapter_id: Number(ctx.chapter?.id || 0) || null,
         scene_id: scalarText(ctx.chapter?.title) || "alchemy_furnace",
-        participants: buildParticipants(ctx, 1),
+        participants: buildParticipants(ctx, Math.max(1, Math.min(3, mentors.length + 1))),
         public_state: buildSimplePublicState({
           recipe_name: "回复丹药方（lv1）",
           known_recipes: uniqueTexts(["回复丹药方（lv1）", ...asArray<string>(playerCard.items).filter((item) => /丹方|药方/u.test(item))]),
           alchemy_skills: uniqueTexts(["药草提纯术（lv1）", ...asArray<string>(playerCard.skills).filter((item) => item.includes("提纯") || item.includes("炼药"))]),
           user_level: Math.max(1, Number(playerCard.level || 1)),
           cost_money: 1,
+          available_mentors: mentors,
           panel_default_collapsed: true,
           last_formula: "",
           last_result: "",
@@ -4705,7 +4876,8 @@ export async function handleMiniGameTurn(input: MiniGameControllerInput): Promis
       messages: step.messages?.length ? attachMiniGameMeta(step.messages, stepMeta) : undefined,
     };
   }
-  const aiIntent = await resolveMiniGameIntentByAi({
+  const ruleActionId = normalizeActionId(input.playerMessage, options);
+  const aiIntent = ruleActionId ? null : await resolveMiniGameIntentByAi({
     userId: input.userId,
     gameType: rulebook.gameType,
     phase: scalarText(activeSession.phase),
@@ -4720,7 +4892,8 @@ export async function handleMiniGameTurn(input: MiniGameControllerInput): Promis
       aliases: item.aliases || [],
     })),
   });
-  const actionId = aiIntent?.actionId || normalizeActionId(input.playerMessage, options);
+  // 明确的按钮、别名和角色名必须优先于 AI 兜底，避免“云韵”这类输入被模型误判成收功/结束。
+  const actionId = ruleActionId || aiIntent?.actionId || "";
   if (!actionId) {
     logMiniGameAction({
       normalizedInput: normalizeMiniGameActionText(input.playerMessage),
@@ -4796,15 +4969,17 @@ export async function handleMiniGameTurn(input: MiniGameControllerInput): Promis
   const eventType = scalarText(activeSession.status) === "finished" || scalarText(activeSession.status) === "aborted"
     ? "on_mini_game_finish"
     : "on_mini_game";
+  const stepMeta = buildMiniGameMeta(root);
   return {
     intercepted: true,
     runtime: root,
     message: {
-      role: scalarText(input.world?.narratorRole?.name) || "旁白",
-      roleType: "narrator",
+      role: step.speakerRole || scalarText(input.world?.narratorRole?.name) || "旁白",
+      roleType: step.speakerRoleType || "narrator",
       eventType,
       content: narration,
-      meta: buildMiniGameMeta(root),
+      meta: stepMeta,
     },
+    messages: step.messages?.length ? attachMiniGameMeta(step.messages, stepMeta) : undefined,
   };
 }

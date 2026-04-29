@@ -1470,6 +1470,7 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
       }
 
       let narrativeMessageRow: any = null;
+      const narrativeMessageRows: any[] = [];
       const miniGameMessages = miniGameResult.messages && miniGameResult.messages.length
         ? miniGameResult.messages
         : miniGameResult.message
@@ -1487,6 +1488,9 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
         });
         const narrativeMessageId = normalizeMessageId(inserted);
         narrativeMessageRow = await db("t_sessionMessage").where({ id: narrativeMessageId }).first();
+        if (narrativeMessageRow) {
+          narrativeMessageRows.push(narrativeMessageRow);
+        }
       }
 
 	      if (currentChapter) {
@@ -1538,7 +1542,9 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
         message: normalizeMessageOutput(messageRow),
         chapterSwitchMessage: null,
         narrativeMessage: narrativeMessageRow ? normalizeMessageOutput(narrativeMessageRow) : null,
-        generatedMessages: narrativeMessageRow ? [normalizeMessageOutput(narrativeMessageRow)].filter(Boolean) as Record<string, any>[] : [],
+        generatedMessages: narrativeMessageRows
+          .map((row) => normalizeMessageOutput(row))
+          .filter(Boolean) as Record<string, any>[],
         narrativePlan: null,
         triggered: [],
         taskProgress: [],
