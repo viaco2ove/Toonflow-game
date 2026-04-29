@@ -50,6 +50,7 @@ import {
 } from "@/modules/game-runtime/engines/TriggerEngine";
 import { evaluateRuntimeOutcome } from "@/modules/game-runtime/services/ChapterRuntimeService";
 import { evaluateEventProgressByAi } from "@/modules/game-runtime/services/EventProgressRuntimeService";
+import { maybeActivateFreeChapterTaskEvent } from "@/modules/game-runtime/services/FreeChapterTaskService";
 import { persistSnapshotIfNeeded } from "@/modules/game-runtime/services/SnapshotService";
 import {
   AppliedDelta,
@@ -1610,6 +1611,33 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
           userId: currentUserId,
         },
       });
+      /**
+       * 自由章节里“领取推荐任务”不是普通的一句用户输入，而是要正式切入一个动态任务事件。
+       *
+       * 这里放在事件进度检测之后执行，原因是：
+       * 1. 先保留静态引导事件的正常完成判定；
+       * 2. 再把“用户选中了哪一个任务”升级成新的动态事件；
+       * 3. 新事件创建后立刻把回合交给旁白，让旁白继续描述任务开场，而不是继续等待用户输入。
+       */
+      const activatedFreeChapterTask = await maybeActivateFreeChapterTaskEvent({
+        userId: currentUserId,
+        world,
+        chapter: currentChapter,
+        state,
+        recentMessages: recentMessagesForProgress,
+        playerMessage: messageContent,
+      });
+      if (activatedFreeChapterTask) {
+        // 任务领取成功后，应由旁白先补充任务过程、成功条件与失败条件。
+        setRuntimeTurnState(state, world, {
+          canPlayerSpeak: false,
+          expectedRoleType: "narrator",
+          expectedRole: String(state.narrator?.name || "旁白"),
+          lastSpeakerRoleType: "player",
+          lastSpeaker: roleValue,
+        });
+        syncChapterProgressWithRuntime(currentChapter, state);
+      }
     } else {
       recordChapterProgressSignals(currentChapter, state, {
         messageContent,
