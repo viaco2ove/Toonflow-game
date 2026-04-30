@@ -1244,6 +1244,35 @@ function normalizeGeneratedLine(input: unknown, limit = 220): string {
   return text.length > limit ? `${text.slice(0, limit)}...` : text;
 }
 
+/**
+ * 为角色发言器解析最终展示正文时计算合适的裁剪上限。
+ *
+ * 用途：
+ * - 普通短句仍保持较短上限，避免模型啰嗦失控；
+ * - 任务推荐、选项列表、结构化旁白这类多行内容必须保留完整，不然会在 `/game/streamlines`
+ *   里变成“第 5 项被砍断”的半截文本；
+ * - 这里只放宽“旁白 + 结构化多行内容”的长度，其它角色发言维持原有节奏。
+ */
+function resolveSpeakerOutputLimit(input: {
+  candidateText: string;
+  roleType: string;
+  compactMode: boolean;
+  currentEventSummary: string;
+  motive: string;
+}): number {
+  const candidateText = normalizeScalarText(input.candidateText);
+  const summaryText = normalizeScalarText(input.currentEventSummary);
+  const motiveText = normalizeScalarText(input.motive);
+  const roleType = sanitizeRoleType(input.roleType);
+  const looksLikeStructuredList = /\n\s*(?:\d+[.、]|[-*])\s*/.test(candidateText);
+  const lineCount = candidateText ? candidateText.split(/\r?\n/).filter((item) => item.trim()).length : 0;
+  const looksLikeTaskChoicePrompt = /任务|委托|推荐|请选择|可选/.test(`${summaryText} ${motiveText}`);
+  if (roleType === "narrator" && (looksLikeStructuredList || lineCount >= 4 || looksLikeTaskChoicePrompt)) {
+    return 1200;
+  }
+  return input.compactMode ? 140 : 220;
+}
+
 // 去掉舞台提示尾部多余标点，避免括号内容难读。
 function trimStageDirectionTail(input: string): string {
   return normalizeScalarText(input)
@@ -1252,8 +1281,8 @@ function trimStageDirectionTail(input: string): string {
 }
 
 // 将动作描写与台词拆开，保证朗读和展示都更自然。
-function formatDialogueWithStageDirection(content: string, roleType: string): string {
-  const normalized = normalizeGeneratedLine(content, 220);
+function formatDialogueWithStageDirection(content: string, roleType: string, limit = 220): string {
+  const normalized = normalizeGeneratedLine(content, limit);
   if (!normalized) return "";
   if (sanitizeRoleType(roleType) === "narrator") return normalized;
   if (/^\s*\([^)]*\)\s*[\r\n]+/.test(normalized) || /^\s*（[^）]*）\s*[\r\n]+/.test(normalized)) {
@@ -3802,13 +3831,22 @@ export async function runStorySpeakerContent(input: {
     const rawText = rawResponse;
     const objectLike = parseJsonSafe<Record<string, unknown>>(rawText, {});
     const fieldMap = parseFieldMap(rawText);
-    const rawContent = normalizeGeneratedLine(
+    const candidateContent = String(
       (objectLike && Object.keys(objectLike).length ? objectLike.content : undefined)
       || getPlainField(fieldMap, "content")
       || rawText,
-      compactMode ? 140 : 220,
     );
-    const content = formatDialogueWithStageDirection(rawContent, input.currentRole.roleType);
+    // 任务推荐、多行选项等结构化正文不能继续沿用 140/220 的统一硬裁剪，
+    // 否则模型明明返回完整列表，最终落到 streamlines 时却只剩下半截。
+    const outputLimit = resolveSpeakerOutputLimit({
+      candidateText: candidateContent,
+      roleType: input.currentRole.roleType,
+      compactMode,
+      currentEventSummary: promptCurrentEventSummary,
+      motive: input.motive,
+    });
+    const rawContent = normalizeGeneratedLine(candidateContent, outputLimit);
+    const content = formatDialogueWithStageDirection(rawContent, input.currentRole.roleType, outputLimit);
     if (!content) {
       throw createRuntimeModelError("speaker", "模型返回内容为空");
     }
