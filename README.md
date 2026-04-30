@@ -18,7 +18,7 @@
 <img src="./docs/logo.png" alt="Toonflow Logo" height="120"/>
 
 # Toonflow
-
+Toonflow 是"Toonflow Game" 的前身，在当前项目更多是残留功能而不是主要功能。
   <p align="center">
     <b>
       AI短剧工厂
@@ -43,9 +43,12 @@
   </p>
   
   > 🚀 **一站式短剧工程**：从文本到角色，从分镜到视频，0门槛全流程AI化，创作效率提升10倍+！
-   🚀 **多角色沉浸感ai故事游戏**: 体验沉浸式ai故事游戏，感受角色互动的魅力！
+  
 </div>
 
+# "Toonflow Game"
+"Toonflow Game" 在Toonflow基础上进行的二度开发
+ 🚀 **多角色沉浸感ai故事游戏**: 体验沉浸式ai故事游戏，感受角色互动的魅力！
 ---
 # 🌟 主要功能
 多角色 ai 游戏
