@@ -1,5 +1,8 @@
 # 运行目录
 `/opt/toonflow/toonflow-game-app`
+DB_PATH=/opt/toonflow/toonflow-app-run-db/db.sqlite
+UPLOAD_DIR=/opt/toonflow/toonflow-app-run-db/uploads
+LOG_PATH=/opt/toonflow/toonflow-game-app/logs
 
 # 环境配置
 `install.sh` 会自动生成：
@@ -59,3 +62,15 @@ pm2 status
 pm2 logs toonflow-game                                                                                                                                                            
 pm2 logs toonflow-panel  
 ```
+
+# 清除环境
+```
+  cd /opt/toonflow/toonflow-game-app                                                                                                                                                
+  rm -rf node_modules build                                                                                                                                                         
+                                                                                                                                                                                    
+  cd ~/ubuntu                                                                                                                                                                       
+  source ./install.config.sh                                                                                                                                                        
+  ./install.sh  
+```
+
+

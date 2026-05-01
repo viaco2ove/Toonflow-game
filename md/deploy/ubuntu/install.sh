@@ -63,6 +63,9 @@ need_cmd() {
 install_yarn_dependencies() {
   # 服务端构建需要 typescript/tsx 等开发依赖，但仓库同时包含 Electron 桌面依赖。
   # Ubuntu 部署不会使用 Electron，这里忽略 engines 校验，避免被桌面打包链阻塞。
+  if [ -d node_modules ]; then
+    rm -rf node_modules
+  fi
   yarn install --frozen-lockfile --ignore-engines
 }
 
