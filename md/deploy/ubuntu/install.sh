@@ -392,8 +392,8 @@ main() {
   install_system_deps
   install_node_yarn_pm2
   prepare_dirs
-  build_backend
-  build_frontend
+  build_frontend   # 先构建前端，同步到后端 scripts/web
+  build_backend    # 再构建后端，确保 scripts/web 已经是最新的
   start_pm2
   install_panel
   write_nginx_config

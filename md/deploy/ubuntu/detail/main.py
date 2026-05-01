@@ -60,11 +60,12 @@ def sync_web_project_code() -> str:
 
 
 def build_web_project() -> str:
-    """构建web项目，输出到scripts/web目录"""
+    """构建web项目：先同步代码，再构建，输出到scripts/web目录"""
     safe_dir = shlex.quote(WEB_PROJECT_DIR)
     safe_output_dir = shlex.quote(WEB_SOURCE_DIR)
     return run(
         f"cd {safe_dir} && "
+        "git pull origin 2>&1 && "
         "yarn install 2>&1 && "
         f"yarn build 2>&1 && "
         f"rm -rf {safe_output_dir} 2>&1 && "
@@ -448,7 +449,7 @@ def home() -> str:
               <a class="action danger" href="/nginx/stop">停止 nginx</a>
             </div>
             <div class="row">
-              <a class="action" href="/deploy/sync-web">同步静态页（构建+部署）</a>
+              <a class="action" href="/deploy/sync-web">同步静态页（pull+构建+部署）</a>
               <a class="action" href="/deploy/sync-web-code">同步web项目代码</a>
               <a class="action danger" href="/git/force-sync">强制同步当前分支</a>
             </div>
@@ -543,8 +544,8 @@ def deploy_sync_web():
 
 @app.get("/deploy/sync-web-code")
 def deploy_sync_web_code():
-    """同步web项目源码（git pull）"""
-    output = sync_web_project_code()
+    """仅同步web项目源码（git pull），不构建"""
+    output = run(f"cd {shlex.quote(WEB_PROJECT_DIR)} && git pull origin 2>&1 || true")
     set_last_action_log("同步web项目代码", output)
     return RedirectResponse("/", status_code=302)
 
