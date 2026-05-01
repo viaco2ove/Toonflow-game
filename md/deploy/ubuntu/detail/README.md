@@ -3,7 +3,7 @@
 
 # 环境配置
 `install.sh` 会自动生成：
-
+[本地头像分离模型安装.md](../../../modeapi/image/%E6%9C%AC%E5%9C%B0%E5%A4%B4%E5%83%8F%E5%88%86%E7%A6%BB%E6%A8%A1%E5%9E%8B%E5%AE%89%E8%A3%85.md)
 ```text
 /opt/toonflow/toonflow-game-app/env/.env.local
 ```
@@ -55,6 +55,7 @@ http://你的服务器IP:6008/
 查看状态：
 
 ```bash
-pm2 status
-pm2 logs toonflow-panel
+pm2 status                                                                                                                                                                        
+pm2 logs toonflow-game                                                                                                                                                            
+pm2 logs toonflow-panel  
 ```

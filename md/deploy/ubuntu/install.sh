@@ -60,6 +60,12 @@ need_cmd() {
   command -v "$1" >/dev/null 2>&1 || die "缺少命令：$1"
 }
 
+install_yarn_dependencies() {
+  # 服务端构建需要 typescript/tsx 等开发依赖，但仓库同时包含 Electron 桌面依赖。
+  # Ubuntu 部署不会使用 Electron，这里忽略 engines 校验，避免被桌面打包链阻塞。
+  yarn install --frozen-lockfile --ignore-engines
+}
+
 run_sudo() {
   if [ "$(id -u)" -eq 0 ]; then
     "$@"
@@ -197,7 +203,7 @@ build_frontend() {
 
   log "安装并构建前端"
   cd "$WEB_DIR"
-  yarn install --frozen-lockfile
+  install_yarn_dependencies
   yarn build
 
   log "同步前端 dist 到后端 scripts/web"
@@ -239,7 +245,7 @@ build_backend() {
 
   log "安装并构建后端"
   cd "$APP_DIR"
-  yarn install --frozen-lockfile
+  install_yarn_dependencies
   NODE_ENV=prod PREFER_PROCESS_ENV=1 yarn build
 }
 
