@@ -1,5 +1,6 @@
 import u from "@/utils";
 import {
+  isFreeChapterRuntimeMode,
   JsonRecord,
   readChapterProgressState,
   readPhaseAwareRuntimeCurrentEventDigestState,
@@ -51,6 +52,40 @@ function normalizeScalarText(input: unknown): string {
   const text = String(input ?? "").trim();
   if (!text || text === "null" || text === "undefined") return "";
   return text;
+}
+
+/**
+ * 判断是否要在章节结束检测里屏蔽“已完成的自由章节静态引导事件”。
+ *
+ * 作用：
+ * - 判章虽然不直接决定发言人，但也会读取 current_event 作为本轮上下文；
+ * - 如果自由章节已经退出任务、当前应回到自由行动，却仍把 completed 的引导事件送给判章，
+ *   会让判章上下文持续停留在旧引导阶段；
+ * - 因此这里也统一改写成自由剧情等待态，保持和编排师、事件进度检测一致。
+ */
+function shouldSuppressCompletedFreeChapterGuideEvent(input: {
+  chapter: any;
+  state: JsonRecord;
+  eventFlowType: string;
+  eventStatus: string;
+}): boolean {
+  if (!isFreeChapterRuntimeMode(input.chapter)) {
+    return false;
+  }
+  if (normalizeScalarText(input.eventFlowType) === "free_runtime") {
+    return false;
+  }
+  if (normalizeScalarText(input.eventStatus) !== "completed") {
+    return false;
+  }
+  const vars = input.state.vars && typeof input.state.vars === "object"
+    ? input.state.vars as Record<string, unknown>
+    : {};
+  const activeFreeTask = vars.activeFreeTask && typeof vars.activeFreeTask === "object"
+    ? vars.activeFreeTask as Record<string, unknown>
+    : {};
+  const activeTaskStatus = normalizeScalarText(activeFreeTask.status);
+  return !activeTaskStatus || ["completed", "failed", "aborted"].includes(activeTaskStatus);
 }
 
 function stringifyCondition(input: unknown): string {
@@ -232,6 +267,12 @@ function buildChapterJudgeInputSnapshot({
   // 否则 chapterProgress 已经切到事件2，但旧 digest 还停在事件1时，
   // 判章 prompt 会错误读到 eventIndex=0/1，和真实运行态脱节。
   const currentEvent = readPhaseAwareRuntimeCurrentEventDigestState(chapter, state);
+  const shouldSuppressGuideEvent = shouldSuppressCompletedFreeChapterGuideEvent({
+    chapter,
+    state,
+    eventFlowType: normalizeScalarText(currentEvent.eventFlowType),
+    eventStatus: normalizeScalarText(currentEvent.eventStatus) || "idle",
+  });
 
   const recentDialogue = Array.isArray(recentMessages)
     ? recentMessages
@@ -254,10 +295,21 @@ function buildChapterJudgeInputSnapshot({
     current_event: {
       index: Number(normalizeScalarText(currentEvent.eventIndex) || "0"),
       kind: normalizeScalarText(currentEvent.eventKind) || "scene",
-      flow: normalizeScalarText(currentEvent.eventFlowType) || "chapter_content",
-      status: normalizeScalarText(currentEvent.eventStatus) || "idle",
-      summary: shortText(currentEvent.eventSummary, 120) || "",
-      facts: Array.isArray(currentEvent.eventFacts)
+      flow: shouldSuppressGuideEvent
+        ? "free_runtime"
+        : normalizeScalarText(currentEvent.eventFlowType) || "chapter_content",
+      status: shouldSuppressGuideEvent
+        ? "waiting_input"
+        : normalizeScalarText(currentEvent.eventStatus) || "idle",
+      summary: shouldSuppressGuideEvent
+        ? "自由行动中，等待承接用户的新动作。"
+        : shortText(currentEvent.eventSummary, 120) || "",
+      facts: shouldSuppressGuideEvent
+        ? [
+          "当前无进行中的任务",
+          "应根据用户最新输入继续自由剧情",
+        ]
+        : Array.isArray(currentEvent.eventFacts)
         ? currentEvent.eventFacts
             .map((item: unknown) => normalizeScalarText(item))
             .filter(Boolean)

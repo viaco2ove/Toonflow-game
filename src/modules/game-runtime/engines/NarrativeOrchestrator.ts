@@ -768,6 +768,41 @@ function readCurrentChapterPhase(chapter: any, state: JsonRecord): ChapterRuntim
   return outline.phases[0] || null;
 }
 
+/**
+ * 判断当前是否需要在编排提示词里屏蔽“已完成的自由章节静态引导事件”。
+ *
+ * 作用：
+ * - 用户已经结束上一个任务或完成了任务推荐选择后，章节静态引导 phase 可能短暂仍停留在 state 中；
+ * - 如果此时把 `completed` 的旧引导事件继续作为 `current_event` 发送给编排模型，
+ *   模型会误以为本轮仍应继续重复“给我推荐个任务”这一类提示；
+ * - 这里做一层 prompt 级兜底，只在自由章节下屏蔽这种“已结束但仍残留”的静态引导事件。
+ */
+function shouldSuppressCompletedFreeChapterGuidePrompt(input: {
+  chapter: any;
+  state: JsonRecord;
+  currentEvent: {
+    eventFlowType: "introduction" | "chapter_content" | "chapter_ending_check" | "free_runtime";
+    eventStatus: RuntimeCurrentEventState["status"];
+  };
+}): boolean {
+  if (!isFreeChapterRuntimeMode(input.chapter)) {
+    return false;
+  }
+  if (input.currentEvent.eventFlowType === "free_runtime") {
+    return false;
+  }
+  if (input.currentEvent.eventStatus !== "completed") {
+    return false;
+  }
+  const activeFreeTask = asRecord(asRecord(input.state.vars).activeFreeTask);
+  const activeTaskStatus = normalizeScalarText(activeFreeTask.status);
+  // 仍有进行中的任务时，不能把任务阶段误判成“自由等待态”。
+  if (activeTaskStatus && !["completed", "failed", "aborted"].includes(activeTaskStatus)) {
+    return false;
+  }
+  return true;
+}
+
 function isRoleAllowedInPhase(role: RuntimeStoryRole, phase: ChapterRuntimePhase | null): boolean {
   if (!phase) return true;
   const allowedSpeakers = Array.isArray(phase.allowedSpeakers) ? phase.allowedSpeakers : [];
@@ -3303,14 +3338,31 @@ function buildOrchestratorPromptPayload(input: {
   traceMeta?: JsonRecord;
   playerMessage?: string;
 }): OrchestratorPromptPayload {
+  const shouldSuppressCompletedGuide = shouldSuppressCompletedFreeChapterGuidePrompt({
+    chapter: input.chapter,
+    state: input.state,
+    currentEvent: input.currentEvent,
+  });
+  const effectiveCurrentPhaseLabel = shouldSuppressCompletedGuide
+    ? "自由剧情"
+    : normalizeScalarText(input.currentPhase?.label);
+  const effectiveCurrentEventSummary = shouldSuppressCompletedGuide
+    ? "自由行动中，等待承接用户的新动作。"
+    : input.currentEvent.eventSummary;
+  const effectiveCurrentEventFacts = shouldSuppressCompletedGuide
+    ? [
+      "当前无进行中的任务",
+      "应根据用户最新输入继续自由剧情",
+    ]
+    : input.currentEvent.eventFacts;
   const promptEventSummary = buildPromptSafeEventSummary({
-    currentEventSummary: input.currentEvent.eventSummary,
-    currentPhaseLabel: normalizeScalarText(input.currentPhase?.label),
+    currentEventSummary: effectiveCurrentEventSummary,
+    currentPhaseLabel: effectiveCurrentPhaseLabel,
     chapterDirective: input.currentChapter.directive,
     limit: input.compactMode ? 72 : 96,
   });
   const promptEventFacts = buildPromptSafeEventFacts({
-    currentEventFacts: input.currentEvent.eventFacts,
+    currentEventFacts: effectiveCurrentEventFacts,
     chapterDirective: input.currentChapter.directive,
     limit: input.compactMode ? 3 : 4,
   });
@@ -3321,14 +3373,18 @@ function buildOrchestratorPromptPayload(input: {
     worldName: normalizeScalarText(input.world?.name),
     worldIntro: shortText(input.world?.intro, input.compactMode ? 600 : 1200),
     chapterTitle: input.currentChapter.title,
-    chapterDirective: buildPromptSafeChapterDirective({
+    chapterDirective: shouldSuppressCompletedGuide
+      ? ""
+      : buildPromptSafeChapterDirective({
       chapterDirective: input.currentChapter.directive,
       currentEventFlowType: input.currentEvent.eventFlowType,
     }),
-    chapterUserTurns: shortText(
-      extractChapterUserInteractionText(input.currentChapter.directive),
-      input.compactMode ? 180 : 880,
-    ),
+    chapterUserTurns: shouldSuppressCompletedGuide
+      ? ""
+      : shortText(
+        extractChapterUserInteractionText(input.currentChapter.directive),
+        input.compactMode ? 180 : 880,
+      ),
     chapterOpening: input.compactMode
       ? normalizeScalarText(input.currentChapter.openingText).slice(0, 80)
       : shortText(input.currentChapter.openingText, 180),
@@ -3343,17 +3399,29 @@ function buildOrchestratorPromptPayload(input: {
     // storyState 是长期记忆的压缩版；turnState 则是当前回合的硬状态。
     storyState: input.compactMode ? shortText(summarizeStoryState(input.state), 180) : summarizeStoryState(input.state),
     turnState: input.turnState,
-    currentPhaseLabel: normalizeScalarText(input.currentPhase?.label),
-    currentPhaseGoal: buildPromptSafePhaseGoal({
-      currentPhaseLabel: normalizeScalarText(input.currentPhase?.label),
-      currentEventSummary: input.currentEvent.eventSummary,
+    currentPhaseLabel: effectiveCurrentPhaseLabel,
+    currentPhaseGoal: shouldSuppressCompletedGuide
+      ? "根据用户最新输入推进自由剧情。"
+      : buildPromptSafePhaseGoal({
+      currentPhaseLabel: effectiveCurrentPhaseLabel,
+      currentEventSummary: effectiveCurrentEventSummary,
       chapterDirective: input.currentChapter.directive,
       limit: input.compactMode ? 72 : 96,
     }),
 
     // 当前事件是编排师最重要的上下文，所以先塞完整结构，再用下方两行覆盖成“安全摘要版”。
-    ...buildPromptEventContextPayload(input.currentEvent),
-    currentEventWindow: buildPromptSafeEventWindow({
+    ...buildPromptEventContextPayload({
+      ...input.currentEvent,
+      eventFlowType: shouldSuppressCompletedGuide ? "free_runtime" : input.currentEvent.eventFlowType,
+      eventStatus: shouldSuppressCompletedGuide ? "waiting_input" : input.currentEvent.eventStatus,
+      eventSummary: effectiveCurrentEventSummary,
+      eventFacts: effectiveCurrentEventFacts,
+      eventMemorySummary: shouldSuppressCompletedGuide ? "" : input.currentEvent.eventMemorySummary,
+      eventMemoryFacts: shouldSuppressCompletedGuide ? [] : input.currentEvent.eventMemoryFacts,
+    }),
+    currentEventWindow: shouldSuppressCompletedGuide
+      ? ""
+      : buildPromptSafeEventWindow({
       currentEventWindow: input.compactMode
         ? readRuntimeEventDigestWindowTextState(input.state, {
           windowSize: 3,
@@ -3366,7 +3434,9 @@ function buildOrchestratorPromptPayload(input: {
       currentEventFlowType: input.currentEvent.eventFlowType,
       limit: input.compactMode ? 80 : 140,
     }),
-    phaseAllowedSpeakers: Array.isArray(input.currentPhase?.allowedSpeakers) ? input.currentPhase.allowedSpeakers : [],
+    phaseAllowedSpeakers: shouldSuppressCompletedGuide
+      ? []
+      : Array.isArray(input.currentPhase?.allowedSpeakers) ? input.currentPhase.allowedSpeakers : [],
 
     // recentDialogue / latestPlayerMessage 是这轮最直接的触发因素，决定模型怎么承接上下文。
     recentDialogue: input.compactMode

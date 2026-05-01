@@ -1,5 +1,6 @@
 import u from "@/utils";
 import {
+  isFreeChapterRuntimeMode,
   JsonRecord,
   readChapterProgressState,
   readPhaseAwareRuntimeCurrentEventDigestState,
@@ -60,6 +61,39 @@ function normalizeScalarText(input: unknown): string {
 function normalizeTraceMeta(input: unknown): JsonRecord {
   if (!input || typeof input !== "object") return {};
   return input as JsonRecord;
+}
+
+/**
+ * 判断是否要在事件进度检测里屏蔽“已完成的自由章节静态引导事件”。
+ *
+ * 作用：
+ * - 自由章节里，任务结束后 state 可能短暂仍残留最后一个静态引导事件；
+ * - 如果事件进度检测继续读取这个 completed 事件，会误以为当前轮还在围绕“任务推荐引导”推进；
+ * - 这里只在没有进行中任务的前提下，将其视为自由剧情等待态。
+ */
+function shouldSuppressCompletedFreeChapterGuideEvent(input: {
+  chapter: any;
+  state: JsonRecord;
+  eventFlowType: string;
+  eventStatus: string;
+}): boolean {
+  if (!isFreeChapterRuntimeMode(input.chapter)) {
+    return false;
+  }
+  if (normalizeScalarText(input.eventFlowType) === "free_runtime") {
+    return false;
+  }
+  if (normalizeScalarText(input.eventStatus) !== "completed") {
+    return false;
+  }
+  const vars = input.state.vars && typeof input.state.vars === "object"
+    ? input.state.vars as Record<string, unknown>
+    : {};
+  const activeFreeTask = vars.activeFreeTask && typeof vars.activeFreeTask === "object"
+    ? vars.activeFreeTask as Record<string, unknown>
+    : {};
+  const activeTaskStatus = normalizeScalarText(activeFreeTask.status);
+  return !activeTaskStatus || ["completed", "failed", "aborted"].includes(activeTaskStatus);
 }
 
 /**
@@ -202,6 +236,12 @@ function buildEventProgressInputSnapshot(input: EvaluateEventProgressInput): Jso
   // 否则 phaseId 已经进到事件2，但这里仍按旧 digest 读到事件1，就会出现 1/2/0 混乱。
   const chapterProgress = readChapterProgressState(input.state) as unknown as Record<string, unknown>;
   const currentEvent = readPhaseAwareRuntimeCurrentEventDigestState(input.chapter, input.state);
+  const shouldSuppressGuideEvent = shouldSuppressCompletedFreeChapterGuideEvent({
+    chapter: input.chapter,
+    state: input.state,
+    eventFlowType: normalizeScalarText(currentEvent.eventFlowType),
+    eventStatus: normalizeEventStatus(currentEvent.eventStatus || chapterProgress.eventStatus),
+  });
   const recentDialogue = Array.isArray(input.recentMessages)
     ? input.recentMessages
         .slice(-10)
@@ -222,10 +262,21 @@ function buildEventProgressInputSnapshot(input: EvaluateEventProgressInput): Jso
     current_event: {
       index: Number(currentEvent.eventIndex || chapterProgress.eventIndex || 0),
       kind: normalizeScalarText(currentEvent.eventKind || chapterProgress.eventKind) || "scene",
-      flow: normalizeScalarText(currentEvent.eventFlowType) || "chapter_content",
-      status: normalizeEventStatus(currentEvent.eventStatus || chapterProgress.eventStatus),
-      summary: normalizeScalarText(currentEvent.eventSummary || chapterProgress.eventSummary),
-      facts: Array.isArray(currentEvent.eventFacts)
+      flow: shouldSuppressGuideEvent
+        ? "free_runtime"
+        : normalizeScalarText(currentEvent.eventFlowType) || "chapter_content",
+      status: shouldSuppressGuideEvent
+        ? "waiting_input"
+        : normalizeEventStatus(currentEvent.eventStatus || chapterProgress.eventStatus),
+      summary: shouldSuppressGuideEvent
+        ? "自由行动中，等待承接用户的新动作。"
+        : normalizeScalarText(currentEvent.eventSummary || chapterProgress.eventSummary),
+      facts: shouldSuppressGuideEvent
+        ? [
+          "当前无进行中的任务",
+          "应根据用户最新输入继续自由剧情",
+        ]
+        : Array.isArray(currentEvent.eventFacts)
         ? currentEvent.eventFacts.map((item) => normalizeScalarText(item)).filter(Boolean)
         : [],
     },
