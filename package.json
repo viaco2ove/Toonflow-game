@@ -48,7 +48,7 @@
     "lint": "tsc --noEmit",
     "sync:wsl": "bash scripts/syncWslMirror.sh",
     "lint:wsl": "bash scripts/runWslMirror.sh yarn lint",
-    "build": "cross-env NODE_ENV=prod tsx scripts/build.ts",
+    "build": "cross-env NODE_ENV=prod node scripts/build.js",
     "build:wsl": "bash scripts/runWslMirror.sh yarn build",
     "pack": "electron-builder --dir",
     "dist": "yarn build && electron-builder",
