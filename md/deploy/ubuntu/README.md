@@ -4,7 +4,9 @@
 
 下面内容只涉及安装
 ## 1. 传目录到服务器
-
+[main.py](detail/main.py)
+[install.config.sh](install.config.sh)
+[install.sh](install.sh)
 ```bash
 scp -r md/deploy/ubuntu root@你的服务器IP:~/ubuntu
 ```
