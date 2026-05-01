@@ -66,12 +66,60 @@ interface ExecutingTaskCardValue {
 }
 
 /**
+ * 自由章节任务奖励。
+ *
+ * 用途：
+ * - 任务成功后统一回写经验、金币和物品；
+ * - 让旁白收尾文案与参数卡写回使用同一份奖励数据。
+ */
+interface FreeChapterTaskReward {
+  exp: number;
+  money: number;
+  items: string[];
+}
+
+/**
+ * 自由章节任务结算结果。
+ *
+ * 用途：
+ * - SessionService 需要知道本轮任务是否已经被判定为成功/失败；
+ * - 如果已结算，还要拿到旁白收尾文案与奖励摘要，直接结束当前“任务小游戏”。
+ */
+export interface FreeChapterTaskResolutionResult {
+  resolved: boolean;
+  outcome: "success" | "failed";
+  taskTitle: string;
+  objective: string;
+  narration: string;
+  reward: FreeChapterTaskReward;
+}
+
+/**
  * 对单值文本做最小归一化，过滤 null / undefined / 空串。
  */
 function scalarText(input: unknown): string {
   const text = String(input ?? "").trim();
   if (!text || text === "null" || text === "undefined") return "";
   return text;
+}
+
+/**
+ * 将字符串数组做去重清洗。
+ *
+ * 用途：
+ * - 奖励物品、参数卡物品、背包写回都需要避免重复空值；
+ * - 这里统一做基础文本归一化，避免各处重复写过滤逻辑。
+ */
+function uniqueTexts(input: unknown[]): string[] {
+  const seen = new Set<string>();
+  const output: string[] = [];
+  for (const item of input) {
+    const text = scalarText(item);
+    if (!text || seen.has(text)) continue;
+    seen.add(text);
+    output.push(text);
+  }
+  return output;
 }
 
 /**
@@ -112,6 +160,65 @@ function ensurePlayerParameterCard(state: JsonRecord): JsonRecord {
   player.parameterCardJson = card;
   state.player = player;
   return card;
+}
+
+/**
+ * 计算任务奖励写入后的升级阈值。
+ *
+ * 用途：
+ * - 自由任务奖励与小游戏奖励遵循同一套升级规则；
+ * - 默认阈值采用 `level * 100`，最低不低于 100。
+ */
+function resolveTaskNextLevelExp(levelInput: number): number {
+  const level = Math.max(1, Math.floor(levelInput));
+  return Math.max(100, level * 100);
+}
+
+/**
+ * 计算任务升级后的满血满蓝资源。
+ *
+ * 用途：
+ * - 当任务奖励触发升级时，需要把 hp/mp 恢复到当前等级满值；
+ * - 当前参数卡没有独立 max 字段，这里沿用现有统一公式。
+ */
+function resolveTaskFullResource(levelInput: number): number {
+  const level = Math.max(1, Math.floor(levelInput));
+  return 100 + level * 10;
+}
+
+/**
+ * 规范化参数卡里的经验与升级结果。
+ *
+ * 用途：
+ * - 任务奖励可能一次给出多段经验；
+ * - 这里统一负责连续升级、扣减旧阈值，并在升级后恢复 hp/mp。
+ */
+function normalizeTaskParameterCardProgress(cardInput: JsonRecord): { card: JsonRecord; levelUps: number } {
+  const card = { ...cardInput };
+  const rawLevel = Number(card.level);
+  let level = Number.isFinite(rawLevel) && rawLevel > 0 ? Math.floor(rawLevel) : 1;
+  let exp = Math.max(0, Number(card.exp || 0));
+  let nextLevelExp = Number(card.next_level_exp);
+  if (!Number.isFinite(nextLevelExp) || nextLevelExp <= 0) {
+    nextLevelExp = resolveTaskNextLevelExp(level);
+  }
+  nextLevelExp = Math.max(resolveTaskNextLevelExp(level), nextLevelExp);
+  let levelUps = 0;
+  while (exp >= nextLevelExp) {
+    exp -= nextLevelExp;
+    level += 1;
+    nextLevelExp = resolveTaskNextLevelExp(level);
+    levelUps += 1;
+  }
+  card.level = level;
+  card.exp = exp;
+  card.next_level_exp = nextLevelExp;
+  if (levelUps > 0) {
+    const fullResource = resolveTaskFullResource(level);
+    card.hp = fullResource;
+    card.mp = fullResource;
+  }
+  return { card, levelUps };
 }
 
 /**
@@ -449,7 +556,7 @@ function buildFallbackFreeChapterTaskBlueprint(option: FreeChapterTaskOption): F
 /**
  * 读取当前正在执行的自由章节任务。
  */
-function readActiveFreeTaskState(state: JsonRecord): JsonRecord {
+export function readActiveFreeTaskState(state: JsonRecord): JsonRecord {
   return asRecord(asRecord(state.vars).activeFreeTask);
 }
 
@@ -459,6 +566,251 @@ function readActiveFreeTaskState(state: JsonRecord): JsonRecord {
 function hasConfiguredNarrativeModel(input: unknown): boolean {
   if (!input || typeof input !== "object") return false;
   return Boolean(scalarText((input as Record<string, unknown>).manufacturer));
+}
+
+/**
+ * 根据任务分类生成默认奖励。
+ *
+ * 用途：
+ * - 当模型没有明确给出奖励时，任务系统仍需能稳定发放一套基础奖励；
+ * - 保证任务完成后一定有经验/金币反馈，并可按任务类型附带少量物品。
+ */
+function buildDefaultFreeTaskReward(activeTask: JsonRecord): FreeChapterTaskReward {
+  const category = scalarText(activeTask.category);
+  const title = scalarText(activeTask.title);
+  const composite = `${category} ${title}`;
+  if (/(恩怨|对抗|剿灭|战斗|历练)/u.test(composite)) {
+    return { exp: 56, money: 22, items: ["战利品"] };
+  }
+  if (/(药材|采集)/u.test(composite)) {
+    return { exp: 42, money: 18, items: ["基础药材"] };
+  }
+  if (/(交易|坊市|押运)/u.test(composite)) {
+    return { exp: 36, money: 28, items: ["委托凭据"] };
+  }
+  if (/(修炼|成长)/u.test(composite)) {
+    return { exp: 48, money: 10, items: ["修炼心得"] };
+  }
+  if (/(探索|探查|侦查)/u.test(composite)) {
+    return { exp: 44, money: 16, items: ["情报记录"] };
+  }
+  return { exp: 32, money: 12, items: [] };
+}
+
+/**
+ * 把任务奖励写回到用户参数卡与背包。
+ *
+ * 用途：
+ * - 自由任务成功后要即时发放经验、金币和战利品；
+ * - 这里统一处理升级、背包去重和参数卡同步，避免 SessionService 里堆业务细节。
+ */
+function applyFreeTaskRewardToState(state: JsonRecord, reward: FreeChapterTaskReward): { reward: FreeChapterTaskReward; levelUps: number } {
+  const normalizedReward: FreeChapterTaskReward = {
+    exp: Math.max(0, Math.floor(Number(reward.exp || 0))),
+    money: Math.max(0, Math.floor(Number(reward.money || 0))),
+    items: uniqueTexts(Array.isArray(reward.items) ? reward.items : []),
+  };
+  const card = ensurePlayerParameterCard(state);
+  card.level = Number.isFinite(Number(card.level)) ? Number(card.level) : 1;
+  card.exp = Math.max(0, Number(card.exp || 0)) + normalizedReward.exp;
+  card.money = Math.max(0, Number(card.money || 0)) + normalizedReward.money;
+  card.items = uniqueTexts([
+    ...((Array.isArray(card.items) ? card.items : []) as unknown[]),
+    ...normalizedReward.items,
+  ]);
+  const normalizedProgress = normalizeTaskParameterCardProgress(card);
+  const player = asRecord(state.player);
+  player.parameterCardJson = normalizedProgress.card;
+  state.player = player;
+  if (normalizedReward.items.length) {
+    const inventory = Array.isArray(state.inventory) ? state.inventory : [];
+    const existedNames = new Set(
+      inventory.map((item) => scalarText(asRecord(item).name)).filter(Boolean),
+    );
+    for (const itemName of normalizedReward.items) {
+      if (existedNames.has(itemName)) continue;
+      inventory.push({ kind: "task_reward", name: itemName });
+      existedNames.add(itemName);
+    }
+    state.inventory = inventory;
+  }
+  return {
+    reward: normalizedReward,
+    levelUps: normalizedProgress.levelUps,
+  };
+}
+
+/**
+ * 依据当前任务与用户动作，做一层规则兜底判定。
+ *
+ * 用途：
+ * - 即使模型不可用，也要能识别“拿下头目 / 击败首领 / 主动撤退”这类关键动作；
+ * - 至少保证自由任务不会一直悬空，能在核心完成/失败动作时顺利收尾。
+ */
+function evaluateFreeTaskResolutionByRules(activeTask: JsonRecord, playerMessage: string): "success" | "failed" | "continue" {
+  const normalizedMessage = normalizeSelectionText(playerMessage);
+  if (!normalizedMessage) return "continue";
+  if (/(#退出|放弃|撤退|逃跑|逃离|认输|中断任务|任务失败|被击退|重伤撤回)/u.test(playerMessage)) {
+    return "failed";
+  }
+  const objective = scalarText(activeTask.objective);
+  const successText = uniqueTexts([
+    objective,
+    ...((Array.isArray(activeTask.successConditions) ? activeTask.successConditions : []) as unknown[]),
+    ...((Array.isArray(activeTask.process) ? activeTask.process : []) as unknown[]),
+  ]).join("；");
+  const normalizedSuccess = normalizeSelectionText(successText);
+  const bossKeywords = /(头目|首领|核心头目|领头|匪首|首脑)/u;
+  const killKeywords = /(暗杀|拿下|击败|斩杀|解决|制服|干掉|诛杀|除掉|教训|收拾)/u;
+  if (bossKeywords.test(successText) && killKeywords.test(playerMessage)) {
+    return "success";
+  }
+  if (/(交付|带回|送达|验收|汇报|回报|确认完成|完成委托|完成任务)/u.test(playerMessage) && /(返回|交付|汇报|确认)/u.test(successText)) {
+    return "success";
+  }
+  if (normalizedSuccess && normalizedMessage.length >= 2 && normalizedSuccess.includes(normalizedMessage)) {
+    return "success";
+  }
+  return "continue";
+}
+
+/**
+ * 用模型判断当前任务是否已经成功/失败。
+ *
+ * 用途：
+ * - 自由任务的完成动作高度开放，单靠规则无法覆盖；
+ * - 这里把任务描述、成功/失败条件、最近对话和本轮动作一起交给模型判定。
+ */
+async function evaluateFreeTaskResolutionByAi(input: {
+  userId: number;
+  world: any;
+  chapter: any;
+  state: JsonRecord;
+  recentMessages: Array<{
+    role?: string | null;
+    roleType?: string | null;
+    content?: string | null;
+  }>;
+  playerMessage: string;
+  activeTask: JsonRecord;
+}): Promise<{
+  decision: "success" | "failed" | "continue";
+  narration: string;
+  reward: FreeChapterTaskReward;
+} | null> {
+  const modelConfig = await u.getPromptAi("storyOrchestratorModel", input.userId);
+  if (!hasConfiguredNarrativeModel(modelConfig)) {
+    return null;
+  }
+  const worldName = scalarText(input.world?.name);
+  const chapterTitle = scalarText(input.chapter?.title);
+  const playerCard = ensurePlayerParameterCard(input.state);
+  const prompt = JSON.stringify({
+    worldName,
+    chapterTitle,
+    activeTask: {
+      title: scalarText(input.activeTask.title),
+      category: scalarText(input.activeTask.category),
+      objective: scalarText(input.activeTask.objective),
+      process: Array.isArray(input.activeTask.process) ? input.activeTask.process : [],
+      successConditions: Array.isArray(input.activeTask.successConditions) ? input.activeTask.successConditions : [],
+      failureConditions: Array.isArray(input.activeTask.failureConditions) ? input.activeTask.failureConditions : [],
+    },
+    playerCard,
+    recentMessages: input.recentMessages.slice(-8).map((item) => ({
+      role: scalarText(item.role),
+      roleType: scalarText(item.roleType),
+      content: scalarText(item.content),
+    })),
+    currentUserAction: scalarText(input.playerMessage),
+  }, null, 2);
+  try {
+    const result = await u.ai.text.invoke(
+      {
+        plainTextOutput: true,
+        usageType: "自由任务结算判定",
+        usageRemark: `${chapterTitle || "自由章节"} / ${scalarText(input.activeTask.title) || "任务结算"}`,
+        usageMeta: {
+          stage: "freeChapterTaskResolution",
+          chapterId: Number(input.chapter?.id || 0),
+          taskTitle: scalarText(input.activeTask.title),
+        },
+        messages: [
+          {
+            role: "system",
+            content: [
+              "你是互动故事中的任务裁决器。",
+              "当前用户已经处于一个自由任务中，你要判断本轮动作是否已达成成功条件、触发失败条件，或仍应继续任务。",
+              "只输出 JSON，不要解释，不要 markdown。",
+              "JSON 结构固定为：",
+              "{",
+              '  "decision": "success | failed | continue",',
+              '  "narration": "如果 success / failed，需要给出一段旁白收尾文案；continue 时返回空串即可",',
+              '  "reward": { "exp": 经验整数, "money": 金钱整数, "items": ["物品1", "物品2"] }',
+              "}",
+              "规则：",
+              "1. 只有明确满足成功条件时，decision 才能是 success。",
+              "2. 只有明确命中失败条件或明显撤退/放弃/重伤败退时，decision 才能是 failed。",
+              "3. 若用户动作只是过程推进，不足以完成任务，必须返回 continue。",
+              "4. continue 时 narration 置空，reward 置为 0 和空数组。",
+              "5. success 时 narration 必须是旁白收尾语气，并明确奖励已到账、任务结束。",
+              "6. 失败时 narration 必须说明失败原因，并明确任务已结束。",
+            ].join("\n"),
+          },
+          { role: "user", content: prompt },
+        ],
+        maxRetries: 0,
+      },
+      modelConfig as any,
+    );
+    const parsed = parseJsonSafe<JsonRecord>(unwrapModelText((result as any)?.text || ""), {});
+    const decisionText = scalarText(parsed.decision).toLowerCase();
+    const decision = decisionText === "success" || decisionText === "failed" || decisionText === "continue"
+      ? decisionText as "success" | "failed" | "continue"
+      : "continue";
+    return {
+      decision,
+      narration: scalarText(parsed.narration),
+      reward: {
+        exp: Math.max(0, Math.floor(Number(asRecord(parsed.reward).exp || 0))),
+        money: Math.max(0, Math.floor(Number(asRecord(parsed.reward).money || 0))),
+        items: uniqueTexts(Array.isArray(asRecord(parsed.reward).items) ? asRecord(parsed.reward).items as unknown[] : []),
+      },
+    };
+  } catch (error) {
+    if (DebugLogUtil.isDebugLogEnabled()) {
+      console.log("[story:free_task:resolution:error]", JSON.stringify({
+        taskTitle: scalarText(input.activeTask.title),
+        message: String((error as Error)?.message || error || ""),
+      }));
+    }
+    return null;
+  }
+}
+
+/**
+ * 生成任务结算后的旁白文案。
+ *
+ * 用途：
+ * - 任务成功/失败后，如果模型没有给出可直接展示的旁白文案，仍要有一段清晰收尾；
+ * - 统一把奖励摘要、失败原因和“任务已结束”写清楚。
+ */
+function buildFallbackFreeTaskResolutionNarration(input: {
+  outcome: "success" | "failed";
+  activeTask: JsonRecord;
+  reward: FreeChapterTaskReward;
+  playerMessage: string;
+}): string {
+  const title = scalarText(input.activeTask.title) || "当前任务";
+  if (input.outcome === "failed") {
+    return `（局势骤然收紧，原本可掌控的节奏被打断）任务【${title}】已判定失败。你这次行动未能满足委托要求，当前任务就此结束，你已退出任务面板。`;
+  }
+  const rewardParts = [
+    input.reward.exp > 0 ? `${input.reward.exp}经验` : "",
+    input.reward.money > 0 ? `${input.reward.money}金钱` : "",
+    input.reward.items.length ? input.reward.items.join("、") : "",
+  ].filter(Boolean);
+  return `（你刚才的行动已击中任务关键环节，局势迅速尘埃落定）任务【${title}】完成。奖励已发放：${rewardParts.join("、") || "基础战果"}。当前任务结束，你已退出任务面板，可继续自由行动。`;
 }
 
 /**
@@ -760,6 +1112,146 @@ export function abandonActiveFreeChapterTaskEvent(state: JsonRecord): JsonRecord
   return {
     title,
     objective,
+  };
+}
+
+/**
+ * 尝试结算当前正在执行的自由章节任务。
+ *
+ * 用途：
+ * - 用户在任务面板内输入普通行动后，优先判断这次动作是否已满足任务成功/失败条件；
+ * - 一旦命中，就立刻发放奖励、结束任务事件、关闭任务面板，并阻止后续旁白继续把它当“自由剧情”处理。
+ */
+export async function maybeResolveActiveFreeChapterTaskEvent(input: {
+  userId: number;
+  world: any;
+  chapter: any;
+  state: JsonRecord;
+  recentMessages: Array<{
+    role?: string | null;
+    roleType?: string | null;
+    content?: string | null;
+  }>;
+  playerMessage: string;
+}): Promise<FreeChapterTaskResolutionResult | null> {
+  if (!input.chapter || !isFreeChapterRuntimeMode(input.chapter)) {
+    return null;
+  }
+  const activeTask = readActiveFreeTaskState(input.state);
+  if (scalarText(activeTask.status) !== "doing") {
+    return null;
+  }
+  const taskTitle = scalarText(activeTask.title);
+  const objective = scalarText(activeTask.objective);
+  const eventIndex = Number(activeTask.eventIndex || 0);
+  if (!taskTitle || !objective || !Number.isFinite(eventIndex) || eventIndex <= 0) {
+    return null;
+  }
+  const playerMessage = scalarText(input.playerMessage);
+  if (!playerMessage) {
+    return null;
+  }
+  const aiResolution = await evaluateFreeTaskResolutionByAi({
+    userId: input.userId,
+    world: input.world,
+    chapter: input.chapter,
+    state: input.state,
+    recentMessages: input.recentMessages,
+    playerMessage,
+    activeTask,
+  });
+  const fallbackDecision = evaluateFreeTaskResolutionByRules(activeTask, playerMessage);
+  const decision = aiResolution?.decision && aiResolution.decision !== "continue"
+    ? aiResolution.decision
+    : fallbackDecision;
+  if (decision === "continue") {
+    return null;
+  }
+  const currentProgress = readChapterProgressState(input.state);
+  const resultReward = decision === "success"
+    ? applyFreeTaskRewardToState(
+      input.state,
+      aiResolution?.reward && (aiResolution.reward.exp > 0 || aiResolution.reward.money > 0 || aiResolution.reward.items.length > 0)
+        ? aiResolution.reward
+        : buildDefaultFreeTaskReward(activeTask),
+    )
+    : { reward: { exp: 0, money: 0, items: [] }, levelUps: 0 };
+  const rewardText = [
+    resultReward.reward.exp > 0 ? `获得经验：${resultReward.reward.exp}` : "",
+    resultReward.reward.money > 0 ? `获得金钱：${resultReward.reward.money}` : "",
+    resultReward.reward.items.length ? `获得物品：${resultReward.reward.items.join("、")}` : "",
+    resultReward.levelUps > 0 ? `等级提升：+${resultReward.levelUps}` : "",
+  ].filter(Boolean);
+  const resolvedFacts = [
+    `任务标题：${taskTitle}`,
+    `当前目标：${objective}`,
+    `任务状态：${decision === "success" ? "已完成" : "失败"}`,
+    `本轮动作：${playerMessage}`,
+    ...(rewardText.length ? rewardText : []),
+  ];
+  const summary = decision === "success"
+    ? `@旁白：任务【${taskTitle}】已完成。`
+    : `@旁白：任务【${taskTitle}】失败。`;
+  if (Number(currentProgress.eventIndex || 0) === eventIndex) {
+    setChapterProgressState(input.state, {
+      ...currentProgress,
+      eventSummary: summary,
+      eventStatus: "completed",
+      pendingGoal: "自由剧情",
+    });
+  }
+  upsertRuntimeDynamicEventState(input.state, {
+    eventIndex,
+    phaseId: "",
+    kind: "scene",
+    flowType: "free_runtime",
+    summary,
+    runtimeFacts: resolvedFacts,
+    summarySource: "system",
+    memorySummary: decision === "success" ? `已完成任务：${taskTitle}` : `任务失败：${taskTitle}`,
+    memoryFacts: resolvedFacts,
+    status: "completed",
+    allowedRoles: [],
+    userNodeId: "",
+    updateTime: nowTs(),
+  });
+  upsertRuntimeEventDigestState(input.state, {
+    eventIndex,
+    eventKind: "scene",
+    eventFlowType: "free_runtime",
+    eventSummary: summary,
+    eventFacts: resolvedFacts,
+    eventStatus: "completed",
+    summarySource: "system",
+    memorySummary: decision === "success" ? `已完成任务：${taskTitle}` : `任务失败：${taskTitle}`,
+    memoryFacts: resolvedFacts,
+    updateTime: nowTs(),
+  });
+  const vars = asRecord(input.state.vars);
+  vars.activeFreeTask = {
+    ...activeTask,
+    status: decision === "success" ? "completed" : "failed",
+    reward: resultReward.reward,
+    resolvedBy: playerMessage,
+    updateTime: nowTs(),
+  };
+  input.state.vars = vars;
+  setExecutingTaskCardValue(input.state, null);
+  clearFreeTaskMiniGameState(input.state);
+  syncRuntimeCurrentEventFromChapterProgress(input.state);
+  const narration = scalarText(aiResolution?.narration) || buildFallbackFreeTaskResolutionNarration({
+    outcome: decision,
+    activeTask,
+    reward: resultReward.reward,
+    playerMessage,
+  });
+  return {
+    resolved: true,
+    outcome: decision,
+    taskTitle,
+    objective,
+    narration,
+    reward: resultReward.reward,
   };
 }
 

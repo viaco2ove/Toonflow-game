@@ -49,6 +49,14 @@ Toonflow 是"Toonflow Game" 的前身，在当前项目更多是残留功能而�
 # "Toonflow Game"
 "Toonflow Game" 在Toonflow基础上进行的二度开发
  🚀 **多角色沉浸感ai故事游戏**: 体验沉浸式ai故事游戏，感受角色互动的魅力！
+
+## github url
+https://github.com/topics/toonflow-game
+https://github.com/viaco2ove/Toonflow-game.git
+https://github.com/viaco2ove/Toonflow-game-vedio-web.git
+https://github.com/viaco2ove/Toonflow-game-web.git
+https://github.com/viaco2ove/Toonflow-game-android.git
+
 ---
 # 🌟 主要功能
 多角色 ai 游戏
@@ -164,7 +172,7 @@ GIT=gitee BRANCH=dev docker.md-compose -f docker.md/docker.md-compose.yml up -d 
 
 ```shell
 # 先克隆项目（如已有则跳过）
-git clone https://github.com/HBAI-Ltd/Toonflow-app.git
+git clone https://github.com/viaco2ove/Toonflow-game.git
 cd Toonflow-app
 
 # 使用本地源码构建
@@ -239,7 +247,7 @@ npm install -g yarn pm2
 
 ```bash
 cd /opt
-git clone https://github.com/HBAI-Ltd/Toonflow-app.git
+git clone https://github.com/viaco2ove/Toonflow-game.git
 cd Toonflow-app
 yarn install
 yarn build
@@ -334,7 +342,7 @@ pm2 monit             # 监控面板
    **从 GitHub 克隆：**
 
    ```bash
-   git clone https://github.com/HBAI-Ltd/Toonflow-app.git
+   git clone https://github.com/viaco2ove/Toonflow-game.git
    cd Toonflow-app
    ```
 

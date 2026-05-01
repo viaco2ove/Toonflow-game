@@ -50,7 +50,10 @@ import {
 } from "@/modules/game-runtime/engines/TriggerEngine";
 import { evaluateRuntimeOutcome } from "@/modules/game-runtime/services/ChapterRuntimeService";
 import { evaluateEventProgressByAi } from "@/modules/game-runtime/services/EventProgressRuntimeService";
-import { maybeActivateFreeChapterTaskEvent } from "@/modules/game-runtime/services/FreeChapterTaskService";
+import {
+  maybeActivateFreeChapterTaskEvent,
+  maybeResolveActiveFreeChapterTaskEvent,
+} from "@/modules/game-runtime/services/FreeChapterTaskService";
 import { persistSnapshotIfNeeded } from "@/modules/game-runtime/services/SnapshotService";
 import {
   AppliedDelta,
@@ -1611,6 +1614,120 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
           userId: currentUserId,
         },
       });
+      /**
+       * 如果当前已经处于“任务小游戏”中，就优先判定本轮动作是否触发任务成功/失败。
+       *
+       * 用途：
+       * - 任务中的用户输入应先服务于当前任务，而不是继续走普通自由剧情旁白；
+       * - 一旦命中成功/失败，就要立刻发奖励、结束任务、关闭任务面板，并直接返回任务收尾文案。
+       */
+      const resolvedFreeChapterTask = await maybeResolveActiveFreeChapterTaskEvent({
+        userId: currentUserId,
+        world,
+        chapter: currentChapter,
+        state,
+        recentMessages: recentMessagesForProgress,
+        playerMessage: messageContent,
+      });
+      if (resolvedFreeChapterTask) {
+        setRuntimeTurnState(state, world, {
+          canPlayerSpeak: true,
+          expectedRoleType: "player",
+          expectedRole: String(state.player?.name || "用户"),
+          lastSpeakerRoleType: "narrator",
+          lastSpeaker: String(state.narrator?.name || "旁白"),
+        });
+        syncChapterProgressWithRuntime(currentChapter, state);
+        const taskNarrativeRows = await insertSessionNarrativeMessages({
+          db,
+          sessionId,
+          state,
+          messages: [{
+            role: String(state.narrator?.name || "旁白"),
+            roleType: "narrator",
+            eventType: "on_task_resolution",
+            content: resolvedFreeChapterTask.narration,
+            createTime: now,
+          }],
+          now,
+          eventTypeFallback: "on_task_resolution",
+        });
+        const latestRecentRows = await db("t_sessionMessage").where({ sessionId }).orderBy("id", "desc").limit(20);
+        const latestRecentMessages = buildRecentMessages(latestRecentRows);
+        await refreshStoryMemoryBestEffort({
+          userId: currentUserId,
+          world,
+          chapter: currentChapter,
+          state,
+          recentMessages: latestRecentMessages,
+        });
+        const lastNarrativeMessageId = Number(taskNarrativeRows[taskNarrativeRows.length - 1]?.id || messageId || 0);
+        setMemoryCursor(state, lastNarrativeMessageId, nowTs());
+        const stateJson = toJsonText(state, {});
+        await db("t_gameSession").where({ sessionId }).update({
+          stateJson,
+          chapterId: state.chapterId || prevChapterId,
+          status: sessionStatus,
+          updateTime: now,
+        });
+        const snapshotResult = await persistSnapshotIfNeeded({
+          db,
+          sessionId,
+          stateJson,
+          round: Number(state.round || 0),
+          now,
+          policy: {
+            saveSnapshot: input.saveSnapshot,
+            nextChapterId: state.chapterId || prevChapterId,
+            prevChapterId,
+            sessionStatus,
+            prevStatus,
+            round: Number(state.round || 0),
+          },
+        });
+        scheduleSessionRoleParameterCardRefresh({
+          userId: currentUserId,
+          world,
+        });
+        const messageRow = await db("t_sessionMessage").where({ id: messageId }).first();
+        const narrativeRow = taskNarrativeRows[taskNarrativeRows.length - 1]
+          ? await db("t_sessionMessage").where({ id: Number(taskNarrativeRows[taskNarrativeRows.length - 1].id || 0) }).first()
+          : null;
+        await persistSessionMessageRevisitData({
+          db,
+          rows: [messageRow, narrativeRow],
+          state,
+          chapterId: state.chapterId || prevChapterId,
+          status: sessionStatus,
+          capturedAt: now,
+          sessionId,
+        });
+        const activeChapterId = Number(state.chapterId || prevChapterId || 0) || null;
+        const activeChapter = activeChapterId
+          ? normalizeChapterOutput(await db("t_storyChapter").where({ id: activeChapterId }).first())
+          : null;
+        const eventView = buildEventView(state);
+        return {
+          sessionId,
+          status: sessionStatus,
+          chapterId: activeChapterId,
+          chapter: activeChapter,
+          state,
+          currentEventDigest: eventView.currentEventDigest,
+          eventDigestWindow: eventView.eventDigestWindow,
+          eventDigestWindowText: eventView.eventDigestWindowText,
+          message: normalizeMessageOutput(messageRow),
+          chapterSwitchMessage: null,
+          narrativeMessage: narrativeRow ? normalizeMessageOutput(narrativeRow) : null,
+          generatedMessages: taskNarrativeRows,
+          narrativePlan: null,
+          triggered,
+          taskProgress: taskResult.taskProgressChanges,
+          deltas: appliedDeltas,
+          snapshotSaved: snapshotResult.snapshotSaved,
+          snapshotReason: snapshotResult.snapshotReason,
+        };
+      }
       /**
        * 自由章节里“领取推荐任务”不是普通的一句用户输入，而是要正式切入一个动态任务事件。
        *
