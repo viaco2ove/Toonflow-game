@@ -212,6 +212,12 @@ build_frontend() {
   log "同步前端 dist 到后端 scripts/web"
   mkdir -p "$APP_DIR/scripts/web"
   rsync -a --delete "$WEB_DIR/dist/" "$APP_DIR/scripts/web/"
+
+  log "同步前端 dist 到 Nginx 发布目录"
+  mkdir -p "$PANEL_WEB_PUBLISH_DIR"
+  rsync -a --delete "$WEB_DIR/dist/" "$PANEL_WEB_PUBLISH_DIR/"
+  run_sudo chown -R www-data:www-data "$PANEL_WEB_PUBLISH_DIR"
+  run_sudo chmod -R 755 "$PANEL_WEB_PUBLISH_DIR"
 }
 
 write_backend_env() {
@@ -316,7 +322,7 @@ server {
 
     client_max_body_size 100m;
 
-    root $APP_DIR/scripts/web;
+    root $PANEL_WEB_PUBLISH_DIR;
     index index.html;
 
     location / {

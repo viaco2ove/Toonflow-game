@@ -72,6 +72,15 @@ pm2 logs toonflow-game
 pm2 logs toonflow-panel  
 ```
 
+# nginx 配置
+/etc/nginx/sites-available/toonflow-game
+[nginx.conf](toonflow-game)
+修改命令                                                                                                                                                                          
+                                                                                                                                                                                  
+sudo nano /etc/nginx/sites-available/toonflow-game                                                                                                                                
+sudo nginx -t                                                                                                                                                                     
+sudo systemctl reload nginx   
+
 # 清理环境&安装
 ```
   cd /opt/toonflow/toonflow-game-app                                                                                                                                                

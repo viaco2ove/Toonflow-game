@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from dataclasses import dataclass
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
 import html
@@ -21,6 +22,7 @@ WEB_PROJECT_DIR = os.environ.get("PANEL_WEB_PROJECT_DIR", "").strip()
 if not WEB_PROJECT_DIR:
     # 默认从 system.yml 读取或使用相对路径
     WEB_PROJECT_DIR = "/opt/toonflow/Toonflow-game-web"
+WEB_BUILD_NODE_OPTIONS = os.environ.get("PANEL_WEB_BUILD_NODE_OPTIONS", "--max-old-space-size=512").strip() or "--max-old-space-size=512"
 START_APP_CMD = (
     f"cd {shlex.quote(APP_DIR)} && "
     "NODE_ENV=prod PREFER_PROCESS_ENV=1 "
@@ -29,47 +31,86 @@ START_APP_CMD = (
 LAST_ACTION_LOG = "暂无操作记录"
 
 
-def run(cmd: str) -> str:
+@dataclass
+class CommandResult:
+    """统一保存 shell 命令的输出与退出码，便于面板按结果决定是否继续后续步骤。"""
+
+    output: str
+    returncode: int
+
+    @property
+    def ok(self) -> bool:
+        return self.returncode == 0
+
+
+def run_result(cmd: str) -> CommandResult:
+    """执行 shell 命令并保留退出码，避免调用方只能拿到文本却不知道是否失败。"""
     process = subprocess.run(cmd, shell=True, text=True, capture_output=True)
-    return (process.stdout or "") + (process.stderr or "")
+    output = (process.stdout or "") + (process.stderr or "")
+    return CommandResult(output=output, returncode=process.returncode)
+
+
+def run(cmd: str) -> str:
+    return run_result(cmd).output
 
 
 def run_in_repo(cmd: str) -> str:
     return run(f"cd {shlex.quote(APP_DIR)} && {cmd}")
 
 
-def sync_web_publish_dir() -> str:
-    """同步构建后的web静态文件到发布目录"""
+def git_pull_current_branch(repo_dir: str) -> str:
+    """拉取仓库当前分支的最新代码，避免 `git pull origin` 因分支不明确而行为含糊。"""
+    safe_dir = shlex.quote(repo_dir)
     return run(
+        "set -e; "
+        f"cd {safe_dir} && "
+        'current_branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null)" && '
+        'if [ -z "$current_branch" ] || [ "$current_branch" = "HEAD" ]; then '
+        '  echo "无法识别当前分支，已取消 pull。"; '
+        "  exit 1; "
+        "fi && "
+        "git fetch origin --prune 2>&1 && "
+        'git pull --ff-only origin "$current_branch" 2>&1'
+    )
+
+
+def sync_web_publish_dir() -> str:
+    """同步构建后的 web 静态文件到发布目录，并在完成后刷新 Nginx。"""
+    return run(
+        "set -e; "
         f"mkdir -p {shlex.quote(WEB_PUBLISH_DIR)} && "
         f"rsync -a --delete {shlex.quote(WEB_SOURCE_DIR)}/ {shlex.quote(WEB_PUBLISH_DIR)}/ && "
         f"chown -R www-data:www-data {shlex.quote(WEB_PUBLISH_DIR)} && "
         f"chmod -R 755 {shlex.quote(WEB_PUBLISH_DIR)} && "
-        "nginx -t >/dev/null 2>&1 && systemctl reload nginx >/dev/null 2>&1 || true"
+        "nginx -t 2>&1 && systemctl reload nginx 2>&1"
     )
 
 
 def sync_web_project_code() -> str:
-    """同步web项目源码（git pull）"""
-    safe_dir = shlex.quote(WEB_PROJECT_DIR)
-    return run(
-        f"cd {safe_dir} && "
-        "git fetch origin --prune 2>&1 && "
-        "git pull origin 2>&1 || true"
-    )
+    """同步 web 项目源码，只拉当前分支代码，不执行构建和部署。"""
+    return git_pull_current_branch(WEB_PROJECT_DIR)
 
 
 def build_web_project() -> str:
-    """构建web项目：先同步代码，再构建，输出到scripts/web目录"""
+    """构建 web 项目：拉取当前分支、安装依赖、构建，并覆盖后端静态目录。"""
     safe_dir = shlex.quote(WEB_PROJECT_DIR)
     safe_output_dir = shlex.quote(WEB_SOURCE_DIR)
+    safe_node_options = shlex.quote(WEB_BUILD_NODE_OPTIONS)
     return run(
+        "set -e; "
         f"cd {safe_dir} && "
-        "git pull origin 2>&1 && "
+        'current_branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null)" && '
+        'if [ -z "$current_branch" ] || [ "$current_branch" = "HEAD" ]; then '
+        '  echo "无法识别当前分支，已取消构建。"; '
+        "  exit 1; "
+        "fi && "
+        "git fetch origin --prune 2>&1 && "
+        'git pull --ff-only origin "$current_branch" 2>&1 && '
         "yarn install 2>&1 && "
-        f"yarn build 2>&1 && "
-        f"rm -rf {safe_output_dir} 2>&1 && "
-        f"cp -r dist {safe_output_dir} 2>&1 || true"
+        f"NODE_OPTIONS={safe_node_options} yarn build 2>&1 && "
+        f"rm -rf {safe_output_dir} && "
+        f"mkdir -p {safe_output_dir} && "
+        f"rsync -a --delete dist/ {safe_output_dir}/ 2>&1"
     )
 
 
@@ -204,6 +245,7 @@ def git_info() -> dict:
 
 
 def force_sync_current_branch() -> str:
+    """强制同步当前后端分支，专用于 APP 仓库，不负责 web 仓库构建。"""
     branch = run_in_repo("git rev-parse --abbrev-ref HEAD 2>&1 || true").strip()
     safe_branch = shlex.quote(branch)
     if not branch or branch == "HEAD":
@@ -449,9 +491,9 @@ def home() -> str:
               <a class="action danger" href="/nginx/stop">停止 nginx</a>
             </div>
             <div class="row">
-              <a class="action" href="/deploy/sync-web">同步静态页（pull+构建+部署）</a>
-              <a class="action" href="/deploy/sync-web-code">同步web项目代码</a>
-              <a class="action danger" href="/git/force-sync">强制同步当前分支</a>
+              <a class="action" href="/deploy/sync-web">同步静态页（拉代码+构建+部署）</a>
+              <a class="action" href="/deploy/sync-web-code">同步web项目代码（仅拉代码）</a>
+              <a class="action danger" href="/git/force-sync">强制同步后端当前分支</a>
             </div>
             <div class="row" style="margin-top: 18px;">
               <form action="/git/switch-branch" method="get" style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
@@ -536,8 +578,41 @@ def nginx_stop():
 @app.get("/deploy/sync-web")
 def deploy_sync_web():
     """同步静态页：先构建web项目，再同步到发布目录"""
-    output = build_web_project()
-    output += "\n\n" + sync_web_publish_dir()
+    safe_node_options = shlex.quote(WEB_BUILD_NODE_OPTIONS)
+    build_result = run_result(
+        "set -e; "
+        f"cd {shlex.quote(WEB_PROJECT_DIR)} && "
+        'current_branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null)" && '
+        'if [ -z "$current_branch" ] || [ "$current_branch" = "HEAD" ]; then '
+        '  echo "无法识别当前分支，已取消构建。"; '
+        "  exit 1; "
+        "fi && "
+        "git fetch origin --prune 2>&1 && "
+        'git pull --ff-only origin "$current_branch" 2>&1 && '
+        "yarn install 2>&1 && "
+        f"NODE_OPTIONS={safe_node_options} yarn build 2>&1 && "
+        f"rm -rf {shlex.quote(WEB_SOURCE_DIR)} && "
+        f"mkdir -p {shlex.quote(WEB_SOURCE_DIR)} && "
+        f"rsync -a --delete dist/ {shlex.quote(WEB_SOURCE_DIR)}/ 2>&1"
+    )
+    if not build_result.ok:
+        failed_output = (
+            f"{build_result.output.rstrip()}\n\n"
+            f"[deploy] web 构建失败，退出码={build_result.returncode}，已取消静态目录同步。"
+        )
+        set_last_action_log("同步静态页（构建失败，已停止发布）", failed_output)
+        return RedirectResponse("/", status_code=302)
+    publish_result = run_result(
+        "set -e; "
+        f"mkdir -p {shlex.quote(WEB_PUBLISH_DIR)} && "
+        f"rsync -a --delete {shlex.quote(WEB_SOURCE_DIR)}/ {shlex.quote(WEB_PUBLISH_DIR)}/ && "
+        f"chown -R www-data:www-data {shlex.quote(WEB_PUBLISH_DIR)} && "
+        f"chmod -R 755 {shlex.quote(WEB_PUBLISH_DIR)} && "
+        "nginx -t 2>&1 && systemctl reload nginx 2>&1"
+    )
+    output = build_result.output + "\n\n" + publish_result.output
+    if not publish_result.ok:
+        output = f"{output.rstrip()}\n\n[deploy] 静态目录同步失败，退出码={publish_result.returncode}。"
     set_last_action_log("同步静态页（含构建）", output)
     return RedirectResponse("/", status_code=302)
 
@@ -545,7 +620,7 @@ def deploy_sync_web():
 @app.get("/deploy/sync-web-code")
 def deploy_sync_web_code():
     """仅同步web项目源码（git pull），不构建"""
-    output = run(f"cd {shlex.quote(WEB_PROJECT_DIR)} && git pull origin 2>&1 || true")
+    output = sync_web_project_code()
     set_last_action_log("同步web项目代码", output)
     return RedirectResponse("/", status_code=302)
 
