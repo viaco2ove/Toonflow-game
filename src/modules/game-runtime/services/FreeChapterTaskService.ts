@@ -79,6 +79,82 @@ interface FreeChapterTaskReward {
 }
 
 /**
+ * 任务收尾后把当前事件指针切回“自由剧情等待输入”。
+ *
+ * 用途：
+ * - 放弃/完成/失败任务后，旧的任务动态事件应只保留在历史窗口里，不能继续挂在当前事件指针上；
+ * - 否则后续用户再说普通行动时，自由章节同步逻辑容易把静态“给我推荐个任务”引导 phase 重新捡回来。
+ */
+function enterFreeChapterWaitingState(state: JsonRecord, nextEventIndex: number): void {
+  const currentProgress = readChapterProgressState(state);
+  const normalizedEventIndex = Math.max(1, Number(nextEventIndex || 0));
+  const waitingSummary = "自由剧情已开启，等待用户输入下一步行动";
+  setChapterProgressState(state, {
+    ...currentProgress,
+    phaseId: "",
+    phaseIndex: -1,
+    eventIndex: normalizedEventIndex,
+    eventKind: "scene",
+    eventSummary: waitingSummary,
+    eventStatus: "waiting_input",
+    userNodeId: "",
+    userNodeIndex: -1,
+    userNodeStatus: "idle",
+    pendingGoal: "自由剧情",
+  });
+  upsertRuntimeDynamicEventState(state, {
+    eventIndex: normalizedEventIndex,
+    phaseId: "",
+    kind: "scene",
+    flowType: "free_runtime",
+    summary: waitingSummary,
+    runtimeFacts: [],
+    summarySource: "system",
+    memorySummary: "",
+    memoryFacts: [],
+    status: "waiting_input",
+    allowedRoles: [],
+    userNodeId: "",
+    updateTime: 0,
+  });
+  syncRuntimeCurrentEventFromChapterProgress(state);
+}
+
+/**
+ * 在任务关键节点直接回写运行态记忆摘要，避免异步记忆刷新前仍沿用旧上下文。
+ *
+ * 用途：
+ * - 用户刚接取 / 放弃 / 完成任务后，后续编排马上就会读取 memorySummary / memoryFacts；
+ * - 如果这里只等异步记忆 agent 刷新，旁白很容易继续沿用“还在等推荐任务”这类旧语气；
+ * - 因此这里先做一层即时、轻量的运行态记忆回写，异步记忆再在后台做长期整理。
+ */
+function updateImmediateTaskMemoryState(input: {
+  state: JsonRecord;
+  summary: string;
+  facts: string[];
+  addTags?: string[];
+  removeTags?: string[];
+}): void {
+  input.state.memorySummary = scalarText(input.summary);
+  input.state.memoryFacts = Array.from(new Set(
+    (Array.isArray(input.facts) ? input.facts : [])
+      .map((item) => scalarText(item))
+      .filter(Boolean),
+  ));
+  const currentTags = Array.isArray(input.state.memoryTags)
+    ? input.state.memoryTags.map((item) => scalarText(item)).filter(Boolean)
+    : [];
+  const removeTags = new Set((input.removeTags || []).map((item) => scalarText(item)).filter(Boolean));
+  const nextTags = currentTags.filter((item) => !removeTags.has(item));
+  for (const tag of (input.addTags || []).map((item) => scalarText(item)).filter(Boolean)) {
+    if (!nextTags.includes(tag)) {
+      nextTags.push(tag);
+    }
+  }
+  input.state.memoryTags = nextTags;
+}
+
+/**
  * 自由章节任务结算结果。
  *
  * 用途：
@@ -1022,6 +1098,17 @@ function applyFreeChapterTaskBlueprintToState(input: {
     updateTime: nowTs(),
   };
   input.state.vars = vars;
+  updateImmediateTaskMemoryState({
+    state: input.state,
+    summary: `用户已接取任务：${input.blueprint.taskTitle}`,
+    facts: [
+      `当前正在执行任务：${input.blueprint.taskTitle}`,
+      `任务目标：${input.blueprint.objective}`,
+      `任务分类：${scalarText(input.option.category) || "自由任务"}`,
+    ],
+    addTags: ["任务进行中", "自由行动阶段"],
+    removeTags: ["等待任务推荐请求", "等待任务选择", "等待进入任务流程"],
+  });
   setExecutingTaskCardValue(input.state, {
     title: input.blueprint.taskTitle,
     category: scalarText(input.option.category) || "自由任务",
@@ -1106,9 +1193,19 @@ export function abandonActiveFreeChapterTaskEvent(state: JsonRecord): JsonRecord
     updateTime: nowTs(),
   };
   state.vars = vars;
+  updateImmediateTaskMemoryState({
+    state,
+    summary: `用户已放弃任务：${title}`,
+    facts: failureFacts,
+    addTags: ["自由行动阶段", "任务已放弃"],
+    removeTags: ["任务进行中", "等待任务选择", "等待进入任务流程"],
+  });
   setExecutingTaskCardValue(state, null);
   clearFreeTaskMiniGameState(state);
-  syncRuntimeCurrentEventFromChapterProgress(state);
+  enterFreeChapterWaitingState(
+    state,
+    Math.max(Number(currentProgress.eventIndex || 0), eventIndex) + 1,
+  );
   return {
     title,
     objective,
@@ -1236,9 +1333,21 @@ export async function maybeResolveActiveFreeChapterTaskEvent(input: {
     updateTime: nowTs(),
   };
   input.state.vars = vars;
+  updateImmediateTaskMemoryState({
+    state: input.state,
+    summary: decision === "success"
+      ? `用户已完成任务：${taskTitle}`
+      : `用户任务失败：${taskTitle}`,
+    facts: resolvedFacts,
+    addTags: ["自由行动阶段", decision === "success" ? "任务已完成" : "任务失败"],
+    removeTags: ["任务进行中", "等待任务选择", "等待进入任务流程"],
+  });
   setExecutingTaskCardValue(input.state, null);
   clearFreeTaskMiniGameState(input.state);
-  syncRuntimeCurrentEventFromChapterProgress(input.state);
+  enterFreeChapterWaitingState(
+    input.state,
+    Math.max(Number(currentProgress.eventIndex || 0), eventIndex) + 1,
+  );
   const narration = scalarText(aiResolution?.narration) || buildFallbackFreeTaskResolutionNarration({
     outcome: decision,
     activeTask,

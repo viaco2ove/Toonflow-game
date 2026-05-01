@@ -55,10 +55,11 @@
   sessionStatus：
   nextChapterId：
 ```
-编排流程文件生成命令： yarn debug:event-chain logs/app-2026-04-13.log 
+编排流程文件生成命令： 
+yarn debug:event-chain logs/app-2026-05-01.log 
 
 ## 小游戏日志摘要生成
-yarn debug:mini-game logs/app-2026-04-16.log 
+yarn debug:mini-game logs/app-2026-05-01.log 
 
 
 ## @记忆管理 日志

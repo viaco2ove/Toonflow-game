@@ -1,8 +1,8 @@
 # 运行目录
 `/opt/toonflow/toonflow-game-app`
-DB_PATH=/opt/toonflow/toonflow-app-run-db/db.sqlite
-UPLOAD_DIR=/opt/toonflow/toonflow-app-run-db/uploads
-LOG_PATH=/opt/toonflow/toonflow-game-app/logs
+DB_PATH=/data/toonflow/db.sqlite
+UPLOAD_DIR=/data/toonflow/uploads
+LOG_PATH=/data/toonflow/logs
 
 # 环境配置
 `install.sh` 会自动生成：
@@ -52,8 +52,16 @@ export PANEL_WEB_PUBLISH_DIR="/var/www/toonflow"
 安装完成后访问：
 
 ```text
-http://你的服务器IP:6002/
+http://你的服务器IP/
 http://你的服务器IP:6008/
+```
+
+注意：
+
+```text
+主站是 http://你的服务器IP/
+管理页是 http://你的服务器IP:6008/
+不要写成 http://你的服务器IP/6008/
 ```
 
 查看状态：
@@ -64,7 +72,7 @@ pm2 logs toonflow-game
 pm2 logs toonflow-panel  
 ```
 
-# 清除环境
+# 清理环境&安装
 ```
   cd /opt/toonflow/toonflow-game-app                                                                                                                                                
   rm -rf node_modules build                                                                                                                                                         
@@ -74,4 +82,44 @@ pm2 logs toonflow-panel
   ./install.sh  
 ```
 
+# 重启
+- 方法1：http://你的服务器IP:6008/ 中操作
+- 方法2：命令行
+  - 查看状态
 
+```bash
+pm2 status
+```
+
+  - 重启主站
+
+```bash
+pm2 restart toonflow-game
+```
+
+  - 重启管理页
+
+```bash
+pm2 restart toonflow-panel
+```
+
+  - 同时重启
+
+```bash
+pm2 restart toonflow-game
+pm2 restart toonflow-panel
+```
+
+  - 停止
+
+```bash
+pm2 stop toonflow-game
+pm2 stop toonflow-panel
+```
+
+  - 查看日志
+
+```bash
+pm2 logs toonflow-game
+pm2 logs toonflow-panel
+```

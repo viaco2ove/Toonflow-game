@@ -47,11 +47,18 @@ source ./install.config.sh
 打开主站：
 
 ```text
-http://你的服务器IP:6002/
+http://你的服务器IP/
 ```
 
 打开管理页：
 
 ```text
 http://你的服务器IP:6008/
+```
+
+注意：
+
+```text
+这里是 :6008
+不是 /6008/
 ```

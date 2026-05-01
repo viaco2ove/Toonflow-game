@@ -12,6 +12,7 @@ import {
   nowTs,
   readDefaultRuntimeEventViewState,
   readChapterProgressState,
+  readRuntimeCurrentEventState,
 } from "@/lib/gameEngine";
 import {
   advanceChapterProgressAfterNarrative,
@@ -339,6 +340,7 @@ function compactTextList(input: unknown, limit = 6): string[] {
 export function buildDebugStateSnapshot(state: Record<string, any>, debugRuntimeKey: string) {
   const eventView = readDefaultRuntimeEventViewState(state);
   const chapterProgress = readChapterProgressState(state);
+  const currentEvent = readRuntimeCurrentEventState(state);
   const snapshot: Record<string, any> = {
     debugRuntimeKey: String(debugRuntimeKey || readDebugRuntimeKey(state) || "").trim(),
     version: Number(state.version || 1),
@@ -350,7 +352,9 @@ export function buildDebugStateSnapshot(state: Record<string, any>, debugRuntime
     currentEventDigest: cloneDebugRuntimeState(eventView.currentEventDigest),
     eventDigestWindow: cloneDebugRuntimeState(eventView.eventDigestWindow),
     eventDigestWindowText: eventView.eventDigestWindowText,
-    currentEvent: cloneDebugRuntimeState(state.currentEvent || {}),
+    // 调试快照必须输出“按当前 chapterProgress 实时重算”的 currentEvent，
+    // 避免 storyInfo 面板读到旧缓存里的 currentEvent，和 currentEventDigest/window 口径不一致。
+    currentEvent: cloneDebugRuntimeState(currentEvent),
     dynamicEvents: cloneDebugRuntimeState(Array.isArray(state.dynamicEvents) ? state.dynamicEvents : []),
     // 调试回溯后的继续编排会直接使用前端回传的 snapshot，因此这里必须带完整章节运行态，
     // 否则一旦缓存失效，就会出现“台词恢复了，但事件进度没有恢复”或“事件进度残留未来状态”的问题。
@@ -574,6 +578,13 @@ export function syncDebugChapterRuntime(chapter: any, state: Record<string, any>
   state.chapterTitle = String(chapter.title || "").trim() || String(state.chapterTitle || "").trim();
   initializeChapterProgressForState(chapter, state);
   syncChapterProgressWithRuntime(chapter, state);
+  // 调试态会直接把 state 回给前端，并再次作为后续请求的运行态输入。
+  // 这里同步刷新 currentEvent / currentEventDigest / 事件窗口，避免旧快照字段继续污染下一轮调试请求。
+  const eventView = readDefaultRuntimeEventViewState(state);
+  state.currentEvent = cloneDebugRuntimeState(readRuntimeCurrentEventState(state));
+  state.currentEventDigest = cloneDebugRuntimeState(eventView.currentEventDigest);
+  state.eventDigestWindow = cloneDebugRuntimeState(eventView.eventDigestWindow);
+  state.eventDigestWindowText = eventView.eventDigestWindowText;
 }
 
 export async function applyDebugUserMessageProgress(params: {

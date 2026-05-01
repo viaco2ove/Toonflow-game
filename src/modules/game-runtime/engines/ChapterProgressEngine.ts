@@ -236,6 +236,24 @@ function resolveCurrentOrInitialPhase(
 }
 
 /**
+ * 判断自由章节的静态 phase 是否已经全部完成。
+ *
+ * 用途：
+ * - 自由章节的 runtimeOutline 前几段通常只是引导性静态事件；
+ * - 当这些 phase 全部完成后，后续应切到 free_runtime 动态事件，而不是把最后一个静态 phase 重新当成当前事件；
+ * - 这里单独提取判断，避免多个同步入口各自手写相同逻辑。
+ */
+function areAllFreeChapterStaticPhasesCompleted(
+  outline: ChapterRuntimeOutline,
+  completedEvents: string[],
+): boolean {
+  if (!Array.isArray(outline.phases) || !outline.phases.length) {
+    return false;
+  }
+  return outline.phases.every((phase) => isPhaseCompleted(completedEvents, phase.id));
+}
+
+/**
  * 根据用户节点反查所属 phase，用于用户输入后回到对应事件。
  */
 function resolvePhaseForUserNode(
@@ -1092,6 +1110,14 @@ export function initializeChapterProgressForState(chapter: any, state: JsonRecor
   }
   const completedEvents = normalizeCompletedEvents(current.completedEvents);
   const nextUserNode = findNextPendingUserNode(outline, completedEvents);
+  if (isFreeChapterRuntimeMode(chapter)
+    && !nextUserNode
+    && areAllFreeChapterStaticPhasesCompleted(outline, completedEvents)) {
+    ensureFreeChapterDynamicEventState(chapter, state, Math.max(outline.phases.length + 1, current.eventIndex || 1), {
+      completedEvents,
+    });
+    return;
+  }
   const activePhaseInfo = resolveCurrentOrInitialPhase(outline, current.phaseId, completedEvents);
   if (!activePhaseInfo.phase && !nextUserNode) {
     if (isFreeChapterRuntimeMode(chapter)) {
@@ -1166,6 +1192,21 @@ export function syncChapterProgressWithRuntime(chapter: any, state: JsonRecord):
   }
   const completedEvents = normalizeCompletedEvents(Array.isArray(current.completedEvents) ? current.completedEvents : []);
   const nextUserNode = findNextPendingUserNode(outline, completedEvents);
+  if (isFreeChapterRuntimeMode(chapter)
+    && !nextUserNode
+    && areAllFreeChapterStaticPhasesCompleted(outline, completedEvents)) {
+    ensureFreeChapterDynamicEventState(
+      chapter,
+      state,
+      current.eventStatus === "completed"
+        ? Math.max(outline.phases.length + 1, current.eventIndex + 1)
+        : Math.max(outline.phases.length + 1, current.eventIndex || 1),
+      {
+        completedEvents,
+      },
+    );
+    return;
+  }
   let activePhaseInfo = resolveCurrentOrInitialPhase(outline, current.phaseId, completedEvents);
   if (activePhaseInfo.phase?.kind === "user" && isUserNodeCompleted(completedEvents, activePhaseInfo.phase.userNodeId)) {
     const nextPhaseInfo = resolveNextPhaseFromGraph(
