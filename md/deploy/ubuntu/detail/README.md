@@ -91,6 +91,21 @@ sudo systemctl reload nginx
   ./install.sh  
 ```
 
+# 服务器上先加 swap，至少 2G 
+```
+sudo fallocate -l 2G /swapfile                                                                                                                                                    
+  sudo chmod 600 /swapfile                                                                                                                                                          
+  sudo mkswap /swapfile                                                                                                                                                             
+  sudo swapon /swapfile                                                                                                                                                             
+  echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab                                                                                                                        
+  free -h   
+```
+cd /opt/toonflow/Toonflow-game-web/
+yarn bulid
+
+# 授权
+chmod +x ~/ubuntu/install.sh
+chmod +x /opt/toonflow/panel/main.py
 # 重启
 - 方法1：http://你的服务器IP:6008/ 中操作
 - 方法2：命令行
@@ -106,29 +121,21 @@ pm2 status
 pm2 restart toonflow-game
 ```
 
-  - 重启管理页
-
-```bash
-pm2 restart toonflow-panel
-```
-
   - 同时重启
 
 ```bash
 pm2 restart toonflow-game
-pm2 restart toonflow-panel
 ```
 
   - 停止
 
 ```bash
 pm2 stop toonflow-game
-pm2 stop toonflow-panel
 ```
 
   - 查看日志
 
 ```bash
 pm2 logs toonflow-game
-pm2 logs toonflow-panel
 ```
+[panel.readme.md](panel.readme.bak1.md)

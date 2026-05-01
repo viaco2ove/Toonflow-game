@@ -91,27 +91,38 @@ def sync_web_project_code() -> str:
     return git_pull_current_branch(WEB_PROJECT_DIR)
 
 
-def build_web_project() -> str:
-    """构建 web 项目：拉取当前分支、安装依赖、构建，并覆盖后端静态目录。"""
+def build_web_project_command() -> str:
+    """生成统一的 web 构建命令，确保按钮构建与公共构建函数使用完全相同的参数。"""
     safe_dir = shlex.quote(WEB_PROJECT_DIR)
     safe_output_dir = shlex.quote(WEB_SOURCE_DIR)
     safe_node_options = shlex.quote(WEB_BUILD_NODE_OPTIONS)
-    return run(
+    return (
         "set -e; "
+        f'echo "[deploy] WEB_PROJECT_DIR={safe_dir}" && '
+        f'echo "[deploy] WEB_SOURCE_DIR={safe_output_dir}" && '
+        f'echo "[deploy] NODE_OPTIONS={safe_node_options}" && '
+        f'echo "[deploy] BUILD_CMD=export NODE_OPTIONS={safe_node_options} && yarn build" && '
         f"cd {safe_dir} && "
         'current_branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null)" && '
         'if [ -z "$current_branch" ] || [ "$current_branch" = "HEAD" ]; then '
         '  echo "无法识别当前分支，已取消构建。"; '
         "  exit 1; "
         "fi && "
+        'echo "[deploy] CURRENT_BRANCH=$current_branch" && '
         "git fetch origin --prune 2>&1 && "
         'git pull --ff-only origin "$current_branch" 2>&1 && '
         "yarn install 2>&1 && "
-        f"NODE_OPTIONS={safe_node_options} yarn build 2>&1 && "
+        f"export NODE_OPTIONS={safe_node_options} && "
+        "yarn build 2>&1 && "
         f"rm -rf {safe_output_dir} && "
         f"mkdir -p {safe_output_dir} && "
         f"rsync -a --delete dist/ {safe_output_dir}/ 2>&1"
     )
+
+
+def build_web_project() -> str:
+    """构建 web 项目：拉取当前分支、安装依赖、构建，并覆盖后端静态目录。"""
+    return run(build_web_project_command())
 
 
 def get_web_branches() -> list[str]:
@@ -578,23 +589,7 @@ def nginx_stop():
 @app.get("/deploy/sync-web")
 def deploy_sync_web():
     """同步静态页：先构建web项目，再同步到发布目录"""
-    safe_node_options = shlex.quote(WEB_BUILD_NODE_OPTIONS)
-    build_result = run_result(
-        "set -e; "
-        f"cd {shlex.quote(WEB_PROJECT_DIR)} && "
-        'current_branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null)" && '
-        'if [ -z "$current_branch" ] || [ "$current_branch" = "HEAD" ]; then '
-        '  echo "无法识别当前分支，已取消构建。"; '
-        "  exit 1; "
-        "fi && "
-        "git fetch origin --prune 2>&1 && "
-        'git pull --ff-only origin "$current_branch" 2>&1 && '
-        "yarn install 2>&1 && "
-        f"NODE_OPTIONS={safe_node_options} yarn build 2>&1 && "
-        f"rm -rf {shlex.quote(WEB_SOURCE_DIR)} && "
-        f"mkdir -p {shlex.quote(WEB_SOURCE_DIR)} && "
-        f"rsync -a --delete dist/ {shlex.quote(WEB_SOURCE_DIR)}/ 2>&1"
-    )
+    build_result = run_result(build_web_project_command())
     if not build_result.ok:
         failed_output = (
             f"{build_result.output.rstrip()}\n\n"

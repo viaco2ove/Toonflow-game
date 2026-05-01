@@ -283,10 +283,15 @@ start_pm2() {
 install_panel() {
   # 部署 FastAPI 管理页，方便在 Ubuntu 环境里查看服务状态和执行常用操作。
   # 同时把 web 项目目录和构建内存限制传给管理页，保证面板按钮与安装脚本的构建参数一致。
+  # 管理页本身很轻量，但它还要负责触发前端构建。
+  # 这里优先使用 systemd 托管，避免在低配机器上叠加 PM2 守护层后增加额外不确定性。
+  # 如果目标环境没有 systemd，再退回 PM2 托管独立脚本。
   local panel_source="$SCRIPT_DIR/detail/main.py"
   local panel_target="$PANEL_DIR/main.py"
+  local panel_start_script="$PANEL_DIR/start-panel.sh"
   local panel_python="$PANEL_DIR/.venv/bin/python"
-  local panel_pm2_command
+  local panel_service_name="${PANEL_NAME}.service"
+  local panel_service_file="/etc/systemd/system/${panel_service_name}"
 
   [ -f "$panel_source" ] || die "找不到管理页脚本：$panel_source"
 
@@ -301,23 +306,59 @@ install_panel() {
   "$panel_python" -m pip install --upgrade pip
   "$panel_python" -m pip install fastapi uvicorn
 
-  panel_pm2_command="cd \"$PANEL_DIR\" && \
-PANEL_APP_NAME=\"$PANEL_APP_NAME\" \
-PANEL_APP_DIR=\"$PANEL_APP_DIR\" \
-PANEL_APP_PORT=\"$PANEL_APP_PORT\" \
-PANEL_WEB_PORT=\"$PANEL_WEB_PORT\" \
-PANEL_WEB_PUBLISH_DIR=\"$PANEL_WEB_PUBLISH_DIR\" \
-PANEL_WEB_PROJECT_DIR=\"$PANEL_WEB_PROJECT_DIR\" \
-PANEL_WEB_BUILD_NODE_OPTIONS=\"$PANEL_WEB_BUILD_NODE_OPTIONS\" \
-\"$panel_python\" -m uvicorn main:app --host 0.0.0.0 --port \"$PANEL_PORT\""
+  # 生成独立启动脚本，让手动启动与 PM2 托管启动走完全一致的路径。
+  cat > "$panel_start_script" <<EOF
+#!/usr/bin/env bash
+set -Eeuo pipefail
 
+# 启动 Ubuntu 管理页，并显式导出运行所需的环境变量。
+cd "$PANEL_DIR" || exit 1
+export PANEL_APP_NAME="$PANEL_APP_NAME"
+export PANEL_APP_DIR="$PANEL_APP_DIR"
+export PANEL_APP_PORT="$PANEL_APP_PORT"
+export PANEL_WEB_PORT="$PANEL_WEB_PORT"
+export PANEL_WEB_PUBLISH_DIR="$PANEL_WEB_PUBLISH_DIR"
+export PANEL_WEB_PROJECT_DIR="$PANEL_WEB_PROJECT_DIR"
+export PANEL_WEB_BUILD_NODE_OPTIONS="$PANEL_WEB_BUILD_NODE_OPTIONS"
+
+exec "$panel_python" -m uvicorn main:app --host 0.0.0.0 --port "$PANEL_PORT"
+EOF
+  chmod +x "$panel_start_script"
+
+  # 先清理可能残留的 PM2 管理页进程，避免占用同一端口导致新服务无法启动。
   if pm2 describe "$PANEL_NAME" >/dev/null 2>&1; then
-    pm2 delete "$PANEL_NAME"
+    pm2 delete "$PANEL_NAME" || true
+    pm2 save || true
   fi
 
-  # 这里使用 pm2 托管 uvicorn，避免服务器重启后管理页丢失。
-  pm2 start bash --name "$PANEL_NAME" -- -lc "$panel_pm2_command"
-  pm2 save
+  if command -v systemctl >/dev/null 2>&1; then
+    log "使用 systemd 托管管理页"
+    run_sudo tee "$panel_service_file" > /dev/null <<EOF
+[Unit]
+Description=Toonflow Panel
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=$PANEL_DIR
+ExecStart=$panel_start_script
+Restart=always
+RestartSec=3
+User=root
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    run_sudo systemctl daemon-reload
+    run_sudo systemctl enable "$panel_service_name"
+    run_sudo systemctl restart "$panel_service_name"
+  else
+    # systemd 不可用时，再退回 PM2 托管独立脚本。
+    log "当前环境无 systemd，退回使用 PM2 托管管理页"
+    pm2 start "$panel_start_script" --name "$PANEL_NAME"
+    pm2 save
+  fi
 }
 
 write_nginx_config() {
@@ -387,7 +428,8 @@ print_result() {
 常用命令：
   pm2 status
   pm2 logs $PM2_NAME
-  pm2 logs $PANEL_NAME
+  sudo systemctl status ${PANEL_NAME}.service
+  sudo journalctl -u ${PANEL_NAME}.service -n 100 --no-pager
   sudo nginx -t
   sudo systemctl status nginx
 
