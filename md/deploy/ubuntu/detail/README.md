@@ -52,6 +52,7 @@ export PANEL_WEB_PUBLISH_DIR="/var/www/toonflow"
 安装完成后访问：
 
 ```text
+http://你的服务器IP:6002/
 http://你的服务器IP:6008/
 ```
 

@@ -47,7 +47,7 @@ source ./install.config.sh
 打开主站：
 
 ```text
-http://你的服务器IP/
+http://你的服务器IP:6002/
 ```
 
 打开管理页：
