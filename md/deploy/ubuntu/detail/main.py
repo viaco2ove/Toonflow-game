@@ -16,6 +16,11 @@ APP_PORT = int(os.environ.get("PANEL_APP_PORT", "60002").strip() or "60002")
 WEB_PORT = int(os.environ.get("PANEL_WEB_PORT", "80").strip() or "80")
 WEB_SOURCE_DIR = f"{APP_DIR}/scripts/web"
 WEB_PUBLISH_DIR = os.environ.get("PANEL_WEB_PUBLISH_DIR", "/var/www/toonflow").strip() or "/var/www/toonflow"
+# Web项目源码目录（用于构建和同步）
+WEB_PROJECT_DIR = os.environ.get("PANEL_WEB_PROJECT_DIR", "").strip()
+if not WEB_PROJECT_DIR:
+    # 默认从 system.yml 读取或使用相对路径
+    WEB_PROJECT_DIR = "/opt/toonflow/Toonflow-game-web"
 START_APP_CMD = (
     f"cd {shlex.quote(APP_DIR)} && "
     "NODE_ENV=prod PREFER_PROCESS_ENV=1 "
@@ -34,12 +39,77 @@ def run_in_repo(cmd: str) -> str:
 
 
 def sync_web_publish_dir() -> str:
+    """同步构建后的web静态文件到发布目录"""
     return run(
         f"mkdir -p {shlex.quote(WEB_PUBLISH_DIR)} && "
         f"rsync -a --delete {shlex.quote(WEB_SOURCE_DIR)}/ {shlex.quote(WEB_PUBLISH_DIR)}/ && "
         f"chown -R www-data:www-data {shlex.quote(WEB_PUBLISH_DIR)} && "
         f"chmod -R 755 {shlex.quote(WEB_PUBLISH_DIR)} && "
         "nginx -t >/dev/null 2>&1 && systemctl reload nginx >/dev/null 2>&1 || true"
+    )
+
+
+def sync_web_project_code() -> str:
+    """同步web项目源码（git pull）"""
+    safe_dir = shlex.quote(WEB_PROJECT_DIR)
+    return run(
+        f"cd {safe_dir} && "
+        "git fetch origin --prune 2>&1 && "
+        "git pull origin 2>&1 || true"
+    )
+
+
+def build_web_project() -> str:
+    """构建web项目，输出到scripts/web目录"""
+    safe_dir = shlex.quote(WEB_PROJECT_DIR)
+    safe_output_dir = shlex.quote(WEB_SOURCE_DIR)
+    return run(
+        f"cd {safe_dir} && "
+        "yarn install 2>&1 && "
+        f"yarn build 2>&1 && "
+        f"rm -rf {safe_output_dir} 2>&1 && "
+        f"cp -r dist {safe_output_dir} 2>&1 || true"
+    )
+
+
+def get_web_branches() -> list[str]:
+    """获取web项目的所有分支列表"""
+    safe_dir = shlex.quote(WEB_PROJECT_DIR)
+    output = run(f"cd {safe_dir} && git branch --list --no-color 2>&1 || true")
+    branches = []
+    for line in output.splitlines():
+        line = line.strip()
+        if line.startswith("* "):
+            branches.append(line[2:].strip())
+        elif line:
+            branches.append(line.strip())
+    return branches
+
+
+def get_web_current_branch() -> str:
+    """获取web项目当前分支名"""
+    safe_dir = shlex.quote(WEB_PROJECT_DIR)
+    output = run(f"cd {safe_dir} && git rev-parse --abbrev-ref HEAD 2>&1 || true")
+    return output.strip() or "unknown"
+
+
+def switch_web_branch(branch: str) -> str:
+    """切换web项目到指定分支"""
+    safe_dir = shlex.quote(WEB_PROJECT_DIR)
+    safe_branch = shlex.quote(branch)
+    return run(
+        f"cd {safe_dir} && "
+        f"git checkout {safe_branch} 2>&1 && "
+        f"git pull origin {safe_branch} 2>&1 || true"
+    )
+
+
+def switch_app_branch(branch: str) -> str:
+    """切换后端项目到指定分支"""
+    safe_branch = shlex.quote(branch)
+    return run_in_repo(
+        f"git checkout {safe_branch} 2>&1 && "
+        f"git pull origin {safe_branch} 2>&1 || true"
     )
 
 
@@ -171,6 +241,9 @@ def service_status() -> dict:
 def home() -> str:
     status = service_status()
     git = git_info()
+    web_branches = get_web_branches()
+    web_current_branch = get_web_current_branch()
+    app_branches = [b.strip().lstrip("* ") for b in git["branch_list"].splitlines() if b.strip()]
     pm2_kind_map = {
         "online": ("运行中", "success"),
         "stopped": ("已停止", "warn"),
@@ -375,8 +448,27 @@ def home() -> str:
               <a class="action danger" href="/nginx/stop">停止 nginx</a>
             </div>
             <div class="row">
-              <a class="action" href="/deploy/sync-web">同步静态页</a>
+              <a class="action" href="/deploy/sync-web">同步静态页（构建+部署）</a>
+              <a class="action" href="/deploy/sync-web-code">同步web项目代码</a>
               <a class="action danger" href="/git/force-sync">强制同步当前分支</a>
+            </div>
+            <div class="row" style="margin-top: 18px;">
+              <form action="/git/switch-branch" method="get" style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+                <label for="branch" style="font-size: 13px; color: var(--muted); font-weight: 600;">切换Web分支：</label>
+                <select name="branch" id="branch" style="padding: 8px 12px; border-radius: 10px; border: 1px solid var(--border); font-size: 13px; background: var(--panel); color: var(--text);">
+                  {''.join(f'<option value="{html.escape(b)}"{" selected" if b == web_current_branch else ""}>{html.escape(b)}</option>' for b in web_branches)}
+                </select>
+                <button type="submit" class="action dark" style="border: none; cursor: pointer; min-width: auto; padding: 8px 16px;">切换并构建</button>
+              </form>
+            </div>
+            <div class="row" style="margin-top: 10px;">
+              <form action="/git/switch-app-branch" method="get" style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+                <label for="app-branch" style="font-size: 13px; color: var(--muted); font-weight: 600;">切换后端分支：</label>
+                <select name="branch" id="app-branch" style="padding: 8px 12px; border-radius: 10px; border: 1px solid var(--border); font-size: 13px; background: var(--panel); color: var(--text);">
+                  {''.join(f'<option value="{html.escape(b)}"{" selected" if b == git["current_branch"] else ""}>{html.escape(b)}</option>' for b in app_branches)}
+                </select>
+                <button type="submit" class="action dark" style="border: none; cursor: pointer; min-width: auto; padding: 8px 16px;">切换并重启</button>
+              </form>
             </div>
             <div class="meta">
               <div>当前分支：{html.escape(git["current_branch"])}</div>
@@ -442,8 +534,43 @@ def nginx_stop():
 
 @app.get("/deploy/sync-web")
 def deploy_sync_web():
-    output = sync_web_publish_dir()
-    set_last_action_log("同步静态页", output)
+    """同步静态页：先构建web项目，再同步到发布目录"""
+    output = build_web_project()
+    output += "\n\n" + sync_web_publish_dir()
+    set_last_action_log("同步静态页（含构建）", output)
+    return RedirectResponse("/", status_code=302)
+
+
+@app.get("/deploy/sync-web-code")
+def deploy_sync_web_code():
+    """同步web项目源码（git pull）"""
+    output = sync_web_project_code()
+    set_last_action_log("同步web项目代码", output)
+    return RedirectResponse("/", status_code=302)
+
+
+@app.get("/git/switch-branch")
+def git_switch_branch(branch: str = ""):
+    """切换web项目分支并重新构建同步"""
+    if not branch:
+        set_last_action_log("切换分支", "错误：未指定分支名")
+        return RedirectResponse("/", status_code=302)
+    output = switch_web_branch(branch)
+    output += "\n\n" + build_web_project()
+    output += "\n\n" + sync_web_publish_dir()
+    set_last_action_log(f"切换到分支: {branch}", output)
+    return RedirectResponse("/", status_code=302)
+
+
+@app.get("/git/switch-app-branch")
+def git_switch_app_branch(branch: str = ""):
+    """切换后端项目分支并重启"""
+    if not branch:
+        set_last_action_log("切换后端分支", "错误：未指定分支名")
+        return RedirectResponse("/", status_code=302)
+    output = switch_app_branch(branch)
+    output += "\n\n" + run(f"pm2 restart {shlex.quote(APP_NAME)} --update-env 2>&1 || true")
+    set_last_action_log(f"切换后端分支: {branch}", output)
     return RedirectResponse("/", status_code=302)
 
 
