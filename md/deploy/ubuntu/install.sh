@@ -42,6 +42,9 @@ PANEL_APP_DIR="${PANEL_APP_DIR:-$APP_DIR}"
 PANEL_WEB_PORT="${PANEL_WEB_PORT:-$HTTP_PORT}"
 PANEL_APP_PORT="${PANEL_APP_PORT:-$APP_PORT}"
 PANEL_WEB_PUBLISH_DIR="${PANEL_WEB_PUBLISH_DIR:-/var/www/toonflow}"
+WEB_BUILD_NODE_OPTIONS="${WEB_BUILD_NODE_OPTIONS:---max-old-space-size=512}"
+PANEL_WEB_BUILD_NODE_OPTIONS="${PANEL_WEB_BUILD_NODE_OPTIONS:-$WEB_BUILD_NODE_OPTIONS}"
+PANEL_WEB_PROJECT_DIR="${PANEL_WEB_PROJECT_DIR:-$WEB_DIR}"
 
 if [ -z "$APP_REPO" ] && [ -f "package.json" ] && [ -f "src/app.ts" ]; then
   APP_DIR="$(pwd)"
@@ -197,6 +200,8 @@ prepare_dirs() {
 }
 
 build_frontend() {
+  # 构建 web 项目并同步到发布目录。
+  # 这里统一限制 Node 构建内存峰值，降低 1G 无 swap 机器上被 OOM 杀掉的概率。
   if [ "$SKIP_FRONTEND" = "1" ]; then
     log "跳过前端构建：SKIP_FRONTEND=1"
     return
@@ -207,7 +212,7 @@ build_frontend() {
   log "安装并构建前端"
   cd "$WEB_DIR"
   install_yarn_dependencies
-  yarn build
+  NODE_OPTIONS="$WEB_BUILD_NODE_OPTIONS" yarn build
 
   log "同步前端 dist 到后端 scripts/web"
   mkdir -p "$APP_DIR/scripts/web"
@@ -277,6 +282,7 @@ start_pm2() {
 
 install_panel() {
   # 部署 FastAPI 管理页，方便在 Ubuntu 环境里查看服务状态和执行常用操作。
+  # 同时把 web 项目目录和构建内存限制传给管理页，保证面板按钮与安装脚本的构建参数一致。
   local panel_source="$SCRIPT_DIR/detail/main.py"
   local panel_target="$PANEL_DIR/main.py"
   local panel_python="$PANEL_DIR/.venv/bin/python"
@@ -301,6 +307,8 @@ PANEL_APP_DIR=\"$PANEL_APP_DIR\" \
 PANEL_APP_PORT=\"$PANEL_APP_PORT\" \
 PANEL_WEB_PORT=\"$PANEL_WEB_PORT\" \
 PANEL_WEB_PUBLISH_DIR=\"$PANEL_WEB_PUBLISH_DIR\" \
+PANEL_WEB_PROJECT_DIR=\"$PANEL_WEB_PROJECT_DIR\" \
+PANEL_WEB_BUILD_NODE_OPTIONS=\"$PANEL_WEB_BUILD_NODE_OPTIONS\" \
 \"$panel_python\" -m uvicorn main:app --host 0.0.0.0 --port \"$PANEL_PORT\""
 
   if pm2 describe "$PANEL_NAME" >/dev/null 2>&1; then
