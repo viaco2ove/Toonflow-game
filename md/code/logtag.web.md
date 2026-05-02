@@ -2,6 +2,9 @@
 ```
 console.log("[orchestrateDebug] result");
 console.log(result);
+
+console.log("[orchestrateSession] result");
+console.log(result);
 ```
 
 ## web 日志 tag
