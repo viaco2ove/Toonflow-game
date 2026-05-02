@@ -131,6 +131,8 @@ clone_or_update_repo() {
   local branch="$3"
   local name="$4"
 
+  # 目录已存在时，先校验它是不是一个可操作的 Git 仓库。
+  # 这样可以避免目录里残留旧文件或半成品时，继续 git clone 导致报错信息不清晰。
   if [ -d "$dir/.git" ]; then
     log "更新 $name：$dir"
     cd "$dir"
@@ -138,6 +140,21 @@ clone_or_update_repo() {
     checkout_branch_if_needed "$branch"
     git pull --ff-only
     return
+  fi
+
+  if [ -d "$dir" ]; then
+    if git -C "$dir" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+      log "更新 $name：$dir"
+      cd "$dir"
+      cleanup_legacy_env_files
+      checkout_branch_if_needed "$branch"
+      git pull --ff-only
+      return
+    fi
+
+    if [ -n "$(find "$dir" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]; then
+      die "$name 目录已存在但不是 Git 仓库：$dir。请先删除或迁移该目录，或者把正确仓库放到该目录后重试。"
+    fi
   fi
 
   if [ -z "$repo" ]; then
@@ -213,6 +230,10 @@ build_frontend() {
   cd "$WEB_DIR"
   install_yarn_dependencies
   NODE_OPTIONS="$WEB_BUILD_NODE_OPTIONS" yarn build
+
+  # 前端构建产物需要同步到后端仓库的 scripts/web。
+  # 如果后端仓库还不存在，先拉取后端，避免 mkdir -p 提前把 APP 目录创建成一个非 Git 空壳目录。
+  clone_or_update_repo "$APP_DIR" "$APP_REPO" "$APP_BRANCH" "APP"
 
   log "同步前端 dist 到后端 scripts/web"
   mkdir -p "$APP_DIR/scripts/web"

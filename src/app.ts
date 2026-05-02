@@ -11,6 +11,7 @@ import u from "@/utils";
 import jwt from "jsonwebtoken";
 import { getUploadRootDir } from "@/lib/runtimePaths";
 import { runWithRequestContext } from "@/lib/requestContext";
+import { jsonGzipMiddleware } from "@/middleware/jsonGzip";
 import { enforceResourceIsolation } from "@/middleware/resourceIsolation";
 import { startSessionMemoryWorker, stopSessionMemoryWorker } from "@/modules/game-runtime/services/SessionMemoryWorker";
 import { syncBundledVoicePresetSeeds } from "@/lib/voicePresetSeeds";
@@ -53,6 +54,7 @@ export default async function startServe(randomPort: Boolean = false) {
   app.use(cors({ origin: "*" }));
   app.use(express.json({ limit: "100mb" }));
   app.use(express.urlencoded({ extended: true, limit: "100mb" }));
+  app.use(jsonGzipMiddleware);
 
   const rootDir = getUploadRootDir();
 
