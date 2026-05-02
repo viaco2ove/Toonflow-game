@@ -285,7 +285,6 @@ export function buildOrchestrationPayload(params: {
   endDialog?: string | null;
   endDialogDetail?: string | null;
   plan?: ReturnType<typeof buildPlanResult>;
-  command?: OrchestrationCommand | null;
   messages?: RuntimeMessageInput[];
 }) {
   cacheAndBuildDebugStateSnapshot({
@@ -312,9 +311,6 @@ export function buildOrchestrationPayload(params: {
     // 前端需要明确知道当前发言角色类型，用于区分旁白、NPC 和用户展示样式。
     roleType: asTrimmedText(params.plan?.roleType),
     motive: asTrimmedText(params.plan?.motive),
-    // 正式游玩只认 awaitUser，不再对外暴露“下一位是谁”的预编排字段。
-    awaitUser: Boolean(params.plan?.awaitUser),
-    command: params.command || null,
   };
 }
 
@@ -325,15 +321,11 @@ export function buildMinimalOrchestrationResponse(plan?: {
   role?: unknown;
   roleType?: unknown;
   motive?: unknown;
-  awaitUser?: unknown;
-  command?: OrchestrationCommand | null;
 } | null) {
   return {
     role: asTrimmedText(plan?.role),
     roleType: asTrimmedText(plan?.roleType),
     motive: asTrimmedText(plan?.motive),
-    awaitUser: Boolean(plan?.awaitUser),
-    command: plan?.command || null,
   };
 }
 
@@ -342,7 +334,7 @@ export function buildMinimalOrchestrationResponse(plan?: {
  *
  * 响应约束：
  * - 外层维持通用 `code/message` 信封；
- * - data 只能包含 `role/roleType/motive/awaitUser`，禁止夹带 state、chapter、event 等大杂烩字段。
+ * - data 只能包含 `role/roleType/motive`，禁止夹带 state、chapter、event、awaitUser、command 等额外字段。
  */
 export function sendDebugSuccess(
   res: express.Response,

@@ -111,9 +111,20 @@ def build_web_project_command() -> str:
         'echo "[deploy] CURRENT_BRANCH=$current_branch" && '
         "git fetch origin --prune 2>&1 && "
         'git pull --ff-only origin "$current_branch" 2>&1 && '
-        "yarn install 2>&1 && "
+        # 先按锁文件执行一次标准安装。
+        # 如果 vite 运行期仍报缺包，说明 node_modules 可能残缺，再做一次干净重装后重试构建。
+        "yarn install --frozen-lockfile 2>&1 && "
+        'if ! ('
         f"export NODE_OPTIONS={safe_node_options} && "
-        "yarn build 2>&1 && "
+        "yarn build 2>&1"
+        "); then "
+        '  echo "[deploy] 首次构建失败，尝试清理 node_modules 后重装依赖并重试..." && '
+        "  rm -rf node_modules && "
+        "  yarn cache clean >/dev/null 2>&1 || true && "
+        "  yarn install --frozen-lockfile --force 2>&1 && "
+        f"  export NODE_OPTIONS={safe_node_options} && "
+        "  yarn build 2>&1; "
+        "fi && "
         f"rm -rf {safe_output_dir} && "
         f"mkdir -p {safe_output_dir} && "
         f"rsync -a --delete dist/ {safe_output_dir}/ 2>&1"
