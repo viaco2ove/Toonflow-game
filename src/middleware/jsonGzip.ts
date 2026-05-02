@@ -1,7 +1,7 @@
 import { NextFunction, Request, Response } from "express";
 import { gzip } from "zlib";
 
-const JSON_GZIP_MIN_BYTES = 4 * 1024;
+const DEFAULT_JSON_GZIP_MIN_BYTES = 4 * 1024;
 const JSON_GZIP_ROUTE_PREFIXES = [
   "/assets/",
   "/game/",
@@ -18,6 +18,25 @@ const JSON_GZIP_ROUTE_PREFIXES = [
   "/video/",
   "/voice/",
 ];
+
+/**
+ * 读取 JSON gzip 的最小压缩阈值。
+ *
+ * 用途：
+ * - 允许通过环境变量按部署环境调整压缩触发点；
+ * - 当配置缺失、非法或过小的时候，自动回退到稳定默认值，避免线上行为失控。
+ */
+function getJsonGzipMinBytes(): number {
+  const rawValue = Number(process.env.JSON_GZIP_MIN_BYTES);
+  if (!Number.isFinite(rawValue)) {
+    return DEFAULT_JSON_GZIP_MIN_BYTES;
+  }
+  const normalizedValue = Math.floor(rawValue);
+  if (normalizedValue < 256) {
+    return DEFAULT_JSON_GZIP_MIN_BYTES;
+  }
+  return normalizedValue;
+}
 
 /**
  * 判断当前请求是否声明支持 gzip 压缩。
@@ -107,6 +126,7 @@ export function jsonGzipMiddleware(req: Request, res: Response, next: NextFuncti
   }
 
   const originalSend = res.send.bind(res);
+  const jsonGzipMinBytes = getJsonGzipMinBytes();
   /**
    * 压缩并发送 JSON 响应。
    *
@@ -121,7 +141,7 @@ export function jsonGzipMiddleware(req: Request, res: Response, next: NextFuncti
     }
 
     const payloadBuffer = Buffer.from(payload, "utf8");
-    if (payloadBuffer.byteLength < JSON_GZIP_MIN_BYTES) {
+    if (payloadBuffer.byteLength < jsonGzipMinBytes) {
       if (!res.getHeader("Content-Type")) {
         res.type("application/json; charset=utf-8");
       }
