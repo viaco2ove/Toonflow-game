@@ -1596,6 +1596,21 @@ function battleStatusSummary(session: JsonRecord): string {
 }
 
 /**
+ * 生成仅包含敌方存活状态的战斗摘要。
+ *
+ * 用途：
+ * - 回合制战斗的本轮播报只展示用户本次动作结果和敌方剩余状态；
+ * - 避免把敌人反击与用户血蓝变化硬编码进同一条旁白里，和 review 要求保持一致。
+ */
+function battleEnemySummary(session: JsonRecord): string {
+  const aliveEnemies = aliveBattleEnemies(session);
+  const enemySummary = aliveEnemies.length
+    ? aliveEnemies.map((enemy) => `${scalarText(enemy.name)}(HP ${Number(enemy.hp || 0)})`).join("、")
+    : "无存活敌人";
+  return `敌人：${enemySummary}。`;
+}
+
+/**
  * 解析攻击动作里的目标 enemy_id。
  * 这样 battleStep 不需要自己反复处理 action_id 的字符串拆分。
  */
@@ -1843,7 +1858,11 @@ function finalizeBattleDefeat(session: JsonRecord): MiniGameStepResult {
 
 /**
  * 执行一轮战斗动作。
- * 用户动作和敌人反击都会在这一轮内完成，并同步写回敌我血蓝状态。
+ *
+ * 说明：
+ * - 当前只把“用户本次动作造成的结果”直接播报给前端；
+ * - 敌方反击仍会写回内部血蓝状态，但不再拼接硬编码挑衅词或“趁势反击”旁白，
+ *   避免一条战报里混入伪造的敌方发言。
  */
 function battleStep(session: JsonRecord, actionId: string, ctx: MiniGameControllerInput): MiniGameStepResult {
   const publicState = asRecord(session.public_state);
@@ -1909,69 +1928,40 @@ function battleStep(session: JsonRecord, actionId: string, ctx: MiniGameControll
     victory.narration = `${narrations.join("")}${victory.narration}`;
     return victory;
   }
-  const counterAttackLines: string[] = [];
-  let leadCounterEnemy: JsonRecord | null = null;
   aliveBattleEnemies(session).forEach((enemy) => {
-    const name = scalarText(enemy.name) || "敌人";
     const level = Math.max(1, Number(enemy.level || 1));
     let damage = 6 + level * 2 + takeRng(session, 0, 10);
     if (guarding) {
       damage = Math.max(1, Math.floor(damage * 0.45));
     }
     userHp = clamp(userHp - damage, 0, userMaxHp);
-    if (!leadCounterEnemy) {
-      leadCounterEnemy = enemy;
-    }
-    counterAttackLines.push(`${name}趁势反击，打掉了你 ${damage} 点气血。`);
   });
   publicState.user_hp = userHp;
   publicState.user_mp = userMp;
-  publicState.last_result = `${narrations.join("")}${counterAttackLines.join("")}`.trim();
+  // 只记录本轮用户动作与敌方剩余状态，避免把敌人反击硬编码到公开战报里。
+  publicState.last_result = `${narrations.join("")}${battleEnemySummary(session)}`.trim();
   session.round = Number(session.round || 1) + 1;
   session.phase = "encounter";
   session.public_state = publicState;
   if (userHp <= 0) {
     const defeat = finalizeBattleDefeat(session);
-    defeat.narration = `${narrations.join("")}${counterAttackLines.join("")}${defeat.narration}`;
+    defeat.narration = `${narrations.join("")}${defeat.narration}`;
     return defeat;
   }
   syncBattlePublicState(session);
-  const battleSpeaker = resolveBattleSpeaker(session, ctx, leadCounterEnemy);
-  const counterSpeech = leadCounterEnemy
-    ? battleSpeaker.narratorFallback
-      ? `旁白播报：${battleSpeaker.proxyEnemyName}${battleSpeaker.viaWildcard ? "借由万能角色的气势" : ""}发起了下一轮攻击。`
-      : battleSpeaker.viaWildcard
-        ? `“${battleSpeaker.proxyEnemyName}可不会给你喘息的机会。”`
-        : `“你还不配在这里放肆。”`
-    : "";
-  const battleReport = `${narrations.join("")}${counterAttackLines.join("")}旁白播报：当前战斗仍在继续，${battleStatusSummary(session)}`;
+  const battleReport = `${narrations.join("")}${battleEnemySummary(session)}`;
   return {
-    narration: counterSpeech ? `${counterSpeech}${battleReport}` : battleReport,
-    speakerRole: battleSpeaker.role,
-    speakerRoleType: battleSpeaker.roleType,
-    messages: counterSpeech
-      ? [
-        {
-          role: battleSpeaker.role,
-          roleType: battleSpeaker.roleType,
-          eventType: "on_mini_game",
-          content: counterSpeech,
-        },
-        {
-          role: scalarText(ctx.world?.narratorRole?.name) || "旁白",
-          roleType: "narrator",
-          eventType: "on_mini_game",
-          content: battleReport,
-        },
-      ]
-      : [
-        {
-          role: scalarText(ctx.world?.narratorRole?.name) || "旁白",
-          roleType: "narrator",
-          eventType: "on_mini_game",
-          content: battleReport,
-        },
-      ],
+    narration: battleReport,
+    speakerRole: scalarText(ctx.world?.narratorRole?.name) || "旁白",
+    speakerRoleType: "narrator",
+    messages: [
+      {
+        role: scalarText(ctx.world?.narratorRole?.name) || "旁白",
+        roleType: "narrator",
+        eventType: "on_mini_game",
+        content: battleReport,
+      },
+    ],
     resultTags: ["ongoing", "battle_round"],
     rewardSummary: {},
     memorySummary: `战斗推进一轮：${scalarText(publicState.current_target_name) || "敌人"}`,

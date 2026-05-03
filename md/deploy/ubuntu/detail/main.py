@@ -28,6 +28,17 @@ START_APP_CMD = (
     "NODE_ENV=prod PREFER_PROCESS_ENV=1 "
     f"pm2 start build/app.js --name {shlex.quote(APP_NAME)} --update-env"
 )
+RESTART_OR_START_APP_CMD = (
+    "set -e; "
+    f"cd {shlex.quote(APP_DIR)} && "
+    # 线上运行依赖 env/.env.local，因此统一以 local 环境重启或启动 PM2 进程。
+    f"if pm2 describe {shlex.quote(APP_NAME)} >/dev/null 2>&1; then "
+    f"  NODE_ENV=local pm2 restart {shlex.quote(APP_NAME)} --update-env 2>&1; "
+    "else "
+    f"  NODE_ENV=local pm2 start build/app.js --name {shlex.quote(APP_NAME)} --update-env 2>&1; "
+    "fi && "
+    "pm2 save 2>&1"
+)
 LAST_ACTION_LOG = "暂无操作记录"
 
 
@@ -56,6 +67,11 @@ def run(cmd: str) -> str:
 
 def run_in_repo(cmd: str) -> str:
     return run(f"cd {shlex.quote(APP_DIR)} && {cmd}")
+
+
+def restart_or_start_app() -> str:
+    """重启已存在的 PM2 进程；如果进程不存在，则直接按构建产物启动。"""
+    return run(RESTART_OR_START_APP_CMD)
 
 
 def git_pull_current_branch(repo_dir: str) -> str:
@@ -136,6 +152,65 @@ def build_web_project() -> str:
     return run(build_web_project_command())
 
 
+def build_app_project_command() -> str:
+    """生成后端安装与构建命令，确保面板发布链与安装脚本使用相同的关键参数。"""
+    safe_dir = shlex.quote(APP_DIR)
+    return (
+        "set -e; "
+        f'echo "[deploy] APP_DIR={safe_dir}" && '
+        f"cd {safe_dir} && "
+        # Ubuntu 线上只需要后端运行依赖与 TypeScript 构建链，这里沿用安装脚本参数。
+        "yarn install --frozen-lockfile --ignore-engines 2>&1 && "
+        "NODE_ENV=prod PREFER_PROCESS_ENV=1 yarn build 2>&1"
+    )
+
+
+def sync_app_project_code() -> str:
+    """同步后端项目源码，只拉当前分支代码，不执行构建和重启。"""
+    return git_pull_current_branch(APP_DIR)
+
+
+def force_sync_repo_current_branch(repo_dir: str) -> str:
+    """强制把指定仓库对齐到远端当前分支，忽略本地未提交差异。"""
+    safe_dir = shlex.quote(repo_dir)
+    branch = run(f"cd {safe_dir} && git rev-parse --abbrev-ref HEAD 2>&1 || true").strip()
+    safe_branch = shlex.quote(branch)
+    if not branch or branch == "HEAD":
+        return f"无法识别仓库当前分支，已取消强制同步：{repo_dir}"
+    return run(
+        "set -e; "
+        f"cd {safe_dir} && "
+        'echo "[deploy] CURRENT_BRANCH=' + branch + '" 2>&1 && '
+        "git fetch origin --prune 2>&1 && "
+        f"git reset --hard origin/{safe_branch} 2>&1 && "
+        "git clean -fd 2>&1"
+    )
+
+
+def deploy_current_app() -> str:
+    """同步当前后端分支并重建运行产物，最后重启 PM2 使新代码立即生效。"""
+    return run(
+        "set -e; "
+        f"cd {shlex.quote(APP_DIR)} && "
+        'current_branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null)" && '
+        'if [ -z "$current_branch" ] || [ "$current_branch" = "HEAD" ]; then '
+        '  echo "无法识别当前分支，已取消发布。"; '
+        "  exit 1; "
+        "fi && "
+        'echo "[deploy] CURRENT_BRANCH=$current_branch" && '
+        "git fetch origin --prune 2>&1 && "
+        'git pull --ff-only origin "$current_branch" 2>&1 && '
+        "yarn install --frozen-lockfile --ignore-engines 2>&1 && "
+        "NODE_ENV=prod PREFER_PROCESS_ENV=1 yarn build 2>&1 && "
+        f"if pm2 describe {shlex.quote(APP_NAME)} >/dev/null 2>&1; then "
+        f"  NODE_ENV=local pm2 restart {shlex.quote(APP_NAME)} --update-env 2>&1; "
+        "else "
+        f"  NODE_ENV=local pm2 start build/app.js --name {shlex.quote(APP_NAME)} --update-env 2>&1; "
+        "fi && "
+        "pm2 save 2>&1"
+    )
+
+
 def get_web_branches() -> list[str]:
     """获取web项目的所有分支列表"""
     safe_dir = shlex.quote(WEB_PROJECT_DIR)
@@ -173,7 +248,7 @@ def switch_app_branch(branch: str) -> str:
     safe_branch = shlex.quote(branch)
     return run_in_repo(
         f"git checkout {safe_branch} 2>&1 && "
-        f"git pull origin {safe_branch} 2>&1 || true"
+        f"git pull origin {safe_branch} 2>&1"
     )
 
 
@@ -268,15 +343,19 @@ def git_info() -> dict:
 
 def force_sync_current_branch() -> str:
     """强制同步当前后端分支，专用于 APP 仓库，不负责 web 仓库构建。"""
-    branch = run_in_repo("git rev-parse --abbrev-ref HEAD 2>&1 || true").strip()
-    safe_branch = shlex.quote(branch)
-    if not branch or branch == "HEAD":
-        return "无法识别当前分支，已取消强制同步。"
-    return run_in_repo(
-        "git fetch origin --prune 2>&1 && "
-        f"git reset --hard origin/{safe_branch} 2>&1 && "
-        "git clean -fd 2>&1 || true"
-    )
+    return force_sync_repo_current_branch(APP_DIR)
+
+
+def force_sync_web_current_branch() -> str:
+    """强制同步当前 web 分支，忽略本地未提交差异。"""
+    return force_sync_repo_current_branch(WEB_PROJECT_DIR)
+
+
+def force_sync_all_current_branches() -> str:
+    """同时强制同步后端与 web 当前分支，便于一次性覆盖两边代码。"""
+    app_output = force_sync_current_branch()
+    web_output = force_sync_web_current_branch()
+    return f"[APP]\n{app_output}\n\n[WEB]\n{web_output}"
 
 
 def service_status() -> dict:
@@ -503,19 +582,14 @@ def home() -> str:
             <h2>服务操作</h2>
             <div class="subtle">这些操作会直接对当前 Ubuntu 服务器上的真实服务生效。</div>
             <div class="row">
-              <a class="action dark" href="/app/start">启动 app</a>
-              <a class="action" href="/app/restart">重启 app</a>
-              <a class="action danger" href="/app/stop">停止 app</a>
+              <a class="action danger" href="/git/force-sync-all">强制拉取代码（后端和web）</a>
+              <a class="action danger" href="/git/force-sync">强制拉取代码（后端）</a>
+              <a class="action danger" href="/git/force-sync-web">强制拉取代码（web）</a>
             </div>
             <div class="row">
-              <a class="action dark" href="/nginx/start">启动 nginx</a>
-              <a class="action" href="/nginx/restart">重启 nginx</a>
-              <a class="action danger" href="/nginx/stop">停止 nginx</a>
-            </div>
-            <div class="row">
-              <a class="action" href="/deploy/sync-web">同步静态页（拉代码+构建+部署）</a>
-              <a class="action" href="/deploy/sync-web-code">同步web项目代码（仅拉代码）</a>
-              <a class="action danger" href="/git/force-sync">强制同步后端当前分支</a>
+              <a class="action dark" href="/deploy/sync-web">构建web端</a>
+              <a class="action" href="/nginx/restart">重启nginx</a>
+              <a class="action dark" href="/app/restart">重启后端</a>
             </div>
             <div class="row" style="margin-top: 18px;">
               <form action="/git/switch-branch" method="get" style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
@@ -532,7 +606,7 @@ def home() -> str:
                 <select name="branch" id="app-branch" style="padding: 8px 12px; border-radius: 10px; border: 1px solid var(--border); font-size: 13px; background: var(--panel); color: var(--text);">
                   {''.join(f'<option value="{html.escape(b)}"{" selected" if b == git["current_branch"] else ""}>{html.escape(b)}</option>' for b in app_branches)}
                 </select>
-                <button type="submit" class="action dark" style="border: none; cursor: pointer; min-width: auto; padding: 8px 16px;">切换并重启</button>
+                <button type="submit" class="action dark" style="border: none; cursor: pointer; min-width: auto; padding: 8px 16px;">切换并发布</button>
               </form>
             </div>
             <div class="meta">
@@ -564,8 +638,9 @@ def app_start():
 
 @app.get("/app/restart")
 def app_restart():
-    output = run(f"pm2 restart {shlex.quote(APP_NAME)} --update-env 2>&1 || true")
-    set_last_action_log("重启 app", output)
+    output = run(build_app_project_command())
+    output += "\n\n" + restart_or_start_app()
+    set_last_action_log("重启后端（按当前代码重新构建并运行）", output)
     return RedirectResponse("/", status_code=302)
 
 
@@ -631,6 +706,22 @@ def deploy_sync_web_code():
     return RedirectResponse("/", status_code=302)
 
 
+@app.get("/deploy/sync-app")
+def deploy_sync_app():
+    """同步后端项目：拉代码、安装依赖、构建并重启 PM2。"""
+    output = deploy_current_app()
+    set_last_action_log("同步后端（含构建）", output)
+    return RedirectResponse("/", status_code=302)
+
+
+@app.get("/deploy/sync-app-code")
+def deploy_sync_app_code():
+    """仅同步后端项目源码（git pull），不构建也不重启。"""
+    output = sync_app_project_code()
+    set_last_action_log("同步后端代码", output)
+    return RedirectResponse("/", status_code=302)
+
+
 @app.get("/git/switch-branch")
 def git_switch_branch(branch: str = ""):
     """切换web项目分支并重新构建同步"""
@@ -646,12 +737,13 @@ def git_switch_branch(branch: str = ""):
 
 @app.get("/git/switch-app-branch")
 def git_switch_app_branch(branch: str = ""):
-    """切换后端项目分支并重启"""
+    """切换后端项目分支后重新安装依赖、构建并重启。"""
     if not branch:
         set_last_action_log("切换后端分支", "错误：未指定分支名")
         return RedirectResponse("/", status_code=302)
     output = switch_app_branch(branch)
-    output += "\n\n" + run(f"pm2 restart {shlex.quote(APP_NAME)} --update-env 2>&1 || true")
+    output += "\n\n" + run(build_app_project_command())
+    output += "\n\n" + restart_or_start_app()
     set_last_action_log(f"切换后端分支: {branch}", output)
     return RedirectResponse("/", status_code=302)
 
@@ -659,8 +751,21 @@ def git_switch_app_branch(branch: str = ""):
 @app.get("/git/force-sync")
 def git_force_sync():
     output = force_sync_current_branch()
-    output += "\n\n" + sync_web_publish_dir()
-    set_last_action_log("强制同步当前分支", output)
+    set_last_action_log("强制拉取代码（后端）", output)
+    return RedirectResponse("/", status_code=302)
+
+
+@app.get("/git/force-sync-web")
+def git_force_sync_web():
+    output = force_sync_web_current_branch()
+    set_last_action_log("强制拉取代码（web）", output)
+    return RedirectResponse("/", status_code=302)
+
+
+@app.get("/git/force-sync-all")
+def git_force_sync_all():
+    output = force_sync_all_current_branches()
+    set_last_action_log("强制拉取代码（后端和web）", output)
     return RedirectResponse("/", status_code=302)
 
 

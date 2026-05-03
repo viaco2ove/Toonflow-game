@@ -35,4 +35,54 @@
 特别注意：你还不配在这里放肆。”异天挥出攻击命中 萧炎，造成了 30 点伤害。萧炎趁势反击，打掉了你 16 点气血。旁白播报：当前战斗仍在继续
 这句不知道哪里的。 而且流畅很奇怪。
 
-## [fail] [story:mini_game:stats] 的 日志非常简陋,请参考[story:streamlines:stats] 进行设计 打印真正的token 统计
+## [suc] [story:mini_game:stats] 的 日志非常简陋,请参考[story:streamlines:stats] 进行设计 打印真正的token 统计
+
+## [fail] 流程问题修改
+- /game/addMessage[炼炎决附魔灭魔尺]
+不要再使用硬编码！！！！！
+删除这段代码
+```  const counterSpeech = leadCounterEnemy
+    ? battleSpeaker.narratorFallback
+      ? `旁白播报：${battleSpeaker.proxyEnemyName}${battleSpeaker.viaWildcard ? "借由万能角色的气势" : ""}发起了下一轮攻击。`
+      : battleSpeaker.viaWildcard
+        ? `“${battleSpeaker.proxyEnemyName}可不会给你喘息的机会。”`
+        : `“你还不配在这里放肆。”`
+    : "";
+ ```
+- 战斗小游戏动作解析器
+返回内容如下：
+`{
+  "action_id": "skill",
+  "target_name": "萧炎",
+  "reason": "灭魔步属于功法类战斗技能，符合技能攻击的识别范畴，当前明确的敌人目标为萧炎"
+}`
+
+- 旁白播报 
+不允许直接返回回击！！！！
+不允许出现下面的文字
+```
+异天施展技能命中 萧炎，造成了 44 点伤害。
+萧炎趁势反击，打掉了你 16 点气血。
+旁白播报：当前战斗仍在继续，用户 HP 124/140，MP 122/140；
+敌人：萧炎(HP 56)。
+```
+删掉代码
+``counterAttackLines.push(`${name}趁势反击，打掉了你 ${damage} 点气血。`);``
+改为
+```
+异天施展技能命中 萧炎，造成了 44 点伤害。
+敌人：萧炎(HP 56)。
+```
+并且播放语音
+
+- 敌人回合
+事件：攻击用户
+编排agent-》发言agent-》播放语音
+
+- 旁白播报
+
+- 用户回合
+不断循环回合制到结束。
+
+
+## [fail] 机制推广到全部小游戏

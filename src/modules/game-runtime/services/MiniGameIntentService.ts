@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { parse } from "best-effort-json-parser";
 import u from "@/utils";
 import { miniGamePromptCodeByType } from "@/agents/story/mini_game/index";
 import { DebugLogUtil } from "@/utils/debugLogUtil";
@@ -51,6 +52,21 @@ const miniGameIntentSchema = {
   target_name: z.string().describe("若输入里包含明确目标对象，则返回目标名称；否则为空串"),
   reason: z.string().describe("简短说明为什么这样识别"),
 };
+
+/**
+ * 构造小游戏动作解析的 JSON Schema 提示尾巴。
+ *
+ * 用途：
+ * - 当这里改成 plain text 输出后，AI 工具层不会再自动把 schema 注入 system prompt；
+ * - 为了同时拿到原始 text 和 usage，这里手动补回相同的 schema 约束。
+ */
+function buildMiniGameIntentSchemaPrompt(): string {
+  return `\n请按照以下 JSON Schema 格式返回结果:\n${JSON.stringify(
+    z.toJSONSchema(z.object(miniGameIntentSchema)),
+    null,
+    2,
+  )}\n只返回结果，不要将Schema返回。`;
+}
 
 /**
  * 读取小游戏动作解析提示词。
@@ -181,7 +197,7 @@ export async function resolveMiniGameIntentByAi(input: ResolveMiniGameIntentInpu
   let prompt = "";
   let buildFinishedAt = startedAt;
   try {
-    systemPrompt = await loadMiniGamePrompt(input.gameType);
+    systemPrompt = `${await loadMiniGamePrompt(input.gameType)}${buildMiniGameIntentSchemaPrompt()}`.trim();
     if (!systemPrompt) return null;
     const modelConfig = await resolveMiniGameModel(input.userId);
     prompt = buildMiniGameIntentPrompt(input);
@@ -197,7 +213,7 @@ export async function resolveMiniGameIntentByAi(input: ResolveMiniGameIntentInpu
           phase: input.phase,
           status: input.status,
         },
-        output: miniGameIntentSchema,
+        plainTextOutput: true,
         messages: [
           { role: "system", content: systemPrompt },
           { role: "user", content: prompt },
@@ -207,8 +223,11 @@ export async function resolveMiniGameIntentByAi(input: ResolveMiniGameIntentInpu
       modelConfig as any,
     );
     const invokeFinishedAt = Date.now();
-    const rawObject = (result as any)?.object ?? (typeof result === "object" ? result : null);
-    const rawResponse = String((result as any)?.text || JSON.stringify(rawObject || {})).trim();
+    const rawResponse = String((result as any)?.text || "").trim();
+    const parsedObject = rawResponse ? parse(rawResponse) : null;
+    const rawObject = parsedObject && typeof parsedObject === "object"
+      ? (parsedObject as Record<string, unknown>)
+      : null;
     const tokenUsage = readMiniGameIntentTokenUsage(result);
     const logMeta: MiniGameIntentLogMeta = {
       systemPrompt,

@@ -15,7 +15,7 @@ console.log("[aiGame][runtimeStatus] runtimeStatus");
 编写 日志调试工具 WebDebugLogUtil
 配置 debug=true
 开启方式：
-- URL 参数：`?debug=true`
+- URL 参数：`?debug=true`  http://localhost:5173/?debug=true
 - localStorage：`debug=true`
 - localStorage：`toonflow.debug=true`
 ## web 日志 tag （debug=true）
