@@ -8,6 +8,13 @@
 [tag_vue] [voice]
 
 # 后端
+```
+if (DebugLogUtil.isDebugLogEnabled()) {
+    console.log("[story:orchestrator:runtime]", JSON.stringify(runtimeLog));
+...
+}
+```
+
 ## LOG_LEVEL=DEBUG 时 输出的日志
 [story:orchestrator:runtime] :编排师日志
 [story:orchestrator:stats]: 编排师日志 token 统计 
@@ -33,6 +40,9 @@
 [story:memory:stats]: AI故事-忆管理agent token 统计
 [story:memory_directive:stats]: 显式 @记忆管理 参数卡写回日志。打印是否命中，以及新增的技能/物品/装备/其他
 [story:memory:runtime] triggerMemoryAgent
+
+[story:mini_game:agent]: AI故事-小游戏agent 日志
+[story:mini_game:stats]: AI故事-小游戏agent token 统计
 
 ## 后端通用tag
 [debug:revisit:not_found]: 回溯失败
