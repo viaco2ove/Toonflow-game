@@ -8,5 +8,6 @@ console.log(result);
 ```
 
 ## web 日志 tag
-[orchestrateSession]
-[orchestrateDebug]
+[orchestrateSession] 编排
+[orchestrateDebug] 编排-调试
+[useToonflowStore] 故事游玩-调试 日志

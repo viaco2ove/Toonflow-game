@@ -973,22 +973,6 @@ function setPendingSessionChapterStart(state: Record<string, any>, enabled: bool
   delete state.pendingChapterStart;
 }
 
-/**
- * 统一构造“当前章节已结束，需要显式初始化下一章”的命令。
- *
- * 用途：
- * - 前端只需要识别 `command.type === "init_chapter"`；
- * - 不再让客户端从 chapterId/status 里反推是否该切章。
- */
-function buildInitChapterCommand(chapter: any): SessionChapterCommand {
-  return {
-    type: "init_chapter",
-    chapterId: Number(chapter?.id || 0) || 0,
-    chapterTitle: String(chapter?.title || "").trim(),
-    trigger: "chapter_completed",
-  };
-}
-
 function getPendingSessionNarrativePlan(state: Record<string, any>): SessionNarrativePlanResult | null {
   return buildSessionPlanResult(state?.pendingNarrativePlan);
 }
@@ -2441,15 +2425,10 @@ export async function orchestrateSessionTurn(sessionIdInput: string): Promise<Se
         plan: null,
       });
     }
-    return finalizeOrchestrationResult({
-      sessionId,
-      status: sessionStatus,
-      chapterId: currentChapterId,
-      expectedRole: "",
-      expectedRoleType: "",
-      command: buildInitChapterCommand(nextChapter),
-      plan: null,
-    });
+    // 对外不再暴露 init_chapter 命令，正式切章改由服务端在下一轮编排时自行消化。
+    // 这里把 pendingChapterStart 直接切成 true，随后继续走统一的新章节开场编排。
+    setPendingSessionChapterStart(state, true);
+    return buildChapterStartPlan(nextChapter);
   }
 
   let chapter = currentChapterId
@@ -2560,23 +2539,24 @@ export async function orchestrateSessionTurn(sessionIdInput: string): Promise<Se
       || await resolveNextChapterIdByOrder(db, Number(sessionRow.worldId || 0), Number(chapter.id || 0));
     if (resolvedNextChapterId && resolvedNextChapterId !== Number(chapter.id || 0)) {
       const resolvedNextChapter = normalizeChapterOutput(await db("t_storyChapter").where({ id: resolvedNextChapterId }).first());
-      if (resolvedNextChapter) {
-        if (String(plan?.role || "").trim()) {
-          setPendingSessionChapterId(state, resolvedNextChapterId);
+        if (resolvedNextChapter) {
+          if (String(plan?.role || "").trim()) {
+            setPendingSessionChapterId(state, resolvedNextChapterId);
+            // 当前章的收尾台词还要先落库展示，下一章启动标记延后到下一轮 orchestration 自动消费。
+            setPendingSessionChapterStart(state, false);
+          }
+          nextChapter = chapter;
+          nextChapterId = Number(chapter.id || 0) || currentChapterId;
+          return finalizeOrchestrationResult({
+            sessionId,
+            status: nextStatus,
+            chapterId: nextChapterId,
+            expectedRole: "",
+            expectedRoleType: "",
+            plan,
+          });
         }
-        nextChapter = chapter;
-        nextChapterId = Number(chapter.id || 0) || currentChapterId;
-        return finalizeOrchestrationResult({
-          sessionId,
-          status: nextStatus,
-          chapterId: nextChapterId,
-          expectedRole: "",
-          expectedRoleType: "",
-          command: buildInitChapterCommand(resolvedNextChapter),
-          plan,
-        });
       }
-    }
   }
   const eventView = buildEventView(state);
   const result: SessionOrchestrationResult = {
