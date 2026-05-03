@@ -25,6 +25,25 @@ export interface MiniGameIntentResult {
   actionId: string;
   targetName: string;
   reason: string;
+  logMeta?: MiniGameIntentLogMeta | null;
+}
+
+export interface MiniGameIntentLogMeta {
+  systemPrompt: string;
+  userPrompt: string;
+  rawResponse: string;
+  tokenUsage: MiniGameIntentTokenUsage | null;
+  timing: {
+    buildMs: number;
+    invokeMs: number;
+    totalMs: number;
+  };
+}
+
+export interface MiniGameIntentTokenUsage {
+  inputTokens: number;
+  outputTokens: number;
+  reasoningTokens: number;
 }
 
 const miniGameIntentSchema = {
@@ -113,6 +132,7 @@ function buildMiniGameIntentPrompt(input: ResolveMiniGameIntentInput): string {
 function normalizeMiniGameIntentResult(
   rawObject: Record<string, unknown> | null | undefined,
   options: MiniGameIntentOptionInput[],
+  logMeta?: MiniGameIntentLogMeta | null,
 ): MiniGameIntentResult | null {
   const actionId = String(rawObject?.action_id || "").trim();
   if (!actionId) return null;
@@ -122,6 +142,27 @@ function normalizeMiniGameIntentResult(
     actionId,
     targetName: String(rawObject?.target_name || "").trim(),
     reason: String(rawObject?.reason || "").trim(),
+    logMeta: logMeta || null,
+  };
+}
+
+/**
+ * 从文本模型返回结果里提取真实 usage token。
+ *
+ * 用途：
+ * - 小游戏动作解析日志需要打印模型真实 input/output/reasoning token；
+ * - 不同厂商 usage 字段层级略有差异，这里统一归一成稳定结构。
+ */
+function readMiniGameIntentTokenUsage(result: unknown): MiniGameIntentTokenUsage | null {
+  const usage = (result as any)?.usage;
+  if (!usage || typeof usage !== "object") return null;
+  const inputTokens = Number(usage.inputTokens || 0) || 0;
+  const outputTokens = Number(usage.outputTokens || 0) || 0;
+  const reasoningTokens = Number(usage.outputTokenDetails?.reasoningTokens || usage.reasoningTokens || 0) || 0;
+  return {
+    inputTokens,
+    outputTokens,
+    reasoningTokens,
   };
 }
 
@@ -135,11 +176,17 @@ function normalizeMiniGameIntentResult(
 export async function resolveMiniGameIntentByAi(input: ResolveMiniGameIntentInput): Promise<MiniGameIntentResult | null> {
   if (!String(input.userInput || "").trim()) return null;
   if (!Array.isArray(input.options) || !input.options.length) return null;
+  const startedAt = Date.now();
+  let systemPrompt = "";
+  let prompt = "";
+  let buildFinishedAt = startedAt;
   try {
-    const systemPrompt = await loadMiniGamePrompt(input.gameType);
+    systemPrompt = await loadMiniGamePrompt(input.gameType);
     if (!systemPrompt) return null;
     const modelConfig = await resolveMiniGameModel(input.userId);
-    const prompt = buildMiniGameIntentPrompt(input);
+    prompt = buildMiniGameIntentPrompt(input);
+    buildFinishedAt = Date.now();
+    const invokeStartedAt = buildFinishedAt;
     const result = await u.ai.text.invoke(
       {
         usageType: "小游戏动作解析",
@@ -159,8 +206,33 @@ export async function resolveMiniGameIntentByAi(input: ResolveMiniGameIntentInpu
       },
       modelConfig as any,
     );
+    const invokeFinishedAt = Date.now();
     const rawObject = (result as any)?.object ?? (typeof result === "object" ? result : null);
-    const normalized = normalizeMiniGameIntentResult(rawObject as Record<string, unknown> | null, input.options);
+    const rawResponse = String((result as any)?.text || JSON.stringify(rawObject || {})).trim();
+    const tokenUsage = readMiniGameIntentTokenUsage(result);
+    const logMeta: MiniGameIntentLogMeta = {
+      systemPrompt,
+      userPrompt: prompt,
+      rawResponse,
+      tokenUsage,
+      timing: {
+        buildMs: Math.max(0, buildFinishedAt - startedAt),
+        invokeMs: Math.max(0, invokeFinishedAt - invokeStartedAt),
+        totalMs: Math.max(0, invokeFinishedAt - startedAt),
+      },
+    };
+    const normalized = normalizeMiniGameIntentResult(rawObject as Record<string, unknown> | null, input.options, logMeta);
+    DebugLogUtil.logMiniGamePromptStats("story:mini_game:stats", {
+      gameType: input.gameType,
+      phase: input.phase,
+      status: input.status,
+      systemPrompt,
+      userPrompt: prompt,
+      rawResponse,
+      tokenUsage,
+      timing: logMeta.timing,
+      runtimeError: null,
+    });
     if (DebugLogUtil.isDebugLogEnabled()) {
       console.log(`[story:mini_game:agent] ${JSON.stringify({
         gameType: input.gameType,
@@ -174,6 +246,21 @@ export async function resolveMiniGameIntentByAi(input: ResolveMiniGameIntentInpu
     }
     return normalized;
   } catch (error) {
+    DebugLogUtil.logMiniGamePromptStats("story:mini_game:stats", {
+      gameType: input.gameType,
+      phase: input.phase,
+      status: input.status,
+      systemPrompt,
+      userPrompt: prompt,
+      rawResponse: "",
+      tokenUsage: null,
+      timing: {
+        buildMs: Math.max(0, buildFinishedAt - startedAt),
+        invokeMs: Math.max(0, Date.now() - buildFinishedAt),
+        totalMs: Math.max(0, Date.now() - startedAt),
+      },
+      runtimeError: error,
+    });
     if (DebugLogUtil.isDebugLogEnabled()) {
       console.log(`[story:mini_game:agent:error] ${String((error as Error)?.message || error || "")}`);
     }

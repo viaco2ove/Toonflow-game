@@ -1,6 +1,13 @@
 import fs from "fs";
 import path from "path";
 
+type MiniGamePromptStatRow = {
+  block: string;
+  content: string;
+  chars: number;
+  estimatedTokens: number;
+};
+
 /**
  * 调试日志工具。
  *
@@ -9,6 +16,30 @@ import path from "path";
  * - 避免各个运行时类重复实现相同逻辑，导致后续行为不一致。
  */
 export class DebugLogUtil {
+  /**
+   * 估算一段文本大致会消耗多少 Prompt Tokens。
+   *
+   * 用途：
+   * - 小游戏动作解析日志需要和编排/台词流日志保持同一估算口径；
+   * - 这里沿用“4 个字符约等于 1 个 token”的保守估算，便于横向比较。
+   */
+  private static estimatePromptTokens(text: string): number {
+    const chars = String(text || "").length;
+    if (!chars) return 0;
+    return Math.max(1, Math.ceil(chars / 4));
+  }
+
+  /**
+   * 规范化日志里的长文本展示。
+   *
+   * 用途：
+   * - 避免 system prompt / user prompt / 模型返回内容直接换行打散日志；
+   * - 让小游戏 stats 日志和 streamlines stats 日志的可读性保持一致。
+   */
+  private static normalizePromptStatContent(content: string): string {
+    return String(content || "").trim().replaceAll("\n", " ↩ ");
+  }
+
   /**
    * 判断当前进程是否开启 DEBUG 级别日志。
    */
@@ -103,6 +134,107 @@ export class DebugLogUtil {
       resultTags: Array.isArray(payload.resultTags) ? payload.resultTags : [],
       intercepted: Boolean(payload.intercepted),
     })}`);
+  }
+
+  /**
+   * 统一打印小游戏动作解析 agent 的 prompt / token / 返回内容统计。
+   *
+   * 用途：
+   * - 让 `[story:mini_game:stats]` 和 `[story:streamlines:stats]` 使用相同的日志结构；
+   * - 既能看到真实 usage token，也能看到 system prompt、user prompt 和最终返回内容；
+   * - 当模型失败或回退时，也能直接在 stats 日志里看出失败原因。
+   */
+  static logMiniGamePromptStats(tag: string, input: {
+    gameType: string;
+    phase: string;
+    status: string;
+    systemPrompt: string;
+    userPrompt: string;
+    rawResponse?: string | null;
+    tokenUsage?: { inputTokens?: number; outputTokens?: number; reasoningTokens?: number } | null;
+    timing?: { buildMs?: number; invokeMs?: number; totalMs?: number } | null;
+    runtimeError?: unknown;
+  }): void {
+    if (!DebugLogUtil.isDebugLogEnabled()) return;
+    const rows: MiniGamePromptStatRow[] = [
+      {
+        block: "系统提示词",
+        content: input.systemPrompt || "无",
+        chars: input.systemPrompt.length,
+        estimatedTokens: DebugLogUtil.estimatePromptTokens(input.systemPrompt),
+      },
+      {
+        block: "用户提示词",
+        content: input.userPrompt || "无",
+        chars: input.userPrompt.length,
+        estimatedTokens: DebugLogUtil.estimatePromptTokens(input.userPrompt),
+      },
+    ];
+    const totalPromptChars = input.systemPrompt.length + input.userPrompt.length;
+    const totalPromptTokens = DebugLogUtil.estimatePromptTokens(`${input.systemPrompt}\n${input.userPrompt}`.trim());
+    const responseText = String(input.rawResponse || "").trim();
+    const runtimeLog = {
+      gameType: String(input.gameType || "").trim(),
+      phase: String(input.phase || "").trim(),
+      status: String(input.status || "").trim(),
+      requestChars: totalPromptChars,
+      estimatedTokens: totalPromptTokens,
+      systemChars: input.systemPrompt.length,
+      userChars: input.userPrompt.length,
+      requestStatus: input.runtimeError ? "fallback" : "success",
+      responseTextLength: responseText.length,
+      responseText: responseText.slice(0, 500),
+      tokenUsage: input.tokenUsage || null,
+      buildMs: Number(input.timing?.buildMs || 0),
+      invokeMs: Number(input.timing?.invokeMs || 0),
+      totalMs: Number(input.timing?.totalMs || 0),
+      error: input.runtimeError ? String((input.runtimeError as Error)?.message || input.runtimeError || "") : "",
+    };
+    console.log("[story:mini_game:runtime]", JSON.stringify(runtimeLog));
+    console.log(
+      `[${tag}] game_type=${runtimeLog.gameType} request_chars=${totalPromptChars} estimated_tokens=${totalPromptTokens} `
+      + `system_chars=${input.systemPrompt.length} user_chars=${input.userPrompt.length} `
+      + `build_ms=${Number(input.timing?.buildMs || 0)} invoke_ms=${Number(input.timing?.invokeMs || 0)} total_ms=${Number(input.timing?.totalMs || 0)}`,
+    );
+    if (input.tokenUsage) {
+      console.log(
+        `[${tag}] actual_input_tokens=${input.tokenUsage.inputTokens || 0} `
+        + `actual_output_tokens=${input.tokenUsage.outputTokens || 0} `
+        + `actual_reasoning_tokens=${input.tokenUsage.reasoningTokens || 0}`,
+      );
+    }
+    if (responseText) {
+      console.log(`[${tag}] response_chars=${responseText.length}`);
+      console.log(`[${tag}] response_preview=${DebugLogUtil.normalizePromptStatContent(responseText)}`);
+    }
+    if (input.runtimeError) {
+      console.log(
+        `[${tag}] request_status=fallback reason=${DebugLogUtil.normalizePromptStatContent(
+          String((input.runtimeError as Error)?.message || input.runtimeError || ""),
+        )}`,
+      );
+    } else {
+      console.log(`[${tag}] request_status=success`);
+    }
+    console.log(`[${tag}] 以下为 prompt 体积估算，不等于模型真实 usage。`);
+    console.log(`[${tag}] | 区块 | 实际内容 | 字符数 | 估算 Prompt Tokens |`);
+    console.log(`[${tag}] |---|---|---:|---:|`);
+    rows.forEach((row) => {
+      console.log(
+        `[${tag}] | ${row.block} | ${DebugLogUtil.normalizePromptStatContent(row.content)} | ${row.chars} | ${row.estimatedTokens} |`,
+      );
+    });
+    if (responseText) {
+      console.log(`[${tag}] | 返回内容 | ${DebugLogUtil.normalizePromptStatContent(responseText)} | ${responseText.length} | - |`);
+    }
+    if (input.tokenUsage) {
+      console.log(
+        `[${tag}] | 实际推理消耗 | input=${input.tokenUsage.inputTokens || 0}, `
+        + `output=${input.tokenUsage.outputTokens || 0}, reasoning=${input.tokenUsage.reasoningTokens || 0} | - | - |`,
+      );
+    }
+    console.log(`[${tag}] System Prompt`);
+    console.log(`${input.systemPrompt}\n \n userPrompt:\n${input.userPrompt}`);
   }
 
   /**
