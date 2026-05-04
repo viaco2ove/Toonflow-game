@@ -39,8 +39,8 @@
 
 ## [fail] 流程问题修改
 - /game/addMessage[炼炎决附魔灭魔尺]
-不要再使用硬编码！！！！！
-删除这段代码
+  - [suc]不要再使用硬编码！！！！！
+  删除这段代码
 ```  const counterSpeech = leadCounterEnemy
     ? battleSpeaker.narratorFallback
       ? `旁白播报：${battleSpeaker.proxyEnemyName}${battleSpeaker.viaWildcard ? "借由万能角色的气势" : ""}发起了下一轮攻击。`
@@ -57,9 +57,9 @@
   "reason": "灭魔步属于功法类战斗技能，符合技能攻击的识别范畴，当前明确的敌人目标为萧炎"
 }`
 
-- 旁白播报 
-不允许直接返回回击！！！！
-不允许出现下面的文字
+- [fail]旁白播报 
+  - [suc]不允许直接返回回击！！！！
+  不允许出现下面的文字
 ```
 异天施展技能命中 萧炎，造成了 44 点伤害。
 萧炎趁势反击，打掉了你 16 点气血。
@@ -73,16 +73,51 @@
 异天施展技能命中 萧炎，造成了 44 点伤害。
 敌人：萧炎(HP 56)。
 ```
-并且播放语音
+- [fail] 生成台词并且播放语音（/game/streamvoice）
+原因分析：addMessage 里面返回了旁白的播报台词。 但是前端对它的处理太生硬了。
+下面两个tag 打了只有 "旁白播报-台词" 会出现，而且看起来只是从返回了获得了这个内容。然后直接插入到聊天框
+[aiGame][miniGame] 旁白播报-台词
+[aiGame][miniGame] 旁白播报-台词-语音播放
+再来看看一般的台词是：编排agent（/game/orchestration）-》发言agent（/game/streamlines）-》播放语音（/game/streamvoice）
+
+解决方案：
+  - ~~方案1(已废弃)：依然使用addMessage ，但是要走完整的模拟编排通道。~~
+  - 方案2：addMessage 不再直接生成旁白台词
+  直接走编排通道。/game/streamlines 时生成旁白播报台词
+    - 播报回合
+    事件：攻击用户
+    编排agent（/game/orchestration）-》发言agent（/game/streamlines）-》播放语音（/game/streamvoice）
 
 - 敌人回合
 事件：攻击用户
-编排agent-》发言agent-》播放语音
+编排agent（/game/orchestration）-》发言agent（/game/streamlines）-》播放语音（/game/streamvoice）
 
 - 旁白播报
 
 - 用户回合
 不断循环回合制到结束。
+
+- 结束
+  - 敌人或者用户血量为0
+  - 用户输入“#退出”
+
+## [fail] 小游戏全链路打tag
+[logtag.web.md](../../../../code/logtag.web.md)
+[logtag.anderoid.md](../../../../code/logtag.anderoid.md)
+
+WebDebugLogUtil-》debug=true 时输出调试日志, AndroidDebugLogUtil-》debug=true 时输出调试日志
+[aiGame][miniGame] 进入小游戏{小游戏名称}
+[aiGame][miniGame] 用户发送了信息：
+[aiGame][miniGame] 旁白播报-台词
+[aiGame][miniGame] 旁白播报-台词-语音播放
+[aiGame][miniGame] 敌方回合-编排
+[aiGame][miniGame] 敌方回合-台词
+[aiGame][miniGame] 敌方回合-语音播放
+[aiGame][miniGame] 退出小游戏{小游戏名称}
+
+[aiGame][miniGame] 陪练(狼人杀 挖矿等)角色回合-编排
+[aiGame][miniGame] 陪练(狼人杀 挖矿等)角色回合-台词
+[aiGame][miniGame] 陪练(狼人杀 挖矿等)角色回合-语音播放
 
 
 ## [fail] 机制推广到全部小游戏
