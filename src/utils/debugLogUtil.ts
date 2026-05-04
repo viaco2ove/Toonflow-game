@@ -98,12 +98,13 @@ export class DebugLogUtil {
   }
 
   /**
-   * 统一打印小游戏文本输入的命中结果。
+   * 统一打印小游戏文本输入的命中结果 + 真实 token 统计。
    *
    * 用途：
    * - 明确记录小游戏输入被归一化后的文本；
    * - 明确记录最终命中的控制动作、局内动作或战斗动作；
-   * - 便于直接从日志判断聊天框输入有没有真正命中目标玩法。
+   * - 打印真实的 AI 调用 token 消耗、耗时等统计，与 [story:streamlines:stats] 格式对齐；
+   * - 便于直接从日志判断聊天框输入有没有真正命中目标玩法，以及 AI 调用成本。
    */
   static logMiniGameActionResolution(tag: string, payload: {
     gameType?: unknown;
@@ -118,8 +119,13 @@ export class DebugLogUtil {
     resolverReason?: unknown;
     resultTags?: unknown;
     intercepted?: unknown;
+    /** AI 意图解析的真实 token 消耗（来自 MiniGameIntentService） */
+    tokenUsage?: { inputTokens?: number; outputTokens?: number; reasoningTokens?: number } | null;
+    /** AI 意图解析的耗时（来自 MiniGameIntentService） */
+    timing?: { buildMs?: number; invokeMs?: number; totalMs?: number } | null;
   }): void {
     if (!DebugLogUtil.isDebugLogEnabled()) return;
+    // 第一行：动作命中结果（保持向后兼容）
     console.log(`[${tag}] action=${JSON.stringify({
       gameType: String(payload.gameType || "").trim(),
       phase: String(payload.phase || "").trim(),
@@ -134,6 +140,38 @@ export class DebugLogUtil {
       resultTags: Array.isArray(payload.resultTags) ? payload.resultTags : [],
       intercepted: Boolean(payload.intercepted),
     })}`);
+    // 以下为真实 token 统计，参考 [story:streamlines:stats] 格式
+    const tokenUsage = payload.tokenUsage;
+    const timing = payload.timing;
+    if (tokenUsage || timing) {
+      // 耗时统计
+      if (timing) {
+        console.log(
+          `[${tag}] build_ms=${Number(timing.buildMs || 0)} invoke_ms=${Number(timing.invokeMs || 0)} total_ms=${Number(timing.totalMs || 0)}`,
+        );
+      }
+      // 真实 token 消耗
+      if (tokenUsage) {
+        console.log(
+          `[${tag}] actual_input_tokens=${tokenUsage.inputTokens || 0} `
+          + `actual_output_tokens=${tokenUsage.outputTokens || 0} `
+          + `actual_reasoning_tokens=${tokenUsage.reasoningTokens || 0}`,
+        );
+      }
+      // 汇总表格
+      console.log(`[${tag}] | 指标 | 值 |`);
+      console.log(`[${tag}] |---|---|`);
+      if (timing) {
+        console.log(`[${tag}] | 构建耗时 | ${Number(timing.buildMs || 0)} ms |`);
+        console.log(`[${tag}] | 调用耗时 | ${Number(timing.invokeMs || 0)} ms |`);
+        console.log(`[${tag}] | 总耗时 | ${Number(timing.totalMs || 0)} ms |`);
+      }
+      if (tokenUsage) {
+        console.log(`[${tag}] | 输入 Token | ${tokenUsage.inputTokens || 0} |`);
+        console.log(`[${tag}] | 输出 Token | ${tokenUsage.outputTokens || 0} |`);
+        console.log(`[${tag}] | 推理 Token | ${tokenUsage.reasoningTokens || 0} |`);
+      }
+    }
   }
 
   /**
@@ -501,11 +539,13 @@ export class DebugLogUtil {
     const lines = rawLog.split(/\r?\n/);
     const entries: MiniGameActionSummaryEntry[] = [];
 
-    lines.forEach((line) => {
-      if (!line.includes("[story:mini_game:stats] action=")) return;
+    // 逐行解析，遇到 action= 行后继续向后扫描同一 tag 的 token 统计行
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      if (!line.includes("[story:mini_game:stats] action=")) continue;
       const payload = parseJsonFromLogLine(line.replace("[story:mini_game:stats] action=", ""));
-      if (!payload) return;
-      entries.push({
+      if (!payload) continue;
+      const entry: MiniGameActionSummaryEntry = {
         gameType: readString(payload.gameType),
         phase: readString(payload.phase),
         status: readString(payload.status),
@@ -518,14 +558,38 @@ export class DebugLogUtil {
         resolverReason: readString(payload.resolverReason),
         resultTags: Array.isArray(payload.resultTags) ? payload.resultTags.map((item) => readString(item)).filter(Boolean) : [],
         intercepted: Boolean(payload.intercepted),
-      });
-    });
+      };
+      // 向后扫描紧跟的 token 统计行（最多看 10 行）
+      for (let j = i + 1; j < Math.min(i + 11, lines.length); j++) {
+        const nextLine = lines[j];
+        if (!nextLine.includes("[story:mini_game:stats]")) break;
+        // 解析 actual_input_tokens=xx actual_output_tokens=xx actual_reasoning_tokens=xx
+        const tokenMatch = nextLine.match(/actual_input_tokens=(\d+)\s+actual_output_tokens=(\d+)\s+actual_reasoning_tokens=(\d+)/);
+        if (tokenMatch) {
+          entry.tokenUsage = {
+            inputTokens: Number(tokenMatch[1]),
+            outputTokens: Number(tokenMatch[2]),
+            reasoningTokens: Number(tokenMatch[3]),
+          };
+        }
+        // 解析 build_ms=xx invoke_ms=xx total_ms=xx
+        const timingMatch = nextLine.match(/build_ms=(\d+)\s+invoke_ms=(\d+)\s+total_ms=(\d+)/);
+        if (timingMatch) {
+          entry.timing = {
+            buildMs: Number(timingMatch[1]),
+            invokeMs: Number(timingMatch[2]),
+            totalMs: Number(timingMatch[3]),
+          };
+        }
+      }
+      entries.push(entry);
+    }
 
     const markdownLines = [
       "# 小游戏输入命中摘要",
       "",
       ...entries.flatMap((entry, index) => {
-        return [
+        const baseLines = [
           `## ${index + 1}. ${entry.gameType || "未知小游戏"}`,
           "",
           `- 阶段：${entry.phase || "未知"}`,
@@ -538,8 +602,24 @@ export class DebugLogUtil {
           `- 解析原因：${entry.resolverReason || "空"}`,
           `- 结果标签：${entry.resultTags.length ? entry.resultTags.join("、") : "无"}`,
           `- 是否拦截：${entry.intercepted ? "是" : "否"}`,
-          "",
         ];
+        // 追加 token 统计信息
+        if (entry.tokenUsage) {
+          baseLines.push(
+            `- 输入 Token：${entry.tokenUsage.inputTokens || 0}`,
+            `- 输出 Token：${entry.tokenUsage.outputTokens || 0}`,
+            `- 推理 Token：${entry.tokenUsage.reasoningTokens || 0}`,
+          );
+        }
+        if (entry.timing) {
+          baseLines.push(
+            `- 构建耗时：${entry.timing.buildMs || 0} ms`,
+            `- 调用耗时：${entry.timing.invokeMs || 0} ms`,
+            `- 总耗时：${entry.timing.totalMs || 0} ms`,
+          );
+        }
+        baseLines.push("");
+        return baseLines;
       }),
     ];
 
@@ -591,6 +671,10 @@ type MiniGameActionSummaryEntry = {
   resolverReason?: string;
   resultTags: string[];
   intercepted?: boolean;
+  /** AI 意图解析的真实 token 消耗 */
+  tokenUsage?: { inputTokens?: number; outputTokens?: number; reasoningTokens?: number } | null;
+  /** AI 意图解析的耗时 */
+  timing?: { buildMs?: number; invokeMs?: number; totalMs?: number } | null;
 };
 
 /**

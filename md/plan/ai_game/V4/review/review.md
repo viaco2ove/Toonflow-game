@@ -39,7 +39,7 @@
 
 ## [fail] 流程问题修改
 - /game/addMessage[炼炎决附魔灭魔尺]
-  - [suc]不要再使用硬编码！！！！！
+  - [fail]不要再使用硬编码！！！！！
   删除这段代码
 ```  const counterSpeech = leadCounterEnemy
     ? battleSpeaker.narratorFallback

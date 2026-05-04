@@ -10,6 +10,7 @@ import { DebugLogUtil } from "@/utils/debugLogUtil";
 import {
   resolveMiniGameIntentByAi,
   resolveMiniGameModel,
+  type MiniGameIntentLogMeta,
 } from "@/modules/game-runtime/services/MiniGameIntentService";
 import { abandonActiveFreeChapterTaskEvent } from "@/modules/game-runtime/services/FreeChapterTaskService";
 
@@ -1725,7 +1726,7 @@ async function resolveBattleActionByAgent(
   rulebook: MiniGameRulebook,
   ctx: MiniGameControllerInput,
   latestNarration: string,
-): Promise<{ actionId: string; targetName: string; resolverSource: string; resolverReason: string } | null> {
+): Promise<{ actionId: string; targetName: string; resolverSource: string; resolverReason: string; logMeta?: MiniGameIntentLogMeta | null } | null> {
   const options = buildMiniGameIntentOptions(session, rulebook);
   const intent = await resolveMiniGameIntentByAi({
     userId: ctx.userId,
@@ -1743,12 +1744,14 @@ async function resolveBattleActionByAgent(
     })),
   });
   if (!intent) return null;
+  const logMeta = intent.logMeta || null;
   if (intent.actionId === "view_status" || intent.actionId === "guard" || intent.actionId === "recover") {
     return {
       actionId: intent.actionId,
       targetName: intent.targetName,
       resolverSource: "ai",
       resolverReason: intent.reason,
+      logMeta,
     };
   }
   if (intent.actionId === "attack" || intent.actionId === "skill") {
@@ -1760,6 +1763,7 @@ async function resolveBattleActionByAgent(
       targetName: scalarText(fallbackTarget.name),
       resolverSource: "ai",
       resolverReason: intent.reason,
+      logMeta,
     };
   }
   return null;
@@ -4871,6 +4875,10 @@ export async function handleMiniGameTurn(input: MiniGameControllerInput): Promis
     resolverReason?: string;
     resultTags?: string[];
     intercepted?: boolean;
+    /** AI 意图解析的真实 token 消耗（来自 MiniGameIntentService） */
+    tokenUsage?: { inputTokens?: number; outputTokens?: number; reasoningTokens?: number } | null;
+    /** AI 意图解析的耗时（来自 MiniGameIntentService） */
+    timing?: { buildMs?: number; invokeMs?: number; totalMs?: number } | null;
   }) => {
     DebugLogUtil.logMiniGameActionResolution("story:mini_game:stats", {
       gameType: rulebook.gameType,
@@ -4885,6 +4893,8 @@ export async function handleMiniGameTurn(input: MiniGameControllerInput): Promis
       resolverReason: payload.resolverReason || "",
       resultTags: payload.resultTags || [],
       intercepted: payload.intercepted,
+      tokenUsage: payload.tokenUsage || null,
+      timing: payload.timing || null,
     });
   };
 
@@ -5086,7 +5096,7 @@ export async function handleMiniGameTurn(input: MiniGameControllerInput): Promis
       if (!battleAction) {
         logMiniGameAction({
           normalizedInput,
-          resolverSource: aiBattleAction ? "ai" : "rule",
+          resolverSource: "rule",
           intercepted: true,
           resultTags: ["invalid_battle_input"],
         });
@@ -5112,6 +5122,8 @@ export async function handleMiniGameTurn(input: MiniGameControllerInput): Promis
           resolverReason: aiBattleAction?.resolverReason || "",
           intercepted: true,
           resultTags: ["view_status"],
+          tokenUsage: aiBattleAction?.logMeta?.tokenUsage || null,
+          timing: aiBattleAction?.logMeta?.timing || null,
         });
         const narration = buildStatusNarration(root, rulebook);
         refreshRuntimeUi(root, narration, rulebook);
@@ -5135,6 +5147,8 @@ export async function handleMiniGameTurn(input: MiniGameControllerInput): Promis
         resolverReason: aiBattleAction?.resolverReason || "",
         intercepted: true,
         resultTags: step.resultTags || [],
+        tokenUsage: aiBattleAction?.logMeta?.tokenUsage || null,
+        timing: aiBattleAction?.logMeta?.timing || null,
       });
     } else if (rulebook.gameType === "research_skill") {
       step = evaluateResearchSkillInput(activeSession, input);
@@ -5237,6 +5251,8 @@ export async function handleMiniGameTurn(input: MiniGameControllerInput): Promis
       resolverReason: aiIntent?.reason || "",
       intercepted: true,
       resultTags: ["invalid_action"],
+      tokenUsage: aiIntent?.logMeta?.tokenUsage || null,
+      timing: aiIntent?.logMeta?.timing || null,
     });
     const narration = `当前仍在 ${rulebook.displayName} 中，请先完成、暂停或退出小游戏。当前合法动作：${options.map((item) => item.label).join("、")}。`;
     refreshRuntimeUi(root, narration, rulebook);
@@ -5264,6 +5280,8 @@ export async function handleMiniGameTurn(input: MiniGameControllerInput): Promis
     resolverReason: aiIntent?.reason || "",
     intercepted: true,
     resultTags: step.resultTags || [],
+    tokenUsage: aiIntent?.logMeta?.tokenUsage || null,
+    timing: aiIntent?.logMeta?.timing || null,
   });
   const stateDelta = {
     public_state: buildStateDelta(beforePublicState, asRecord(activeSession.public_state)),
