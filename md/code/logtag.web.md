@@ -25,3 +25,17 @@ console.log("[aiGame][runtimeStatus] runtimeStatus");
 [aiGame][runtimeStatus] 故事游玩和调试 日志-状态流转
 
 [aiGame][miniGame] 故事游玩和调试 日志-小游戏调试信息
+
+### 小游戏全链路打tag
+[aiGame][miniGame] 进入小游戏{小游戏名称}
+[aiGame][miniGame] 用户发送了信息：
+[aiGame][miniGame] 旁白播报-台词
+[aiGame][miniGame] 旁白播报-台词-语音播放
+[aiGame][miniGame] 敌方回合-编排
+[aiGame][miniGame] 敌方回合-台词
+[aiGame][miniGame] 敌方回合-语音播放
+[aiGame][miniGame] 退出小游戏{小游戏名称}
+
+[aiGame][miniGame] 陪练(狼人杀 挖矿等)角色回合-编排
+[aiGame][miniGame] 陪练(狼人杀 挖矿等)角色回合-台词
+[aiGame][miniGame] 陪练(狼人杀 挖矿等)角色回合-语音播放
