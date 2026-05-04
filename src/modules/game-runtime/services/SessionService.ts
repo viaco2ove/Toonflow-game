@@ -1430,18 +1430,63 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
     });
 
       if (miniGameResult?.intercepted) {
-      // 小游戏链已经接管后续交互，正式会话这里必须立刻交还给用户输入。
-      //
-      // 用途：
-      // - 战斗/钓鱼等小游戏现在统一通过聊天框输入动作推进；
-      // - 如果这里继续沿用“等待旁白/角色发言”的旧 turnState，前端会误触发主线续写；
-      // - ScenePlay 的小游戏面板和输入提示也会继续显示成“还没轮到用户”，看起来像没有真正进入小游戏。
-      allowPlayerTurn(
-        state,
-        world,
-        String(miniGameResult.message?.roleType || "narrator"),
-        String(miniGameResult.message?.role || state.narrator?.name || "旁白"),
-      );
+      const pendingPlan = miniGameResult.pendingNarrativePlan;
+      if (pendingPlan) {
+        // 有编排计划：写入 state，不插入小游戏消息
+        setPendingSessionNarrativePlan(state, {
+          role: pendingPlan.role,
+          roleType: pendingPlan.roleType,
+          motive: pendingPlan.motive || "",
+          presetContent: pendingPlan.presetContent || "",
+          awaitUser: pendingPlan.awaitUser || false,
+          nextRole: pendingPlan.nextRole,
+          nextRoleType: pendingPlan.nextRoleType,
+          source: pendingPlan.source || "rule",
+          eventType: pendingPlan.eventType || "on_mini_game",
+          eventAdjustMode: pendingPlan.eventAdjustMode || "keep",
+          eventStatus: pendingPlan.eventStatus || "active",
+          nextNarrativePlan: pendingPlan.nextNarrativePlan
+            ? JSON.parse(JSON.stringify(pendingPlan.nextNarrativePlan))
+            : null,
+        });
+        // 交还用户输入权（编排器会接管）
+        allowPlayerTurn(
+          state,
+          world,
+          String(pendingPlan.roleType || "narrator"),
+          String(pendingPlan.role || state.narrator?.name || "旁白"),
+        );
+      } else {
+        // 没有编排计划：走原有逻辑
+        allowPlayerTurn(
+          state,
+          world,
+          String(miniGameResult.message?.roleType || "narrator"),
+          String(miniGameResult.message?.role || state.narrator?.name || "旁白"),
+        );
+        // 插入 miniGame messages
+        const miniGameMessages = miniGameResult.messages && miniGameResult.messages.length
+          ? miniGameResult.messages
+          : miniGameResult.message
+            ? [miniGameResult.message]
+            : [];
+        for (const item of miniGameMessages) {
+          const inserted = await db("t_sessionMessage").insert({
+            sessionId,
+            role: String(item.role || state.narrator?.name || "旁白"),
+            roleType: String(item.roleType || "narrator"),
+            content: String(item.content || ""),
+            eventType: String(item.eventType || "on_mini_game"),
+            meta: toJsonText(item.meta || {}, {}),
+            createTime: now,
+          });
+          const narrativeMessageId = normalizeMessageId(inserted);
+          const narrativeMessageRow = await db("t_sessionMessage").where({ id: narrativeMessageId }).first();
+          if (narrativeMessageRow) {
+            narrativeMessageRows.push(narrativeMessageRow);
+          }
+        }
+      }
       if (attrDeltas.length > 0) {
         const deltaRows = attrDeltas.map((delta) => ({
           sessionId,
@@ -1455,30 +1500,6 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
           createTime: now,
         }));
         await db("t_entityStateDelta").insert(deltaRows);
-      }
-
-      let narrativeMessageRow: any = null;
-      const narrativeMessageRows: any[] = [];
-      const miniGameMessages = miniGameResult.messages && miniGameResult.messages.length
-        ? miniGameResult.messages
-        : miniGameResult.message
-          ? [miniGameResult.message]
-          : [];
-      for (const item of miniGameMessages) {
-        const inserted = await db("t_sessionMessage").insert({
-          sessionId,
-          role: String(item.role || state.narrator?.name || "旁白"),
-          roleType: String(item.roleType || "narrator"),
-          content: String(item.content || ""),
-          eventType: String(item.eventType || "on_mini_game"),
-          meta: toJsonText(item.meta || {}, {}),
-          createTime: now,
-        });
-        const narrativeMessageId = normalizeMessageId(inserted);
-        narrativeMessageRow = await db("t_sessionMessage").where({ id: narrativeMessageId }).first();
-        if (narrativeMessageRow) {
-          narrativeMessageRows.push(narrativeMessageRow);
-        }
       }
 
 	      if (currentChapter) {
@@ -1518,6 +1539,12 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
         capturedAt: now,
       });
       const eventView = buildEventView(state);
+      // 如果有编排计划（小游戏或普通编排），返回它
+      const returnedPlan = state.pendingNarrativePlan
+        ? buildSessionPlanResult(state.pendingNarrativePlan)
+        : miniGameResult?.pendingNarrativePlan
+          ? buildSessionPlanResult(miniGameResult.pendingNarrativePlan as any)
+          : null;
       return {
         sessionId,
         status: prevStatus,
@@ -1533,7 +1560,7 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
         generatedMessages: narrativeMessageRows
           .map((row) => normalizeMessageOutput(row))
           .filter(Boolean) as Record<string, any>[],
-        narrativePlan: null,
+        narrativePlan: returnedPlan,
         triggered: [],
         taskProgress: [],
         deltas: attrDeltas,
@@ -2719,7 +2746,18 @@ export async function commitSessionNarrativeTurn(input: CommitSessionNarrativeTu
     now: createTime,
     eventTypeFallback: committedEventType,
   });
+  const pendingPlan = getPendingSessionNarrativePlan(state);
   setPendingSessionNarrativePlan(state, null);
+  // 链式提升：如果 pendingPlan 有 nextNarrativePlan，提升为新的 pendingNarrativePlan
+  if (pendingPlan?.nextNarrativePlan) {
+    setPendingSessionNarrativePlan(state, pendingPlan.nextNarrativePlan as any);
+    if (DebugLogUtil.isDebugLogEnabled()) {
+      console.log("[story:next_plan:stats] nextNarrativePlan promoted to pendingNarrativePlan", {
+        role: (pendingPlan.nextNarrativePlan as any)?.role,
+        roleType: (pendingPlan.nextNarrativePlan as any)?.roleType,
+      });
+    }
+  }
   const chapter = nextChapterId
     ? normalizeChapterOutput(await db("t_storyChapter").where({ id: nextChapterId }).first())
     : null;

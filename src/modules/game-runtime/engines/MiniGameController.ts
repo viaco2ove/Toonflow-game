@@ -33,6 +33,7 @@ export interface MiniGameControllerInput {
 
 export interface MiniGameControllerResult {
   intercepted: boolean;
+  runtime: JsonRecord | null;
   message: {
     role: string;
     roleType: string;
@@ -47,7 +48,8 @@ export interface MiniGameControllerResult {
     content: string;
     meta: JsonRecord;
   }>;
-  runtime: JsonRecord | null;
+  /** 小游戏动作产生的编排计划（旁白播报/敌方回合等） */
+  pendingNarrativePlan?: MiniGameStepResult["pendingNarrativePlan"];
 }
 
 type MiniGameStatus = "idle" | "preparing" | "active" | "settling" | "finished" | "aborted" | "suspended";
@@ -67,7 +69,7 @@ interface MiniGameRulebook {
 }
 
 interface MiniGameStepResult {
-  narration: string;
+  narration?: string;  /** 保留，用于日志/调试；走编排通道后不再直接插入消息 */
   speakerRole?: string;
   speakerRoleType?: string;
   mentorSpeech?: MiniGameMentorSpeechRequest;
@@ -82,6 +84,22 @@ interface MiniGameStepResult {
   rewardSummary?: JsonRecord;
   writeback?: JsonRecord;
   memorySummary?: string;
+  /** 旁白播报/敌方回合的编排计划，走 orchestration → streamlines → streamvoice */
+  pendingNarrativePlan?: {
+    role: string;
+    roleType: string;
+    motive: string;
+    presetContent?: string;
+    awaitUser: boolean;
+    nextRole?: string;
+    nextRoleType?: string;
+    eventType?: string;
+    source?: string;
+    triggerMemoryAgent?: boolean;
+    eventAdjustMode?: string;
+    eventStatus?: string;
+    nextNarrativePlan?: any;  /** 链式计划 */
+  };
 }
 
 interface MiniGameMentorSpeechRequest {
@@ -1803,7 +1821,7 @@ function buildBattleVictoryWriteback(session: JsonRecord, battleExpGain: number)
  * 统一生成战斗胜利结算。
  * 当所有敌人的血量都归零后，战斗会立即结束并播报战报。
  */
-function finalizeBattleVictory(session: JsonRecord): MiniGameStepResult {
+function finalizeBattleVictory(session: JsonRecord, ctx?: MiniGameControllerInput): MiniGameStepResult {
   const publicState = asRecord(session.public_state);
   const allEnemies = asArray<JsonRecord>(publicState.enemy_list).map((item) => asRecord(item));
   const totalMoney = allEnemies.reduce((sum, enemy) => sum + Number(enemy.reward_money || 0), 0);
@@ -1819,14 +1837,31 @@ function finalizeBattleVictory(session: JsonRecord): MiniGameStepResult {
   publicState.user_mp = Number(publicState.user_max_mp || 0);
   publicState.last_result = `战斗结束，已击败全部敌人，获得 ${totalMoney} 金钱、${battleExpGain} 经验${rewardItems.length ? ` 与 ${rewardItems.join("、")}` : ""}。`;
   session.public_state = publicState;
+  const narratorName = scalarText(ctx?.world?.narratorRole?.name) || "旁白";
+  const victoryText = `你已经击败全部敌人。${rewardItems.length ? `本次战利品为 ${rewardItems.join("、")}。` : ""}获得 ${totalMoney} 金钱与 ${battleExpGain} 经验。战斗结束后，你的气血与法力都已经恢复到最佳状态。`;
   return {
-    narration: `旁白播报战报：你已经击败全部敌人。${rewardItems.length ? `本次战利品为 ${rewardItems.join("、")}。` : ""}获得 ${totalMoney} 金钱与 ${battleExpGain} 经验。战斗结束后，你的气血与法力都已经恢复到最佳状态。`,
-    speakerRole: "旁白",
+    narration: victoryText,  // 保留，用于日志/调试
+    speakerRole: narratorName,
     speakerRoleType: "narrator",
     resultTags: ["success", "battle_victory"],
     rewardSummary: { money: totalMoney, items: rewardItems, exp: battleExpGain },
     writeback: buildBattleVictoryWriteback(session, battleExpGain),
     memorySummary: `战斗胜利：击败 ${allEnemies.map((enemy) => scalarText(enemy.name)).filter(Boolean).join("、")}`,
+    // 走编排通道，返回 pendingNarrativePlan
+    pendingNarrativePlan: {
+      role: narratorName,
+      roleType: "narrator",
+      motive: `战斗结算：${victoryText}`,
+      presetContent: victoryText,
+      awaitUser: true,  // 战斗结束，交还用户
+      nextRole: scalarText(ctx?.world?.playerRole?.name) || "用户",
+      nextRoleType: "player",
+      source: "rule",
+      eventType: "on_mini_game_finish",
+      eventAdjustMode: "keep",
+      eventStatus: "finished",
+      nextNarrativePlan: null,
+    },
   };
 }
 
@@ -1834,7 +1869,7 @@ function finalizeBattleVictory(session: JsonRecord): MiniGameStepResult {
  * 统一生成战斗失败结算。
  * 为避免主线直接卡死，战败后会按败退处理，并把用户血蓝恢复到可继续剧情的安全值。
  */
-function finalizeBattleDefeat(session: JsonRecord): MiniGameStepResult {
+function finalizeBattleDefeat(session: JsonRecord, ctx?: MiniGameControllerInput): MiniGameStepResult {
   const publicState = asRecord(session.public_state);
   const safeHp = Math.max(1, Math.floor(Number(publicState.user_max_hp || 100) * 0.4));
   const safeMp = Math.max(0, Math.floor(Number(publicState.user_max_mp || 0) * 0.4));
@@ -1846,9 +1881,11 @@ function finalizeBattleDefeat(session: JsonRecord): MiniGameStepResult {
   publicState.user_mp = safeMp;
   publicState.last_result = "战斗失利，已暂时撤退。";
   session.public_state = publicState;
+  const narratorName = scalarText(ctx?.world?.narratorRole?.name) || "旁白";
+  const defeatText = "你在这场战斗中被彻底压制，只能暂时撤退。为了避免主线中断，你已经强行调息，恢复了部分气血与法力，随时可以重新规划下一步行动。";
   return {
-    narration: "旁白播报战报：你在这场战斗中被彻底压制，只能暂时撤退。为了避免主线中断，你已经强行调息，恢复了部分气血与法力，随时可以重新规划下一步行动。",
-    speakerRole: "旁白",
+    narration: defeatText,  // 保留，用于日志/调试
+    speakerRole: narratorName,
     speakerRoleType: "narrator",
     resultTags: ["failed", "battle_defeat"],
     rewardSummary: { retreat: true },
@@ -1857,6 +1894,22 @@ function finalizeBattleDefeat(session: JsonRecord): MiniGameStepResult {
       memoryAdd: ["一次战斗失利后被迫撤退"],
     },
     memorySummary: "战斗失利，暂时撤退",
+    // 走编排通道，返回 pendingNarrativePlan
+    pendingNarrativePlan: {
+      role: narratorName,
+      roleType: "narrator",
+      motive: `战斗结算：${defeatText}`,
+      presetContent: defeatText,
+      awaitUser: true,  // 战斗结束，交还用户
+      nextRole: scalarText(ctx?.world?.playerRole?.name) || "用户",
+      nextRoleType: "player",
+      source: "rule",
+      eventType: "on_mini_game_finish",
+      eventAdjustMode: "keep",
+      eventStatus: "finished",
+      nextNarrativePlan: null,
+    },
+    // messages 删除，走编排通道
   };
 }
 
@@ -1873,7 +1926,7 @@ function battleStep(session: JsonRecord, actionId: string, ctx: MiniGameControll
   const enemyList = asArray<JsonRecord>(publicState.enemy_list).map((item) => asRecord(item));
   const aliveEnemies = enemyList.filter((enemy) => Number(enemy.hp || 0) > 0);
   if (!aliveEnemies.length) {
-    return finalizeBattleVictory(session);
+    return finalizeBattleVictory(session, ctx);
   }
   const userName = scalarText(publicState.user_name) || "用户";
   const userMaxHp = Math.max(1, Number(publicState.user_max_hp || 100));
@@ -1948,27 +2001,55 @@ function battleStep(session: JsonRecord, actionId: string, ctx: MiniGameControll
   session.phase = "encounter";
   session.public_state = publicState;
   if (userHp <= 0) {
-    const defeat = finalizeBattleDefeat(session);
+    const defeat = finalizeBattleDefeat(session, ctx);
     defeat.narration = `${narrations.join("")}${defeat.narration}`;
     return defeat;
   }
   syncBattlePublicState(session);
   const battleReport = `${narrations.join("")}${battleEnemySummary(session)}`;
+  // 构建旁白播报的 pendingNarrativePlan，走编排通道
+  const narratorName = scalarText(ctx.world?.narratorRole?.name) || "旁白";
+  const hasAliveEnemies = aliveBattleEnemies(session).length > 0;
+  // 敌方回合的链式计划
+  const enemyTurnPlan = hasAliveEnemies ? {
+    role: aliveBattleEnemies(session)[0]?.name || "敌人",
+    roleType: "enemy",
+    motive: "敌方回合",
+    awaitUser: false,
+    nextNarrativePlan: {
+      role: narratorName,
+      roleType: "narrator",
+      nextRole: scalarText(ctx.world?.playerRole?.name) || "用户",
+      nextRoleType: "player",
+      awaitUser: true,
+      source: "rule",
+      eventType: "on_mini_game",
+      eventAdjustMode: "keep",
+      eventStatus: "active",
+    },
+  } : null;
   return {
-    narration: battleReport,
-    speakerRole: scalarText(ctx.world?.narratorRole?.name) || "旁白",
+    narration: battleReport,  // 保留，用于日志/调试
+    speakerRole: narratorName,
     speakerRoleType: "narrator",
-    messages: [
-      {
-        role: scalarText(ctx.world?.narratorRole?.name) || "旁白",
-        roleType: "narrator",
-        eventType: "on_mini_game",
-        content: battleReport,
-      },
-    ],
     resultTags: ["ongoing", "battle_round"],
     rewardSummary: {},
     memorySummary: `战斗推进一轮：${scalarText(publicState.current_target_name) || "敌人"}`,
+    // 不走 messages，走编排通道
+    pendingNarrativePlan: {
+      role: narratorName,
+      roleType: "narrator",
+      motive: `战斗播报：${battleReport}`,
+      presetContent: battleReport,
+      awaitUser: !hasAliveEnemies,  // 没有敌人了就直接交还用户
+      nextRole: hasAliveEnemies ? (enemyTurnPlan?.role || "敌人") : scalarText(ctx.world?.playerRole?.name) || "用户",
+      nextRoleType: hasAliveEnemies ? "enemy" : "player",
+      source: "rule",
+      eventType: "on_mini_game",
+      eventAdjustMode: "keep",
+      eventStatus: "active",
+      nextNarrativePlan: hasAliveEnemies ? enemyTurnPlan : null,
+    },
   };
 }
 
@@ -1979,7 +2060,7 @@ function evaluateResearchSkillInput(session: JsonRecord, input: MiniGameControll
   const mentor = resolveMentionedMentor(publicState, plan);
   const withMentorMessages = (step: MiniGameStepResult): MiniGameStepResult => ({
     ...step,
-    mentorSpeech: buildMentorMiniGameSpeechRequest(mentor, "research_skill", skillName, step.narration),
+    mentorSpeech: buildMentorMiniGameSpeechRequest(mentor, "research_skill", skillName, step.narration || ""),
   });
   const currentMoney = readMiniGamePlayerMoney(input.state);
   if (currentMoney < 5) {
@@ -2060,7 +2141,7 @@ function evaluateAlchemyInput(session: JsonRecord, input: MiniGameControllerInpu
   const mentor = resolveMentionedMentor(publicState, formula);
   const withMentorMessages = (step: MiniGameStepResult): MiniGameStepResult => ({
     ...step,
-    mentorSpeech: buildMentorMiniGameSpeechRequest(mentor, "alchemy", recipeName, step.narration),
+    mentorSpeech: buildMentorMiniGameSpeechRequest(mentor, "alchemy", recipeName, step.narration || ""),
   });
   const userLevel = readMiniGamePlayerLevel(input.state);
   const inferredRecipeLevel = Math.max(1, Number((formula.match(/(?:lv|LV|等级)\s*(\d+)/u)?.[1]) || 1));
@@ -2135,8 +2216,24 @@ function evaluateEquipmentInput(session: JsonRecord, input: MiniGameControllerIn
   const mentor = resolveMentionedMentor(publicState, plan);
   const withMentorMessages = (target: string, step: MiniGameStepResult): MiniGameStepResult => ({
     ...step,
-    mentorSpeech: buildMentorMiniGameSpeechRequest(mentor, "upgrade_equipment", target, step.narration),
+    mentorSpeech: buildMentorMiniGameSpeechRequest(mentor, "upgrade_equipment", target, step.narration || ""),
   });
+  const target = "";
+  const currentMoney = readMiniGamePlayerMoney(input.state);
+  if (currentMoney < 8) {
+    session.status = "finished";
+    session.phase = "settling";
+    session.result = "failed";
+    session.finish_reason = "金币不足";
+    publicState.last_result = "锻造/强化装备失败：金币不足";
+    publicState.last_advice = "锻造/强化装备每次会消耗 8 金币，先准备足够资金再来。";
+    return {
+      narration: `我检查了你的锻造/强化方案。当前金币不足 8，无法继续。`,
+      resultTags: ["failed", "insufficient_money"],
+      memorySummary: "锻造/强化装备失败：金币不足",
+    };
+  }
+  const mentor = resolveMentionedMentor(publicState, plan);
   const currentMoney = readMiniGamePlayerMoney(input.state);
   const userLevel = readMiniGamePlayerLevel(input.state);
   const strengthenSkillLevel = readNamedPracticeLevel(input.state, "装备强化术", 1);
@@ -5224,6 +5321,7 @@ export async function handleMiniGameTurn(input: MiniGameControllerInput): Promis
         meta: stepMeta,
       },
       messages: stepMessages?.length ? attachMiniGameMeta(stepMessages, stepMeta) : undefined,
+      pendingNarrativePlan: step.pendingNarrativePlan,
     };
   }
   const ruleActionId = normalizeActionId(input.playerMessage, options);
