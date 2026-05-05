@@ -2020,18 +2020,41 @@ function battleStep(session: JsonRecord, actionId: string, ctx: MiniGameControll
   const enemySpeaker = hasAliveEnemies
     ? resolveBattleSpeaker(session, ctx, aliveBattleEnemies(session)[0] || null)
     : null;
-  const enemyTurnPlan = hasAliveEnemies && enemySpeaker ? {
-    role: enemySpeaker.role,
-    roleType: enemySpeaker.roleType,
-    motive: `${enemySpeaker.proxyEnemyName}完成了本轮反击，对用户造成了 ${totalEnemyCounterDamage} 点伤害。当前用户剩余 HP ${userHp}/${userMaxHp}、MP ${userMp}/${userMaxMp}。请严格以该敌人的身份与语气，对用户说一句敌人回合的攻击台词，并体现当前战斗仍在继续。`,
+  // 敌人说完攻击台词后，还需要有一轮旁白播报敌方伤害结果。
+  //
+  // 用途：
+  // - review 要求战斗回合不再在 addMessage 里硬插旁白，而是完整走编排链；
+  // - 因此这里把“敌方回合”与“敌方回合后的旁白播报”拆成两层链式 plan；
+  // - 最后一层旁白播报结束后，才真正把输入权交还用户。
+  const enemyDamageReport = totalEnemyCounterDamage > 0
+    ? `敌方反击命中用户，造成了 ${totalEnemyCounterDamage} 点伤害。用户：HP ${userHp}/${userMaxHp}，MP ${userMp}/${userMaxMp}。`
+    : `敌方尝试反击，但未能对用户造成有效伤害。用户：HP ${userHp}/${userMaxHp}，MP ${userMp}/${userMaxMp}。`;
+  const enemyDamageNarratorPlan = hasAliveEnemies ? {
+    role: narratorName,
+    roleType: "narrator",
+    motive: `战斗播报：${enemyDamageReport}`,
+    presetContent: enemyDamageReport,
     awaitUser: true,
     nextRole: scalarText(ctx.world?.playerRole?.name) || "用户",
     nextRoleType: "player",
     source: "rule",
-    eventType: "on_mini_game_enemy_turn",
+    eventType: "on_mini_game_enemy_report",
     eventAdjustMode: "keep",
     eventStatus: "active",
     nextNarrativePlan: null,
+  } : null;
+  const enemyTurnPlan = hasAliveEnemies && enemySpeaker ? {
+    role: enemySpeaker.role,
+    roleType: enemySpeaker.roleType,
+    motive: `${enemySpeaker.proxyEnemyName}完成了本轮反击，对用户造成了 ${totalEnemyCounterDamage} 点伤害。当前用户剩余 HP ${userHp}/${userMaxHp}、MP ${userMp}/${userMaxMp}。请严格以该敌人的身份与语气，对用户说一句敌人回合的攻击台词，并体现当前战斗仍在继续。`,
+    awaitUser: false,
+    nextRole: narratorName,
+    nextRoleType: "narrator",
+    source: "rule",
+    eventType: "on_mini_game_enemy_turn",
+    eventAdjustMode: "keep",
+    eventStatus: "active",
+    nextNarrativePlan: enemyDamageNarratorPlan,
   } : null;
   return {
     narration: battleReport,  // 保留，用于日志/调试
