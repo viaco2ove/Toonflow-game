@@ -18,6 +18,7 @@ if (DebugLogUtil.isDebugLogEnabled()) {
 ## LOG_LEVEL=DEBUG 时 输出的日志
 [story:orchestrator:runtime] :编排师日志
 [story:orchestrator:stats]: 编排师日志 token 统计 
+[story:orchestrator:runtime]：判断为不走到模型。原因：{原因}
 
 [tag_api]:请求日志
 [tag_end_chapter]:章节结束判断。{章节}{条件}{为什么判断结束}

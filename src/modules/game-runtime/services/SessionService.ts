@@ -42,7 +42,7 @@ import {
   readNextEventProgressHint,
   syncChapterProgressWithRuntime,
 } from "@/modules/game-runtime/engines/ChapterProgressEngine";
-import { handleMiniGameTurn } from "@/modules/game-runtime/engines/MiniGameController";
+import { handleMiniGameTurn, isMiniGameActiveState } from "@/modules/game-runtime/engines/MiniGameController";
 import { runTaskProgressEngine } from "@/modules/game-runtime/engines/TaskProgressEngine";
 import {
   applyAttributeChanges,
@@ -1448,6 +1448,11 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
         applyPlanTurnStateToSessionState(state, world, pendingPlan as any);
       } else {
         // 没有编排计划：走原有逻辑
+        // 小游戏退出时（abort/finish 后用户再发言），旧的小游戏 pendingNarrativePlan 可能还残留，
+        // 需要清除，否则后续编排会被过期的 plan 挡住。
+        if (getPendingSessionNarrativePlan(state) && !isMiniGameActiveState(state)) {
+          setPendingSessionNarrativePlan(state, null);
+        }
         allowPlayerTurn(
           state,
           world,
@@ -2411,6 +2416,14 @@ export async function orchestrateSessionTurn(sessionIdInput: string): Promise<Se
   const pendingChapterId = getPendingSessionChapterId(state);
   const pendingChapterStart = getPendingSessionChapterStart(state);
   if (pendingChapterId && pendingChapterStart) {
+    if (DebugLogUtil.isDebugLogEnabled()) {
+      console.log("[story:orchestrator:runtime] 判断为不走到模型。原因：pendingChapterId_with_pendingChapterStart", JSON.stringify({
+        sessionId,
+        chapterId: currentChapterId,
+        pendingChapterId,
+        pendingChapterStart,
+      }));
+    }
     const nextChapter = normalizeChapterOutput(await db("t_storyChapter").where({ id: pendingChapterId }).first());
     if (!nextChapter) {
       setPendingSessionChapterId(state, null);
@@ -2428,6 +2441,14 @@ export async function orchestrateSessionTurn(sessionIdInput: string): Promise<Se
     return buildChapterStartPlan(nextChapter);
   }
   if (pendingChapterId && !pendingChapterStart) {
+    if (DebugLogUtil.isDebugLogEnabled()) {
+      console.log("[story:orchestrator:runtime] 判断为不走到模型。原因：pendingChapterId_without_pendingChapterStart", JSON.stringify({
+        sessionId,
+        chapterId: currentChapterId,
+        pendingChapterId,
+        pendingChapterStart,
+      }));
+    }
     const nextChapter = normalizeChapterOutput(await db("t_storyChapter").where({ id: pendingChapterId }).first());
     if (!nextChapter) {
       setPendingSessionChapterId(state, null);
@@ -2464,20 +2485,52 @@ export async function orchestrateSessionTurn(sessionIdInput: string): Promise<Se
 
   const pendingNarrativePlan = getPendingSessionNarrativePlan(state);
   if (pendingNarrativePlan) {
-    // 小游戏的旁白播报 / 敌人回合都通过 pendingNarrativePlan 进入正式编排链。
-    // 这里必须优先返回，避免再跑普通剧情编排把小游戏回合冲掉。
-    return finalizeOrchestrationResult({
-      sessionId,
-      status: sessionStatus,
-      chapterId: Number(chapter.id || 0) || null,
-      expectedRole: "",
-      expectedRoleType: "",
-      command: null,
-      plan: pendingNarrativePlan,
-    });
+    // 小游戏已退出但 pendingNarrativePlan 残留时，说明是小游戏退出不干净，
+    // 需要清除过期的 plan，否则编排会一直被它挡住不走大模型。
+    if (!isMiniGameActiveState(state)) {
+      if (DebugLogUtil.isDebugLogEnabled()) {
+        console.log("[story:orchestrator:runtime] 清除过期 pendingNarrativePlan，小游戏已不在 active 状态", JSON.stringify({
+          sessionId,
+          chapterId: Number(chapter?.id || 0),
+          planRole: String(pendingNarrativePlan.role || ""),
+          planRoleType: String(pendingNarrativePlan.roleType || ""),
+          planAwaitUser: Boolean(pendingNarrativePlan.awaitUser),
+          planEventType: String(pendingNarrativePlan.eventType || ""),
+        }));
+      }
+      setPendingSessionNarrativePlan(state, null);
+    } else {
+      // 小游戏的旁白播报 / 敌人回合都通过 pendingNarrativePlan 进入正式编排链。
+      // 这里必须优先返回，避免再跑普通剧情编排把小游戏回合冲掉。
+      if (DebugLogUtil.isDebugLogEnabled()) {
+        console.log("[story:orchestrator:runtime] 判断为不走到模型。原因：pendingNarrativePlan_exists", JSON.stringify({
+          sessionId,
+          chapterId: Number(chapter?.id || 0),
+          planRole: String(pendingNarrativePlan.role || ""),
+          planRoleType: String(pendingNarrativePlan.roleType || ""),
+          planAwaitUser: Boolean(pendingNarrativePlan.awaitUser),
+          planEventType: String(pendingNarrativePlan.eventType || ""),
+        }));
+      }
+      return finalizeOrchestrationResult({
+        sessionId,
+        status: sessionStatus,
+        chapterId: Number(chapter.id || 0) || null,
+        expectedRole: "",
+        expectedRoleType: "",
+        command: null,
+        plan: pendingNarrativePlan,
+      });
+    }
   }
 
   if (!recentMessages.length) {
+    if (DebugLogUtil.isDebugLogEnabled()) {
+      console.log("[story:orchestrator:runtime] 判断为不走到模型。原因：no_recentMessages", JSON.stringify({
+        sessionId,
+        chapterId: Number(chapter?.id || 0),
+      }));
+    }
     return buildChapterStartPlan(chapter);
   }
   await applySessionPreOrchestrationEventProgress({
@@ -2492,6 +2545,12 @@ export async function orchestrateSessionTurn(sessionIdInput: string): Promise<Se
     },
   });
   if (canPlayerSpeakNow(state, world)) {
+    if (DebugLogUtil.isDebugLogEnabled()) {
+      console.log("[story:orchestrator:runtime] 判断为不走到模型。原因：canPlayerSpeakNow", JSON.stringify({
+        sessionId,
+        chapterId: Number(chapter?.id || 0),
+      }));
+    }
     return finalizeOrchestrationResult({
       sessionId,
       status: sessionStatus,
@@ -2511,6 +2570,12 @@ export async function orchestrateSessionTurn(sessionIdInput: string): Promise<Se
       reason: "opening_is_outside_chapter_event_graph",
       resetEventIndex: Number(state.chapterProgress?.eventIndex || state.currentEvent?.index || 0),
     });
+    if (DebugLogUtil.isDebugLogEnabled()) {
+      console.log("[story:orchestrator:runtime] 判断为不走到模型。原因：opening_is_outside_chapter_event_graph", JSON.stringify({
+        sessionId,
+        chapterId: Number(chapter?.id || 0),
+      }));
+    }
     const plan = await runNarrativePlan({
       userId: currentUserId,
       world,
@@ -2544,6 +2609,14 @@ export async function orchestrateSessionTurn(sessionIdInput: string): Promise<Se
       command: null,
       plan: builtPlan,
     });
+  }
+  if (DebugLogUtil.isDebugLogEnabled()) {
+    console.log("[story:orchestrator:runtime] 走大模型编排", JSON.stringify({
+      sessionId,
+      chapterId: Number(chapter?.id || 0),
+      recentMessageCount: recentMessages.length,
+      latestEventType: String(latestRecentMessage?.eventType || ""),
+    }));
   }
   const arbitration = await runConcurrentSessionJudgeAndNarrative({
     userId: currentUserId,

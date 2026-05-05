@@ -249,7 +249,7 @@ function activeStatuses() {
   return new Set<MiniGameStatus>(["preparing", "active", "settling", "suspended"]);
 }
 
-function isMiniGameActiveState(state: JsonRecord): boolean {
+export function isMiniGameActiveState(state: JsonRecord): boolean {
   const session = asRecord(asRecord(state.miniGame).session);
   const status = scalarText(session.status) as MiniGameStatus;
   return activeStatuses().has(status);
