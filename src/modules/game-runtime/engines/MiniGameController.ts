@@ -1985,12 +1985,14 @@ function battleStep(session: JsonRecord, actionId: string, ctx: MiniGameControll
     victory.narration = `${narrations.join("")}${victory.narration}`;
     return victory;
   }
+  let totalEnemyCounterDamage = 0;
   aliveBattleEnemies(session).forEach((enemy) => {
     const level = Math.max(1, Number(enemy.level || 1));
     let damage = 6 + level * 2 + takeRng(session, 0, 10);
     if (guarding) {
       damage = Math.max(1, Math.floor(damage * 0.45));
     }
+    totalEnemyCounterDamage += damage;
     userHp = clamp(userHp - damage, 0, userMaxHp);
   });
   publicState.user_hp = userHp;
@@ -2007,26 +2009,29 @@ function battleStep(session: JsonRecord, actionId: string, ctx: MiniGameControll
   }
   syncBattlePublicState(session);
   const battleReport = `${narrations.join("")}${battleEnemySummary(session)}`;
-  // 构建旁白播报的 pendingNarrativePlan，走编排通道
+  // 构建旁白播报与敌人回合的链式 pendingNarrativePlan，统一走编排通道。
+  //
+  // 用途：
+  // - 用户动作结果先由旁白播报；
+  // - 若敌人仍存活，则继续进入“敌人回合 -> streamlines -> streamvoice”；
+  // - 敌人回合说完后，直接把输入权交还用户，不再在 addMessage 里硬插一句假旁白。
   const narratorName = scalarText(ctx.world?.narratorRole?.name) || "旁白";
   const hasAliveEnemies = aliveBattleEnemies(session).length > 0;
-  // 敌方回合的链式计划
-  const enemyTurnPlan = hasAliveEnemies ? {
-    role: aliveBattleEnemies(session)[0]?.name || "敌人",
-    roleType: "enemy",
-    motive: "敌方回合",
-    awaitUser: false,
-    nextNarrativePlan: {
-      role: narratorName,
-      roleType: "narrator",
-      nextRole: scalarText(ctx.world?.playerRole?.name) || "用户",
-      nextRoleType: "player",
-      awaitUser: true,
-      source: "rule",
-      eventType: "on_mini_game",
-      eventAdjustMode: "keep",
-      eventStatus: "active",
-    },
+  const enemySpeaker = hasAliveEnemies
+    ? resolveBattleSpeaker(session, ctx, aliveBattleEnemies(session)[0] || null)
+    : null;
+  const enemyTurnPlan = hasAliveEnemies && enemySpeaker ? {
+    role: enemySpeaker.role,
+    roleType: enemySpeaker.roleType,
+    motive: `${enemySpeaker.proxyEnemyName}完成了本轮反击，对用户造成了 ${totalEnemyCounterDamage} 点伤害。当前用户剩余 HP ${userHp}/${userMaxHp}、MP ${userMp}/${userMaxMp}。请严格以该敌人的身份与语气，对用户说一句敌人回合的攻击台词，并体现当前战斗仍在继续。`,
+    awaitUser: true,
+    nextRole: scalarText(ctx.world?.playerRole?.name) || "用户",
+    nextRoleType: "player",
+    source: "rule",
+    eventType: "on_mini_game_enemy_turn",
+    eventAdjustMode: "keep",
+    eventStatus: "active",
+    nextNarrativePlan: null,
   } : null;
   return {
     narration: battleReport,  // 保留，用于日志/调试
@@ -2043,9 +2048,9 @@ function battleStep(session: JsonRecord, actionId: string, ctx: MiniGameControll
       presetContent: battleReport,
       awaitUser: !hasAliveEnemies,  // 没有敌人了就直接交还用户
       nextRole: hasAliveEnemies ? (enemyTurnPlan?.role || "敌人") : scalarText(ctx.world?.playerRole?.name) || "用户",
-      nextRoleType: hasAliveEnemies ? "enemy" : "player",
+      nextRoleType: hasAliveEnemies ? String(enemyTurnPlan?.roleType || "npc") : "player",
       source: "rule",
-      eventType: "on_mini_game",
+      eventType: "on_mini_game_broadcast",
       eventAdjustMode: "keep",
       eventStatus: "active",
       nextNarrativePlan: hasAliveEnemies ? enemyTurnPlan : null,

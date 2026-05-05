@@ -1439,18 +1439,13 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
       mode: "session",
     });
 
-      if (miniGameResult?.intercepted) {
+    if (miniGameResult?.intercepted) {
       const pendingPlan = miniGameResult.pendingNarrativePlan;
       if (pendingPlan) {
-        // 有编排计划：写入 state，不插入小游戏消息
+        // 有编排计划：只写入 session.pendingNarrativePlan，由后续 orchestration/streamlines 消费。
+        // 这里不能提前把输入权交还用户，否则前端会误以为小游戏回合已经结束。
         setPendingSessionNarrativePlan(state, pendingPlan as any);
-        // 交还用户输入权（编排器会接管）
-        allowPlayerTurn(
-          state,
-          world,
-          String(pendingPlan.roleType || "narrator"),
-          String(pendingPlan.role || state.narrator?.name || "旁白"),
-        );
+        applyPlanTurnStateToSessionState(state, world, pendingPlan as any);
       } else {
         // 没有编排计划：走原有逻辑
         allowPlayerTurn(
@@ -2467,6 +2462,21 @@ export async function orchestrateSessionTurn(sessionIdInput: string): Promise<Se
     throw new SessionServiceError(400, "当前章节不存在");
   }
 
+  const pendingNarrativePlan = getPendingSessionNarrativePlan(state);
+  if (pendingNarrativePlan) {
+    // 小游戏的旁白播报 / 敌人回合都通过 pendingNarrativePlan 进入正式编排链。
+    // 这里必须优先返回，避免再跑普通剧情编排把小游戏回合冲掉。
+    return finalizeOrchestrationResult({
+      sessionId,
+      status: sessionStatus,
+      chapterId: Number(chapter.id || 0) || null,
+      expectedRole: "",
+      expectedRoleType: "",
+      command: null,
+      plan: pendingNarrativePlan,
+    });
+  }
+
   if (!recentMessages.length) {
     return buildChapterStartPlan(chapter);
   }
@@ -2824,6 +2834,9 @@ export async function commitSessionNarrativeTurn(input: CommitSessionNarrativeTu
   // - orchestration 只负责预编排，不代表这一句已经真正提交；
   // - 如果 commit 后不显式推进 turnState，storyInfo / listSession 仍可能读到旧 expectedRole；
   // - 前端就会继续显示“等待上一位角色发言”，直到回溯或刷新才恢复。
+  const promotedNextPlan = pendingPlan?.nextNarrativePlan
+    ? buildSessionPlanResult(pendingPlan.nextNarrativePlan as any)
+    : null;
   if (hasPendingChapterSwitch || isOpeningCommit) {
     setRuntimeTurnState(state, world, {
       canPlayerSpeak: false,
@@ -2832,6 +2845,10 @@ export async function commitSessionNarrativeTurn(input: CommitSessionNarrativeTu
       lastSpeakerRoleType: committedRoleType,
       lastSpeaker: committedRole,
     });
+  } else if (promotedNextPlan) {
+    // 当前台词落库后若已经提升出下一轮 plan，就要立刻按下一轮回合重写 turnState。
+    // 否则敌人回合/旁白播报这种链式编排会继续停留在“等待刚刚说完的人”。
+    applyPlanTurnStateToSessionState(state, world, promotedNextPlan);
   } else if (pendingPlan?.awaitUser) {
     allowPlayerTurn(state, world, committedRoleType, committedRole);
   } else {
