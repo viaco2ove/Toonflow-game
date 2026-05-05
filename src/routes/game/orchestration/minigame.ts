@@ -1,0 +1,68 @@
+import express from "express";
+import { z } from "zod";
+import { validateFields } from "@/middleware/middleware";
+import { error, success } from "@/lib/responseFormat";
+import {
+  orchestrateSessionTurn,
+  isSessionServiceError,
+} from "@/modules/game-runtime/services/SessionService";
+import { DebugLogUtil } from "@/utils/debugLogUtil";
+
+const router = express.Router();
+
+/**
+ * 小游戏编排专用接口。
+ *
+ * 用途：
+ * - 战斗/陪练等小游戏回合的编排走这个独立接口，不走 /game/orchestration；
+ * - 返回完整的 plan（含 eventType、presetContent 等），确保前端 streamlines 能正确消费；
+ * - 前端每条消息串行：编排 → streamlines → 语音播放 → 编排，避免链式中断语音。
+ *
+ * 流程：编排agent(/game/orchestration/minigame) → 发言agent(/game/streamlines) → 语音预热(/game/streamvoice) → 语音播放(/voice/audioProxy)
+ */
+export default router.post(
+  "/",
+  validateFields({
+    sessionId: z.string().min(1),
+  }),
+  async (req, res) => {
+    const sessionId = String(req.body.sessionId || "").trim();
+    if (!sessionId) {
+      return res.status(400).send(error("sessionId 不能为空"));
+    }
+    try {
+      const result = await orchestrateSessionTurn(sessionId);
+
+      if (DebugLogUtil.isDebugLogEnabled()) {
+        console.log("[story:orchestrator:minigame] 编排结果", JSON.stringify({
+          sessionId,
+          planRole: String(result.plan?.role || ""),
+          planRoleType: String(result.plan?.roleType || ""),
+          planEventType: String(result.plan?.eventType || ""),
+          planAwaitUser: Boolean(result.plan?.awaitUser),
+          planPresetContentLength: String(result.plan?.presetContent || "").length,
+        }));
+      }
+
+      // 小游戏编排需要返回完整的 plan 信息（eventType、presetContent 等），
+      // 不能用 buildMinimalOrchestrationResponse 只返回 role/roleType/motive。
+      return res.status(200).send(success({
+        sessionId: result.sessionId,
+        status: result.status,
+        chapterId: result.chapterId,
+        expectedRole: result.expectedRole,
+        expectedRoleType: result.expectedRoleType,
+        command: result.command || null,
+        currentEventDigest: result.currentEventDigest,
+        eventDigestWindow: result.eventDigestWindow,
+        eventDigestWindowText: result.eventDigestWindowText,
+        plan: result.plan,
+      }));
+    } catch (err) {
+      if (isSessionServiceError(err)) {
+        return res.status(err.status).send(error(err.message));
+      }
+      res.status(500).send(error(String((err as Error)?.message || "小游戏编排失败")));
+    }
+  },
+);

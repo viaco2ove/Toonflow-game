@@ -342,3 +342,10 @@ export function sendDebugSuccess(
 ) {
   return res.status(200).send(success(buildOrchestrationPayload(params)));
 }
+
+/**
+ * 此文件是共享工具模块，不是路由。给一个空 Router default export 防止 core.ts 自动注册时报错。
+ */
+const emptyRouter = express.Router();
+emptyRouter.use((_req, res) => { res.status(404).json({ code: 404, message: "not a route" }); });
+export default emptyRouter;

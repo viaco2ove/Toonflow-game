@@ -14,7 +14,7 @@ md/plan/ai_game/V3/游玩业务/V3/resolve/testV2
 | **[当前阶段]** | `label: 阶段名`<br>`goal: 阶段目标`<br>`allowed_speakers: 旁白、孙悟...` | ~50~100 |
 | **[当前事件]** | `index: 1`<br>`kind: scene`<br>`summary: <120字事件摘要>`<br>`facts: <事件事实>`<br>`memory_summary / memory_facts`<br>`事件窗口: <近期对话片段>` | ~150~300 |
 | **[回合状态]** | `can_player_speak: false`<br>`expected_role_type: narrator`<br>`expected_role: 旁白`<br>`last_speaker: 无` | ~50~80 |
-| **[最近对话]** | `旁白：混沌虚空开启...`<br>`玩家：无`（最近 N 轮） | ~50~150 |
+| **[最近对话]** | `旁白：混沌虚空开启...`<br>`用户：无`（最近 N 轮） | ~50~150 |
 | **[用户本轮输入]** | `无`（首轮进入时为空） | ~2~5 |
 
 

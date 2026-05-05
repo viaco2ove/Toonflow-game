@@ -40,7 +40,7 @@ import {
   buildEffectiveDebugChapter,
   evaluateDebugRuntimeOutcome,
   buildDebugEndDialogDetail,
-} from "./debugRuntimeShared";
+} from "../debugRuntimeShared";
 import {
   asTrimmedText,
   buildMinimalOrchestrationResponse,
@@ -49,7 +49,7 @@ import {
   buildPresetPlan,
   resolveDebugResponseChapterMeta,
   sendDebugSuccess,
-} from "./orchestrationResponseShared";
+} from "../orchestrationResponseShared";
 import u from "@/utils";
 import { DebugLogUtil } from "@/utils/debugLogUtil";
 

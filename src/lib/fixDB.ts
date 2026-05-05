@@ -1107,7 +1107,7 @@ event_facts:`,
             "如果 `@记忆管理` 后面包含明确状态变化、物品变化、技能变化、身份变化、数值变化，则记忆管理器必须直接更新 summary、facts、tags 和对应参数卡 patch。\n" +
             "示例：\n" +
             "  - `@记忆管理 睡觉恢复`\n" +
-            "  - 视为玩家已通过睡觉恢复状态\n" +
+            "  - 视为用户已通过睡觉恢复状态\n" +
             "  - 必须写入 facts 或 player_card_patch.other\n" +
             "  - hp/mp 必须是数值，文字只写入 other参数" +
             "## 输出必须是一个 JSON 对象，字段固定为：summary, facts, tags, player_card_patch, npc_card_patches。\n" +

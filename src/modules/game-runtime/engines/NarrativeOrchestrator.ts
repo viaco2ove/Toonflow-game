@@ -2812,7 +2812,7 @@ function findFirstRoleByType(roles: RuntimeStoryRole[], roleType: string): Runti
 }
 
 // 编排师有时会返回 `speaker: 用户`，但运行时里的真实用户名可能是“异天”。
-// 这里统一把“用户/玩家/player”这类占位说法映射到当前用户角色，避免模型明明编排给用户却被当成无效结果。
+// 这里统一把“用户/用户/player”这类占位说法映射到当前用户角色，避免模型明明编排给用户却被当成无效结果。
 function resolvePlannerSpeakerRole(
   roles: RuntimeStoryRole[],
   speaker: string,
@@ -2820,7 +2820,7 @@ function resolvePlannerSpeakerRole(
 ): RuntimeStoryRole | null {
   const normalizedSpeaker = normalizeScalarText(speaker);
   const normalizedRoleType = sanitizeRoleType(roleType);
-  if (normalizedRoleType === "player" || /^(用户|玩家|player)$/i.test(normalizedSpeaker)) {
+  if (normalizedRoleType === "player" || /^(用户|用户|player)$/i.test(normalizedSpeaker)) {
     return findFirstRoleByType(roles, "player") || null;
   }
   if (normalizedSpeaker) {

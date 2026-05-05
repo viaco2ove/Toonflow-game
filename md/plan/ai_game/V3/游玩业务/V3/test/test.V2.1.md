@@ -68,7 +68,7 @@ event_facts:
 {
   "role_type": "narrator",
   "speaker": "旁白",
-  "motive": "向玩家介绍当前战场处境，点明未被察觉的边缘异常气息",
+  "motive": "向用户介绍当前战场处境，点明未被察觉的边缘异常气息",
   "await_user": true,                    ← 关键：等待用户发言
   "next_role_type": "player",             ← 关键：下一轮是用户
   "next_speaker": "异天",
@@ -84,7 +84,7 @@ event_facts:
     "战场存在破碎星辰残骸，此前多位强者围绕金箍棒大战",
     "战场边缘存在未被其他强者察觉的异常气息"
   ],
-  "state_delta": "玩家异天的状态更新为..."
+  "state_delta": "用户异天的状态更新为..."
 }
 ```
 
@@ -139,7 +139,7 @@ User Prompt (发送给大模型的实际内容)
 
 [阶段] label: 全局状态（仅用户可见）...
 
-[当前事件] index: 1 kind: scene summary: 玩家角色设定完成，即将进入破碎时空跨界战场...
+[当前事件] index: 1 kind: scene summary: 用户角色设定完成，即将进入破碎时空跨界战场...
 
 [回合] player: false | expected: narrator/旁白 | last: narrator/旁白
 
