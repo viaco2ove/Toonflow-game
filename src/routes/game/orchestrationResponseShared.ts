@@ -30,7 +30,7 @@ export type PlanLike = {
   triggerMemoryAgent?: boolean;
   stateDelta?: Record<string, unknown>;
   eventType?: string;
-  presetContent?: string;
+  presetContent?: string | null;
   eventAdjustMode?: PlanEventAdjustMode;
   eventIndex?: number;
   eventKind?: PlanEventKind;

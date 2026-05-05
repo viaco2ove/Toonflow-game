@@ -84,6 +84,8 @@ export interface NarrativePlanResult {
   awaitUser: boolean;
   nextRole: string;
   nextRoleType: string;
+  eventType?: string;
+  presetContent?: string | null;
   chapterOutcome: "continue" | "success" | "failed";
   nextChapterId: number | null;
   source: NarrativePlanSource;
@@ -112,6 +114,8 @@ export interface NarrativePlanSummary {
   memoryHints: string[];
   triggerMemoryAgent: boolean;
   source: "ai" | "fallback" | "rule";
+  eventType?: string;
+  presetContent?: string | null;
   eventAdjustMode: "keep" | "update" | "waiting_input" | "completed";
   eventIndex: number;
   eventKind: RuntimeCurrentEventState["kind"];
@@ -4786,6 +4790,8 @@ export function summarizeNarrativePlan(result: OrchestratorResult | null | undef
       : [],
     triggerMemoryAgent: Boolean(result.triggerMemoryAgent),
     source: normalizedSource,
+    eventType: normalizeScalarText(result.eventType),
+    presetContent: normalizeScalarText(result.presetContent),
     eventAdjustMode: result.eventAdjustMode || "keep",
     eventIndex: Number.isFinite(Number(result.eventIndex)) ? Math.max(1, Number(result.eventIndex)) : 1,
     eventKind: result.eventKind || "scene",

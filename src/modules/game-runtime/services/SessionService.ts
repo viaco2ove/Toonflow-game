@@ -222,7 +222,7 @@ export interface AddSessionMessageResult {
   chapterSwitchMessage: Record<string, any> | null;
   narrativeMessage: Record<string, any> | null;
   generatedMessages: Record<string, any>[];
-  narrativePlan: NarrativePlanSummary | null;
+  narrativePlan: any | null;
   triggered: TriggerHit[];
   taskProgress: TaskProgressChange[];
   deltas: AppliedDelta[];
@@ -239,6 +239,7 @@ export interface SessionNarrativePlanResult {
   awaitUser: boolean;
   nextRole: string;
   nextRoleType: string;
+  memoryHints: string[];
   source: "ai" | "fallback" | "rule";
   triggerMemoryAgent: boolean;
   eventType: string;
@@ -251,6 +252,7 @@ export interface SessionNarrativePlanResult {
   eventStatus?: "idle" | "active" | "waiting_input" | "completed";
   speakerMode?: "template" | "fast" | "premium";
   speakerRouteReason?: string;
+  nextNarrativePlan?: SessionNarrativePlanResult | null;
   orchestratorRuntime?: {
     modelKey: string;
     manufacturer: string;
@@ -823,6 +825,7 @@ function buildSessionPlanResult(plan: ({
   awaitUser?: unknown;
   nextRole?: unknown;
   nextRoleType?: unknown;
+  memoryHints?: unknown;
   source?: unknown;
   triggerMemoryAgent?: unknown;
   eventType?: unknown;
@@ -835,6 +838,7 @@ function buildSessionPlanResult(plan: ({
   eventStatus?: unknown;
   speakerMode?: unknown;
   speakerRouteReason?: unknown;
+  nextNarrativePlan?: unknown;
   orchestratorRuntime?: unknown;
 }) | null | undefined): SessionNarrativePlanResult | null {
   if (!plan) return null;
@@ -859,9 +863,7 @@ function buildSessionPlanResult(plan: ({
         ? "waiting_input"
         : plan.eventAdjustMode === "completed"
           ? "completed"
-          : plan.eventAdjustMode === "keep"
-            ? "keep"
-            : undefined,
+          : "keep",
     eventIndex: Number.isFinite(Number(plan.eventIndex)) ? Math.max(1, Number(plan.eventIndex)) : undefined,
     eventKind: plan.eventKind === "opening"
       ? "opening"
@@ -895,6 +897,12 @@ function buildSessionPlanResult(plan: ({
           ? "premium"
           : undefined,
     speakerRouteReason: String(plan.speakerRouteReason || "").trim(),
+    memoryHints: Array.isArray(plan.memoryHints)
+      ? plan.memoryHints.map((item) => String(item || "").trim()).filter(Boolean)
+      : [],
+    nextNarrativePlan: plan.nextNarrativePlan
+      ? buildSessionPlanResult(plan.nextNarrativePlan as any)
+      : null,
     orchestratorRuntime: (() => {
       const raw = parseJsonMaybe(plan.orchestratorRuntime);
       if (!Object.keys(raw).length) return undefined;
@@ -1337,6 +1345,8 @@ async function loadSessionWorld(db: any, worldId: number) {
 }
 
 export async function addSessionMessage(input: AddSessionMessageInput): Promise<AddSessionMessageResult> {
+  let narrativeMessageRow: any = null;  // 移到函数开头，避免 used before declaration
+  const narrativeMessageRows: any[] = [];  // 移到函数开头
   const db = getGameDb();
   const now = nowTs();
   const sessionId = String(input.sessionId || "").trim();
@@ -1433,22 +1443,7 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
       const pendingPlan = miniGameResult.pendingNarrativePlan;
       if (pendingPlan) {
         // 有编排计划：写入 state，不插入小游戏消息
-        setPendingSessionNarrativePlan(state, {
-          role: pendingPlan.role,
-          roleType: pendingPlan.roleType,
-          motive: pendingPlan.motive || "",
-          presetContent: pendingPlan.presetContent || "",
-          awaitUser: pendingPlan.awaitUser || false,
-          nextRole: pendingPlan.nextRole,
-          nextRoleType: pendingPlan.nextRoleType,
-          source: pendingPlan.source || "rule",
-          eventType: pendingPlan.eventType || "on_mini_game",
-          eventAdjustMode: pendingPlan.eventAdjustMode || "keep",
-          eventStatus: pendingPlan.eventStatus || "active",
-          nextNarrativePlan: pendingPlan.nextNarrativePlan
-            ? JSON.parse(JSON.stringify(pendingPlan.nextNarrativePlan))
-            : null,
-        });
+        setPendingSessionNarrativePlan(state, pendingPlan as any);
         // 交还用户输入权（编排器会接管）
         allowPlayerTurn(
           state,
@@ -1918,9 +1913,8 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
   }
 
   let chapterSwitchMessageRow: any = null;
-  let narrativeMessageRow: any = null;
   let generatedMessages: Record<string, any>[] = [];
-  let narrativePlan: NarrativePlanSummary | null = null;
+  let narrativePlan: any | null = null;
   if (!(nextChapterId && nextChapterId !== prevChapterId) && roleTypeValue === "player" && eventTypeValue === "on_message" && messageContent.trim()) {
     const playChapter = nextChapterId
       ? normalizeChapterOutput(await db("t_storyChapter").where({ id: nextChapterId }).first())
@@ -2746,7 +2740,6 @@ export async function commitSessionNarrativeTurn(input: CommitSessionNarrativeTu
     now: createTime,
     eventTypeFallback: committedEventType,
   });
-  const pendingPlan = getPendingSessionNarrativePlan(state);
   setPendingSessionNarrativePlan(state, null);
   // 链式提升：如果 pendingPlan 有 nextNarrativePlan，提升为新的 pendingNarrativePlan
   if (pendingPlan?.nextNarrativePlan) {

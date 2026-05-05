@@ -2214,6 +2214,7 @@ function evaluateEquipmentInput(session: JsonRecord, input: MiniGameControllerIn
   const publicState = asRecord(session.public_state);
   const plan = normalizeInlineText(input.playerMessage);
   const mentor = resolveMentionedMentor(publicState, plan);
+  const userLevel = readMiniGamePlayerLevel(input.state);
   const withMentorMessages = (target: string, step: MiniGameStepResult): MiniGameStepResult => ({
     ...step,
     mentorSpeech: buildMentorMiniGameSpeechRequest(mentor, "upgrade_equipment", target, step.narration || ""),
@@ -2233,9 +2234,6 @@ function evaluateEquipmentInput(session: JsonRecord, input: MiniGameControllerIn
       memorySummary: "锻造/强化装备失败：金币不足",
     };
   }
-  const mentor = resolveMentionedMentor(publicState, plan);
-  const currentMoney = readMiniGamePlayerMoney(input.state);
-  const userLevel = readMiniGamePlayerLevel(input.state);
   const strengthenSkillLevel = readNamedPracticeLevel(input.state, "装备强化术", 1);
   const skillCandidates = asArray<string>(createPlayerParameterCard(input.state).skills);
   const matchedSkill = skillCandidates.find((item) => {
@@ -3856,7 +3854,7 @@ function miningStep(session: JsonRecord, actionId: string, ctx: MiniGameControll
       currentMentor(),
       "mining",
       scalarText(publicState.target_mineral) || "当前矿物",
-      step.narration,
+      step.narration || "",
     ),
   });
   const add = (field: string, delta: number, min = 0, max = 160) => {
