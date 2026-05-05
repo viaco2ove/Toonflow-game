@@ -1790,6 +1790,8 @@ async function resolveBattleActionByAgent(
 /**
  * 为战斗胜利生成写回补丁。
  * 这里统一处理奖励金钱、物品、战斗经验，以及战后回满血蓝。
+ * 同时为有角色ID的故事敌人（is_role_enemy）生成NPC参数卡HP恢复补丁，
+ * 避免战斗中记忆管理器写入的受损HP在战后持续残留。
  */
 function buildBattleVictoryWriteback(session: JsonRecord, battleExpGain: number): JsonRecord {
   const publicState = asRecord(session.public_state);
@@ -1798,10 +1800,21 @@ function buildBattleVictoryWriteback(session: JsonRecord, battleExpGain: number)
   const rewardItems = uniqueTexts(
     allEnemies.flatMap((enemy) => asArray<string>(enemy.reward_items).map((item) => scalarText(item)).filter(Boolean)),
   );
+  // 战后恢复故事敌人的HP到满血，防止记忆管理器写入的受损HP残留
+  const npcParameterPatches = allEnemies
+    .filter((enemy) => enemy.is_role_enemy && scalarText(enemy.role_id))
+    .map((enemy) => ({
+      roleId: scalarText(enemy.role_id),
+      roleName: scalarText(enemy.name),
+      patch: {
+        hp: Math.max(1, Number(enemy.max_hp || 100)),
+        mp: Math.max(0, Number(enemy.max_mp || 0)),
+      },
+    }));
   return {
     inventoryAdd: rewardItems.map((item) => ({ kind: "loot", name: item })),
     // 战利品除了进入背包，还要同步进参数卡物品栏，
-    // 避免剧情文本与角色详情出现“拿到了但卡面没有”的割裂。
+    // 避免剧情文本与角色详情出现"拿到了但卡面没有"的割裂。
     parameterCardItemAdd: rewardItems,
     playerParameterPatch: {
       money: totalMoney,
@@ -1809,6 +1822,7 @@ function buildBattleVictoryWriteback(session: JsonRecord, battleExpGain: number)
       hp: Number(publicState.user_max_hp || 0),
       mp: Number(publicState.user_max_mp || 0),
     },
+    npcParameterPatches,
     memoryAdd: [
       `完成战斗：${allEnemies.map((enemy) => scalarText(enemy.name)).filter(Boolean).join("、")}`,
       `战斗获得经验：${battleExpGain}`,
@@ -1868,11 +1882,24 @@ function finalizeBattleVictory(session: JsonRecord, ctx?: MiniGameControllerInpu
 /**
  * 统一生成战斗失败结算。
  * 为避免主线直接卡死，战败后会按败退处理，并把用户血蓝恢复到可继续剧情的安全值。
+ * 同时恢复故事敌人的HP，避免战后敌人参数卡残留受损血量。
  */
 function finalizeBattleDefeat(session: JsonRecord, ctx?: MiniGameControllerInput): MiniGameStepResult {
   const publicState = asRecord(session.public_state);
   const safeHp = Math.max(1, Math.floor(Number(publicState.user_max_hp || 100) * 0.4));
   const safeMp = Math.max(0, Math.floor(Number(publicState.user_max_mp || 0) * 0.4));
+  // 战败后也恢复敌人HP，防止残留受损血量
+  const allEnemies = asArray<JsonRecord>(publicState.enemy_list).map((item) => asRecord(item));
+  const npcParameterPatches = allEnemies
+    .filter((enemy) => enemy.is_role_enemy && scalarText(enemy.role_id))
+    .map((enemy) => ({
+      roleId: scalarText(enemy.role_id),
+      roleName: scalarText(enemy.name),
+      patch: {
+        hp: Math.max(1, Number(enemy.max_hp || 100)),
+        mp: Math.max(0, Number(enemy.max_mp || 0)),
+      },
+    }));
   session.status = "finished";
   session.phase = "settling";
   session.result = "failed";
@@ -1891,6 +1918,7 @@ function finalizeBattleDefeat(session: JsonRecord, ctx?: MiniGameControllerInput
     rewardSummary: { retreat: true },
     writeback: {
       playerParameterPatch: { hp: safeHp, mp: safeMp },
+      npcParameterPatches,
       memoryAdd: ["一次战斗失利后被迫撤退"],
     },
     memorySummary: "战斗失利，暂时撤退",
@@ -4449,7 +4477,7 @@ const RULEBOOKS: Record<string, MiniGameRulebook> = {
         result: "ongoing",
         finish_reason: "",
         reward_preview: {},
-        writeback_whitelist: ["player_state.parameter_card", "player_state.inventory", "memory_state.mid_term"],
+        writeback_whitelist: ["player_state.parameter_card", "player_state.inventory", "npc_state.parameter_card", "memory_state.mid_term"],
         can_suspend: true,
         can_quit: true,
         resume_token: `resume_${sessionId}`,
@@ -4581,6 +4609,41 @@ function applyMiniGameWriteback(state: JsonRecord, writeback: JsonRecord) {
       : card;
     player.parameterCardJson = normalizedCard;
     state.player = player;
+  }
+  // NPC参数卡补丁：战斗结束后恢复故事敌人的HP/MP到满值
+  const npcParameterPatches = asArray<JsonRecord>(writeback.npcParameterPatches);
+  if (npcParameterPatches.length && allow("npc_state.parameter_card")) {
+    const npcBag = asRecord(state.npcs);
+    if (Object.keys(npcBag).length) {
+      npcParameterPatches.forEach((patchEntry) => {
+        const roleId = scalarText(patchEntry.roleId);
+        const roleName = scalarText(patchEntry.roleName);
+        const patch = asRecord(patchEntry.patch);
+        if (!Object.keys(patch).length) return;
+        // 按roleId或roleName匹配NPC
+        let matchedKey = "";
+        Object.entries(npcBag).some(([key, value]) => {
+          const npc = asRecord(value);
+          const npcId = scalarText(npc.id);
+          const npcName = scalarText(npc.name);
+          if ((roleId && npcId === roleId) || (roleName && npcName === roleName)) {
+            matchedKey = key;
+            return true;
+          }
+          return false;
+        });
+        if (!matchedKey) return;
+        const npc = asRecord(npcBag[matchedKey]);
+        const card = asRecord(npc.parameterCardJson);
+        // 直接写入补丁字段（hp/mp等）
+        Object.entries(patch).forEach(([key, value]) => {
+          card[key] = value;
+        });
+        npc.parameterCardJson = card;
+        npcBag[matchedKey] = npc;
+      });
+      state.npcs = npcBag;
+    }
   }
   const cultivationPracticePatch = asRecord(writeback.cultivationPracticePatch);
   if (Object.keys(cultivationPracticePatch).length && allow("player_state.parameter_card")) {
