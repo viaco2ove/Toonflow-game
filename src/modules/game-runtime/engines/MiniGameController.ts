@@ -5432,5 +5432,6 @@ export async function handleMiniGameTurn(input: MiniGameControllerInput): Promis
       meta: stepMeta,
     },
     messages: stepMessages?.length ? attachMiniGameMeta(stepMessages, stepMeta) : undefined,
+    pendingNarrativePlan: step.pendingNarrativePlan,
   };
 }
