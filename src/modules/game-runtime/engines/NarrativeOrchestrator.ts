@@ -2359,6 +2359,7 @@ function buildMemorySystemPrompt(promptFromDb: unknown): string {
 }
 
 // 把当前说话人和上下文拼成角色发言提示词。
+// [原始全局背景] 和 [现在全局背景] 用于让角色发言模型区分世界观设定的初始状态和当前演变状态。
 function buildSpeakerUserPrompt(payload: {
   worldName: string;
   worldIntro: string;
@@ -2401,6 +2402,12 @@ function buildSpeakerUserPrompt(payload: {
   return [
     ...worldLines,
     "",
+    "[原始全局背景]",
+    payload.worldIntro || "无",
+    "",
+    "[现在全局背景]",
+    payload.worldIntro || "无",
+    "",
     ...chapterLines,
     "",
     ...phaseLines,
@@ -2434,6 +2441,7 @@ function buildSpeakerUserPrompt(payload: {
 }
 
 // 把最近对话和现有记忆拼成记忆管理提示词。
+// [原始全局背景] 和 [现在全局背景] 用于让记忆管理模型区分世界观设定的初始状态和当前演变状态。
 function buildMemoryUserPrompt(payload: {
   worldName: string;
   worldIntro: string;
@@ -2460,7 +2468,12 @@ function buildMemoryUserPrompt(payload: {
     return [
       "[世界]",
       `名称: ${payload.worldName || "未命名世界"}`,
-      payload.worldIntro ? `简介: ${payload.worldIntro}` : "",
+      "",
+      "[原始全局背景]",
+      payload.worldIntro || "无",
+      "",
+      "[现在全局背景]",
+      payload.worldIntro || "无",
       "",
       "[章节]",
       `标题: ${payload.chapterTitle || "未命名章节"}`,
@@ -2496,6 +2509,12 @@ function buildMemoryUserPrompt(payload: {
   const outputExampleLines = buildFullMemoryOutputExampleLines();
   return [
     ...worldChapterLines,
+    "",
+    "[原始全局背景]",
+    payload.worldIntro || "无",
+    "",
+    "[现在全局背景]",
+    payload.worldIntro || "无",
     "",
     ...currentEventLines,
     "",
