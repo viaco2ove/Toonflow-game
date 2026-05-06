@@ -43,7 +43,7 @@ if (DebugLogUtil.isDebugLogEnabled()) {
 [story:memory:runtime] triggerMemoryAgent
 
 [story:mini_game:agent]: AI故事-小游戏agent 日志
-[story:mini_game:stats]: AI故事-小游戏agent token 统计
+[story:mini_game:stats]: AI故事-小游戏agent token 统计（参考[story:orchestrator:stats]）
 
 ## 后端通用tag
 [debug:revisit:not_found]: 回溯失败
@@ -70,7 +70,7 @@ if (DebugLogUtil.isDebugLogEnabled()) {
 yarn debug:event-chain logs/app-2026-05-01.log 
 
 ## 小游戏日志摘要生成
-yarn debug:mini-game logs/app-2026-05-01.log 
+yarn debug:mini-game logs/app-2026-05-06.log 
 
 
 ## @记忆管理 日志

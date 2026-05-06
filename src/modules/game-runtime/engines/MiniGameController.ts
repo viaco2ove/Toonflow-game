@@ -2112,6 +2112,8 @@ function battleStep(session: JsonRecord, actionId: string, ctx: MiniGameControll
 function evaluateResearchSkillInput(session: JsonRecord, input: MiniGameControllerInput): MiniGameStepResult {
   const publicState = asRecord(session.public_state);
   const plan = normalizeInlineText(input.playerMessage);
+  const narratorName = scalarText(input?.world?.narratorRole?.name) || "旁白";
+  const playerName = scalarText(input?.world?.playerRole?.name) || "用户";
   const skillName = inferSkillName(plan) || "新技能蓝图";
   const mentor = resolveMentionedMentor(publicState, plan);
   const withMentorMessages = (step: MiniGameStepResult): MiniGameStepResult => ({
@@ -2130,6 +2132,7 @@ function evaluateResearchSkillInput(session: JsonRecord, input: MiniGameControll
       narration: "我检查了你的研发准备。当前金币不足 5，无法继续研发技能。",
       resultTags: ["failed", "insufficient_money"],
       memorySummary: "研发技能失败：金币不足",
+      pendingNarrativePlan: buildMiniGameNarrativePlan("研发技能：金币不足", "金币不足，无法继续研发技能", true, narratorName, playerName, "on_mini_game_finish"),
     };
   }
   const synergyHits = countAssetSynergyHits(
@@ -2152,8 +2155,9 @@ function evaluateResearchSkillInput(session: JsonRecord, input: MiniGameControll
   if (score >= 68) {
     session.result = "success";
     session.finish_reason = "研发技能成功";
+    const succNarration = `我检查了你的研发方案。恭喜你获得技能《${skillName}》；理论闭环和稳定性都已经成立，已经可以记入角色参数。`;
     return withMentorMessages({
-      narration: `我检查了你的研发方案。恭喜你获得技能《${skillName}》；理论闭环和稳定性都已经成立，已经可以记入角色参数。`,
+      narration: succNarration,
       resultTags: ["success"],
       rewardSummary: { unlock: skillName },
       writeback: {
@@ -2163,13 +2167,15 @@ function evaluateResearchSkillInput(session: JsonRecord, input: MiniGameControll
         memoryAdd: [`研发技能成功：${skillName}`],
       },
       memorySummary: `研发技能成功：${skillName}`,
+      pendingNarrativePlan: buildMiniGameNarrativePlan("研发技能结算：研发成功", succNarration, true, narratorName, playerName, "on_mini_game_finish"),
     });
   }
   if (score >= 48) {
     session.result = "partial";
     session.finish_reason = "得到技能碎片";
+    const partNarration = `我检查了你的研发方案。你已经摸到了《${skillName}》的雏形，但还差最后一口气；${publicState.last_advice}`;
     return withMentorMessages({
-      narration: `我检查了你的研发方案。你已经摸到了《${skillName}》的雏形，但还差最后一口气；${publicState.last_advice}`,
+      narration: partNarration,
       resultTags: ["partial"],
       rewardSummary: { fragment: skillName },
       writeback: {
@@ -2178,21 +2184,26 @@ function evaluateResearchSkillInput(session: JsonRecord, input: MiniGameControll
         memoryAdd: [`研发得到技能碎片：${skillName}`],
       },
       memorySummary: `研发半成功：${skillName}`,
+      pendingNarrativePlan: buildMiniGameNarrativePlan("研发技能结算：得到技能碎片", partNarration, true, narratorName, playerName, "on_mini_game_finish"),
     });
   }
   session.result = "failed";
   session.finish_reason = "研发失败";
+  const failNarration = `我检查了你的研发方案。研发失败，暂时还无法稳定成型；${publicState.last_advice}`;
   return withMentorMessages({
-    narration: `我检查了你的研发方案。研发失败，暂时还无法稳定成型；${publicState.last_advice}`,
+    narration: failNarration,
     resultTags: ["failed"],
     writeback: { playerParameterPatch: { money: -5 }, memoryAdd: ["一次失败的技能研发尝试"] },
     memorySummary: "研发技能失败",
+    pendingNarrativePlan: buildMiniGameNarrativePlan("研发技能结算：研发失败", failNarration, true, narratorName, playerName, "on_mini_game_finish"),
   });
 }
 
 function evaluateAlchemyInput(session: JsonRecord, input: MiniGameControllerInput): MiniGameStepResult {
   const publicState = asRecord(session.public_state);
   const formula = normalizeInlineText(input.playerMessage);
+  const narratorName = scalarText(input?.world?.narratorRole?.name) || "旁白";
+  const playerName = scalarText(input?.world?.playerRole?.name) || "用户";
   const recipeName = inferPotionName(formula);
   const mentor = resolveMentionedMentor(publicState, formula);
   const withMentorMessages = (step: MiniGameStepResult): MiniGameStepResult => ({
@@ -2213,6 +2224,7 @@ function evaluateAlchemyInput(session: JsonRecord, input: MiniGameControllerInpu
       narration: "我检查了你的炼药准备。当前金币不足 1，无法开炉炼药。",
       resultTags: ["failed", "insufficient_money"],
       memorySummary: "炼药失败：金币不足",
+      pendingNarrativePlan: buildMiniGameNarrativePlan("炼药：金币不足", "金币不足，无法开炉炼药", true, narratorName, playerName, "on_mini_game_finish"),
     });
   }
   if (inferredRecipeLevel > userLevel) {
@@ -2226,6 +2238,7 @@ function evaluateAlchemyInput(session: JsonRecord, input: MiniGameControllerInpu
       narration: `我检查了你的炼药方案。当前丹药等级 lv${inferredRecipeLevel} 超过了你自身等级 lv${userLevel}，本次无法成炉。`,
       resultTags: ["failed", "level_limited"],
       memorySummary: "炼药失败：超出等级限制",
+      pendingNarrativePlan: buildMiniGameNarrativePlan("炼药：丹药等级过高", `丹药等级 lv${inferredRecipeLevel} 超出自身等级 lv${userLevel}`, true, narratorName, playerName, "on_mini_game_finish"),
     });
   }
   const herbSkillLevel = readNamedPracticeLevel(input.state, "药草提纯术", 1);
@@ -2243,8 +2256,9 @@ function evaluateAlchemyInput(session: JsonRecord, input: MiniGameControllerInpu
     session.result = score >= 68 ? "success" : "partial";
     session.finish_reason = "炼药完成";
     const pillName = score >= 68 ? recipeName : `粗炼${recipeName}`;
+    const alchNarration = `我检查了你的炼药方案。恭喜你获得药品《${pillName}》；丹炉状态和药性融合都达到了成药标准。`;
     return withMentorMessages({
-      narration: `我检查了你的炼药方案。恭喜你获得药品《${pillName}》；丹炉状态和药性融合都达到了成药标准。`,
+      narration: alchNarration,
       resultTags: [score >= 68 ? "success" : "partial"],
       rewardSummary: { item: pillName },
       writeback: {
@@ -2254,21 +2268,26 @@ function evaluateAlchemyInput(session: JsonRecord, input: MiniGameControllerInpu
         memoryAdd: [`炼药获得：${pillName}`],
       },
       memorySummary: `炼药完成：${pillName}`,
+      pendingNarrativePlan: buildMiniGameNarrativePlan("炼药结算：炼药完成", alchNarration, true, narratorName, playerName, "on_mini_game_finish"),
     });
   }
   session.result = "failed";
   session.finish_reason = "炼药失败";
+  const alchFailNarration = `我检查了你的炼药方案。炼药失败；${publicState.last_advice}`;
   return withMentorMessages({
-    narration: `我检查了你的炼药方案。炼药失败；${publicState.last_advice}`,
+    narration: alchFailNarration,
     resultTags: ["failed"],
     writeback: { playerParameterPatch: { money: -1 }, memoryAdd: ["一次失败的炼药尝试"] },
     memorySummary: "炼药失败",
+    pendingNarrativePlan: buildMiniGameNarrativePlan("炼药结算：炼药失败", alchFailNarration, true, narratorName, playerName, "on_mini_game_finish"),
   });
 }
 
 function evaluateEquipmentInput(session: JsonRecord, input: MiniGameControllerInput): MiniGameStepResult {
   const publicState = asRecord(session.public_state);
   const plan = normalizeInlineText(input.playerMessage);
+  const narratorName = scalarText(input?.world?.narratorRole?.name) || "旁白";
+  const playerName = scalarText(input?.world?.playerRole?.name) || "用户";
   const mentor = resolveMentionedMentor(publicState, plan);
   const userLevel = readMiniGamePlayerLevel(input.state);
   const withMentorMessages = (target: string, step: MiniGameStepResult): MiniGameStepResult => ({
@@ -2288,6 +2307,7 @@ function evaluateEquipmentInput(session: JsonRecord, input: MiniGameControllerIn
       narration: `我检查了你的锻造/强化方案。当前金币不足 8，无法继续。`,
       resultTags: ["failed", "insufficient_money"],
       memorySummary: "锻造/强化装备失败：金币不足",
+      pendingNarrativePlan: buildMiniGameNarrativePlan("装备升级：金币不足", "金币不足 8，无法继续", true, narratorName, playerName, "on_mini_game_finish"),
     };
   }
   const strengthenSkillLevel = readNamedPracticeLevel(input.state, "装备强化术", 1);
@@ -2298,18 +2318,22 @@ function evaluateEquipmentInput(session: JsonRecord, input: MiniGameControllerIn
   }) || "";
   if (matchedSkill) {
     if (currentMoney < 20) {
+      const skillMoneyNarration = "我检查了你的升级方案。升级技能需要 20 金币，你当前资金不足。";
       return {
-        narration: "我检查了你的升级方案。升级技能需要 20 金币，你当前资金不足。",
+        narration: skillMoneyNarration,
         resultTags: ["failed", "insufficient_money"],
         memorySummary: "升级技能失败：金币不足",
+        pendingNarrativePlan: buildMiniGameNarrativePlan("装备升级：升级技能金币不足", skillMoneyNarration, false, narratorName, playerName),
       };
     }
     const parsedSkill = parseLeveledPracticeName(matchedSkill);
     if (parsedSkill.level >= userLevel) {
+      const skillLevelNarration = `我检查了你的升级方案。${parsedSkill.name} 已达到你当前等级上限 lv${userLevel}，暂时无法继续升级。`;
       return {
-        narration: `我检查了你的升级方案。${parsedSkill.name} 已达到你当前等级上限 lv${userLevel}，暂时无法继续升级。`,
+        narration: skillLevelNarration,
         resultTags: ["failed", "level_limited"],
         memorySummary: "升级技能失败：达到等级上限",
+        pendingNarrativePlan: buildMiniGameNarrativePlan("装备升级：技能等级已满", skillLevelNarration, false, narratorName, playerName),
       };
     }
     const nextSkillName = formatLeveledPracticeName(parsedSkill.name, parsedSkill.level + 1);
@@ -2319,8 +2343,9 @@ function evaluateEquipmentInput(session: JsonRecord, input: MiniGameControllerIn
     session.finish_reason = "升级技能成功";
     publicState.last_result = `技能升级成功：${nextSkillName}`;
     publicState.last_advice = "技能已经提升，建议尽快进行实战检验。";
+    const skillUpNarration = `我检查了你的升级方案。恭喜你成功把 ${parsedSkill.name} 提升到了 ${nextSkillName}。`;
     return withMentorMessages(parsedSkill.name, {
-      narration: `我检查了你的升级方案。恭喜你成功把 ${parsedSkill.name} 提升到了 ${nextSkillName}。`,
+      narration: skillUpNarration,
       resultTags: ["success", "skill_upgrade"],
       rewardSummary: { skill: nextSkillName },
       writeback: {
@@ -2329,6 +2354,7 @@ function evaluateEquipmentInput(session: JsonRecord, input: MiniGameControllerIn
         memoryAdd: [`技能升级成功：${nextSkillName}`],
       },
       memorySummary: `技能升级成功：${nextSkillName}`,
+      pendingNarrativePlan: buildMiniGameNarrativePlan("装备升级结算：技能升级成功", skillUpNarration, true, narratorName, playerName, "on_mini_game_finish"),
     });
   }
   const candidates = collectPlayerEquipmentNames(input.state);
@@ -2346,11 +2372,13 @@ function evaluateEquipmentInput(session: JsonRecord, input: MiniGameControllerIn
     const recommend = candidates[0] ? `你没有这件装备，要不试试升级 ${candidates[0]} 吧。` : "你当前没有可升级的装备，先准备一件装备再来。";
     publicState.last_result = "没有对应装备";
     publicState.last_advice = recommend;
+    const noMatchNarration = `我检查了你的升级方案。不好意思，你没有这个装备；${recommend}`;
     return {
-      narration: `我检查了你的升级方案。不好意思，你没有这个装备；${recommend}`,
+      narration: noMatchNarration,
       resultTags: ["failed"],
       writeback: { memoryAdd: ["一次未命中目标装备的强化尝试"] },
       memorySummary: "升级装备失败：未找到目标装备",
+      pendingNarrativePlan: buildMiniGameNarrativePlan("装备升级：找不到目标装备", noMatchNarration, true, narratorName, playerName, "on_mini_game_finish"),
     };
   }
   if (currentMoney < 1) {
@@ -2360,32 +2388,40 @@ function evaluateEquipmentInput(session: JsonRecord, input: MiniGameControllerIn
     session.finish_reason = "金币不足";
     publicState.last_result = "升级失败：金币不足";
     publicState.last_advice = "升级装备每次至少需要 1 金币。";
+    const equipMoneyNarration = "我检查了你的升级方案。当前金币不足 1，无法启动强化流程。";
     return {
-      narration: "我检查了你的升级方案。当前金币不足 1，无法启动强化流程。",
+      narration: equipMoneyNarration,
       resultTags: ["failed", "insufficient_money"],
       memorySummary: "升级装备失败：金币不足",
+      pendingNarrativePlan: buildMiniGameNarrativePlan("装备升级：金币不足", equipMoneyNarration, true, narratorName, playerName, "on_mini_game_finish"),
     };
   }
   const currentEquipmentLevel = parseEquipmentLevel(matched);
   if (currentEquipmentLevel >= userLevel) {
+    const equipLevelNarration = `我检查了你的升级方案。${matched} 升级后会超过你当前等级 lv${userLevel}，现在无法继续强化。`;
     return {
-      narration: `我检查了你的升级方案。${matched} 升级后会超过你当前等级 lv${userLevel}，现在无法继续强化。`,
+      narration: equipLevelNarration,
       resultTags: ["failed", "level_limited"],
       memorySummary: `升级装备失败：${matched} 超出用户等级`,
+      pendingNarrativePlan: buildMiniGameNarrativePlan("装备升级：超过等级上限", equipLevelNarration, false, narratorName, playerName),
     };
   }
   if (currentEquipmentLevel >= strengthenSkillLevel) {
+    const skillLimitNarration = `我检查了你的升级方案。你当前的装备强化术仅为 lv${strengthenSkillLevel}，还不足以继续强化 ${matched}。`;
     return {
-      narration: `我检查了你的升级方案。你当前的装备强化术仅为 lv${strengthenSkillLevel}，还不足以继续强化 ${matched}。`,
+      narration: skillLimitNarration,
       resultTags: ["failed", "skill_limited"],
       memorySummary: `升级装备失败：${matched} 超出强化术等级`,
+      pendingNarrativePlan: buildMiniGameNarrativePlan("装备升级：强化术等级不足", skillLimitNarration, false, narratorName, playerName),
     };
   }
   if (!hasPlayerItemLike(input.state, "矿石") && !hasPlayerItemLike(input.state, "强化石")) {
+    const missingNarration = "我检查了你的升级方案。当前缺少矿石或强化石，无法完成这次强化。";
     return {
-      narration: "我检查了你的升级方案。当前缺少矿石或强化石，无法完成这次强化。",
+      narration: missingNarration,
       resultTags: ["failed", "missing_material"],
       memorySummary: "升级装备失败：缺少强化材料",
+      pendingNarrativePlan: buildMiniGameNarrativePlan("装备升级：缺少材料", missingNarration, false, narratorName, playerName),
     };
   }
   const consumedMaterial = hasPlayerItemLike(input.state, "强化石")
@@ -2400,8 +2436,9 @@ function evaluateEquipmentInput(session: JsonRecord, input: MiniGameControllerIn
     const upgraded = upgradeEquipmentName(matched, affix);
     publicState.last_result = `升级成功：${upgraded}`;
     publicState.last_advice = "建议再进行一次实战检验，确认附魔是否稳定。";
+    const equipSuccNarration = `我检查了你的升级方案。恭喜你升级成功，${matched} 已提升为 ${upgraded}。`;
     return withMentorMessages(matched, {
-      narration: `我检查了你的升级方案。恭喜你升级成功，${matched} 已提升为 ${upgraded}。`,
+      narration: equipSuccNarration,
       resultTags: [score >= 78 ? "perfect" : "success"],
       rewardSummary: { equipment: upgraded },
       writeback: {
@@ -2413,14 +2450,16 @@ function evaluateEquipmentInput(session: JsonRecord, input: MiniGameControllerIn
         memoryAdd: [`装备升级成功：${upgraded}`],
       },
       memorySummary: `装备升级成功：${upgraded}`,
+      pendingNarrativePlan: buildMiniGameNarrativePlan("装备升级结算：升级成功", equipSuccNarration, true, narratorName, playerName, "on_mini_game_finish"),
     });
   }
   session.result = "failed";
   session.finish_reason = "升级装备失败";
   publicState.last_result = "升级失败";
   publicState.last_advice = buildTextMiniGameAdvice("upgrade_equipment", plan);
+  const equipFailNarration = `我检查了你的升级方案。升级失败；${publicState.last_advice}`;
   return withMentorMessages(matched, {
-    narration: `我检查了你的升级方案。升级失败；${publicState.last_advice}`,
+    narration: equipFailNarration,
     resultTags: ["failed"],
     writeback: {
       parameterCardItemRemove: [consumedMaterial],
@@ -2429,6 +2468,7 @@ function evaluateEquipmentInput(session: JsonRecord, input: MiniGameControllerIn
       memoryAdd: [`一次失败的装备升级尝试：${matched}`],
     },
     memorySummary: `装备升级失败：${matched}`,
+    pendingNarrativePlan: buildMiniGameNarrativePlan("装备升级结算：升级失败", equipFailNarration, true, narratorName, playerName, "on_mini_game_finish"),
   });
 }
 
@@ -3220,12 +3260,13 @@ function finalizeWerewolfVote(session: JsonRecord, votedOut: string): string {
     : `${votedOut} 被票出局。${nextRoundNarration}`;
 }
 
-function werewolfStep(session: JsonRecord, actionId: string): MiniGameStepResult {
+function werewolfStep(session: JsonRecord, actionId: string, ctx: MiniGameControllerInput): MiniGameStepResult {
   const phase = normalizePhase(session.phase, "day_discussion");
   const publicState = asRecord(session.public_state);
   const hidden = asRecord(session.hidden_state);
   const roleMap = asRecord(hidden.role_map);
-  const playerName = werewolfPlayerName(session);
+  const playerName = scalarText(ctx?.world?.playerRole?.name) || "用户";
+  const narratorName = scalarText(ctx?.world?.narratorRole?.name) || "旁白";
   const playerAlive = isWerewolfPlayerAlive(session);
   if (!Array.isArray(publicState.alive_list) || !publicState.alive_list.length) {
     publicState.alive_list = asArray<JsonRecord>(session.participants).filter((item) => item.alive !== false).map((item) => item.role_name);
@@ -3234,9 +3275,11 @@ function werewolfStep(session: JsonRecord, actionId: string): MiniGameStepResult
     const history = asArray<any>(publicState.public_vote_history)
       .map((item) => `第${item.round}轮：${item.votedOut}`)
       .join("；");
+    const wolfRecNarration = `当前存活：${asArray<string>(publicState.alive_list).join("、")}。昨夜结果：${scalarText(publicState.last_night_result) || "暂无"}。公开记录：${history || "暂无"}。`;
     return {
-      narration: `当前存活：${asArray<string>(publicState.alive_list).join("、")}。昨夜结果：${scalarText(publicState.last_night_result) || "暂无"}。公开记录：${history || "暂无"}。`,
+      narration: wolfRecNarration,
       resultTags: ["view_record"],
+      pendingNarrativePlan: buildMiniGameNarrativePlan("狼人杀播报：查看记录", wolfRecNarration, false, narratorName, playerName),
     };
   }
   if (!playerAlive) {
@@ -3244,18 +3287,24 @@ function werewolfStep(session: JsonRecord, actionId: string): MiniGameStepResult
       if (phase === "day_vote") {
         const voteRound = resolveWerewolfVoteRound(session, "");
         const narration = `${voteRound.narration}${finalizeWerewolfVote(session, voteRound.votedOut)}`;
-        return withWerewolfFinishReward(session, { narration, resultTags: ["spectator_continue", "vote"] });
+        const isWolfFinished = scalarText(session.status) === "finished";
+        return withWerewolfFinishReward(session, { narration, resultTags: ["spectator_continue", "vote"], pendingNarrativePlan: buildMiniGameNarrativePlan("狼人杀播报：旁观投票结算", narration, isWolfFinished, narratorName, playerName, isWolfFinished ? "on_mini_game_finish" : undefined) });
       }
       if (phase === "day_discussion") {
         session.phase = "day_vote";
+        const wolfDiscNarration = `${buildWerewolfDiscussionNarration(session, false)}你已出局，本轮将以旁观身份观看投票结算。`;
         return {
-          narration: `${buildWerewolfDiscussionNarration(session, false)}你已出局，本轮将以旁观身份观看投票结算。`,
+          narration: wolfDiscNarration,
           resultTags: ["spectator_continue", "discussion"],
+          pendingNarrativePlan: buildMiniGameNarrativePlan("狼人杀播报：旁观讨论", wolfDiscNarration, false, narratorName, playerName),
         };
       }
+      const specNarration = finishWerewolfNightAfterPlayerAction(session);
+      const isWolfFinished = scalarText(session.status) === "finished";
       return withWerewolfFinishReward(session, {
-        narration: finishWerewolfNightAfterPlayerAction(session),
+        narration: specNarration,
         resultTags: ["spectator_continue"],
+        pendingNarrativePlan: buildMiniGameNarrativePlan("狼人杀播报：旁观继续", specNarration, isWolfFinished, narratorName, playerName, isWolfFinished ? "on_mini_game_finish" : undefined),
       });
     }
     return { narration: "你已经出局，本局只能继续旁观或查看记录。", resultTags: ["spectator_blocked"] };
@@ -3264,16 +3313,22 @@ function werewolfStep(session: JsonRecord, actionId: string): MiniGameStepResult
     if (actionId.startsWith("kill:")) {
       const target = actionId.slice(5);
       hidden.wolf_target = target;
+      const wolfKillNarration = finishWerewolfNightAfterPlayerAction(session);
+      const isWolfFinished = scalarText(session.status) === "finished";
       return withWerewolfFinishReward(session, {
-        narration: finishWerewolfNightAfterPlayerAction(session),
+        narration: wolfKillNarration,
         resultTags: ["night_kill"],
+        pendingNarrativePlan: buildMiniGameNarrativePlan("狼人杀播报：狼人行动", wolfKillNarration, isWolfFinished, narratorName, playerName, isWolfFinished ? "on_mini_game_finish" : undefined),
       });
     }
     if (actionId === "skip_kill") {
       hidden.wolf_target = "";
+      const wolfSkipNarration = finishWerewolfNightAfterPlayerAction(session);
+      const isWolfFinished = scalarText(session.status) === "finished";
       return withWerewolfFinishReward(session, {
-        narration: finishWerewolfNightAfterPlayerAction(session),
+        narration: wolfSkipNarration,
         resultTags: ["skip_kill"],
+        pendingNarrativePlan: buildMiniGameNarrativePlan("狼人杀播报：狼人跳过", wolfSkipNarration, isWolfFinished, narratorName, playerName, isWolfFinished ? "on_mini_game_finish" : undefined),
       });
     }
   }
@@ -3283,15 +3338,21 @@ function werewolfStep(session: JsonRecord, actionId: string): MiniGameStepResult
       const targetRole = scalarText(roleMap[target]) || "村民";
       hidden.seer_last_check = target;
       hidden.seer_last_role = targetRole;
+      const seerCheckNarration = `你查验了 ${target}，对方阵营为：${targetRole}。${finishWerewolfNightAfterPlayerAction(session)}`;
+      const isWolfFinished = scalarText(session.status) === "finished";
       return withWerewolfFinishReward(session, {
-        narration: `你查验了 ${target}，对方阵营为：${targetRole}。${finishWerewolfNightAfterPlayerAction(session)}`,
+        narration: seerCheckNarration,
         resultTags: ["seer_check"],
+        pendingNarrativePlan: buildMiniGameNarrativePlan("狼人杀播报：预言家查验", seerCheckNarration, isWolfFinished, narratorName, playerName, isWolfFinished ? "on_mini_game_finish" : undefined),
       });
     }
     if (actionId === "skip_check") {
+      const seerSkipNarration = finishWerewolfNightAfterPlayerAction(session);
+      const isWolfFinished = scalarText(session.status) === "finished";
       return withWerewolfFinishReward(session, {
-        narration: finishWerewolfNightAfterPlayerAction(session),
+        narration: seerSkipNarration,
         resultTags: ["skip_check"],
+        pendingNarrativePlan: buildMiniGameNarrativePlan("狼人杀播报：预言家跳过", seerSkipNarration, isWolfFinished, narratorName, playerName, isWolfFinished ? "on_mini_game_finish" : undefined),
       });
     }
   }
@@ -3303,9 +3364,12 @@ function werewolfStep(session: JsonRecord, actionId: string): MiniGameStepResult
       }
       hidden.saved_target = target;
       hidden.witch_save_used = true;
+      const witchSaveNarration = finishWerewolfNightAfterPlayerAction(session);
+      const isWolfFinished = scalarText(session.status) === "finished";
       return withWerewolfFinishReward(session, {
-        narration: finishWerewolfNightAfterPlayerAction(session),
+        narration: witchSaveNarration,
         resultTags: ["witch_save"],
+        pendingNarrativePlan: buildMiniGameNarrativePlan("狼人杀播报：女巫救人", witchSaveNarration, isWolfFinished, narratorName, playerName, isWolfFinished ? "on_mini_game_finish" : undefined),
       });
     }
     if (actionId.startsWith("poison:")) {
@@ -3315,15 +3379,21 @@ function werewolfStep(session: JsonRecord, actionId: string): MiniGameStepResult
       }
       hidden.poison_target = target;
       hidden.witch_poison_used = true;
+      const witchPoisonNarration = finishWerewolfNightAfterPlayerAction(session);
+      const isWolfFinished = scalarText(session.status) === "finished";
       return withWerewolfFinishReward(session, {
-        narration: finishWerewolfNightAfterPlayerAction(session),
+        narration: witchPoisonNarration,
         resultTags: ["witch_poison"],
+        pendingNarrativePlan: buildMiniGameNarrativePlan("狼人杀播报：女巫下毒", witchPoisonNarration, isWolfFinished, narratorName, playerName, isWolfFinished ? "on_mini_game_finish" : undefined),
       });
     }
     if (actionId === "skip_witch") {
+      const witchSkipNarration = finishWerewolfNightAfterPlayerAction(session);
+      const isWolfFinished = scalarText(session.status) === "finished";
       return withWerewolfFinishReward(session, {
-        narration: finishWerewolfNightAfterPlayerAction(session),
+        narration: witchSkipNarration,
         resultTags: ["skip_witch"],
+        pendingNarrativePlan: buildMiniGameNarrativePlan("狼人杀播报：女巫跳过", witchSkipNarration, isWolfFinished, narratorName, playerName, isWolfFinished ? "on_mini_game_finish" : undefined),
       });
     }
   }
@@ -3332,23 +3402,29 @@ function werewolfStep(session: JsonRecord, actionId: string): MiniGameStepResult
       const history = asArray<any>(publicState.public_vote_history)
         .map((item) => `第${item.round}轮：${item.votedOut}`)
         .join("；");
+      const wolfDayRecNarration = `当前存活：${asArray<string>(publicState.alive_list).join("、")}。昨夜结果：${scalarText(publicState.last_night_result) || "暂无"}。公开记录：${history || "暂无"}。`;
       return {
-        narration: `当前存活：${asArray<string>(publicState.alive_list).join("、")}。昨夜结果：${scalarText(publicState.last_night_result) || "暂无"}。公开记录：${history || "暂无"}。`,
+        narration: wolfDayRecNarration,
         resultTags: ["view_record"],
+        pendingNarrativePlan: buildMiniGameNarrativePlan("狼人杀播报：查看记录", wolfDayRecNarration, false, narratorName, playerName),
       };
     }
     if (actionId === "begin_vote") {
       session.phase = "day_vote";
+      const wolfBeginVoteNarration = `${buildWerewolfDiscussionNarration(session, false)}请选择你要票出的对象。`;
       return {
-        narration: `${buildWerewolfDiscussionNarration(session, false)}请选择你要票出的对象。`,
+        narration: wolfBeginVoteNarration,
         resultTags: ["begin_vote"],
+        pendingNarrativePlan: buildMiniGameNarrativePlan("狼人杀播报：开始投票", wolfBeginVoteNarration, false, narratorName, playerName),
       };
     }
     if (actionId === "speak") {
       session.phase = "day_vote";
+      const wolfSpeakNarration = `${buildWerewolfDiscussionNarration(session, true)}请选择你要票出的对象。`;
       return {
-        narration: `${buildWerewolfDiscussionNarration(session, true)}请选择你要票出的对象。`,
+        narration: wolfSpeakNarration,
         resultTags: ["speak"],
+        pendingNarrativePlan: buildMiniGameNarrativePlan("狼人杀播报：发言后开始投票", wolfSpeakNarration, false, narratorName, playerName),
       };
     }
   }
@@ -3357,18 +3433,21 @@ function werewolfStep(session: JsonRecord, actionId: string): MiniGameStepResult
       const voteTarget = actionId.slice(5);
       const voteRound = resolveWerewolfVoteRound(session, voteTarget);
       const narration = `${voteRound.narration}${finalizeWerewolfVote(session, voteRound.votedOut)}`;
-      return withWerewolfFinishReward(session, { narration, resultTags: ["vote"] });
+      const isWolfFinished = scalarText(session.status) === "finished";
+      return withWerewolfFinishReward(session, { narration, resultTags: ["vote"], pendingNarrativePlan: buildMiniGameNarrativePlan("狼人杀播报：投票结算", narration, isWolfFinished, narratorName, playerName, isWolfFinished ? "on_mini_game_finish" : undefined) });
     }
     if (actionId === "abstain") {
       const voteRound = resolveWerewolfVoteRound(session, "弃票");
       const narration = `${voteRound.narration}${finalizeWerewolfVote(session, voteRound.votedOut)}`;
-      return withWerewolfFinishReward(session, { narration, resultTags: ["abstain"] });
+      const isWolfFinished = scalarText(session.status) === "finished";
+      return withWerewolfFinishReward(session, { narration, resultTags: ["abstain"], pendingNarrativePlan: buildMiniGameNarrativePlan("狼人杀播报：弃票结算", narration, isWolfFinished, narratorName, playerName, isWolfFinished ? "on_mini_game_finish" : undefined) });
     }
     if (actionId === "view_record") {
       const history = asArray<any>(publicState.public_vote_history)
         .map((item) => `第${item.round}轮：${item.votedOut}`)
         .join("；");
-      return { narration: `当前公开投票记录：${history || "暂无"}。存活：${asArray<string>(publicState.alive_list).join("、")}。`, resultTags: ["view_record"] };
+      const wolfVoteRecNarration = `当前公开投票记录：${history || "暂无"}。存活：${asArray<string>(publicState.alive_list).join("、")}。`;
+      return { narration: wolfVoteRecNarration, resultTags: ["view_record"], pendingNarrativePlan: buildMiniGameNarrativePlan("狼人杀播报：查看投票记录", wolfVoteRecNarration, false, narratorName, playerName) };
     }
   }
   return { narration: "当前阶段无法执行该动作，请从合法动作里选择。", resultTags: ["invalid"] };
@@ -3473,9 +3552,11 @@ function resolveFishingRound(session: JsonRecord, siteName: string): MiniGameSte
   };
 }
 
-function fishingStep(session: JsonRecord, actionId: string): MiniGameStepResult {
+function fishingStep(session: JsonRecord, actionId: string, ctx: MiniGameControllerInput): MiniGameStepResult {
   const publicState = asRecord(session.public_state);
   const hidden = asRecord(session.hidden_state);
+  const narratorName = scalarText(ctx?.world?.narratorRole?.name) || "旁白";
+  const playerName = scalarText(ctx?.world?.playerRole?.name) || "用户";
   const currentPhase = normalizePhase(session.phase, "prepare");
   const siteName = scalarText(publicState.site_name) || "水面";
   if (actionId === "finish") {
@@ -3484,15 +3565,17 @@ function fishingStep(session: JsonRecord, actionId: string): MiniGameStepResult 
     session.result = scalarText(publicState.last_reward) ? "completed" : "cancelled";
     session.finish_reason = "用户结束钓鱼";
     publicState.current_status = "已结束";
+    const fishFinNarration = scalarText(publicState.last_reward)
+      ? `你收起鱼竿，带着 ${scalarText(publicState.last_reward)} 结束了这次钓鱼。`
+      : "你收起鱼竿，结束了这次钓鱼。";
     return {
-      narration: scalarText(publicState.last_reward)
-        ? `你收起鱼竿，带着 ${scalarText(publicState.last_reward)} 结束了这次钓鱼。`
-        : "你收起鱼竿，结束了这次钓鱼。",
+      narration: fishFinNarration,
       resultTags: ["finish"],
       rewardSummary: scalarText(publicState.last_reward) ? { loot: scalarText(publicState.last_reward) } : {},
       memorySummary: scalarText(publicState.last_reward)
         ? `钓鱼结束，最近收获 ${scalarText(publicState.last_reward)}`
         : "钓鱼提前结束",
+      pendingNarrativePlan: buildMiniGameNarrativePlan("钓鱼结算：结束钓鱼", fishFinNarration, true, narratorName, playerName, "on_mini_game_finish"),
     };
   }
   if (currentPhase === "prepare" || currentPhase === "result") {
@@ -3504,12 +3587,14 @@ function fishingStep(session: JsonRecord, actionId: string): MiniGameStepResult 
       publicState.last_reward = "";
       publicState.exp_reward = resolveFishingExpGain(Math.max(1, Number(publicState.user_level || 1)), session);
       hidden.encounter_roll = takeRng(session, 1, 100);
-      return resolveFishingRound(session, siteName);
+      const fishRound = resolveFishingRound(session, siteName);
+      return { ...fishRound, pendingNarrativePlan: fishRound.pendingNarrativePlan || buildMiniGameNarrativePlan("钓鱼播报", fishRound.narration || "", false, narratorName, playerName) };
     }
   }
   if (currentPhase === "waiting") {
     if (actionId === "wait_more" || actionId === "cast") {
-      return resolveFishingRound(session, siteName);
+      const fishRound = resolveFishingRound(session, siteName);
+      return { ...fishRound, pendingNarrativePlan: fishRound.pendingNarrativePlan || buildMiniGameNarrativePlan("钓鱼播报", fishRound.narration || "", false, narratorName, playerName) };
     }
   }
   return { narration: "当前阶段无法执行该动作。", resultTags: ["invalid"] };
@@ -3548,6 +3633,8 @@ function cultivationOptions(session?: JsonRecord): MiniGameActionOption[] {
 function cultivationStep(session: JsonRecord, actionId: string, ctx: MiniGameControllerInput): MiniGameStepResult {
   const publicState = asRecord(session.public_state);
   const hidden = asRecord(session.hidden_state);
+  const narratorName = scalarText(ctx?.world?.narratorRole?.name) || "旁白";
+  const playerName = scalarText(ctx?.world?.playerRole?.name) || "用户";
   const currentTarget = () => scalarText(publicState.current_method) || scalarText(asArray<string>(publicState.available_practices)[0]) || "基础功法";
   const practiceKind = (target: string) => (asArray<string>(publicState.available_skills).includes(target) ? "skill" : "method");
   const currentMentor = () => {
@@ -3598,6 +3685,7 @@ function cultivationStep(session: JsonRecord, actionId: string, ctx: MiniGameCon
       rewardSummary: { exp: expGain, practice: target, practiceLevel, levelUps },
       writeback: buildPracticeReward(target, expGain, kind),
       memorySummary: `修炼${target}获得经验 ${expGain}`,
+      pendingNarrativePlan: buildMiniGameNarrativePlan(`修炼播报：${narration}`, narration, false, narratorName, playerName),
     };
   };
   const add = (field: string, delta: number, min = 0, max = 100) => {
@@ -3620,18 +3708,22 @@ function cultivationStep(session: JsonRecord, actionId: string, ctx: MiniGameCon
   }
   if (actionId === "choose_mentor") {
     const mentors = asArray<string>(publicState.available_mentors);
+    const narration = mentors.length
+      ? `可以选择这些角色陪练或指导：${mentors.join("、")}。如果不需要陪练，直接说"不需要陪练"。`
+      : "当前没有可选陪练角色。你可以直接选择基础功法、基础体术或基础冥想开始修炼。";
     return {
-      narration: mentors.length
-        ? `可以选择这些角色陪练或指导：${mentors.join("、")}。如果不需要陪练，直接说“不需要陪练”。`
-        : "当前没有可选陪练角色。你可以直接选择基础功法、基础体术或基础冥想开始修炼。",
+      narration,
       resultTags: ["mentor_prompt"],
+      pendingNarrativePlan: buildMiniGameNarrativePlan("修炼：提示选择陪练角色", narration, false, narratorName, playerName),
     };
   }
   if (actionId === "no_mentor") {
     publicState.mentor = "无";
+    const narration = `本轮独自修炼。请选择修炼目标：${asArray<string>(publicState.available_practices).join("、") || "基础功法、基础体术、基础冥想"}。`;
     return {
-      narration: `本轮独自修炼。请选择修炼目标：${asArray<string>(publicState.available_practices).join("、") || "基础功法、基础体术、基础冥想"}。`,
+      narration,
       resultTags: ["mentor_skipped"],
+      pendingNarrativePlan: buildMiniGameNarrativePlan("修炼：选择独自修炼", narration, false, narratorName, playerName),
     };
   }
   if (actionId === "breathe") {
@@ -3652,7 +3744,8 @@ function cultivationStep(session: JsonRecord, actionId: string, ctx: MiniGameCon
     }
     hidden.pill_used = true;
     add("qi", 25); add("stability", -5); addHidden("deviation_risk", 8); session.round = Number(session.round || 1) + 1;
-    return { narration: `丹药化开，你的灵气暴涨，但也让经脉承受了更多压力。`, resultTags: ["take_pill"] };
+    const pillNarration = `丹药化开，你的灵气暴涨，但也让经脉承受了更多压力。`;
+    return { narration: pillNarration, resultTags: ["take_pill"], pendingNarrativePlan: buildMiniGameNarrativePlan("修炼播报：服用丹药", pillNarration, false, narratorName, playerName) };
   }
   if (actionId === "breakthrough") {
     const qi = Number(publicState.qi || 0);
@@ -3670,8 +3763,9 @@ function cultivationStep(session: JsonRecord, actionId: string, ctx: MiniGameCon
         session.phase = "settling";
         session.result = "success";
         session.finish_reason = "突破成功";
+        const btNarration = "你抓住了突破契机，经脉顺畅贯通，这次修炼突破成功，并在破境时获得了一层新的感悟。";
         return {
-          narration: "你抓住了突破契机，经脉顺畅贯通，这次修炼突破成功，并在破境时获得了一层新的感悟。",
+          narration: btNarration,
           resultTags: ["success", "breakthrough"],
           rewardSummary: { exp: 60, realmProgress: 1, insight: 20 },
           writeback: {
@@ -3683,9 +3777,10 @@ function cultivationStep(session: JsonRecord, actionId: string, ctx: MiniGameCon
             memoryAdd: ["修炼突破成功", "修炼时获得新感悟"],
           },
           memorySummary: "本次修炼突破成功",
+          pendingNarrativePlan: buildMiniGameNarrativePlan("修炼结算：突破成功", btNarration, true, narratorName, playerName, "on_mini_game_finish"),
         };
       }
-      return { narration: `你强行冲关，突破进度推进到了 ${publicState.breakthrough_progress}。`, resultTags: ["breakthrough"] };
+      return { narration: `你强行冲关，突破进度推进到了 ${publicState.breakthrough_progress}。`, resultTags: ["breakthrough"], pendingNarrativePlan: buildMiniGameNarrativePlan("修炼播报：冲关中", `突破进度推进到了 ${publicState.breakthrough_progress}`, false, narratorName, playerName) };
     }
     addHidden("deviation_risk", 20);
     add("stability", -10);
@@ -3696,14 +3791,16 @@ function cultivationStep(session: JsonRecord, actionId: string, ctx: MiniGameCon
       session.phase = "settling";
       session.result = "failed";
       session.finish_reason = "走火入魔";
+      const devNarration = "你在条件不足时强行冲关，气息紊乱，修炼以失败告终。";
       return {
-        narration: "你在条件不足时强行冲关，气息紊乱，修炼以失败告终。",
+        narration: devNarration,
         resultTags: ["failed", "deviation"],
         writeback: { playerAttributePatch: { fatigue: 25 }, flagsPatch: { cultivation_debuff: true }, memoryAdd: ["修炼冲关失败"] },
         memorySummary: "修炼冲关失败",
+        pendingNarrativePlan: buildMiniGameNarrativePlan("修炼结算：走火入魔", devNarration, true, narratorName, playerName, "on_mini_game_finish"),
       };
     }
-    return { narration: "这次冲关准备仍然不足，你感到经脉微微刺痛，只能暂时压住反噬。", resultTags: ["risky_breakthrough"] };
+    return { narration: "这次冲关准备仍然不足，你感到经脉微微刺痛，只能暂时压住反噬。", resultTags: ["risky_breakthrough"], pendingNarrativePlan: buildMiniGameNarrativePlan("修炼播报：冲关风险", "冲关准备不足，经脉刺痛", false, narratorName, playerName) };
   }
   if (actionId === "finish") {
     const expGain = Math.max(10, Math.floor(Number(publicState.breakthrough_progress || 0) / 4));
@@ -3712,8 +3809,9 @@ function cultivationStep(session: JsonRecord, actionId: string, ctx: MiniGameCon
     session.phase = "settling";
     session.result = "partial";
     session.finish_reason = "安全收功";
+    const finNarration = "你选择稳妥收功，把本轮修炼成果沉淀下来，也顺势理清了几分修行感悟。";
     return {
-      narration: "你选择稳妥收功，把本轮修炼成果沉淀下来，也顺势理清了几分修行感悟。",
+      narration: finNarration,
       resultTags: ["finish"],
       rewardSummary: { exp: expGain, insight: insightGain },
       writeback: {
@@ -3722,6 +3820,7 @@ function cultivationStep(session: JsonRecord, actionId: string, ctx: MiniGameCon
         memoryAdd: ["一次稳妥收功的修炼", "修炼收功后整理出新的感悟"],
       },
       memorySummary: "本次修炼平稳收功",
+      pendingNarrativePlan: buildMiniGameNarrativePlan("修炼结算：安全收功", finNarration, true, narratorName, playerName, "on_mini_game_finish"),
     };
   }
   return { narration: "当前无法执行该动作。", resultTags: ["invalid"] };
@@ -3797,9 +3896,11 @@ function alchemyOptions(session?: JsonRecord): MiniGameActionOption[] {
   return [];
 }
 
-function alchemyStep(session: JsonRecord, actionId: string): MiniGameStepResult {
+function alchemyStep(session: JsonRecord, actionId: string, ctx: MiniGameControllerInput): MiniGameStepResult {
   const publicState = asRecord(session.public_state);
   const hidden = asRecord(session.hidden_state);
+  const narratorName = scalarText(ctx?.world?.narratorRole?.name) || "旁白";
+  const playerName = scalarText(ctx?.world?.playerRole?.name) || "用户";
   const add = (field: string, delta: number, min = 0, max = 120) => {
     publicState[field] = clamp(Number(publicState[field] || 0) + delta, min, max);
   };
@@ -3819,19 +3920,21 @@ function alchemyStep(session: JsonRecord, actionId: string): MiniGameStepResult 
     session.result = quality >= 70 ? "success" : quality >= 45 ? "partial" : "failed";
     session.finish_reason = session.result === "success" ? "成功成丹" : session.result === "partial" ? "勉强成丹" : "炼制失败";
     const pillName = quality >= 85 ? "上品丹药" : quality >= 70 ? "成品丹药" : quality >= 45 ? "残次丹药" : "报废药液";
-      return {
-        narration: session.result === "failed" ? "你尝试凝丹，但药液失稳，最终炼制失败。" : `炉火渐稳，最终凝出了一枚 ${pillName}。`,
-        resultTags: [session.result],
-        rewardSummary: session.result === "failed" ? {} : { item: pillName },
-        writeback: session.result === "failed"
-          ? { memoryAdd: ["一次失败的炼药尝试"] }
-          : {
-            inventoryAdd: [{ kind: "pill", name: pillName }],
-            parameterCardItemAdd: [pillName],
-            memoryAdd: [`炼制获得：${pillName}`],
-          },
-        memorySummary: session.result === "failed" ? "炼药失败" : `炼药完成：${pillName}`,
-      };
+    const alchCondNarration = session.result === "failed" ? "你尝试凝丹，但药液失稳，最终炼制失败。" : `炉火渐稳，最终凝出了一枚 ${pillName}。`;
+    return {
+      narration: alchCondNarration,
+      resultTags: [session.result],
+      rewardSummary: session.result === "failed" ? {} : { item: pillName },
+      writeback: session.result === "failed"
+        ? { memoryAdd: ["一次失败的炼药尝试"] }
+        : {
+          inventoryAdd: [{ kind: "pill", name: pillName }],
+          parameterCardItemAdd: [pillName],
+          memoryAdd: [`炼制获得：${pillName}`],
+        },
+      memorySummary: session.result === "failed" ? "炼药失败" : `炼药完成：${pillName}`,
+      pendingNarrativePlan: buildMiniGameNarrativePlan("炼药结算：凝丹", alchCondNarration, true, narratorName, playerName, "on_mini_game_finish"),
+    };
   } else return { narration: "当前无法执行该动作。", resultTags: ["invalid"] };
 
   if (Number(publicState.heat || 0) - Number(hidden.target_heat || 65) > 20) {
@@ -3843,10 +3946,12 @@ function alchemyStep(session: JsonRecord, actionId: string): MiniGameStepResult 
     session.phase = "settling";
     session.result = "failed";
     session.finish_reason = Number(publicState.toxicity || 0) >= 100 ? "炸炉失败" : "药液报废";
-    return { narration: "炉火与药性彻底失控，本轮炼药失败。", resultTags: ["failed"], memorySummary: "炼药失败" };
+    const alchFailNarration = "炉火与药性彻底失控，本轮炼药失败。";
+    return { narration: alchFailNarration, resultTags: ["failed"], memorySummary: "炼药失败", pendingNarrativePlan: buildMiniGameNarrativePlan("炼药结算：炼药失败", alchFailNarration, true, narratorName, playerName, "on_mini_game_finish") };
   }
   session.round = Number(session.round || 1) + 1;
-  return { narration: `火候 ${publicState.heat}，纯度 ${publicState.purity}，融合 ${publicState.fusion}，毒性 ${publicState.toxicity}。`, resultTags: [actionId] };
+  const alchProgressNarration = `火候 ${publicState.heat}，纯度 ${publicState.purity}，融合 ${publicState.fusion}，毒性 ${publicState.toxicity}。`;
+  return { narration: alchProgressNarration, resultTags: [actionId], pendingNarrativePlan: buildMiniGameNarrativePlan("炼药播报", alchProgressNarration, false, narratorName, playerName) };
 }
 
 function miningOptions(session?: JsonRecord): MiniGameActionOption[] {
@@ -3897,9 +4002,53 @@ function resolveMiningRewards(session: JsonRecord, oreAmount: number): { itemNam
   };
 }
 
+/**
+ * 构建小游戏通用的 pendingNarrativePlan，让播报走编排→发言→语音流程。
+ * 所有小游戏 step 函数都应使用此辅助函数，确保播报流程统一。
+ *
+ * @param motiveText 编排动机描述
+ * @param presetContent 预设内容（作为旁白播报的参考）
+ * @param isFinished 小游戏是否已结束
+ * @param narratorName 旁白角色名
+ * @param playerName 用户角色名
+ * @param eventType 事件类型，进行中为 "on_mini_game"，结束为 "on_mini_game_finish"
+ */
+function buildMiniGameNarrativePlan(
+  motiveText: string,
+  presetContent: string,
+  isFinished: boolean,
+  narratorName: string,
+  playerName: string,
+  eventType: string = "on_mini_game",
+  rewardSummary?: { ore?: number; rare?: string } | null,
+  itemNames?: string[] | null,
+  writeback?: JsonRecord | null,
+) {
+  return {
+    role: narratorName,
+    roleType: "narrator" as const,
+    motive: motiveText,
+    presetContent,
+    awaitUser: true,
+    nextRole: playerName,
+    nextRoleType: "player",
+    source: "rule",
+    eventType,
+    eventAdjustMode: "keep",
+    eventStatus: isFinished ? "finished" as const : "active" as const,
+    nextNarrativePlan: null,
+    // 奖励信息，供前端展示奖励面板
+    rewardSummary: rewardSummary || null,
+    itemNames: itemNames || null,
+    writeback: writeback || null,
+  };
+}
+
 function miningStep(session: JsonRecord, actionId: string, ctx: MiniGameControllerInput): MiniGameStepResult {
   const publicState = asRecord(session.public_state);
   const hidden = asRecord(session.hidden_state);
+  const narratorName = scalarText(ctx?.world?.narratorRole?.name) || "旁白";
+  const playerName = scalarText(ctx?.world?.playerRole?.name) || "用户";
   const currentMentor = () => {
     const mentor = scalarText(publicState.mentor);
     return mentor && mentor !== "无" ? mentor : "";
@@ -3916,34 +4065,76 @@ function miningStep(session: JsonRecord, actionId: string, ctx: MiniGameControll
   const add = (field: string, delta: number, min = 0, max = 160) => {
     publicState[field] = clamp(Number(publicState[field] || 0) + delta, min, max);
   };
+  // 选择陪练角色
   if (actionId.startsWith("mentor:")) {
     const mentor = scalarText(actionId.slice("mentor:".length));
     publicState.mentor = mentor;
-    const narration = `${mentor}已准备协助你挖矿。你可以继续输入“勘探”“开采”“精挖”“支护”或“撤离”。`;
-    return {
+    const narration = `${mentor}已准备协助你挖矿。你可以继续输入"勘探""开采""精挖""支护"或"撤离"。`;
+    return withMentorMessages({
       narration,
       mentorSpeech: buildMentorMiniGameSpeechRequest(mentor, "mining", scalarText(publicState.target_mineral) || "当前矿物", narration),
       resultTags: ["mentor_selected"],
-    };
+      // 选择陪练后走编排通道，生成旁白台词
+      pendingNarrativePlan: buildMiniGameNarrativePlan(
+        `挖矿：${mentor}加入协助`,
+        narration,
+        false,
+        narratorName,
+        playerName,
+      ),
+    });
   }
   if (actionId === "choose_mentor") {
     const mentors = asArray<string>(publicState.available_mentors);
+    const narration = mentors.length
+      ? `可以选择这些角色协助挖矿：${mentors.join("、")}。如果不需要协助，直接说"不需要陪练"。`
+      : "当前没有可选协助角色。你可以直接输入\"勘探\"\"开采\"或\"撤离\"。";
     return {
-      narration: mentors.length
-        ? `可以选择这些角色协助挖矿：${mentors.join("、")}。如果不需要协助，直接说“不需要陪练”。`
-        : "当前没有可选协助角色。你可以直接输入“勘探”“开采”或“撤离”。",
+      narration,
       resultTags: ["mentor_prompt"],
+      pendingNarrativePlan: buildMiniGameNarrativePlan(
+        "挖矿：提示选择陪练角色",
+        narration,
+        false,
+        narratorName,
+        playerName,
+      ),
     };
   }
   if (actionId === "no_mentor") {
     publicState.mentor = "无";
-    return { narration: "本轮独自挖矿。你可以输入“勘探”“开采”“精挖”“支护”或“撤离”。", resultTags: ["mentor_skipped"] };
+    const narration = "本轮独自挖矿。你可以输入\"勘探\"\"开采\"\"精挖\"\"支护\"或\"撤离\"。";
+    return withMentorMessages({
+      narration,
+      resultTags: ["mentor_skipped"],
+      pendingNarrativePlan: buildMiniGameNarrativePlan(
+        "挖矿：选择独自挖矿",
+        narration,
+        false,
+        narratorName,
+        playerName,
+      ),
+    });
   }
+  // 勘探
   if (actionId === "survey") {
     hidden.weakness_point = true;
     session.round = Number(session.round || 1) + 1;
-    return withMentorMessages({ narration: "你仔细勘探矿脉，找到了更容易下镐的薄弱点。", resultTags: ["survey"] });
+    const narration = "你仔细勘探矿脉，找到了更容易下镐的薄弱点。";
+    return withMentorMessages({
+      narration,
+      resultTags: ["survey"],
+      // 勘探结果走编排通道，生成旁白台词
+      pendingNarrativePlan: buildMiniGameNarrativePlan(
+        `挖矿播报：${narration}`,
+        narration,
+        false,
+        narratorName,
+        playerName,
+      ),
+    });
   }
+  // 以下动作会修改矿脉状态，统一在最后处理坍塌/采尽判定
   if (actionId === "excavate") {
     const bonus = hidden.weakness_point ? 12 : 0;
     add("vein_hp", -(20 + bonus), 0, 100);
@@ -3951,12 +4142,60 @@ function miningStep(session: JsonRecord, actionId: string, ctx: MiniGameControll
     add("danger", 10, 0, 100);
     add("bag_load", 12, 0, 100);
     hidden.weakness_point = false;
+    // 实时将 bag_load 增量转换为背包物品
+    const targetOre = scalarText(publicState.target_mineral) || "矿石";
+    const oreAmount = Math.floor(12 * 0.8); // 开采稳定获得，按 80% 折算
+    const inventoryAdd = oreAmount > 0 ? [{ kind: "ore" as const, name: targetOre, amount: oreAmount }] : [];
+    const itemNames = oreAmount > 0 ? [`${targetOre}×${oreAmount}`] : [];
+    session.round = Number(session.round || 1) + 1;
+    const narration = `你挥动矿镐，采下了目标矿物 ${targetOre} ${oreAmount} 个，矿脉剩余 ${publicState.vein_hp}，危险度 ${publicState.danger}，负重 ${publicState.bag_load}。`;
+    return withMentorMessages({
+      narration,
+      resultTags: [actionId],
+      rewardSummary: { ore: oreAmount },
+      writeback: inventoryAdd.length ? { inventoryAdd } : {},
+      pendingNarrativePlan: buildMiniGameNarrativePlan(
+        `挖矿播报：获得${targetOre}×${oreAmount}`,
+        narration,
+        false,
+        narratorName,
+        playerName,
+        "on_mini_game",
+        { ore: oreAmount },
+        itemNames,
+        inventoryAdd.length ? { inventoryAdd } : null,
+      ),
+    });
   } else if (actionId === "careful_excavate") {
     add("vein_hp", -12, 0, 100);
     add("player_stamina", -20, 0, 100);
     add("danger", 12, 0, 100);
     add("bag_load", 10, 0, 100);
     hidden.rare_drop_roll = clamp(Number(hidden.rare_drop_roll || 0) + 15, 0, 100);
+    // 实时将 bag_load 增量转换为背包物品（精挖产量略低，但稀有率更高）
+    const targetOre = scalarText(publicState.target_mineral) || "矿石";
+    const oreAmount = Math.floor(10 * 0.8);
+    const inventoryAdd = oreAmount > 0 ? [{ kind: "ore" as const, name: targetOre, amount: oreAmount }] : [];
+    const itemNames = oreAmount > 0 ? [`${targetOre}×${oreAmount}`] : [];
+    session.round = Number(session.round || 1) + 1;
+    const narration = `你放慢节奏，精细开采，获得了 ${targetOre} ${oreAmount} 个，矿脉剩余 ${publicState.vein_hp}，危险度 ${publicState.danger}，负重 ${publicState.bag_load}。`;
+    return withMentorMessages({
+      narration,
+      resultTags: [actionId],
+      rewardSummary: { ore: oreAmount },
+      writeback: inventoryAdd.length ? { inventoryAdd } : {},
+      pendingNarrativePlan: buildMiniGameNarrativePlan(
+        `挖矿播报：精细开采获得${targetOre}×${oreAmount}`,
+        narration,
+        false,
+        narratorName,
+        playerName,
+        "on_mini_game",
+        { ore: oreAmount },
+        itemNames,
+        inventoryAdd.length ? { inventoryAdd } : null,
+      ),
+    });
   } else if (actionId === "support") {
     add("stability", 20, 0, 100);
     add("danger", -15, 0, 100);
@@ -3966,14 +4205,16 @@ function miningStep(session: JsonRecord, actionId: string, ctx: MiniGameControll
   } else if (actionId === "rest") {
     add("player_stamina", 20, 0, 100);
   } else if (actionId === "leave") {
+    // 主动撤离
     session.status = "finished";
     session.phase = "settling";
     session.result = Number(publicState.bag_load || 0) > 0 ? "success" : "partial";
     session.finish_reason = "主动撤离";
     const oreAmount = Math.max(1, Math.floor(Number(publicState.bag_load || 0) / 10));
     const rewards = resolveMiningRewards(session, oreAmount);
+    const narration = `你选择及时撤离，把当前矿物安全带离了矿区。${rewards.rareItem ? `这次还额外挖出了 ${rewards.rareItem}。` : ""}`;
     return withMentorMessages({
-      narration: `你选择及时撤离，把当前矿物安全带离了矿区。${rewards.rareItem ? `这次还额外挖出了 ${rewards.rareItem}。` : ""}`,
+      narration,
       resultTags: ["leave"],
       rewardSummary: { ore: oreAmount, rare: rewards.rareItem },
       writeback: {
@@ -3982,16 +4223,48 @@ function miningStep(session: JsonRecord, actionId: string, ctx: MiniGameControll
         memoryAdd: ["矿区采掘后安全撤离"],
       },
       memorySummary: "挖矿后主动撤离",
+      // 撤离结算走编排通道，奖励信息通过 pendingNarrativePlan 传递
+      pendingNarrativePlan: buildMiniGameNarrativePlan(
+        `挖矿结算：${narration}`,
+        narration,
+        true,
+        narratorName,
+        playerName,
+        "on_mini_game_finish",
+        { ore: oreAmount, rare: rewards.rareItem },
+        rewards.itemNames,
+        { inventoryAdd: rewards.inventoryAdd, parameterCardItemAdd: rewards.itemNames, memoryAdd: ["矿区采掘后安全撤离"] },
+      ),
     });
   } else return { narration: "当前无法执行该动作。", resultTags: ["invalid"] };
 
+  // 坍塌判定
   if (Number(publicState.danger || 0) >= 70 && (Number(publicState.stability || 0) <= 20 || takeRng(session, 1, 100) <= Number(publicState.danger || 0) - 50)) {
     session.status = "finished";
     session.phase = "settling";
     session.result = "failed";
     session.finish_reason = "矿脉坍塌";
-    return withMentorMessages({ narration: "矿道突然坍塌，你只能狼狈撤出，损失了不少采集成果。", resultTags: ["failed", "collapse"], writeback: { playerAttributePatch: { staminaLoss: 20 }, memoryAdd: ["一次危险的矿脉坍塌"] }, memorySummary: "挖矿时遭遇坍塌" });
+    const narration = "矿道突然坍塌，你只能狼狈撤出，损失了不少采集成果。";
+    return withMentorMessages({
+      narration,
+      resultTags: ["failed", "collapse"],
+      writeback: { playerAttributePatch: { staminaLoss: 20 }, memoryAdd: ["一次危险的矿脉坍塌"] },
+      memorySummary: "挖矿时遭遇坍塌",
+      // 坍塌结算走编排通道（无奖励）
+      pendingNarrativePlan: buildMiniGameNarrativePlan(
+        `挖矿结算：${narration}`,
+        narration,
+        true,
+        narratorName,
+        playerName,
+        "on_mini_game_finish",
+        null,
+        null,
+        { playerAttributePatch: { staminaLoss: 20 }, memoryAdd: ["一次危险的矿脉坍塌"] },
+      ),
+    });
   }
+  // 采尽判定
   if (Number(publicState.vein_hp || 0) <= 0) {
     session.status = "finished";
     session.phase = "settling";
@@ -3999,8 +4272,9 @@ function miningStep(session: JsonRecord, actionId: string, ctx: MiniGameControll
     session.finish_reason = "矿脉采尽";
     const oreAmount = Math.max(2, Math.floor(Number(publicState.bag_load || 0) / 8));
     const rewards = resolveMiningRewards(session, oreAmount);
+    const narration = `你成功采空了这条矿脉，带走了一批目标矿物。${rewards.rareItem ? `矿脉深处还掉出了 ${rewards.rareItem}。` : ""}`;
     return withMentorMessages({
-      narration: `你成功采空了这条矿脉，带走了一批目标矿物。${rewards.rareItem ? `矿脉深处还掉出了 ${rewards.rareItem}。` : ""}`,
+      narration,
       resultTags: ["success"],
       rewardSummary: { ore: oreAmount, rare: rewards.rareItem },
       writeback: {
@@ -4009,10 +4283,35 @@ function miningStep(session: JsonRecord, actionId: string, ctx: MiniGameControll
         memoryAdd: ["采尽了一条矿脉"],
       },
       memorySummary: "挖矿成功，采尽矿脉",
+      // 采尽结算走编排通道，奖励信息通过 pendingNarrativePlan 传递
+      pendingNarrativePlan: buildMiniGameNarrativePlan(
+        `挖矿结算：${narration}`,
+        narration,
+        true,
+        narratorName,
+        playerName,
+        "on_mini_game_finish",
+        { ore: oreAmount, rare: rewards.rareItem },
+        rewards.itemNames,
+        { inventoryAdd: rewards.inventoryAdd, parameterCardItemAdd: rewards.itemNames, memoryAdd: ["采尽了一条矿脉"] },
+      ),
     });
   }
+  // 挖矿进行中，返回状态播报
   session.round = Number(session.round || 1) + 1;
-  return withMentorMessages({ narration: `矿脉剩余 ${publicState.vein_hp}，危险度 ${publicState.danger}，负重 ${publicState.bag_load}。`, resultTags: [actionId] });
+  const narration = `矿脉剩余 ${publicState.vein_hp}，危险度 ${publicState.danger}，负重 ${publicState.bag_load}。`;
+  return withMentorMessages({
+    narration,
+    resultTags: [actionId],
+    // 进行中播报走编排通道，让 AI 生成旁白台词
+    pendingNarrativePlan: buildMiniGameNarrativePlan(
+      `挖矿播报：${narration}`,
+      narration,
+      false,
+      narratorName,
+      playerName,
+    ),
+  });
 }
 
 function forgeOptions(session?: JsonRecord): MiniGameActionOption[] {
@@ -5414,7 +5713,14 @@ export async function handleMiniGameTurn(input: MiniGameControllerInput): Promis
     };
   }
   const ruleActionId = normalizeActionId(input.playerMessage, options);
-  const aiIntent = ruleActionId ? null : await resolveMiniGameIntentByAi({
+  // 挖矿、修炼等小游戏也需要 AI 参与动作解析，避免规则模糊匹配导致误判
+  // （例如"挖"被模糊匹配到"精挖"而非"开采"）
+  // 精确匹配（action_id 或 label 完全相等）优先于 AI，避免 AI 误判明确的按钮/别名输入
+  const isExactRuleMatch = ruleActionId && options.some(
+    (item) => input.playerMessage === item.action_id || input.playerMessage === item.label
+    || (item.aliases || []).some((alias) => alias === input.playerMessage),
+  );
+  const aiIntent = isExactRuleMatch ? null : await resolveMiniGameIntentByAi({
     userId: input.userId,
     gameType: rulebook.gameType,
     phase: scalarText(activeSession.phase),
@@ -5429,8 +5735,11 @@ export async function handleMiniGameTurn(input: MiniGameControllerInput): Promis
       aliases: item.aliases || [],
     })),
   });
-  // 明确的按钮、别名和角色名必须优先于 AI 兜底，避免“云韵”这类输入被模型误判成收功/结束。
-  const actionId = ruleActionId || aiIntent?.actionId || "";
+  // AI 结果优先于模糊规则匹配，但精确匹配（按钮、别名、角色名）优先于 AI，
+  // 避免"云韵"这类明确的角色名输入被模型误判。
+  const actionId = isExactRuleMatch
+    ? ruleActionId
+    : (aiIntent?.actionId || ruleActionId || "");
   if (!actionId) {
     logMiniGameAction({
       normalizedInput: normalizeMiniGameActionText(input.playerMessage),

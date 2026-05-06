@@ -1441,18 +1441,25 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
 
     if (miniGameResult?.intercepted) {
       const pendingPlan = miniGameResult.pendingNarrativePlan;
+      // 小游戏退出/中止时，必须清除可能残留的 pendingNarrativePlan，
+      // 否则后续编排会被过期的 plan 挡住，导致“自动推进没有产出新内容”的死循环。
+      // 参见 h1.md 分析。
+      const miniGameEventType = String(miniGameResult.message?.eventType || "");
+      const isMiniGameEnded = miniGameEventType === "on_mini_game_abort"
+        || miniGameEventType === "on_mini_game_finish"
+        || !isMiniGameActiveState(state);
+      if (isMiniGameEnded) {
+        // 小游戏已结束，清除残留的 pendingNarrativePlan
+        if (getPendingSessionNarrativePlan(state)) {
+          setPendingSessionNarrativePlan(state, null);
+        }
+      }
       if (pendingPlan) {
         // 有编排计划：只写入 session.pendingNarrativePlan，由后续 orchestration/streamlines 消费。
         // 这里不能提前把输入权交还用户，否则前端会误以为小游戏回合已经结束。
         setPendingSessionNarrativePlan(state, pendingPlan as any);
         applyPlanTurnStateToSessionState(state, world, pendingPlan as any);
       } else {
-        // 没有编排计划：走原有逻辑
-        // 小游戏退出时（abort/finish 后用户再发言），旧的小游戏 pendingNarrativePlan 可能还残留，
-        // 需要清除，否则后续编排会被过期的 plan 挡住。
-        if (getPendingSessionNarrativePlan(state) && !isMiniGameActiveState(state)) {
-          setPendingSessionNarrativePlan(state, null);
-        }
         allowPlayerTurn(
           state,
           world,

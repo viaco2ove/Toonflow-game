@@ -2166,6 +2166,22 @@ export function normalizeSessionState(
     chapterProgress,
     currentEvent,
     dynamicEvents,
+    // 显式保留小游戏状态，避免 ...base 展开时丢失 miniGame 字段。
+    // 小游戏状态由 handleMiniGameTurn 写入 state.miniGame，
+    // normalizeSessionState 必须保留该字段，否则下次 addSessionMessage 调用时
+    // isMiniGameActiveState(state) 会返回 false，导致小游戏输入不被拦截。
+    miniGame: (() => {
+      const root = isRecord(base.miniGame) ? base.miniGame : {};
+      // 确保必要的子字段存在，避免后续读取时出错
+      if (!root.rulebook || typeof root.rulebook !== "object") root.rulebook = {};
+      if (!root.session || typeof root.session !== "object") root.session = {};
+      if (!root.writeback || typeof root.writeback !== "object") root.writeback = {};
+      if (!root.ui || typeof root.ui !== "object") root.ui = {};
+      if (!Array.isArray(root.actionLog)) root.actionLog = [];
+      if (typeof root.memorySummary !== "string") root.memorySummary = "";
+      if (typeof root.passiveReentrySuppressed !== "boolean") root.passiveReentrySuppressed = false;
+      return root;
+    })(),
     // turnState 默认交给用户发言；如果已有明确 expectedRoleType，则保留原状态。
     turnState: {
       canPlayerSpeak: typeof rawTurnState.canPlayerSpeak === "boolean" ? rawTurnState.canPlayerSpeak : true,
