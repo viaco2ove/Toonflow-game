@@ -19,6 +19,12 @@ const router = express.Router();
  * - 前端每条消息串行：编排 → streamlines → 语音播放 → 编排，避免链式中断语音。
  *
  * 流程：编排agent(/game/orchestration/minigame) → 发言agent(/game/streamlines) → 语音预热(/game/streamvoice) → 语音播放(/voice/audioProxy)
+ *
+ * 其他信息只能通过 storyInfo 接口返回!!!!
+ * 接口返回
+ * {"code": 200, "data": {"role": "旁白","roleType": "narrator","motive": "介绍空间戒指当前的具体存储物品情况"}
+ * ,"message": "成功"} data 只允许返回 谁说法，动机是什么.
+ * 不允许返回任何其他信息！！！ 这不是大杂烩接口！！！！
  */
 export default router.post(
   "/",
