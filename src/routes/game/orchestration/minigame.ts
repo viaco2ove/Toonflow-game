@@ -50,19 +50,12 @@ export default router.post(
         }));
       }
 
-      // 小游戏编排需要返回完整的 plan 信息（eventType、presetContent 等），
-      // 不能用 buildMinimalOrchestrationResponse 只返回 role/roleType/motive。
+      // 小游戏编排接口只返回角色和动机，符合前端消费规范。
+      // 其他信息（sessionId/status/chapterId 等）通过 storyInfo 接口获取。
       return res.status(200).send(success({
-        sessionId: result.sessionId,
-        status: result.status,
-        chapterId: result.chapterId,
-        expectedRole: result.expectedRole,
-        expectedRoleType: result.expectedRoleType,
-        command: result.command || null,
-        currentEventDigest: result.currentEventDigest,
-        eventDigestWindow: result.eventDigestWindow,
-        eventDigestWindowText: result.eventDigestWindowText,
-        plan: result.plan,
+        role: result.plan?.role || "",
+        roleType: result.plan?.roleType || "",
+        motive: result.plan?.motive || "",
       }));
     } catch (err) {
       if (isSessionServiceError(err)) {

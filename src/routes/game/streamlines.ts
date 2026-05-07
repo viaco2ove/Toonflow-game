@@ -298,6 +298,7 @@ export default router.post(
           playerMessage: playerContent,
           currentRole,
           motive: effectiveMotive,
+          eventType,
         });
       } finally {
         if (heartbeatTimer) {

@@ -3727,11 +3727,26 @@ export async function runStorySpeakerContent(input: {
   playerMessage?: string;
   currentRole: RuntimeStoryRole;
   motive: string;
+  /** 小游戏模式时使用 motive 作为上下文，不使用章节事件上下文 */
+  eventType?: string;
 }): Promise<string> {
   // 角色发言链和编排链一样，保留 build/invoke/total 三段耗时，方便直接对照慢点到底出在哪。
   const totalStartedAt = Date.now();
   const currentPhase = readCurrentChapterPhase(input.chapter, input.state);
-  const currentEvent = readCurrentRuntimeEventContext(input.chapter, input.state);
+  // 小游戏模式时使用 motive 作为事件摘要，不使用章节事件上下文
+  const isMiniGameMode = input.eventType === "on_mini_game" || input.eventType === "on_mini_game_start" || input.eventType === "on_mini_game_status" || input.eventType === "on_mini_game_rule";
+  const currentEvent = isMiniGameMode
+    ? {
+        eventIndex: 0,
+        eventKind: "scene" as const,
+        eventFlowType: "free_runtime" as const,
+        eventSummary: input.motive,
+        eventFacts: [] as string[],
+        eventMemorySummary: input.motive,
+        eventMemoryFacts: [] as string[],
+        eventStatus: "active" as const,
+      }
+    : readCurrentRuntimeEventContext(input.chapter, input.state);
   const roles = filterRolesForPhase(runtimeStoryRoles(input.world, input.state), currentPhase);
   if (!isRoleAllowedInPhase(input.currentRole, currentPhase)) {
     throw createRuntimeModelError("speaker", "当前阶段不允许该角色发言");
