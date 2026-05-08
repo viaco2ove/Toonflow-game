@@ -349,6 +349,16 @@ function detectMiniGameState(dialogues, currentPhase) {
     }
   }
 
+  // 如果之前有小游戏开始事件且没有结束事件，说明小游戏仍在进行中
+  // 用户在小游戏中输入普通文本（如"炼炎决"）不代表退出小游戏
+  if (hasMiniGameStart && !hasMiniGameAbort) {
+    const hasFinish = dialogues.some(d => d.eventType === "on_mini_game_finish");
+    if (!hasFinish) {
+      const gameType = currentPhase?.gameType || detectGameType(dialogues.map(d => d.content).join(""));
+      return { isActive: true, gameType, phase: "等待用户操作", hasRulebook: true, turnType: turnType || MINI_GAME_TURN_TYPES.USER_TURN };
+    }
+  }
+
   return { isActive: false, gameType: null, phase: null, hasRulebook: false, turnType: null };
 }
 
