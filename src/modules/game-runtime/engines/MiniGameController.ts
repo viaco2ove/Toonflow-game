@@ -2514,25 +2514,26 @@ function detectGameTrigger(
     text,
   ].join("\n");
   if (!transcript.trim()) return null;
+  // 只匹配作为独立命令出现的 #标签，禁止普通对话中的嵌入文本误触发
+  // 例如 "#修炼" 或 "我决定 #修炼" 可以触发，但 "我想去修炼" 不会触发
+  const standaloneTagPattern = (tag: string): boolean => {
+    const idx = text.indexOf(tag);
+    if (idx < 0) return false;
+    // # 前面必须是字符串起始或空白字符
+    const charBefore = idx > 0 ? text[idx - 1] : "";
+    if (charBefore && !/\s/.test(charBefore)) return false;
+    return true;
+  };
   for (const rulebook of Object.values(RULEBOOKS)) {
-    if (rulebook.triggerTags.some((tag) => text.includes(tag))) {
+    if (rulebook.triggerTags.some(standaloneTagPattern)) {
       if (DebugLogUtil.isDebugLogEnabled()) {
           console.log("[story:mini_game:agent] 识别到小游戏", JSON.stringify(rulebook));
       }
       return { gameType: rulebook.gameType, source: "active" };
     }
   }
-  // #退出 后只允许显式命令重新进入小游戏，禁止继续依赖最近消息被动重触发。
-  if (Boolean(root.passiveReentrySuppressed)) {
-    return null;
-  }
-  const currentConfirmsPassive = PASSIVE_CONFIRM_PATTERNS.some((pattern) => pattern.test(text));
-  for (const rulebook of Object.values(RULEBOOKS)) {
-    const mentionedInTranscript = rulebook.passivePatterns.some((pattern) => pattern.test(transcript));
-    if (mentionedInTranscript && currentConfirmsPassive) {
-      return { gameType: rulebook.gameType, source: "passive" };
-    }
-  }
+  // 被动触发已禁用：只有显式 #标签 命令才能触发小游戏，
+  // 避免普通对话中提到关键词后被误触发。
   return null;
 }
 

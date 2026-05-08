@@ -297,11 +297,20 @@ export class MiniGameStateManager {
 
   /**
    * 检测用户输入触发了哪个小游戏
+   * 只匹配作为独立命令出现的 #标签，禁止普通对话中的嵌入文本误触发
    */
   detectGameType(userInput: string): string | null {
     const trimmed = userInput.trim();
+    /** 判断 tag 是否作为独立命令出现（前面是起始或空白） */
+    const isStandaloneTag = (tag: string): boolean => {
+      const idx = trimmed.indexOf(tag);
+      if (idx < 0) return false;
+      const charBefore = idx > 0 ? trimmed[idx - 1] : "";
+      if (charBefore && !/\s/.test(charBefore)) return false;
+      return true;
+    };
     for (const config of this.configs.values()) {
-      if (config.triggerTags.some(tag => trimmed.includes(tag))) {
+      if (config.triggerTags.some(isStandaloneTag)) {
         return config.gameType;
       }
     }
@@ -491,12 +500,10 @@ export class MiniGameStateManager {
     return true;
   }
 
-  /**
-   * 判断是否应该触发退出
-   */
+  /** 判断是否应该触发退出（仅 #退出 / #exit 命令，不带 # 前缀的"退出"不触发） */
   shouldTriggerAbort(userInput: string, state: Record<string, any>): boolean {
     const trimmed = userInput.trim().toLowerCase();
-    if (trimmed === "#退出" || trimmed === "#exit" || trimmed === "退出") {
+    if (trimmed === "#退出" || trimmed === "#exit") {
       return true;
     }
     return false;
