@@ -298,35 +298,43 @@ export default router.post(
       // - 这样所有正式台词统一经过 speaker 模型，输出风格才不会一半模板一半模型。
       const effectiveMotive = String(plan.motive || "").trim() || presetContent;
       let content = "";
-      let heartbeatTimer: NodeJS.Timeout | null = null;
-      try {
-        heartbeatTimer = setInterval(() => {
-          try {
-            writeStreamLine(res, {
-              type: "heartbeat",
-              data: {
-                stage: "speaker_generating",
-                timestamp: Date.now(),
-              },
-            });
-          } catch {
-            // 响应关闭后忽略心跳异常，避免心跳本身干扰主链路。
+
+      // 小游戏规则说明回合（on_mini_game_start）直接使用 presetContent 作为最终输出，
+      // 跳过 speaker 模型。原因：规则说明包含完整的可选项列表，speaker 有字数限制会丢失关键信息。
+      const isMiniGameStartEvent = eventType === "on_mini_game_start" && presetContent;
+      if (isMiniGameStartEvent) {
+        content = presetContent;
+      } else {
+        let heartbeatTimer: NodeJS.Timeout | null = null;
+        try {
+          heartbeatTimer = setInterval(() => {
+            try {
+              writeStreamLine(res, {
+                type: "heartbeat",
+                data: {
+                  stage: "speaker_generating",
+                  timestamp: Date.now(),
+                },
+              });
+            } catch {
+              // 响应关闭后忽略心跳异常，避免心跳本身干扰主链路。
+            }
+          }, 5000);
+          content = await runStorySpeakerContent({
+            userId,
+            world,
+            chapter,
+            state,
+            recentMessages,
+            playerMessage: playerContent,
+            currentRole,
+            motive: effectiveMotive,
+            eventType,
+          });
+        } finally {
+          if (heartbeatTimer) {
+            clearInterval(heartbeatTimer);
           }
-        }, 5000);
-        content = await runStorySpeakerContent({
-          userId,
-          world,
-          chapter,
-          state,
-          recentMessages,
-          playerMessage: playerContent,
-          currentRole,
-          motive: effectiveMotive,
-          eventType,
-        });
-      } finally {
-        if (heartbeatTimer) {
-          clearInterval(heartbeatTimer);
         }
       }
 
