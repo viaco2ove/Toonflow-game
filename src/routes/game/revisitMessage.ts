@@ -104,7 +104,7 @@ export default router.post(
       });
 
       // 检测是否处于小游戏模式
-      const restoredRulebook = restoredState?.rulebook;
+      const restoredRulebook = restoredState?.miniGame?.rulebook;
       const isMiniGameMode = !!(restoredRulebook && Object.keys(restoredRulebook || {}).length);
 
       if (DebugLogUtil.isDebugLogEnabled()) {
