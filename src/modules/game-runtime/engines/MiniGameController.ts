@@ -2516,6 +2516,9 @@ function detectGameTrigger(
   if (!transcript.trim()) return null;
   for (const rulebook of Object.values(RULEBOOKS)) {
     if (rulebook.triggerTags.some((tag) => text.includes(tag))) {
+      if (DebugLogUtil.isDebugLogEnabled()) {
+          console.log("[story:mini_game:agent] 识别到小游戏", JSON.stringify(rulebook));
+      }
       return { gameType: rulebook.gameType, source: "active" };
     }
   }
@@ -4023,10 +4026,13 @@ function buildMiniGameNarrativePlan(
   rewardSummary?: { ore?: number; rare?: string } | null,
   itemNames?: string[] | null,
   writeback?: JsonRecord | null,
+  nextPlan?: any | null,
+  roleName?: string,
+  roleTypeName?: string,
 ) {
   return {
-    role: narratorName,
-    roleType: "narrator" as const,
+    role: roleName || narratorName,
+    roleType: roleTypeName || "narrator",
     motive: motiveText,
     presetContent,
     awaitUser: true,
@@ -4036,11 +4042,44 @@ function buildMiniGameNarrativePlan(
     eventType,
     eventAdjustMode: "keep",
     eventStatus: isFinished ? "finished" as const : "active" as const,
-    nextNarrativePlan: null,
+    nextNarrativePlan: nextPlan || null,
     // 奖励信息，供前端展示奖励面板
     rewardSummary: rewardSummary || null,
     itemNames: itemNames || null,
     writeback: writeback || null,
+  };
+}
+
+/**
+ * 如果 stepMessages 里有陪练角色台词，把它包装成 nextNarrativePlan，
+ * 让陪练也走完整的编排 -> streamlines -> streamvoice 语音链路。
+ */
+function buildPendingPlanWithMentorSpeech(
+  pendingPlan: MiniGameStepResult["pendingNarrativePlan"] | undefined,
+  stepMessages: MiniGameStepResult["messages"] | undefined,
+  narratorName: string,
+  playerName: string,
+): MiniGameStepResult["pendingNarrativePlan"] | undefined {
+  if (!pendingPlan) return pendingPlan;
+  if (!stepMessages || stepMessages.length <= 1) return pendingPlan;
+  const mentorMessage = stepMessages.find((m) => m.roleType !== "narrator");
+  if (!mentorMessage) return pendingPlan;
+  return {
+    ...pendingPlan,
+    nextNarrativePlan: buildMiniGameNarrativePlan(
+      `小游戏角色台词：${mentorMessage.role}`,
+      mentorMessage.content,
+      false,
+      narratorName,
+      playerName,
+      "on_mini_game",
+      null,
+      null,
+      null,
+      undefined,
+      mentorMessage.role,
+      mentorMessage.roleType,
+    ) as any,
   };
 }
 
@@ -5306,6 +5345,9 @@ export async function handleMiniGameTurn(input: MiniGameControllerInput): Promis
       phaseOrder: rulebook.phaseOrder,
       ruleSummary: rulebook.ruleSummary,
     };
+    if (DebugLogUtil.isDebugLogEnabled()) {
+        console.log("[story:mini_game:agent] 识别到小游戏 root.rulebook", JSON.stringify(root.rulebook));
+    }
     root.session = session;
     root.actionLog = [];
     root.writeback = {};
@@ -5325,11 +5367,27 @@ export async function handleMiniGameTurn(input: MiniGameControllerInput): Promis
       ? buildBattleStartSpeech(session, input)
       : null;
     const startMeta = buildMiniGameMeta(root);
+    const narratorName = scalarText(input.world?.narratorRole?.name) || "旁白";
+    const playerName = scalarText(input.world?.playerRole?.name) || "用户";
+
+    // 非战斗小游戏开场走编排通道，旁白台词统一由 /game/streamlines 生成，不再在 addMessage 里直接插入
+    // motive 必须包含规则说明内容，否则 AI 只拿到"小游戏开场：挖矿"这种笼统动机，无法生成规则相关的台词
+    const startPendingPlan = rulebook.gameType !== "battle"
+      ? buildMiniGameNarrativePlan(
+        `${rulebook.displayName}规则说明回合：${narration}`,
+        narration,
+        false,
+        narratorName,
+        playerName,
+        "on_mini_game_start",
+      )
+      : null;
+
     return {
       intercepted: true,
       runtime: root,
       message: {
-        role: battleStartSpeech?.role || scalarText(input.world?.narratorRole?.name) || "旁白",
+        role: battleStartSpeech?.role || narratorName,
         roleType: battleStartSpeech?.roleType || "narrator",
         eventType: "on_mini_game_start",
         content: battleStartSpeech?.content || narration,
@@ -5345,6 +5403,7 @@ export async function handleMiniGameTurn(input: MiniGameControllerInput): Promis
           },
         ], startMeta)
         : undefined,
+      pendingNarrativePlan: startPendingPlan || undefined,
     };
   }
 
@@ -5478,6 +5537,9 @@ export async function handleMiniGameTurn(input: MiniGameControllerInput): Promis
     }
   }
   if (isForceQuitMiniGameCommand(input.playerMessage)) {
+    if (DebugLogUtil.isDebugLogEnabled()) {
+        console.log("[story:mini_game:agent] #退出 强制结束小游戏");
+    }
     logMiniGameAction({
       normalizedInput: normalizeMiniGameActionText(input.playerMessage),
       controlAction: "force_quit",
@@ -5698,6 +5760,12 @@ export async function handleMiniGameTurn(input: MiniGameControllerInput): Promis
       : "on_mini_game";
     const stepMeta = buildMiniGameMeta(root);
     const stepMessages = await resolveMiniGameStepMessages(input, rulebook, root, step);
+    const pendingPlanWithMentor = buildPendingPlanWithMentorSpeech(
+      step.pendingNarrativePlan,
+      stepMessages,
+      scalarText(input.world?.narratorRole?.name) || "旁白",
+      scalarText(input.world?.playerRole?.name) || "用户",
+    );
     return {
       intercepted: true,
       runtime: root,
@@ -5709,7 +5777,7 @@ export async function handleMiniGameTurn(input: MiniGameControllerInput): Promis
         meta: stepMeta,
       },
       messages: stepMessages?.length ? attachMiniGameMeta(stepMessages, stepMeta) : undefined,
-      pendingNarrativePlan: step.pendingNarrativePlan,
+      pendingNarrativePlan: pendingPlanWithMentor,
     };
   }
   const ruleActionId = normalizeActionId(input.playerMessage, options);
@@ -5821,6 +5889,12 @@ export async function handleMiniGameTurn(input: MiniGameControllerInput): Promis
     : "on_mini_game";
   const stepMeta = buildMiniGameMeta(root);
   const stepMessages = await resolveMiniGameStepMessages(input, rulebook, root, step);
+  const pendingPlanWithMentor = buildPendingPlanWithMentorSpeech(
+    step.pendingNarrativePlan,
+    stepMessages,
+    scalarText(input.world?.narratorRole?.name) || "旁白",
+    scalarText(input.world?.playerRole?.name) || "用户",
+  );
   return {
     intercepted: true,
     runtime: root,
@@ -5832,6 +5906,6 @@ export async function handleMiniGameTurn(input: MiniGameControllerInput): Promis
       meta: stepMeta,
     },
     messages: stepMessages?.length ? attachMiniGameMeta(stepMessages, stepMeta) : undefined,
-    pendingNarrativePlan: step.pendingNarrativePlan,
+    pendingNarrativePlan: pendingPlanWithMentor,
   };
 }

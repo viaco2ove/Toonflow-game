@@ -4,6 +4,7 @@ import { validateFields } from "@/middleware/middleware";
 import { error, success } from "@/lib/responseFormat";
 import { getGameDb, toJsonText } from "@/lib/gameEngine";
 import { buildSessionMessageRevisitData, readSessionMessageRevisitData } from "@/modules/game-runtime/services/SessionService";
+import { DebugLogUtil } from "@/utils/debugLogUtil";
 
 const router = express.Router();
 
@@ -102,7 +103,24 @@ export default router.post(
           });
       });
 
-      return res.status(200).send(success(true, "回溯成功"));
+      // 检测是否处于小游戏模式
+      const restoredRulebook = restoredState?.rulebook;
+      const isMiniGameMode = !!(restoredRulebook && Object.keys(restoredRulebook || {}).length);
+
+      if (DebugLogUtil.isDebugLogEnabled()) {
+        console.log(`[story:revisit:debug] 回溯完成`, JSON.stringify({
+          sessionId,
+          messageId,
+          isMiniGameMode: Boolean(isMiniGameMode),
+          hasRulebook: !!(restoredRulebook && Object.keys(restoredRulebook || {}).length),
+        }));
+      }
+
+      return res.status(200).send(success({
+        success: true,
+        isMiniGameMode: Boolean(isMiniGameMode),
+        miniGameType: restoredRulebook?.gameType || null,
+      }));
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err || "回溯失败");
       return res.status(500).send(error(message));

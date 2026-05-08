@@ -34,6 +34,7 @@ import {
 } from "./debugRuntimeShared";
 import u from "@/utils";
 import { DebugLogUtil } from "@/utils/debugLogUtil";
+import { miniGameStateManager } from "@/modules/game-runtime/engines/MiniGameStateManager";
 
 const router = express.Router();
 
@@ -176,9 +177,22 @@ export default router.post(
         const pendingPlan = parseJsonSafe<Record<string, unknown>>(state?.pendingNarrativePlan, {});
         if (!Object.keys(plan).length && Object.keys(pendingPlan).length) {
           Object.assign(plan, pendingPlan);
+        } else if (Object.keys(pendingPlan).length) {
+          // 小游戏编排接口只返回 role/roleType/motive，这里从 pendingPlan 补全 eventType 等关键字段
+          if (!plan.eventType && pendingPlan.eventType) {
+            plan.eventType = pendingPlan.eventType;
+          }
+          if (!plan.source && pendingPlan.source) {
+            plan.source = pendingPlan.source;
+          }
+          if (!plan.presetContent && pendingPlan.presetContent) {
+            plan.presetContent = pendingPlan.presetContent;
+          }
         }
+        // 小游戏模式时，只用小游戏相关的消息，避免章节事件污染小游戏台词
+        const isMiniGamePlan = pendingPlan && String(pendingPlan.source || "") === "rule";
         const rawRecentMessages = await db("t_sessionMessage").where({ sessionId }).orderBy("id", "desc").limit(20);
-        messages = rawRecentMessages
+        let allMessages = rawRecentMessages
           .reverse()
           .map((item: any) => ({
             role: String(item.role || ""),
@@ -187,6 +201,16 @@ export default router.post(
             content: String(item.content || ""),
             createTime: Number(item.createTime || 0),
           }));
+        // 小游戏模式下过滤，只保留 on_mini_game 系列消息
+        if (isMiniGamePlan) {
+          messages = allMessages.filter((m: { eventType?: string }) => m.eventType?.startsWith("on_mini_game"));
+          // 如果过滤后消息太少（小于3条），补上最新的几条
+          if (messages.length < 3 && allMessages.length > 0) {
+            messages = allMessages.slice(-3);
+          }
+        } else {
+          messages = allMessages;
+        }
       } else {
         world = await db("t_storyWorld as w")
           .leftJoin("t_project as p", "w.projectId", "p.id")
@@ -433,6 +457,17 @@ export default router.post(
           Number(chapter.id || 0) || null,
           debugMessageCount,
         );
+      }
+
+      // 判断是剧情模式还是小游戏模式，用于日志输出
+      const isMiniGameMode = miniGameStateManager.isMiniGameMode(state || {});
+      if (DebugLogUtil.isDebugLogEnabled()) {
+        if (isMiniGameMode) {
+          const gameInfo = miniGameStateManager.getMiniGameStateInfo(state || {});
+          console.log(`[story:streamlines:debug] 小游戏模式 - ${gameInfo.displayName || gameInfo.gameType} | ${gameInfo.phaseName || gameInfo.phase || "unknown"} | motive: ${String(plan.motive || "").slice(0, 50)}`);
+        } else {
+          console.log(`[story:streamlines:debug] 剧情模式 - role: ${roleName}, eventType: ${eventType}, contentPreview: ${String(content || "").slice(0, 80)}`);
+        }
       }
 
       writeStreamLine(res, {

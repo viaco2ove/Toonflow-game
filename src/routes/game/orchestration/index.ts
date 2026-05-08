@@ -40,6 +40,8 @@ import {
   buildEffectiveDebugChapter,
   evaluateDebugRuntimeOutcome,
   buildDebugEndDialogDetail,
+  saveDebugRevisitPoint,
+  cacheAndBuildDebugStateSnapshot,
 } from "../debugRuntimeShared";
 import {
   asTrimmedText,
@@ -659,6 +661,21 @@ async function handleDebugPlayerTurn(params: {
       content: item.content,
       createTime: nowTs(),
     }));
+    // 保存回溯数据，确保小游戏拦截产生的消息可回溯
+    const fullMessages = [...params.inputMessages, ...presetMessages];
+    const snapshot = cacheAndBuildDebugStateSnapshot({
+      userId: params.userId,
+      worldId: params.worldId,
+      state: params.state,
+    });
+    const debugRuntimeKey = String(snapshot.debugRuntimeKey || "");
+    saveDebugRevisitPoint(
+      debugRuntimeKey,
+      params.state,
+      fullMessages,
+      responseChapterMeta.chapterId,
+      fullMessages.length,
+    );
     return sendDebugSuccess(params.res, {
       userId: params.userId,
       worldId: params.worldId,

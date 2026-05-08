@@ -56,6 +56,7 @@ export default router.post(
         role: result.plan?.role || "",
         roleType: result.plan?.roleType || "",
         motive: result.plan?.motive || "",
+        eventType: result.plan?.eventType || "",
       }));
     } catch (err) {
       if (isSessionServiceError(err)) {

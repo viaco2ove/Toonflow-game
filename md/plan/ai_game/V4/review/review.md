@@ -78,7 +78,7 @@
 下面两个tag 打了只有 "旁白播报-台词" 会出现，而且看起来只是从返回了获得了这个内容。然后直接插入到聊天框
 [aiGame][miniGame] 旁白播报-台词
 [aiGame][miniGame] 旁白播报-台词-语音播放
-再来看看一般的台词是：编排agent（/game/orchestration）-》发言agent（/game/streamlines）-》播放语音（/game/streamvoice）
+再来看看一般的台词是：编排agent（/game/orchestration/minigame）-》发言agent（/game/streamlines）-》预热语音（/game/streamvoice）-》语音播放，触发 /voice/audioProxy
 
 解决方案：
   - ~~方案1(已废弃)：依然使用addMessage ，但是要走完整的模拟编排通道。~~
@@ -86,11 +86,11 @@
   直接走编排通道。/game/streamlines 时生成旁白播报台词
     - 播报回合
     事件：攻击用户
-    编排agent（/game/orchestration）-》发言agent（/game/streamlines）-》播放语音（/game/streamvoice）
+    编排agent（/game/orchestration/minigame）-》发言agent（/game/streamlines）-》预热语音（/game/streamvoice）-》语音播放，触发 /voice/audioProxy
 
 - 敌人回合
 事件：攻击用户
-编排agent（/game/orchestration）-》发言agent（/game/streamlines）-》播放语音（/game/streamvoice）
+编排agent（/game/orchestration/minigame）-》发言agent（/game/streamlines）-》预热语音（/game/streamvoice）-》语音播放，触发 /voice/audioProxy
 
 - 旁白播报
 

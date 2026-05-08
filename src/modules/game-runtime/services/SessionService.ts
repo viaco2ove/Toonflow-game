@@ -62,6 +62,7 @@ import {
   TriggerHit,
 } from "@/modules/game-runtime/types/runtime";
 import { DebugLogUtil } from "@/utils/debugLogUtil";
+import {miniGameStateManager} from "@/modules/game-runtime/engines/MiniGameStateManager";
 
 // ==================== 游玩模式回溯功能内存缓存 ====================
 //
@@ -151,7 +152,7 @@ function resetSessionChapterRuntimeOnSwitch(
   if (!chapterSwitched) {
     return;
   }
-  // 这些字段都和“当前章节的事件推进”强绑定。
+  // 这些字段都和"当前章节的事件推进"强绑定。
   // 一旦切章还继续保留，后续读取 current_event 时就会串到上一章。
   delete state.currentEvent;
   delete state.currentEventDigest;
@@ -474,7 +475,7 @@ function buildRecentMessages(rows: any[]): RuntimeMessageInput[] {
 }
 
 /**
- * 将“正式会话里的用户发言”应用到当前事件进度。
+ * 将"正式会话里的用户发言"应用到当前事件进度。
  *
  * 用途：
  * - 先把 trigger / task / delta 等规则信号写进运行态
@@ -546,11 +547,11 @@ async function applySessionUserEventProgress(params: {
 }
 
 /**
- * 在正式 `/game/orchestration` 前，对“最近一条已落库消息”补做一次事件进度检测。
+ * 在正式 `/game/orchestration` 前，对"最近一条已落库消息"补做一次事件进度检测。
  *
  * 用途：
  * - 之前事件进度 AI 只在用户消息提交时运行，旁白/NPC 自动续写不会触发；
- * - 当旁白已经把当前事件推进到“等待用户输入”时，后端若不先检测，就会继续错误编排下一句旁白；
+ * - 当旁白已经把当前事件推进到"等待用户输入"时，后端若不先检测，就会继续错误编排下一句旁白；
  * - 这里在真正进入编排前补一刀，命中 `waiting_input` 后立即把输入权交还给用户。
  */
 async function applySessionPreOrchestrationEventProgress(params: {
@@ -793,12 +794,12 @@ function buildSessionExpectedSpeaker(state: Record<string, any>) {
 }
 
 /**
- * 为“当前已轮到用户输入”的正式会话编排结果构造一个最小计划。
+ * 为"当前已轮到用户输入"的正式会话编排结果构造一个最小计划。
  *
  * 用途：
  * - `/game/orchestration` 必须稳定返回 `role/roleType/motive/awaitUser`；
  * - 之前 waiting_input 分支直接回 `plan: null`，前端就会拿到空角色、空类型；
- * - 这里显式返回“用户可输入”的计划，避免把正常等待用户误渲染成空编排结果。
+ * - 这里显式返回"用户可输入"的计划，避免把正常等待用户误渲染成空编排结果。
  */
 function buildWaitingForUserSessionPlan(state: Record<string, any>): SessionNarrativePlanResult {
   const playerName = String(state.player?.name || "用户").trim() || "用户";
@@ -922,11 +923,11 @@ function buildSessionPlanResult(plan: ({
 }
 
 /**
- * 对外返回正式会话编排结果时，隐藏“下一个是谁”字段。
+ * 对外返回正式会话编排结果时，隐藏"下一个是谁"字段。
  *
  * 用途：
  * - 后端内部仍然需要 nextRole/nextRoleType 来维护 turnState；
- * - 但接口返回给前端时，只允许暴露“当前谁说、为什么说”，禁止前端消费下一位角色。
+ * - 但接口返回给前端时，只允许暴露"当前谁说、为什么说"，禁止前端消费下一位角色。
  */
 function buildPublicSessionPlanResult(plan: SessionNarrativePlanResult | null): SessionNarrativePlanResult | null {
   if (!plan) return null;
@@ -960,14 +961,14 @@ function setPendingSessionChapterId(state: Record<string, any>, chapterId: numbe
  * 用途：
  * - `/orchestration` 在收到 `init_chapter` 命令前不能偷偷进入下一章；
  * - `/initchapter` 完成后再把这个标记设为 true，让下一次 `/orchestration`
- *   明确走“新章节启动编排”而不是继续沿用旧章节残局。
+ *   明确走"新章节启动编排"而不是继续沿用旧章节残局。
  */
 function getPendingSessionChapterStart(state: Record<string, any>): boolean {
   return state?.pendingChapterStart === true;
 }
 
 /**
- * 写入“下一次编排应该从新章节开场开始”的显式标记。
+ * 写入"下一次编排应该从新章节开场开始"的显式标记。
  *
  * 用途：
  * - 只有 `/initchapter` 才允许把 pendingChapterStart 设为 true；
@@ -988,7 +989,15 @@ function getPendingSessionNarrativePlan(state: Record<string, any>): SessionNarr
 function setPendingSessionNarrativePlan(state: Record<string, any>, plan: SessionNarrativePlanResult | null): void {
   if (plan) {
     state.pendingNarrativePlan = plan;
+    const isMiniGameMode = miniGameStateManager.isMiniGameMode(state || {});
+    if (DebugLogUtil.isDebugLogEnabled() && isMiniGameMode) {
+     console.log("[story:mini_game:agent] 把小游戏的编排计划存入 state.pendingNarrativePlan ", JSON.stringify(plan));
+    }
     return;
+  }
+  const isMiniGameMode = miniGameStateManager.isMiniGameMode(state || {});
+  if (DebugLogUtil.isDebugLogEnabled() && isMiniGameMode) {
+     console.log("[story:mini_game:agent] 把小游戏的编排计划移出 state.pendingNarrativePlan ", JSON.stringify(plan));
   }
   delete state.pendingNarrativePlan;
 }
@@ -1024,7 +1033,7 @@ function applyPlanTurnStateToSessionState(
 ) {
   const speakingRoleType = String(plan.roleType || "").trim().toLowerCase();
   const hasNonPlayerLineToGenerate = Boolean(String(plan.role || "").trim()) && speakingRoleType !== "player";
-  // 编排结果里的 nextRole/awaitUser 只描述“这句台词之后”的方向。
+  // 编排结果里的 nextRole/awaitUser 只描述"这句台词之后"的方向。
   // 如果当前还有旁白/NPC 台词要生成，必须等 /streamlines 落库后才能把输入权交还用户。
   const shouldYieldToPlayer = !hasNonPlayerLineToGenerate && Boolean(plan.awaitUser);
   if (shouldYieldToPlayer) {
@@ -1079,7 +1088,7 @@ async function countSessionMessages(db: any, sessionId: string): Promise<number>
   return Number.isFinite(count) && count >= 0 ? count : 0;
 }
 
-// 正式会话并发执行“章节判定 + 候选编排”，最后只提交裁决后的 finalPlan。
+// 正式会话并发执行"章节判定 + 候选编排"，最后只提交裁决后的 finalPlan。
 async function runConcurrentSessionJudgeAndNarrative(params: {
   userId: number;
   world: any;
@@ -1442,13 +1451,30 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
     if (miniGameResult?.intercepted) {
       const pendingPlan = miniGameResult.pendingNarrativePlan;
       // 小游戏退出/中止时，必须清除可能残留的 pendingNarrativePlan，
-      // 否则后续编排会被过期的 plan 挡住，导致“自动推进没有产出新内容”的死循环。
+      // 否则后续编排会被过期的 plan 挡住，导致"自动推进没有产出新内容"的死循环。
       // 参见 h1.md 分析。
       const miniGameEventType = String(miniGameResult.message?.eventType || "");
       const isMiniGameEnded = miniGameEventType === "on_mini_game_abort"
         || miniGameEventType === "on_mini_game_finish"
         || !isMiniGameActiveState(state);
+
+      // 输出小游戏拦截日志
+      if (DebugLogUtil.isDebugLogEnabled()) {
+        console.log("[story:mini_game:agent] 小游戏拦截", JSON.stringify({
+          sessionId,
+          intercepted: true,
+          hasPendingPlan: !!pendingPlan,
+          eventType: miniGameEventType,
+          isMiniGameEnded: Boolean(isMiniGameEnded),
+          gameType: pendingPlan?.source === "rule" ? "小游戏编排" : (((state?.miniGame as Record<string, any>)?.rulebook as Record<string, any>)?.gameType || "未知"),
+          motive: String(pendingPlan?.motive || miniGameResult.message?.content || "").trim().slice(0, 100),
+        }));
+      }
+
       if (isMiniGameEnded) {
+          if (DebugLogUtil.isDebugLogEnabled()) {
+              console.log("[story:mini_game:agent] 退出状态",isMiniGameEnded);
+          }
         // 小游戏已结束，清除残留的 pendingNarrativePlan
         if (getPendingSessionNarrativePlan(state)) {
           setPendingSessionNarrativePlan(state, null);
@@ -1459,6 +1485,7 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
         // 这里不能提前把输入权交还用户，否则前端会误以为小游戏回合已经结束。
         setPendingSessionNarrativePlan(state, pendingPlan as any);
         applyPlanTurnStateToSessionState(state, world, pendingPlan as any);
+        // 不再直接插入旁白消息，小游戏旁白由 /game/streamlines 生成
       } else {
         allowPlayerTurn(
           state,
@@ -1483,9 +1510,10 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
             createTime: now,
           });
           const narrativeMessageId = normalizeMessageId(inserted);
-          const narrativeMessageRow = await db("t_sessionMessage").where({ id: narrativeMessageId }).first();
-          if (narrativeMessageRow) {
-            narrativeMessageRows.push(narrativeMessageRow);
+          const insertedRow = await db("t_sessionMessage").where({ id: narrativeMessageId }).first();
+          if (insertedRow) {
+            narrativeMessageRows.push(insertedRow);
+            narrativeMessageRow = insertedRow;
           }
         }
       }
@@ -1628,7 +1656,7 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
         },
       });
       /**
-       * 如果当前已经处于“任务小游戏”中，就优先判定本轮动作是否触发任务成功/失败。
+       * 如果当前已经处于"任务小游戏"中，就优先判定本轮动作是否触发任务成功/失败。
        *
        * 用途：
        * - 任务中的用户输入应先服务于当前任务，而不是继续走普通自由剧情旁白；
@@ -1742,11 +1770,11 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
         };
       }
       /**
-       * 自由章节里“领取推荐任务”不是普通的一句用户输入，而是要正式切入一个动态任务事件。
+       * 自由章节里"领取推荐任务"不是普通的一句用户输入，而是要正式切入一个动态任务事件。
        *
        * 这里放在事件进度检测之后执行，原因是：
        * 1. 先保留静态引导事件的正常完成判定；
-       * 2. 再把“用户选中了哪一个任务”升级成新的动态事件；
+       * 2. 再把"用户选中了哪一个任务"升级成新的动态事件；
        * 3. 新事件创建后立刻把回合交给旁白，让旁白继续描述任务开场，而不是继续等待用户输入。
        */
       const activatedFreeChapterTask = await maybeActivateFreeChapterTaskEvent({
@@ -1770,7 +1798,7 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
          * 任务接取后立即刷新一次记忆。
          *
          * 用途：
-         * - 让“正在执行的任务”立刻写入记忆摘要/事实和用户参数卡相关上下文；
+         * - 让"正在执行的任务"立刻写入记忆摘要/事实和用户参数卡相关上下文；
          * - 避免用户刚接任务时，记忆管理还停留在接任务前的状态。
          */
         await refreshStoryMemoryBestEffort({
@@ -2565,7 +2593,7 @@ export async function orchestrateSessionTurn(sessionIdInput: string): Promise<Se
       expectedRole: "",
       expectedRoleType: "",
       command: null,
-      // 命中 waiting_input 时，要明确告诉前端“现在轮到用户”，不能再回空 plan。
+      // 命中 waiting_input 时，要明确告诉前端"现在轮到用户"，不能再回空 plan。
       plan: buildWaitingForUserSessionPlan(state),
     });
   }
@@ -2803,7 +2831,7 @@ export async function commitSessionNarrativeTurn(input: CommitSessionNarrativeTu
   // - `/orchestration` 已经先把 pendingNarrativePlan / turnState 写回数据库；
   // - 前端在流式台词结束后再调用 `/commitNarrativeTurn` 时，手里的本地 state 可能还是旧快照；
   // - 如果这里继续优先信 input.state，会把刚写好的服务端 turnState 覆盖回旧值，出现
-  //   “画面已经显示旁白，但输入框仍提示等待上一位角色继续发言”的卡死现象。
+  //   "画面已经显示旁白，但输入框仍提示等待上一位角色继续发言"的卡死现象。
   const state = normalizeSessionState(
     sessionRow.stateJson,
     Number(sessionRow.worldId || 0),
@@ -2908,12 +2936,12 @@ export async function commitSessionNarrativeTurn(input: CommitSessionNarrativeTu
   );
   const isOpeningCommit = isOpeningRuntimeEventType(committedEventType);
 
-  // 台词真正落库后，要立刻把 session turnState 推进到“这句之后”的状态。
+  // 台词真正落库后，要立刻把 session turnState 推进到"这句之后"的状态。
   //
   // 用途：
   // - orchestration 只负责预编排，不代表这一句已经真正提交；
   // - 如果 commit 后不显式推进 turnState，storyInfo / listSession 仍可能读到旧 expectedRole；
-  // - 前端就会继续显示“等待上一位角色发言”，直到回溯或刷新才恢复。
+  // - 前端就会继续显示"等待上一位角色发言"，直到回溯或刷新才恢复。
   const promotedNextPlan = pendingPlan?.nextNarrativePlan
     ? buildSessionPlanResult(pendingPlan.nextNarrativePlan as any)
     : null;
@@ -2927,7 +2955,7 @@ export async function commitSessionNarrativeTurn(input: CommitSessionNarrativeTu
     });
   } else if (promotedNextPlan) {
     // 当前台词落库后若已经提升出下一轮 plan，就要立刻按下一轮回合重写 turnState。
-    // 否则敌人回合/旁白播报这种链式编排会继续停留在“等待刚刚说完的人”。
+    // 否则敌人回合/旁白播报这种链式编排会继续停留在"等待刚刚说完的人"。
     applyPlanTurnStateToSessionState(state, world, promotedNextPlan);
   } else if (pendingPlan?.awaitUser) {
     allowPlayerTurn(state, world, committedRoleType, committedRole);
