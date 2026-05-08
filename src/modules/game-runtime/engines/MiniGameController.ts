@@ -2529,8 +2529,7 @@ function detectGameTrigger(
   const currentConfirmsPassive = PASSIVE_CONFIRM_PATTERNS.some((pattern) => pattern.test(text));
   for (const rulebook of Object.values(RULEBOOKS)) {
     const mentionedInTranscript = rulebook.passivePatterns.some((pattern) => pattern.test(transcript));
-    const directMentionInText = rulebook.passivePatterns.some((pattern) => pattern.test(text));
-    if (directMentionInText || (mentionedInTranscript && currentConfirmsPassive)) {
+    if (mentionedInTranscript && currentConfirmsPassive) {
       return { gameType: rulebook.gameType, source: "passive" };
     }
   }
