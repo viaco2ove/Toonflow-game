@@ -12,6 +12,7 @@ import {
   resolveMiniGameModel,
   type MiniGameIntentLogMeta,
 } from "@/modules/game-runtime/services/MiniGameIntentService";
+import { resolveSellIntent } from "@/modules/game-runtime/services/MiniGameSellService";
 import { abandonActiveFreeChapterTaskEvent } from "@/modules/game-runtime/services/FreeChapterTaskService";
 
 export interface MiniGameActionOption {
@@ -63,6 +64,7 @@ interface MiniGameRulebook {
   triggerTags: string[];
   passivePatterns: RegExp[];
   ruleSummary: string;
+  rulebookNarration?: string;
   setup: (ctx: MiniGameControllerInput, sessionId: string, entrySource: string) => JsonRecord;
   options: (session: JsonRecord) => MiniGameActionOption[];
   applyAction: (session: JsonRecord, actionId: string, ctx: MiniGameControllerInput) => MiniGameStepResult;
@@ -373,6 +375,7 @@ function buildMiniGameUiStateItems(session: JsonRecord, rulebook: MiniGameRulebo
     return [
       { key: "当前水域", value: scalarText(publicState.site_name) || "当前水域" },
       { key: "当前状态", value: scalarText(publicState.current_status) || "准备抛竿" },
+      { key: "陪练", value: scalarText(publicState.mentor) || "未选择" },
       { key: "本轮结果", value: scalarText(publicState.last_result) || "暂无" },
       { key: "最近收获", value: scalarText(publicState.last_reward) || "暂无" },
     ].filter((item) => scalarText(item.value));
@@ -737,6 +740,7 @@ function resolveMentorSpeechDirection(gameType: string, target: string, narratio
   if (/成功|获得|提升|经验\+/u.test(narrationText)) {
     return `围绕${targetText}对本轮成果作出符合角色性格的鼓励、确认或专业点评。`;
   }
+  if (gameType === "fishing") return `以协助者身份提醒用户关注${targetText}的水情、鱼类动向或收竿时机。`;
   if (gameType === "cultivation") return `以陪练或护法身份指导用户继续修炼${targetText}，可提醒节奏、气息或风险。`;
   if (gameType === "mining") return `以协助者身份提醒用户处理${targetText}相关的矿道风险、开采节奏或撤离判断。`;
   if (gameType === "alchemy") return `以协助者身份提醒用户处理${targetText}相关的火候、药性或凝丹节奏。`;
@@ -2550,6 +2554,163 @@ function isForceQuitMiniGameCommand(input: string): boolean {
   return normalized === "退出" || normalized === "exit";
 }
 
+function isSellCommand(input: string): boolean {
+  const text = scalarText(input);
+  if (!text.startsWith("#")) return false;
+  const normalized = text.replace(/^#/, "").trim();
+  return normalized.startsWith("卖出") || normalized.startsWith("卖");
+}
+
+/**
+ * 处理 #卖出 命令。
+ * 调用 AI 解析玩家想卖的物品、数量和价格。
+ */
+async function handleSellCommand(
+  input: MiniGameControllerInput,
+  state: JsonRecord,
+  root: JsonRecord,
+) {
+  const inventory = asArray<JsonRecord>(state.inventory);
+  const narratorName = scalarText(input.world?.narratorRole?.name) || "旁白";
+  const playerName = scalarText(input.world?.playerRole?.name) || "用户";
+
+  if (DebugLogUtil.isDebugLogEnabled()) {
+    console.log("[SellCommand] === 卖出命令开始 ===");
+    console.log("[SellCommand] 玩家输入:", input.playerMessage);
+    console.log("[SellCommand] 原始 inventory:", JSON.stringify(inventory));
+  }
+
+  // 调用 AI 解析卖出意图
+  const result = await resolveSellIntent(
+    input.playerMessage,
+    inventory as any[],
+    input.userId,
+  );
+
+  if (!result || result.sellItems.length === 0) {
+    const narration = inventory.length === 0
+      ? "背包是空的，没有东西可以卖。"
+      : "背包里没有符合条件的物品可以出售。";
+    return {
+      intercepted: true,
+      runtime: root,
+      message: {
+        role: narratorName,
+        roleType: "narrator",
+        eventType: "on_system_message",
+        content: narration,
+        meta: {},
+      },
+    };
+  }
+
+  const soldList = result.sellItems
+    .map((item) => `${item.name}×${item.quantity}`)
+    .join("、");
+  if (DebugLogUtil.isDebugLogEnabled()) {
+    console.log("[SellCommand] AI 解析结果:", JSON.stringify(result));
+    console.log("[SellCommand] 出售列表:", soldList, "获得金币:", result.totalMoney);
+  }
+
+  // 从背包移除已卖物品（按数量顺序移除）
+  const currentInventory = asArray<JsonRecord>(state.inventory);
+  if (DebugLogUtil.isDebugLogEnabled()) {
+    console.log("[SellCommand] 移除前 inventory:", JSON.stringify(currentInventory));
+  }
+
+  const remainingInventory = currentInventory.slice();  // 复制一份
+  const soldItemsRecord: Record<string, number> = {};
+  result.sellItems.forEach((item) => {
+    soldItemsRecord[item.name] = item.quantity;
+  });
+
+  // 按顺序移除指定数量的物品
+  const finalInventory = remainingInventory.filter((item) => {
+    const name = scalarText(item.name || item.itemName || item.title);
+    const sellQty = soldItemsRecord[name];
+    if (sellQty !== undefined && sellQty > 0) {
+      soldItemsRecord[name] = sellQty - 1;
+      if (DebugLogUtil.isDebugLogEnabled()) {
+        console.log("[SellCommand] 移除 inventory 物品:", name);
+      }
+      return false;  // 移除这件物品
+    }
+    return true;  // 保留这件物品
+  });
+
+  state.inventory = finalInventory;
+  if (DebugLogUtil.isDebugLogEnabled()) {
+    console.log("[SellCommand] 移除后 inventory:", JSON.stringify(finalInventory));
+  }
+
+  // 从参数卡 items 中移除已卖物品（前端显示的是参数卡 items，不是 inventory）
+  const card = createPlayerParameterCard(state);
+  if (DebugLogUtil.isDebugLogEnabled()) {
+    console.log("[SellCommand] 参数卡 items 移除前:", JSON.stringify(card.items));
+  }
+
+  // 按数量逐个移除参数卡 items 中的物品
+  const itemsToRemove: Record<string, number> = {};
+  result.sellItems.forEach((item) => {
+    itemsToRemove[item.name] = item.quantity;
+  });
+  const currentItems = asArray<string>(card.items);
+  const remainingItems = currentItems.filter((itemName) => {
+    const sellQty = itemsToRemove[itemName];
+    if (sellQty !== undefined && sellQty > 0) {
+      itemsToRemove[itemName] = sellQty - 1;
+      if (DebugLogUtil.isDebugLogEnabled()) {
+        console.log("[SellCommand] 从参数卡移除:", itemName);
+      }
+      return false;  // 移除
+    }
+    return true;  // 保留
+  });
+  card.items = remainingItems;
+  asRecord(state.player).parameterCardJson = card;
+  if (DebugLogUtil.isDebugLogEnabled()) {
+    console.log("[SellCommand] 参数卡 items 移除后:", JSON.stringify(card.items));
+  }
+
+  // 增加金币
+  card.money = Number(card.money || 0) + result.totalMoney;
+  if (DebugLogUtil.isDebugLogEnabled()) {
+    console.log("[SellCommand] 金币增加:", result.totalMoney, "当前金币:", card.money);
+    console.log("[SellCommand] === 赋值后最终状态 ===");
+    console.log("[SellCommand] state.inventory:", JSON.stringify(state.inventory));
+    console.log("[SellCommand] state.player.money:", card.money);
+    console.log("[SellCommand] === 卖出命令结束 ===");
+  }
+
+  // 记录记忆
+  const memoryAdd = result.sellItems.map(
+    (item) => `出售：${item.name}×${item.quantity}（+${item.subtotal}金）`
+  );
+
+  return {
+    intercepted: true,
+    runtime: root,
+    message: {
+      role: narratorName,
+      roleType: "narrator",
+      eventType: "on_inventory_sell",
+      content: result.narration,
+      meta: buildMiniGameMeta(root),
+    },
+    pendingNarrativePlan: buildMiniGameNarrativePlan(
+      "物品出售结算",
+      result.narration,
+      true,
+      narratorName,
+      playerName,
+      "on_inventory_sell",
+    ),
+  };
+}
+
+/**
+ * 构建简单的旁白回复（用于错误提示等场景）。
+ */
 function availableMiniGameCatalog() {
   return Object.values(RULEBOOKS)
     .filter((rulebook) => rulebook.triggerTags.length > 0)
@@ -3458,8 +3619,19 @@ function werewolfStep(session: JsonRecord, actionId: string, ctx: MiniGameContro
 
 function fishingOptions(session: JsonRecord): MiniGameActionOption[] {
   const phase = normalizePhase(session.phase, "prepare");
+  const publicState = asRecord(session.public_state);
+  const mentors = uniqueTexts(asArray<string>(publicState.available_mentors));
+  const mentorOptions = mentors.map((item) => ({
+    action_id: `mentor:${item}`,
+    label: item,
+    desc: `选择${item}协助钓鱼`,
+    aliases: [`选择${item}`, `${item}陪练`, `${item}协助`, `让${item}帮忙`, `请${item}帮忙`],
+  }));
   if (phase === "prepare") {
     return [
+      { action_id: "choose_mentor", label: "需要陪练", desc: "查看可选协助角色", aliases: ["需要陪练", "找陪练", "需要协助", "找人帮忙"] },
+      { action_id: "no_mentor", label: "不需要陪练", desc: "独自钓鱼", aliases: ["不用陪练", "不需要陪练", "自己钓", "独自钓鱼"] },
+      ...mentorOptions,
       { action_id: "cast", label: "抛竿", desc: "开始本次垂钓", aliases: ["开始钓鱼", "甩竿", "下钩"] },
       { action_id: "finish", label: "#退出结束", desc: "输入 #退出 结束当前钓鱼", aliases: ["收摊", "结束钓鱼", "离开水边"] },
     ];
@@ -3509,11 +3681,16 @@ function resolveFishingReward(session: JsonRecord): { kind: string; name: string
   };
 }
 
-function resolveFishingRound(session: JsonRecord, siteName: string): MiniGameStepResult {
+function resolveFishingRound(session: JsonRecord, siteName: string, ctx?: MiniGameControllerInput): MiniGameStepResult {
   const publicState = asRecord(session.public_state);
   const hidden = asRecord(session.hidden_state);
   const roll = Number(hidden.encounter_roll || takeRng(session, 1, 100));
   const fishingExpGain = Math.max(10, Number(publicState.exp_reward || 0));
+  const currentMentor = () => {
+    const mentor = scalarText(publicState.mentor);
+    return mentor && mentor !== "无" ? mentor : "";
+  };
+  const mentor = currentMentor();
   session.phase = "result";
   if (roll <= 38) {
     publicState.current_status = "空竿";
@@ -3526,6 +3703,7 @@ function resolveFishingRound(session: JsonRecord, siteName: string): MiniGameSte
       narration: `你把鱼钩抛进 ${siteName}，片刻后水面恢复了平静，这一竿没有鱼也没有宝物。你可以继续钓鱼，或输入 #退出 结束当前钓鱼。`,
       resultTags: ["cast", "empty_hook"],
       memorySummary: "钓鱼空竿一次",
+      mentorSpeech: mentor ? buildMentorMiniGameSpeechRequest(mentor, "fishing", siteName, "空竿了") : undefined,
     };
   }
   const reward = resolveFishingReward(session);
@@ -3552,6 +3730,7 @@ function resolveFishingRound(session: JsonRecord, siteName: string): MiniGameSte
       memoryAdd: [`钓鱼收获：${reward.name}`, `钓鱼获得经验：${fishingExpGain}`],
     },
     memorySummary: `钓鱼成功，收获 ${reward.name}`,
+    mentorSpeech: mentor ? buildMentorMiniGameSpeechRequest(mentor, "fishing", siteName, `钓到 ${reward.name}`) : undefined,
   };
 }
 
@@ -3562,6 +3741,32 @@ function fishingStep(session: JsonRecord, actionId: string, ctx: MiniGameControl
   const playerName = scalarText(ctx?.world?.playerRole?.name) || "用户";
   const currentPhase = normalizePhase(session.phase, "prepare");
   const siteName = scalarText(publicState.site_name) || "水面";
+  const mentors = uniqueTexts(asArray<string>(publicState.available_mentors));
+  // 处理陪练选择
+  if (currentPhase === "prepare") {
+    if (actionId === "choose_mentor") {
+      const mentorList = mentors.length > 0 ? `可选陪练：${mentors.join("、")}。` : "当前没有可选陪练。";
+      return {
+        narration: `${mentorList}直接输入陪练角色名字选择协助，或输入"不需要陪练"独自开始。`,
+        resultTags: ["choose_mentor"],
+      };
+    }
+    if (actionId === "no_mentor") {
+      publicState.mentor = "无";
+      return {
+        narration: `你决定独自钓鱼。准备好了就输入"抛竿"开始吧。`,
+        resultTags: ["no_mentor"],
+      };
+    }
+    if (actionId.startsWith("mentor:")) {
+      const mentorName = actionId.replace("mentor:", "");
+      publicState.mentor = mentorName;
+      return {
+        narration: `你邀请了 ${mentorName} 协助钓鱼。准备好了就输入"抛竿"开始吧。`,
+        resultTags: ["mentor_selected", `mentor:${mentorName}`],
+      };
+    }
+  }
   if (actionId === "finish") {
     session.status = "finished";
     session.phase = "settling";
@@ -3590,13 +3795,13 @@ function fishingStep(session: JsonRecord, actionId: string, ctx: MiniGameControl
       publicState.last_reward = "";
       publicState.exp_reward = resolveFishingExpGain(Math.max(1, Number(publicState.user_level || 1)), session);
       hidden.encounter_roll = takeRng(session, 1, 100);
-      const fishRound = resolveFishingRound(session, siteName);
+      const fishRound = resolveFishingRound(session, siteName, ctx);
       return { ...fishRound, pendingNarrativePlan: fishRound.pendingNarrativePlan || buildMiniGameNarrativePlan("钓鱼播报", fishRound.narration || "", false, narratorName, playerName) };
     }
   }
   if (currentPhase === "waiting") {
     if (actionId === "wait_more" || actionId === "cast") {
-      const fishRound = resolveFishingRound(session, siteName);
+      const fishRound = resolveFishingRound(session, siteName, ctx);
       return { ...fishRound, pendingNarrativePlan: fishRound.pendingNarrativePlan || buildMiniGameNarrativePlan("钓鱼播报", fishRound.narration || "", false, narratorName, playerName) };
     }
   }
@@ -4544,10 +4749,13 @@ const RULEBOOKS: Record<string, MiniGameRulebook> = {
     goal: "抛竿后立即结算，看看能否钓到鱼或宝物",
     phaseOrder: ["prepare", "waiting", "result", "settling"],
     triggerTags: ["#钓鱼"],
-    passivePatterns: [/钓鱼/, /去钓鱼/, /开始钓鱼/, /抛竿/],
+    passivePatterns: [/钓鱼/, /去钓鱼/, /开始钓鱼/],
     ruleSummary: "直接输入“抛竿”“收杆”“继续钓鱼”等动作。可能空竿，也可能钓到鱼或宝物；有收获会直接加入物品。",
-    setup: (ctx, sessionId, entrySource) => ({
-      session_id: sessionId,
+    rulebookNarration: '钓鱼开始。你可以输入"抛竿"开始钓鱼，或输入"需要陪练"查看陪练选项。',
+    setup: (ctx, sessionId, entrySource) => {
+      const mentors = collectCultivationMentorNames(ctx);
+      return {
+        session_id: sessionId,
       game_type: "fishing",
       rulebook_version: "1.0",
       status: "active",
@@ -4557,7 +4765,7 @@ const RULEBOOKS: Record<string, MiniGameRulebook> = {
       entry_source: entrySource,
       chapter_id: Number(ctx.chapter?.id || 0) || null,
       scene_id: scalarText(ctx.chapter?.title) || "river_bank",
-      participants: buildParticipants(ctx, 1),
+      participants: buildParticipants(ctx, Math.max(1, Math.min(3, mentors.length + 1))),
       public_state: buildSimplePublicState({
         site_name: "当前水域",
         user_level: readMiniGamePlayerLevel(ctx.state),
@@ -4565,12 +4773,14 @@ const RULEBOOKS: Record<string, MiniGameRulebook> = {
         current_status: "准备抛竿",
         last_result: "",
         last_reward: "",
+        available_mentors: mentors,
       }),
       hidden_state: { target_fish_name: "", encounter_roll: 0, fish_rarity: "", reward_kind: "" },
       resource_state: {},
       rng_state: { seed: `${ctx.world?.id || 0}:${ctx.chapter?.id || 0}:fishing:${sessionId}`, cursor: 0, queue: buildRngQueue(`${ctx.world?.id || 0}:${ctx.chapter?.id || 0}:fishing:${sessionId}`) },
       action_log_ids: [], result: "ongoing", finish_reason: "", reward_preview: {}, writeback_whitelist: ["player_state.parameter_card", "player_state.inventory", "memory_state.mid_term"], can_suspend: true, can_quit: true, resume_token: `resume_${sessionId}`,
-    }),
+      };
+    },
     options: fishingOptions,
     applyAction: fishingStep,
   },
@@ -5073,7 +5283,12 @@ function buildStartNarration(rulebook: MiniGameRulebook, session: JsonRecord): s
     return `小游戏已开始：${rulebook.displayName}。你的身份是 ${playerRole}。当前阶段：${scalarText(session.phase)}。${openingNarration}请直接输入“发言”“进入投票”“投票某人”“查验某人”“救某人”等动作。`;
   }
   if (rulebook.gameType === "fishing") {
-    return `你来到 ${scalarText(publicState.site_name) || "水边"}，准备开始钓鱼。现在可以直接输入“抛竿”“收杆”或“继续钓鱼”。`;
+    const mentors = asArray<string>(publicState.available_mentors).join("、");
+    return [
+      "钓鱼开始了。你想独自垂钓还是需要陪练协助？",
+      mentors ? `可选陪练：${mentors}。` : "当前没有可选陪练，也可以独自钓鱼。",
+      "直接输入陪练角色名字，或输入'不需要陪练'独自钓鱼。",
+    ].join("");
   }
   if (rulebook.gameType === "cultivation") {
     const practices = asArray<string>(publicState.available_practices).join("、") || "基础功法、基础体术、基础冥想";
@@ -5210,12 +5425,13 @@ function buildStatusNarration(root: JsonRecord, rulebook: MiniGameRulebook): str
     return `${rulebook.displayName}状态：当前阶段 ${scalarText(session.phase) || "进行中"}。可直接输入“发言”“进入投票”“投票某人”“查验某人”“救某人”或“查看记录”。`;
   }
   if (rulebook.gameType === "fishing") {
+    const mentor = scalarText(publicState.mentor) || "未选择";
     const reward = scalarText(publicState.last_reward);
     return [
-      `钓鱼状态：${scalarText(publicState.current_status) || "准备抛竿"}。`,
+      `钓鱼状态：${scalarText(publicState.current_status) || "准备抛竿"}。陪练：${mentor}。`,
       scalarText(publicState.last_result) ? `本轮结果：${scalarText(publicState.last_result)}。` : "",
       reward ? `最近收获：${reward}。` : "",
-      "可直接输入“抛竿”“收杆”或“继续钓鱼”。",
+      "可直接输入'抛竿''收杆'或'继续钓鱼'。",
     ].filter(Boolean).join("");
   }
   if (rulebook.gameType === "cultivation") {
@@ -5311,6 +5527,11 @@ export async function handleMiniGameTurn(input: MiniGameControllerInput): Promis
           meta: { miniGameCatalog: catalog },
         },
       };
+    }
+
+    // #卖出 是全局命令，不依赖小游戏状态，在没有小游戏时也要拦截
+    if (isSellCommand(input.playerMessage)) {
+      return handleSellCommand(input, state, root);
     }
 
     const catalogSelection = resolveMiniGameCatalogSelection(state, input.playerMessage);
@@ -5536,6 +5757,7 @@ export async function handleMiniGameTurn(input: MiniGameControllerInput): Promis
       };
     }
   }
+
   if (isForceQuitMiniGameCommand(input.playerMessage)) {
     if (DebugLogUtil.isDebugLogEnabled()) {
         console.log("[story:mini_game:agent] #退出 强制结束小游戏");

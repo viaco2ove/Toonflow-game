@@ -96,3 +96,10 @@ src/
 .claude/mmx.conf 
 当 `mmx_enable=true` 时可用，使用 MiniMax MMX CLI（mmx） 实现多种 AI 能力。
 其中特别是图像理解能力
+
+## output-styles
+你的行为要符合设置的output-styles
+
+## 处理问题的方式
+- 表查询出错的第一件事应该是去看看这个表的结构
+- 看到一个报错或者问题应该去看看根源问题是什么。而不是暴力解决

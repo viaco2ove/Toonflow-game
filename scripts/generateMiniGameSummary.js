@@ -190,6 +190,33 @@ function extractDialogueFromLogLine(line) {
 }
 
 /**
+ * 从日志行中提取小游戏 log tag
+ * 支持的 tag：[mini_game:user:enter]、[mini_game:rule_book]、[mini_game:user_turn]、
+ *           [mini_game:mentor_turn]、[mini_game:narration]、[mini_game:enemy_turn]、
+ *           [mini_game:settling]、[mini_game:user_abort]
+ */
+function extractMiniGameLogTags(line) {
+  const tags = [];
+  const tagPatterns = [
+    "mini_game:user:enter",
+    "mini_game:rule_book",
+    "mini_game:user_turn",
+    "mini_game:mentor_turn",
+    "mini_game:narration",
+    "mini_game:enemy_turn",
+    "mini_game:settling",
+    "mini_game:user_abort",
+  ];
+  for (const tag of tagPatterns) {
+    // 支持 [tag] 或 [tag args] 格式
+    if (line.includes(`[${tag}]`)) {
+      tags.push(tag);
+    }
+  }
+  return tags;
+}
+
+/**
  * 从 rulebook 日志提取游戏配置
  */
 function extractRulebookInfo(line) {
@@ -286,8 +313,8 @@ function detectTurnType(dialogues, currentPhase) {
     }
   }
 
-  // 陪练回合（mentor 介入）
-  if (lastDialogue.role === "陪练" || lastDialogue.roleType === "mentor") {
+  // 陪练回合（mentor/NPC 介入，roleType 为 npc 或 mentor）
+  if (lastDialogue.roleType === "npc" || lastDialogue.role === "陪练" || lastDialogue.roleType === "mentor") {
     return MINI_GAME_TURN_TYPES.MENTOR_TURN;
   }
 
@@ -376,6 +403,7 @@ function generateMiniGameSummaryMarkdown(logFilePath, outputMarkdownPath) {
   let currentMiniGameState = { isActive: false, gameType: null, phase: null, hasRulebook: false };
   let currentTimestamp = "";
   let currentPhase = null;
+  let sessionLogTags = [];  // 当前会话收集到的 log tags
 
   for (const line of lines) {
     // 提取时间戳
@@ -386,7 +414,11 @@ function generateMiniGameSummaryMarkdown(logFilePath, outputMarkdownPath) {
 
     // 提取 sessionId
     const sid = extractSessionId(line);
-    if (sid) {
+    if (sid && sid !== currentSession) {
+      currentSession = sid;
+      sessionLogTags = [];  // 换会话时重置
+      sessionDialogueList = [];  // 换会话时清空对话列表
+    } else if (sid) {
       currentSession = sid;
     }
 
@@ -396,6 +428,12 @@ function generateMiniGameSummaryMarkdown(logFilePath, outputMarkdownPath) {
       currentPhase = rulebookInfo;
     }
 
+    // 提取小游戏 log tag（打在 [mini_game:xxx] 的行）
+    const logTags = extractMiniGameLogTags(line);
+    if (logTags.length > 0) {
+      sessionLogTags.push(...logTags);
+    }
+
     // 从新增对话提取对话列表
     const dialogues = extractDialogueFromLogLine(line);
     if (dialogues && dialogues.length > 0) {
@@ -403,8 +441,8 @@ function generateMiniGameSummaryMarkdown(logFilePath, outputMarkdownPath) {
       const detected = detectMiniGameState(dialogues, currentPhase);
       currentMiniGameState = detected;
 
-      // 合并对话到当前会话
-      sessionDialogueList = dialogues;
+      // 追加对话到当前会话（而非覆盖）
+      sessionDialogueList.push(...dialogues);
 
       // 保存到 sessionDialogues
       if (currentSession) {
@@ -413,6 +451,7 @@ function generateMiniGameSummaryMarkdown(logFilePath, outputMarkdownPath) {
           miniGameState: { ...currentMiniGameState },
           timestamp: currentTimestamp,
           phaseInfo: currentPhase,
+          logTags: [...sessionLogTags],  // 带上本次收集到的 log tags
         });
       }
     }
@@ -488,6 +527,9 @@ function generateMiniGameSummaryMarkdown(logFilePath, outputMarkdownPath) {
         turnTypeName = MINI_GAME_TURN_TYPES.RULE_BOOK;
       } else if (d.eventType === "on_mini_game") {
         turnTypeName = MINI_GAME_TURN_TYPES.NARRATION;
+      } else if (d.eventType === "on_mini_game" && d.roleType === "npc") {
+        // 陪练回合（NPC 角色，如云韵、萧薰儿等）
+        turnTypeName = MINI_GAME_TURN_TYPES.MENTOR_TURN;
       } else if (d.eventType === "on_message" && d.role === "用户") {
         const gameType = detectGameType(content);
         if (gameType) {
@@ -513,7 +555,7 @@ function generateMiniGameSummaryMarkdown(logFilePath, outputMarkdownPath) {
           markdownLines.push(`- [用户输入] ${content}`);
         }
       } else {
-        markdownLines.push(`- 【旁白】 ${content}`);
+        markdownLines.push(`- 【${d.role}】 ${content}`);
         markdownLines.push(`  - 事件: ${eventName}`);
       }
 
@@ -521,6 +563,14 @@ function generateMiniGameSummaryMarkdown(logFilePath, outputMarkdownPath) {
       if (turnTypeName) {
         markdownLines.push(`  - 回合类型：${turnTypeName}`);
       }
+    }
+
+    // 显示收集到的 log tags
+    if (data.logTags && data.logTags.length > 0) {
+      markdownLines.push("");
+      markdownLines.push("### Log Tags");
+      const uniqueTags = [...new Set(data.logTags)];
+      markdownLines.push(`\`${uniqueTags.join(", ")}\``);
     }
 
     markdownLines.push("");

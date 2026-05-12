@@ -72,7 +72,9 @@ yarn debug:event-chain logs/app-2026-05-01.log
 
 ## 小游戏日志摘要生成
 yarn debug:mini-game logs/app-2026-05-08.log 
-
+模板参考[debug-mini-game.md](template/debug-mini-game.md)
+打上log tag 输出 用户进入小游戏回合， 规则说明回合。用户回合，陪练回合,
+  播报回合，敌方攻击回合，小游戏规程性退出回合，小游戏#退出回合。
 
 ## @记忆管理 日志
 如 @记忆管理 睡觉恢复

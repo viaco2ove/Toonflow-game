@@ -116,6 +116,11 @@ export default router.post(
           eventDigestWindowText: eventView.eventDigestWindowText,
           endDialog: sessionEndDialog,
           endDialogDetail: buildSessionEndDialogDetail(sessionStatus, chapter?.title || activeState.chapterTitle),
+          // 小游戏配置：前端根据此配置决定语音等待时间
+          // AUDIO_PROXY_MIN_SEC 默认3秒，可通过环境变量配置
+          miniGameConfig: {
+            audioProxyMinSec: Number(process.env.AUDIO_PROXY_MIN_SEC || 3),
+          },
         }));
       }
 

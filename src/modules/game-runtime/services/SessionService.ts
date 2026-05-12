@@ -62,7 +62,7 @@ import {
   TriggerHit,
 } from "@/modules/game-runtime/types/runtime";
 import { DebugLogUtil } from "@/utils/debugLogUtil";
-import {miniGameStateManager} from "@/modules/game-runtime/engines/MiniGameStateManager";
+import {miniGameStateManager, MiniGameOrchestrationResult} from "@/modules/game-runtime/engines/MiniGameStateManager";
 
 // ==================== 游玩模式回溯功能内存缓存 ====================
 //
@@ -82,6 +82,26 @@ interface SessionRevisitCacheItem {
 
 // 内存层：sessionId -> 最近 N 条（按 messageId 升序）
 const SESSION_REVISIT_HOT = new Map<string, SessionRevisitCacheItem[]>();
+
+// ==================== Session 编排锁 ====================
+//
+// 防止同一 session 的并发编排请求导致重复台词。
+// 内存级互斥锁：同一 sessionId 同时只允许一个编排/commit 操作执行。
+
+const SESSION_LOCKS = new Map<string, Promise<any>>();
+
+async function withSessionLock<T>(sessionId: string, fn: () => Promise<T>): Promise<T> {
+  const prev = SESSION_LOCKS.get(sessionId) || Promise.resolve();
+  const next = prev.then(() => fn(), (err) => { throw err; });
+  SESSION_LOCKS.set(sessionId, next);
+  try {
+    return await next;
+  } finally {
+    if (SESSION_LOCKS.get(sessionId) === next) {
+      SESSION_LOCKS.delete(sessionId);
+    }
+  }
+}
 
 // 保存回溯点到内存缓存
 function saveSessionRevisitToHotCache(
@@ -1475,9 +1495,12 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
           if (DebugLogUtil.isDebugLogEnabled()) {
               console.log("[story:mini_game:agent] 退出状态",isMiniGameEnded);
           }
-        // 小游戏已结束，清除残留的 pendingNarrativePlan
+        // 小游戏已结束，清除残留的 pendingNarrativePlan 和 heldNarrativePlan
         if (getPendingSessionNarrativePlan(state)) {
           setPendingSessionNarrativePlan(state, null);
+        }
+        if (state.heldNarrativePlan) {
+          delete state.heldNarrativePlan;
         }
       }
       if (pendingPlan) {
@@ -1485,6 +1508,49 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
         // 这里不能提前把输入权交还用户，否则前端会误以为小游戏回合已经结束。
         setPendingSessionNarrativePlan(state, pendingPlan as any);
         applyPlanTurnStateToSessionState(state, world, pendingPlan as any);
+        // 记录小游戏回合日志
+        const orchestration: MiniGameOrchestrationResult = {
+          intercepted: true,
+          eventType: pendingPlan.eventType || "on_mini_game",
+          narration: pendingPlan.presetContent || pendingPlan.motive || "",
+          isStart: pendingPlan.eventType === "on_mini_game_start",
+          isEnd: pendingPlan.eventType === "on_mini_game_abort" || pendingPlan.eventType === "on_mini_game_finish",
+          awaitUser: pendingPlan.awaitUser ?? true,
+          nextPhase: null,
+        };
+        const miniGameStateInfo = miniGameStateManager.getMiniGameStateInfo(state);
+        const turnType = miniGameStateManager.detectTurnType(state, messageContent, orchestration);
+        miniGameStateManager.logMiniGameTurn(turnType, {
+          gameType: miniGameStateInfo.gameType,
+          displayName: miniGameStateInfo.displayName,
+          phase: miniGameStateInfo.phase,
+          userInput: messageContent,
+          eventType: orchestration.eventType,
+        });
+        // 小游戏走编排通道时，也要将 messages（含陪练发言）插入数据库，确保陪练台词落库。
+        // 这些 messages 已经在 handleMiniGameTurn 中由 resolveMiniGameStepMessages 生成。
+        const miniGameMessages = miniGameResult.messages && miniGameResult.messages.length
+          ? miniGameResult.messages
+          : miniGameResult.message
+            ? [miniGameResult.message]
+            : [];
+        for (const item of miniGameMessages) {
+          const inserted = await db("t_sessionMessage").insert({
+            sessionId,
+            role: String(item.role || state.narrator?.name || "旁白"),
+            roleType: String(item.roleType || "narrator"),
+            content: String(item.content || ""),
+            eventType: String(item.eventType || "on_mini_game"),
+            meta: toJsonText(item.meta || {}, {}),
+            createTime: now,
+          });
+          const narrativeMessageId = normalizeMessageId(inserted);
+          const insertedRow = await db("t_sessionMessage").where({ id: narrativeMessageId }).first();
+          if (insertedRow) {
+            narrativeMessageRows.push(insertedRow);
+            narrativeMessageRow = insertedRow;
+          }
+        }
         // 不再直接插入旁白消息，小游戏旁白由 /game/streamlines 生成
       } else {
         allowPlayerTurn(
@@ -1536,6 +1602,10 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
 	        syncChapterProgressWithRuntime(currentChapter, state);
 	      }
 	      const stateJson = toJsonText(state, {});
+      if (DebugLogUtil.isDebugLogEnabled()) {
+        const inv = (state as any)?.inventory;
+        console.log("[SessionService] 保存前 state.inventory:", JSON.stringify(inv));
+      }
 	      await db("t_gameSession").where({ sessionId }).update({
         stateJson,
         chapterId: prevChapterId,
@@ -2297,11 +2367,15 @@ export async function continueSessionNarrative(sessionIdInput: string): Promise<
 }
 
 export async function orchestrateSessionTurn(sessionIdInput: string): Promise<SessionOrchestrationResult> {
-  const db = getGameDb();
   const sessionId = String(sessionIdInput || "").trim();
   if (!sessionId) {
     throw new SessionServiceError(400, "sessionId 不能为空");
   }
+  return withSessionLock(sessionId, async () => orchestrateSessionTurnInner(sessionId));
+}
+
+async function orchestrateSessionTurnInner(sessionId: string): Promise<SessionOrchestrationResult> {
+  const db = getGameDb();
 
   const sessionRow = await db("t_gameSession").where({ sessionId }).first();
   if (!sessionRow) {
@@ -2518,6 +2592,20 @@ export async function orchestrateSessionTurn(sessionIdInput: string): Promise<Se
     throw new SessionServiceError(400, "当前章节不存在");
   }
 
+  // 延迟提升：如果存在 heldNarrativePlan（如陪练回合），在前端主动请求编排时提升为 pendingNarrativePlan。
+  // 这确保旁白语音有充足时间播完，陪练回合不会和旁白回合打架。
+  if (state.heldNarrativePlan && !state.pendingNarrativePlan) {
+    if (DebugLogUtil.isDebugLogEnabled()) {
+      console.log("[story:orchestrator:runtime] heldNarrativePlan promoted to pendingNarrativePlan", JSON.stringify({
+        sessionId,
+        role: String(state.heldNarrativePlan.role || ""),
+        roleType: String(state.heldNarrativePlan.roleType || ""),
+      }));
+    }
+    setPendingSessionNarrativePlan(state, state.heldNarrativePlan as any);
+    delete state.heldNarrativePlan;
+  }
+
   const pendingNarrativePlan = getPendingSessionNarrativePlan(state);
   if (pendingNarrativePlan) {
     // 小游戏已退出但 pendingNarrativePlan 残留时，说明是小游戏退出不干净，
@@ -2534,6 +2622,9 @@ export async function orchestrateSessionTurn(sessionIdInput: string): Promise<Se
         }));
       }
       setPendingSessionNarrativePlan(state, null);
+      if (state.heldNarrativePlan) {
+        delete state.heldNarrativePlan;
+      }
     } else {
       // 小游戏的旁白播报 / 敌人回合都通过 pendingNarrativePlan 进入正式编排链。
       // 这里必须优先返回，避免再跑普通剧情编排把小游戏回合冲掉。
@@ -2807,12 +2898,17 @@ export async function initSessionChapter(sessionIdInput: string, chapterIdInput?
 }
 
 export async function commitSessionNarrativeTurn(input: CommitSessionNarrativeTurnInput): Promise<AddSessionMessageResult> {
-  const db = getGameDb();
-  const now = nowTs();
   const sessionId = String(input.sessionId || "").trim();
   if (!sessionId) {
     throw new SessionServiceError(400, "sessionId 不能为空");
   }
+  return withSessionLock(sessionId, async () => commitSessionNarrativeTurnInner(input));
+}
+
+async function commitSessionNarrativeTurnInner(input: CommitSessionNarrativeTurnInput): Promise<AddSessionMessageResult> {
+  const db = getGameDb();
+  const now = nowTs();
+  const sessionId = String(input.sessionId || "").trim();
   const sessionRow = await db("t_gameSession").where({ sessionId }).first();
   if (!sessionRow) {
     throw new SessionServiceError(404, "会话不存在");
@@ -2859,13 +2955,25 @@ export async function commitSessionNarrativeTurn(input: CommitSessionNarrativeTu
     eventTypeFallback: committedEventType,
   });
   setPendingSessionNarrativePlan(state, null);
-  // 链式提升：如果 pendingPlan 有 nextNarrativePlan，提升为新的 pendingNarrativePlan
+  // 延迟提升：如果 pendingPlan 有 nextNarrativePlan（如陪练回合），
+  // 不立即提升为 pendingNarrativePlan，而是存入 heldNarrativePlan。
+  // 这样旁白语音有充足时间播完，等前端下次请求编排时再提升。
   if (pendingPlan?.nextNarrativePlan) {
-    setPendingSessionNarrativePlan(state, pendingPlan.nextNarrativePlan as any);
+    state.heldNarrativePlan = pendingPlan.nextNarrativePlan;
     if (DebugLogUtil.isDebugLogEnabled()) {
-      console.log("[story:next_plan:stats] nextNarrativePlan promoted to pendingNarrativePlan", {
+      console.log("[story:next_plan:stats] nextNarrativePlan held (delayed promotion)", {
         role: (pendingPlan.nextNarrativePlan as any)?.role,
         roleType: (pendingPlan.nextNarrativePlan as any)?.roleType,
+      });
+    }
+    // 打上陪练回合的 log tag
+    const heldRoleType = String((pendingPlan.nextNarrativePlan as any)?.roleType || "");
+    if (heldRoleType && !["narrator", "player", "narrator_person"].includes(heldRoleType)) {
+      miniGameStateManager.logMiniGameTurn("mentor_turn", {
+        gameType: miniGameStateManager.getMiniGameStateInfo(state).gameType,
+        displayName: miniGameStateManager.getMiniGameStateInfo(state).displayName,
+        phase: miniGameStateManager.getMiniGameStateInfo(state).phase,
+        eventType: String((pendingPlan.nextNarrativePlan as any)?.eventType || ""),
       });
     }
   }
@@ -2942,8 +3050,8 @@ export async function commitSessionNarrativeTurn(input: CommitSessionNarrativeTu
   // - orchestration 只负责预编排，不代表这一句已经真正提交；
   // - 如果 commit 后不显式推进 turnState，storyInfo / listSession 仍可能读到旧 expectedRole；
   // - 前端就会继续显示"等待上一位角色发言"，直到回溯或刷新才恢复。
-  const promotedNextPlan = pendingPlan?.nextNarrativePlan
-    ? buildSessionPlanResult(pendingPlan.nextNarrativePlan as any)
+  const heldPlan = state.heldNarrativePlan
+    ? buildSessionPlanResult(state.heldNarrativePlan as any)
     : null;
   if (hasPendingChapterSwitch || isOpeningCommit) {
     setRuntimeTurnState(state, world, {
@@ -2953,10 +3061,10 @@ export async function commitSessionNarrativeTurn(input: CommitSessionNarrativeTu
       lastSpeakerRoleType: committedRoleType,
       lastSpeaker: committedRole,
     });
-  } else if (promotedNextPlan) {
-    // 当前台词落库后若已经提升出下一轮 plan，就要立刻按下一轮回合重写 turnState。
-    // 否则敌人回合/旁白播报这种链式编排会继续停留在"等待刚刚说完的人"。
-    applyPlanTurnStateToSessionState(state, world, promotedNextPlan);
+  } else if (heldPlan) {
+    // 有 heldNarrativePlan（如陪练回合），turnState 指向下一轮编排，
+    // 但不立即暴露 pendingNarrativePlan，等前端下次请求编排时提升。
+    applyPlanTurnStateToSessionState(state, world, heldPlan);
   } else if (pendingPlan?.awaitUser) {
     allowPlayerTurn(state, world, committedRoleType, committedRole);
   } else {

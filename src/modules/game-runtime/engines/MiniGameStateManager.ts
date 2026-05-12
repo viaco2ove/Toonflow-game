@@ -186,8 +186,8 @@ export class MiniGameStateManager {
         phaseOrder: ["prepare", "waiting", "result", "settling"],
         triggerTags: ["#钓鱼"],
         passivePatterns: ["钓鱼", "去钓鱼", "开始钓鱼", "抛竿"],
-        ruleSummary: "直接输入\"抛竿\"\"收杆\"\"继续钓鱼\"等动作。可能空竿，也可能钓到鱼或宝物；有收获会直接加入物品。",
-        rulebookNarration: "钓鱼规则：直接输入\"抛竿\"\"收杆\"\"继续钓鱼\"等动作。可能空竿，也可能钓到鱼或宝物；有收获会直接加入物品。输入 #钓鱼 即可开始钓鱼，输入 #退出 可以强制退出小游戏。",
+        ruleSummary: "首次进入默认折叠面板，旁白询问目标水域与是否需要陪练。可能空竿，也可能钓到鱼或宝物；有收获会直接加入物品。",
+        rulebookNarration: "钓鱼规则：首次进入默认折叠面板，旁白询问目标水域与是否需要陪练。可能空竿，也可能钓到鱼或宝物；有收获会直接加入物品。输入 #钓鱼 即可开始钓鱼，输入 #退出 可以强制退出小游戏。",
       },
       {
         gameType: "alchemy",
@@ -743,6 +743,11 @@ export class MiniGameStateManager {
 
     // 陪练回合（mentor 介入）
     if (eventType === "mentor_turn" || pendingPlan?.mentorTurn) {
+      return "mentor_turn";
+    }
+    // 检查 nextNarrativePlan 中是否包含陪练角色台词（非 narrator/player）
+    const nextPlan = pendingPlan?.nextNarrativePlan;
+    if (nextPlan && nextPlan.roleType && !["narrator", "player", "narrator_person"].includes(nextPlan.roleType)) {
       return "mentor_turn";
     }
 

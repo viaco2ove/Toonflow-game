@@ -101,6 +101,8 @@
   - 敌人或者用户血量为0
   - 用户输入“#退出”
 
+[h6.md](history/h6.md)
+
 ## [fail] 小游戏全链路打tag
 [logtag.web.md](../../../../code/logtag.web.md)
 [logtag.anderoid.md](../../../../code/logtag.anderoid.md)
@@ -119,5 +121,6 @@ WebDebugLogUtil-》debug=true 时输出调试日志, AndroidDebugLogUtil-》debu
 [aiGame][miniGame] 陪练(狼人杀 挖矿等)角色回合-台词
 [aiGame][miniGame] 陪练(狼人杀 挖矿等)角色回合-语音播放
 
-
+打上log tag 输出 用户进入小游戏回合， 规则说明回合。用户回合，陪练回合,
+  播报回合，敌方攻击回合，小游戏规程性退出回合，小游戏#退出回合。
 ## [fail] 机制推广到全部小游戏
