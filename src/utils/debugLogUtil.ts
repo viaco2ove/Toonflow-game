@@ -123,6 +123,10 @@ export class DebugLogUtil {
     tokenUsage?: { inputTokens?: number; outputTokens?: number; reasoningTokens?: number } | null;
     /** AI 意图解析的耗时（来自 MiniGameIntentService） */
     timing?: { buildMs?: number; invokeMs?: number; totalMs?: number } | null;
+    /** 发送给模型的内容摘要 */
+    requestPreview?: string;
+    /** 模型返回的内容摘要 */
+    responsePreview?: string;
   }): void {
     if (!DebugLogUtil.isDebugLogEnabled()) return;
     // 第一行：动作命中结果（保持向后兼容）
@@ -140,7 +144,7 @@ export class DebugLogUtil {
       resultTags: Array.isArray(payload.resultTags) ? payload.resultTags : [],
       intercepted: Boolean(payload.intercepted),
     })}`);
-    // 以下为真实 token 统计，参考 [story:streamlines:stats] 格式
+    // 以下为真实 token 统计，参考 [story:orchestrator:stats] / [story:streamlines:stats] 格式
     const tokenUsage = payload.tokenUsage;
     const timing = payload.timing;
     if (tokenUsage || timing) {
@@ -171,6 +175,13 @@ export class DebugLogUtil {
         console.log(`[${tag}] | 输出 Token | ${tokenUsage.outputTokens || 0} |`);
         console.log(`[${tag}] | 推理 Token | ${tokenUsage.reasoningTokens || 0} |`);
       }
+    }
+    // 发送内容 / 返回内容（参考 [story:orchestrator:stats]）
+    if (payload.requestPreview) {
+      console.log(`[${tag}] request_preview=${payload.requestPreview}`);
+    }
+    if (payload.responsePreview) {
+      console.log(`[${tag}] response_preview=${payload.responsePreview}`);
     }
   }
 

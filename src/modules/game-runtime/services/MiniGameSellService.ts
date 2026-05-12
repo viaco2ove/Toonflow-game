@@ -21,6 +21,11 @@ export interface SellIntentResult {
   sellItems: SellItem[];
   totalMoney: number;
   narration: string;
+  tokenUsage?: { inputTokens?: number; outputTokens?: number; reasoningTokens?: number } | null;
+  timing?: { buildMs?: number; invokeMs?: number; totalMs?: number } | null;
+  requestPreview?: string;
+  responsePreview?: string;
+  _systemPrompt?: string;
 }
 
 const sellIntentSchema = {
@@ -233,6 +238,19 @@ export async function resolveSellIntent(
       ? (parsedObject as Record<string, unknown>)
       : null;
 
+    // 提取 token usage
+    const usage = (result as any)?.usage;
+    let tokenUsage: { inputTokens: number; outputTokens: number; reasoningTokens: number } | null = null;
+    if (usage && typeof usage === "object") {
+      tokenUsage = {
+        inputTokens: Number(usage.inputTokens || 0) || 0,
+        outputTokens: Number(usage.outputTokens || 0) || 0,
+        reasoningTokens: Number(usage.outputTokenDetails?.reasoningTokens || usage.reasoningTokens || 0) || 0,
+      };
+    }
+
+    const invokeMs = Date.now() - startedAt;
+
     if (DebugLogUtil.isDebugLogEnabled()) {
       console.log("[SellService] 原始响应:", rawResponse);
     }
@@ -240,7 +258,15 @@ export async function resolveSellIntent(
     const normalized = normalizeSellIntentResult(rawObject, inventory);
     if (DebugLogUtil.isDebugLogEnabled()) {
       console.log("[SellService] 解析结果:", normalized);
-      console.log("[SellService] 耗时:", Date.now() - startedAt, "ms");
+      console.log("[SellService] 耗时:", invokeMs, "ms");
+    }
+
+    if (normalized) {
+      normalized.tokenUsage = tokenUsage;
+      normalized.timing = { buildMs: 0, invokeMs, totalMs: invokeMs };
+      normalized.requestPreview = userPrompt;
+      normalized.responsePreview = rawResponse;
+      normalized._systemPrompt = systemPrompt + schemaPrompt;
     }
 
     return normalized;

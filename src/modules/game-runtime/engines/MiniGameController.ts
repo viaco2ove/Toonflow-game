@@ -513,10 +513,39 @@ function createPlayerParameterCard(state: JsonRecord) {
   card.mp = Number.isFinite(Number(card.mp)) ? Number(card.mp) : 0;
   card.money = Number.isFinite(Number(card.money)) ? Number(card.money) : 0;
   card.skills = uniqueTexts(asArray<string>(card.skills));
-  card.items = uniqueTexts(asArray<string>(card.items));
+
+  // 关键修复：双向同步 state.inventory 和 parameterCard.items！
+  // 以 state.inventory 为主，但如果 items 有 inventory 没有的，也补回到 inventory
+  const inventory = asArray<JsonRecord>(state.inventory);
+  const itemsFromInventory = inventory.map(item => {
+    return scalarText(item.name || item.itemName || item.title);
+  }).filter(Boolean);
+
+  const existingItems = asArray<string>(card.items);
+
+  // 1. 先把 items 里有但 inventory 里没有的，补回到 inventory
+  for (const itemName of existingItems) {
+    if (!itemsFromInventory.includes(itemName)) {
+      inventory.push({ name: itemName, kind: "loot", rarity: "normal" });
+    }
+  }
+
+  // 2. 再从完整的 inventory 生成 items
+  const fullItemNames = inventory.map(item => {
+    return scalarText(item.name || item.itemName || item.title);
+  }).filter(Boolean);
+
+  // 保持原有 items 的顺序，但只保留实际存在的
+  const mergedItems = [
+    ...existingItems.filter(name => fullItemNames.includes(name)),
+    ...fullItemNames.filter(name => !existingItems.includes(name)),
+  ];
+  card.items = uniqueTexts(mergedItems);
+
   card.equipment = uniqueTexts(asArray<string>(card.equipment));
   player.parameterCardJson = card;
   state.player = player;
+  state.inventory = inventory;  // 确保 inventory 被更新
   return card;
 }
 
@@ -2570,14 +2599,42 @@ async function handleSellCommand(
   state: JsonRecord,
   root: JsonRecord,
 ) {
-  const inventory = asArray<JsonRecord>(state.inventory);
   const narratorName = scalarText(input.world?.narratorRole?.name) || "旁白";
   const playerName = scalarText(input.world?.playerRole?.name) || "用户";
+
+  // 关键修复：强制双向同步 inventory 和 parameterCard.items
+  // 参数卡的 items 是用户界面看到的来源，inventory 是逻辑处理的来源
+  // 钓鱼奖励写入 parameterCardItemAdd 但可能漏了 inventoryAdd
+  // #卖出 时必须确保两者一致，否则玩家看到有鱼却卖不掉
+  const inventory = asArray<JsonRecord>(state.inventory);
+  const player = asRecord(state.player);
+  const playerCard = asRecord(player.parameterCardJson);
+  const existingItems = asArray<string>(playerCard.items);
+
+  // 1. items 有但 inventory 没有的，补回 inventory
+  const inventoryNames = inventory.map(i => scalarText(i.name || i.itemName || i.title));
+  for (const itemName of existingItems) {
+    if (!inventoryNames.includes(itemName)) {
+      inventory.push({ name: itemName, kind: "loot", rarity: "normal" });
+    }
+  }
+  // 2. inventory 有但 items 没有的，补到 items
+  for (const item of inventory) {
+    const name = scalarText(item.name || item.itemName || item.title);
+    if (name && !existingItems.includes(name)) {
+      existingItems.push(name);
+    }
+  }
+  playerCard.items = uniqueTexts(existingItems);
+  state.inventory = inventory;
+  player.parameterCardJson = playerCard;
+  state.player = player;
 
   if (DebugLogUtil.isDebugLogEnabled()) {
     console.log("[SellCommand] === 卖出命令开始 ===");
     console.log("[SellCommand] 玩家输入:", input.playerMessage);
-    console.log("[SellCommand] 原始 inventory:", JSON.stringify(inventory));
+    console.log("[SellCommand] 同步后 inventory:", JSON.stringify(inventory));
+    console.log("[SellCommand] 同步后 items:", JSON.stringify(playerCard.items));
   }
 
   // 调用 AI 解析卖出意图
@@ -2586,6 +2643,34 @@ async function handleSellCommand(
     inventory as any[],
     input.userId,
   );
+
+  // 输出 [story:mini_game:stats] 日志（与小游戏动作解析对齐）
+  DebugLogUtil.logMiniGameActionResolution("story:mini_game:stats", {
+    gameType: "sell",
+    phase: "",
+    status: "",
+    input: input.playerMessage,
+    normalizedInput: "",
+    controlAction: "sell",
+    actionId: "sell_item",
+    resolverSource: "story-sell-item",
+    resolverReason: result ? `匹配${result.sellItems.length}件物品` : "无匹配",
+    resultTags: result ? ["sell", ...result.sellItems.map((i) => i.name)] : ["sell_empty"],
+    intercepted: true,
+    tokenUsage: result?.tokenUsage || null,
+    timing: result?.timing || null,
+    requestPreview: result?.requestPreview || "",
+    responsePreview: result?.responsePreview || "",
+  });
+
+  // 参考 [story:orchestrator:stats]，单独打印 System Prompt 和 userPrompt
+  if (DebugLogUtil.isDebugLogEnabled()) {
+    const systemPrompt = (result as any)?._systemPrompt || "";
+    const userPrompt = result?.requestPreview || "";
+    console.log("[story:mini_game:stats] System Prompt");
+    console.log(systemPrompt);
+    console.log("\n userPrompt:\n" + userPrompt);
+  }
 
   if (!result || result.sellItems.length === 0) {
     const narration = inventory.length === 0
@@ -2644,9 +2729,9 @@ async function handleSellCommand(
   }
 
   // 从参数卡 items 中移除已卖物品（前端显示的是参数卡 items，不是 inventory）
-  const card = createPlayerParameterCard(state);
+  // 注意：createPlayerParameterCard 会重新同步 inventory，所以这里直接用已经同步过的 playerCard
   if (DebugLogUtil.isDebugLogEnabled()) {
-    console.log("[SellCommand] 参数卡 items 移除前:", JSON.stringify(card.items));
+    console.log("[SellCommand] 参数卡 items 移除前:", JSON.stringify(playerCard.items));
   }
 
   // 按数量逐个移除参数卡 items 中的物品
@@ -2654,7 +2739,7 @@ async function handleSellCommand(
   result.sellItems.forEach((item) => {
     itemsToRemove[item.name] = item.quantity;
   });
-  const currentItems = asArray<string>(card.items);
+  const currentItems = asArray<string>(playerCard.items);
   const remainingItems = currentItems.filter((itemName) => {
     const sellQty = itemsToRemove[itemName];
     if (sellQty !== undefined && sellQty > 0) {
@@ -2666,19 +2751,20 @@ async function handleSellCommand(
     }
     return true;  // 保留
   });
-  card.items = remainingItems;
-  asRecord(state.player).parameterCardJson = card;
+  playerCard.items = remainingItems;
+  player.parameterCardJson = playerCard;
+  state.player = player;
   if (DebugLogUtil.isDebugLogEnabled()) {
-    console.log("[SellCommand] 参数卡 items 移除后:", JSON.stringify(card.items));
+    console.log("[SellCommand] 参数卡 items 移除后:", JSON.stringify(playerCard.items));
   }
 
   // 增加金币
-  card.money = Number(card.money || 0) + result.totalMoney;
+  playerCard.money = Number(playerCard.money || 0) + result.totalMoney;
   if (DebugLogUtil.isDebugLogEnabled()) {
-    console.log("[SellCommand] 金币增加:", result.totalMoney, "当前金币:", card.money);
+    console.log("[SellCommand] 金币增加:", result.totalMoney, "当前金币:", playerCard.money);
     console.log("[SellCommand] === 赋值后最终状态 ===");
     console.log("[SellCommand] state.inventory:", JSON.stringify(state.inventory));
-    console.log("[SellCommand] state.player.money:", card.money);
+    console.log("[SellCommand] state.player.money:", playerCard.money);
     console.log("[SellCommand] === 卖出命令结束 ===");
   }
 
