@@ -380,7 +380,17 @@ def home() -> str:
         .action.danger{{border:1px solid #fecaca;color:#dc2626;background:#fff5f5}}
         .action.dark{{border:1px solid #1d4ed8;color:#fff;background:#1d4ed8}}
         .action{{border:1px solid #cfe0ff;color:#2563eb;background:#f8fbff}}
-        pre{{background:#081120;color:#dbeafe;border-radius:16px;padding:16px;max-height:500px;overflow:auto;font-size:12px}}
+        /* 核心修复：布局自适应，双栏自动换行 */
+        .layout{{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:1rem;}}
+        .action{{display:inline-block;padding:0.6rem 1rem;border-radius:12px;text-decoration:none;font-weight:600;margin:0.3rem;border:1px solid var(--border);}}
+        .action-primary{{background:#1d4ed8;color:#fff;border-color:#1d4ed8;}}
+        .action-danger{{background:#fff5f5;color:#dc2626;border-color:#fecaca;}}
+        .action-default{{background:#f8fbff;color:#2563eb;}}
+        pre{{background:#081120;color:#dbeafe;border-radius:16px;padding:1rem;max-height:400px;overflow:auto;font-size:0.8rem;}}
+        form{{margin:1rem 0;}}
+        select{{padding:0.5rem;border-radius:8px;border:1px solid var(--border);margin-right:0.5rem;}}
+        button{{cursor:pointer;}}
+
       </style>
     </head>
     <body>
@@ -396,7 +406,7 @@ def home() -> str:
         <div class="layout">
           <div class="panel">
             <h2>服务操作</h2>
-            <a class="action danger" href="/git/force-sync-all">🔥 强制全量更新（推荐）</a>
+            <a class="action danger" href="/git/force-sync-all">🔥 强制全量更新&重启（推荐）</a>
             <a class="action danger" href="/git/force-sync">强制更新后端</a>
             <a class="action danger" href="/git/force-sync-web">强制更新Web</a>
             <br>

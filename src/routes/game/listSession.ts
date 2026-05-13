@@ -22,6 +22,14 @@ export default router.post(
   async (req, res) => {
     try {
       const userId = Number((req as any)?.user?.id || 0);
+      console.log("[listSession] 请求详情:", JSON.stringify({
+        body: req.body,
+        userId,
+        userEmail: (req as any)?.user?.email || "",
+        projectId: Number(req.body.projectId),
+        worldId: Number(req.body.worldId),
+        limit: Number(req.body.limit),
+      }));
       if (!Number.isFinite(userId) || userId <= 0) {
         return res.status(401).send(error("用户未登录"));
       }
@@ -43,14 +51,19 @@ export default router.post(
         .select("s.*")
         .orderBy("s.updateTime", "desc")
         .orderBy("s.id", "desc");
+
+      console.log("[listSession] rawSessions 数量:", rawSessions.length);
+
       const rawSessionIds = rawSessions.map((item: any) => String(item.sessionId || "")).filter(Boolean);
       const playableMessageRows = rawSessionIds.length
         ? await db("t_sessionMessage")
           .whereIn("sessionId", rawSessionIds)
           .andWhere("roleType", "player")
           .andWhere("eventType", "on_message")
-          .select("sessionId", "content")
+          .select("sessionId", "content", "roleType", "eventType")
         : [];
+
+      console.log("[listSession] rawSessionIds:", rawSessionIds.length, "playableMessageRows:", playableMessageRows.length);
       const playableSessionIds = new Set<string>(
         playableMessageRows
           .filter((item: any) => String(item.content || "").trim())
