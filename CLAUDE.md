@@ -83,6 +83,9 @@ src/
 - `scripts/web/index.html` (构建后的文件，不允许直接修改)
 - `review_xxx.md` 文件（用户验证文件）
 
+# 系统环境配置
+[system.yml](system/system.yml)
+
 ## 前端开发
 
 前端代码在 `Toonflow-game-web` 仓库，开发时直接运行 `yarn dev` 即可查看效果，不需要在当前仓库执行 `yarn build`。
