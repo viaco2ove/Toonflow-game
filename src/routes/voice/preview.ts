@@ -38,6 +38,7 @@ import { synthesizeAliyunDirectCosyVoiceBuffer } from "@/lib/aliyunCosyVoice";
 import { mixPcmWavBuffers } from "@/lib/wavMix";
 import { normalizeAudioBufferToPcmWav } from "@/lib/audioNormalize";
 import { v4 as uuidv4 } from "uuid";
+import { DebugLogUtil } from "@/utils/debugLogUtil";
 
 const router = express.Router();
 
@@ -1292,6 +1293,7 @@ export default router.post(
         (item, index, list) => list.findIndex((row) => row.voiceId === item.voiceId) === index,
       );
       const rawVoiceId = String(voiceId || "").trim();
+      if (DebugLogUtil.isDebugLogEnabled()) { console.log("[voice-preview]", JSON.stringify({ mode, voiceId: rawVoiceId, refPath: referenceAudioPath, directAliyun, configId, model: config.model })); }
       let effectiveVoiceId = rawVoiceId;
       let presetProvider = "";
       let businessPreset = findBusinessVoicePreset(effectiveVoiceId);
@@ -1326,7 +1328,10 @@ export default router.post(
             },
           }));
         }
-        if (directAliyun) {
+        // 只有在没有传入参考音频时，才走系统音色 fallback
+        // 如果传入了参考音频（referenceAudioPath 或 referenceAudioBase64），应该用这个音频做克隆
+        const hasReferenceAudio = resolvedReferenceAudioSource || normalizeBase64(referenceAudioBase64);
+        if (directAliyun && !hasReferenceAudio) {
           const directFallbackVoiceId = resolveDirectAliyunBusinessPresetVoiceId(config, businessPreset);
           if (directFallbackVoiceId) {
             effectiveVoiceId = directFallbackVoiceId;
@@ -1337,23 +1342,77 @@ export default router.post(
         }
       }
 
+      // 业务预设场景：直接走各自厂商的 clone 通道，不再统一走本地网关。
       if (businessPreset) {
-        const cloned = await synthesizeWithLocalClone(
-          req,
-          userId,
-          text,
-          businessPreset.referencePath,
-          businessPreset.referenceText,
-          payload.format,
-          speed,
-        );
-        return res.status(200).send(success({ audioUrl: cloned.audioUrl, data: { ...cloned.data, compatibilityPreset: businessPreset.voiceId } }));
+        if (DebugLogUtil.isDebugLogEnabled()) {
+          console.log("[voice-preview] businessPreset", JSON.stringify({
+            voiceId: businessPreset.voiceId,
+            directAliyun,
+            resolvedRef: resolvedReferenceAudioSource,
+            effectiveRefPath: resolvedReferenceAudioSource || businessPreset.referencePath,
+          }));
+        }
+        if (directAliyun) {
+          // 走 direct Aliyun clone 通道 - 直接用参考音频创建 custom voice
+          const effectiveRefPath = resolvedReferenceAudioSource || businessPreset.referencePath;
+          if (DebugLogUtil.isDebugLogEnabled()) {
+            console.log("[voice-preview] directAliyun businessPreset clone", JSON.stringify({
+              effectiveRefPath,
+              refSource: resolvedReferenceAudioSource,
+              presetRef: businessPreset.referencePath,
+              voiceId: businessPreset.voiceId,
+            }));
+          }
+          let customVoice = await createDirectAliyunCustomVoice({
+            config,
+            mode: "clone",
+            referenceAudioSource: effectiveRefPath,
+            sampleRate: normalizedSampleRate,
+          });
+          if (DebugLogUtil.isDebugLogEnabled()) { console.log("[voice-preview] customVoice", JSON.stringify({ voiceId: customVoice.voiceId, fresh: customVoice.fresh })); }
+          const synthesized = await synthesizeDirectAliyunPreviewAudioWithRetry({
+            config,
+            headers,
+            userId,
+            text,
+            voiceId: customVoice.voiceId,
+            format: payload.format,
+            sampleRate: normalizedSampleRate,
+            speed,
+            fresh: customVoice.fresh,
+          });
+          const audioUrl = buildProxyAudioUrl(req, config?.id, synthesized.sourceUrl);
+          return res.status(200).send(success({
+            audioUrl,
+            data: {
+              ...synthesized.data,
+              customVoiceId: customVoice.voiceId,
+              customVoiceMode: "clone",
+              compatibilityPreset: businessPreset.voiceId,
+            },
+          }));
+        } else {
+          // 非 direct Aliyun 厂商走本地克隆网关
+          const effectiveRefPath = resolvedReferenceAudioSource || businessPreset.referencePath;
+          const effectiveRefText = String(referenceText || "").trim() || businessPreset.referenceText;
+          const cloned = await synthesizeWithLocalClone(
+            req,
+            userId,
+            text,
+            effectiveRefPath,
+            effectiveRefText,
+            payload.format,
+            speed,
+          );
+          return res.status(200).send(success({ audioUrl: cloned.audioUrl, data: { ...cloned.data, compatibilityPreset: businessPreset.voiceId } }));
+        }
       }
 
       if (mode === "text") {
         if (effectiveVoiceId) payload.voice_id = effectiveVoiceId;
         if (resolvedProvider) payload.provider = resolvedProvider;
       } else if (mode === "clone") {
+        if (DebugLogUtil.isDebugLogEnabled()) { console.log("[voice-preview] clone mode", JSON.stringify({ refSource: resolvedReferenceAudioSource, directAliyun })); }
         if (resolvedReferenceAudioSource) {
           if (directAliyun) {
             const explicitCustomVoiceId = trimText(effectiveVoiceId);

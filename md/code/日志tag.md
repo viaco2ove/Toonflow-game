@@ -48,6 +48,8 @@ if (DebugLogUtil.isDebugLogEnabled()) {
 [story:mini_game:stats]: AI故事-小游戏agent token 统计（参考[story:orchestrator:stats]）
 [story:mini_game:agent] 识别到小游戏
 
+[voice-preview] 语音生成相关
+
 ## 后端通用tag
 [debug:revisit:not_found]: 回溯失败
 [debug:revisit]: 回溯相关
