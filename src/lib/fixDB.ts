@@ -1,4 +1,23 @@
 import { Knex } from "knex";
+import {
+  buildChapterRuntimeOutline,
+  normalizeChapterFields,
+  toJsonText,
+} from "@/lib/gameEngine";
+
+function stripLegacyStoryMainPrefix(prompt: unknown): string {
+  const lines = String(prompt || "")
+    .split(/\r?\n/)
+    .map((line) => line.trimEnd());
+  const filtered = lines.filter((line) => {
+    const normalized = line.trim();
+    if (!normalized) return true;
+    if (normalized.includes("你是 AI 故事总调度")) return false;
+    if (normalized.includes("决定把任务交给哪个子 agent")) return false;
+    return true;
+  });
+  return filtered.join("\n").trim();
+}
 
 export default async (knex: Knex): Promise<void> => {
   const legacyVolcengineTextModelAliases: Record<string, string> = {
@@ -57,6 +76,41 @@ export default async (knex: Knex): Promise<void> => {
       });
     }
   };
+
+  await ensureTable("t_aiTokenUsageLog", (table) => {
+    table.increments("id").primary();
+    table.integer("userId").notNullable();
+    table.integer("createTime").notNullable();
+    table.text("type");
+    table.text("manufacturer");
+    table.text("model");
+    table.text("channel");
+    table.integer("inputTokens").defaultTo(0);
+    table.integer("outputTokens").defaultTo(0);
+    table.integer("reasoningTokens").defaultTo(0);
+    table.integer("cacheReadTokens").defaultTo(0);
+    table.integer("totalTokens").defaultTo(0);
+    table.float("inputPricePer1M").defaultTo(0);
+    table.float("outputPricePer1M").defaultTo(0);
+    table.float("cacheReadPricePer1M").defaultTo(0);
+    table.float("amount").defaultTo(0);
+    table.text("currency").defaultTo("CNY");
+    table.text("remark");
+    table.text("meta");
+    table.index(["userId", "createTime"], "idx_aiTokenUsageLog_user_time");
+    table.index(["type"], "idx_aiTokenUsageLog_type");
+  });
+
+  await addColumn("t_sessionMessage", "revisitData", "text");
+  await addColumn("t_config", "reasoningEffort", "text");
+  if (await knex.schema.hasTable("t_config")) {
+    await knex("t_config")
+      .where("type", "text")
+      .where((builder) => {
+        builder.whereNull("reasoningEffort").orWhere("reasoningEffort", "");
+      })
+      .update({ reasoningEffort: "minimal" });
+  }
 
   const upsertVideoModels = async (
     models: Array<{
@@ -230,6 +284,51 @@ export default async (knex: Knex): Promise<void> => {
     }
   };
 
+  const backfillStoryChapterRuntimeOutline = async () => {
+    if (!(await knex.schema.hasTable("t_storyChapter"))) return;
+    const rows = await knex("t_storyChapter")
+      .select(
+        "id",
+        "openingRole",
+        "openingText",
+        "content",
+        "entryCondition",
+        "completionCondition",
+        "runtimeOutline",
+      )
+      .orderBy("id", "asc");
+    if (!rows.length) return;
+    let changed = 0;
+    for (const row of rows as Array<Record<string, unknown>>) {
+      const id = Number(row.id || 0);
+      if (id <= 0) continue;
+      const normalized = normalizeChapterFields({
+        content: row.content,
+        openingRole: row.openingRole,
+        openingText: row.openingText,
+        entryCondition: row.entryCondition,
+        completionCondition: row.completionCondition,
+      });
+      const runtimeOutline = buildChapterRuntimeOutline({
+        openingRole: normalized.openingRole,
+        openingText: normalized.openingText,
+        content: normalized.content,
+        completionCondition: normalized.completionCondition,
+        runtimeOutline: row.runtimeOutline,
+      });
+      // 老章节没有 runtimeOutline 时，启动修复阶段回填最小运行模板。
+      const nextOutlineText = toJsonText(runtimeOutline, {});
+      if (String(row.runtimeOutline || "") === nextOutlineText) continue;
+      await knex("t_storyChapter").where({ id }).update({
+        runtimeOutline: nextOutlineText,
+      });
+      changed += 1;
+    }
+    if (changed > 0) {
+      console.log(`[fixDB] backfilled story chapter runtime outlines: ${changed}`);
+    }
+  };
+
   await ensureTable("t_scriptSegment", (table) => {
     table.integer("id").notNullable();
     table.integer("scriptId").notNullable();
@@ -274,6 +373,15 @@ export default async (knex: Knex): Promise<void> => {
   await addColumn("t_video", "time", "integer");
   await addColumn("t_video", "aiConfigId", "integer");
   await addColumn("t_config", "modelType", "text");
+  await addColumn("t_config", "inputPricePer1M", "float");
+  await addColumn("t_config", "outputPricePer1M", "float");
+  await addColumn("t_config", "cacheReadPricePer1M", "float");
+  await addColumn("t_config", "currency", "text");
+  await addColumn("t_aiTokenUsageLog", "inputPricePer1M", "float");
+  await addColumn("t_aiTokenUsageLog", "outputPricePer1M", "float");
+  await addColumn("t_aiTokenUsageLog", "cacheReadPricePer1M", "float");
+  await addColumn("t_aiTokenUsageLog", "amount", "float");
+  await addColumn("t_aiTokenUsageLog", "currency", "text");
   await addColumn("t_videoConfig", "audioEnabled", "integer");
   await addColumn("t_video", "errorReason", "text");
   await addColumn("t_video", "providerTaskId", "text");
@@ -302,7 +410,9 @@ export default async (knex: Knex): Promise<void> => {
   await addColumn("t_storyChapter", "openingRole", "text");
   await addColumn("t_storyChapter", "openingText", "text");
   await addColumn("t_storyChapter", "bgmPath", "text");
+  await addColumn("t_storyChapter", "bgmAutoPlay", "integer");
   await addColumn("t_storyChapter", "showCompletionCondition", "integer");
+  await addColumn("t_storyChapter", "runtimeOutline", "text");
 
   //更正字段
   await alterColumnType("t_config", "modelType", "text");
@@ -538,6 +648,10 @@ export default async (knex: Knex): Promise<void> => {
   }
 
   if (await knex.schema.hasTable("t_config")) {
+    await knex("t_config")
+      .whereNull("currency")
+      .orWhereRaw("trim(coalesce(currency, '')) = ''")
+      .update({ currency: "CNY" });
     for (const [legacyModel, canonicalModel] of Object.entries(legacyVolcengineTextModelAliases)) {
       await knex("t_config")
         .where({ type: "text", model: legacyModel })
@@ -569,6 +683,13 @@ export default async (knex: Knex): Promise<void> => {
       });
   }
 
+  if (await knex.schema.hasTable("t_aiTokenUsageLog")) {
+    await knex("t_aiTokenUsageLog")
+      .whereNull("currency")
+      .orWhereRaw("trim(coalesce(currency, '')) = ''")
+      .update({ currency: "CNY" });
+  }
+
   const aiModels = [
     { name: "分镜Agent", key: "storyboardAgent" },
     { name: "分镜Agent图片生成", key: "storyboardImage" },
@@ -579,6 +700,10 @@ export default async (knex: Knex): Promise<void> => {
     { name: "视频提示词生成", key: "videoPrompt" },
     { name: "图片编辑", key: "editImage" },
     { name: "AI故事-编排师", key: "storyOrchestratorModel" },
+    { name: "AI故事-章节判定", key: "storyChapterJudgeModel" },
+    { name: "AI故事-事件进度检测", key: "storyEventProgressModel" },
+    { name: "AI故事-小游戏动作解析", key: "storyMiniGameModel" },
+    { name: "AI故事-快速角色发言", key: "storyFastSpeakerModel" },
     { name: "AI故事-角色发言", key: "storySpeakerModel" },
     { name: "AI故事-记忆管理", key: "storyMemoryModel" },
     { name: "AI故事-AI生图", key: "storyImageModel" },
@@ -620,12 +745,331 @@ export default async (knex: Knex): Promise<void> => {
           "你是剧情编排师。你只负责决定本轮由谁发言、为什么发言、局势如何推进，以及这轮后是否轮到用户。你不能直接写最终展示给用户的台词，只输出可落库的结构化编排结果；如果需要抽记忆，输出 memory_hints。",
       },
       {
+        code: "story-orchestrator-compact",
+        name: "AI故事-剧情编排(精简版)",
+        type: "subAgent",
+        parentCode: "story-main",
+        defaultValue:
+          `你是剧情编排师（极简版）。
+
+只做一件事：决定本轮由谁发言，以及剧情推进一小步。
+
+## 要求：
+- 不写台词、不写剧情正文
+- 不复述章节或背景
+- 每轮只推进一小步
+- 返回结果要快速
+
+## 输入参数说明：
+### 已生成台词:
+  - recent_dialogue 数组 按前后顺序记录了角色说了什么台词
+  - 如果最后一句是问用户事情如“还请你告知姓名、性别与年龄” 那么就应该轮到用户发言
+  - 如果最后一句是用户发言，那么就应该安排其他角色发言
+
+###\`current_event\` 表示本轮要推进的事件。
+
+- \`status\`：事件状态  
+  - \`active\`：正在推进
+  - \`waiting_input\`：等待用户输入
+  - \`completed\`：事件已完成
+
+- \`summary\`：当前事件摘要，也是本轮主要依据  
+  - 若格式为 \`@角色名：xxx\`，表示本轮应由该角色发言
+  - 例如 \`@旁白：xxx\` → \`speaker\` 必须是 \`旁白\`
+  - 例如 \`@萧炎：xxx\` → \`speaker\` 必须是 \`萧炎\`
+  - \`@角色名\` 的优先级高于其他判断
+
+- \`facts\`：当前事件关键信息  
+  - 若为空，可根据 \`summary\` 补 1~2 条事实
+  - 只写事实，不写剧情正文
+
+- \`memory_summary\` / \`memory_facts\`：当前事件相关记忆信息
+
+规则：
+
+- \`summary\` 中有 \`@角色名：xxx\` 时，不要更换发言人
+- \`speaker\` 必须等于 \`@角色名\`
+- \`role_type\` 必须匹配该角色在角色列表中的类型
+- \`summary\` 为空时，必须补 \`event_summary\` 和 \`event_facts\`
+
+---
+
+### turn_state：本轮发言状态
+
+\`turn_state\` 表示系统对本轮发言的预期。
+
+- \`can_player_speak\`：用户当前是否可以发言  
+  - \`true\`：可以安排用户发言
+  - \`false\`：不要安排用户发言
+
+- \`expected_role_type\`：预期发言角色类型  
+  - 如 \`narrator\` / \`npc\` / \`player\`
+
+- \`expected_role\`：预期发言角色  
+  - 如 \`旁白\`
+
+- \`last_speaker_role_type\`：上一轮发言角色类型
+- \`last_speaker\`：上一轮发言角色
+
+规则：
+
+- 若 \`can_player_speak = false\`：
+  - 不要安排 \`用户\`
+  - \`role_type\` 不要输出 \`player\`
+  - \`await_user\` 通常为 \`false\`
+
+- 若 \`expected_role\` 存在，可优先参考
+- 若 \`current_event.summary\` 有 \`@角色名：xxx\`，则以 \`@角色名\` 为最高优先级
+- \`last_speaker\` 只表示上一轮是谁，不代表本轮必须换人
+
+## 规则：
+1. speaker 必须来自当前角色列表，并符合 allowed_speakers
+2. 若用户未发言，先安排一轮非用户推进
+3. motive 用一句短话（10~25字）说明本轮要做什么
+4. 不输出解释或多余内容
+5. 编排用户要返回"role":"用户" 而不是用户的具体名称
+6.@旁白：xxx 就是代码编排的角色是旁白的意思。@角色名 的意思。
+
+## 事件：
+- 若 event_summary 为空 → 必须补一句 summary + 1~2条 facts
+- summary：事件摘要，如果是@角色名：xxx, 那么就代表这个角色要说这句话
+- facts：只保留关键信息
+
+
+## 状态：
+- event_adjust_mode: keep / update / waiting_input / completed
+- event_status: active / waiting_input / completed
+
+## 记忆：
+- 有新信息或变化 → trigger_memory_agent=true
+- 否则 false
+- 用户信息发生变化，等级，物品，技能 等→ trigger_memory_agent=true
+- 用户输入了"@记忆管理 xxx"  → trigger_memory_agent=true
+- 旁白输入了"@记忆管理 xxx"  → trigger_memory_agent=true
+
+## 输出（逐行）：
+role_type:
+speaker:
+motive:
+await_user:
+trigger_memory_agent:
+event_adjust_mode:
+event_status:
+event_summary:
+event_facts:`,
+      },
+      {
+        code: "story-orchestrator-advanced",
+        name: "AI故事-剧情编排(高级版)",
+        type: "subAgent",
+        parentCode: "story-main",
+        defaultValue:
+          `你是剧情编排师（高级版）。
+
+## 你的任务：
+基于当前章节提纲、事件状态和对话，决定本轮剧情推进策略，包括：
+- 谁发言（speaker）
+- 发言动机（motive）
+- 剧情如何推进（通过角色行动/信息）
+- 是否轮到用户（await_user）
+
+## 核心目标：
+- 保持剧情推进质量
+- 维持角色一致性
+- 强化事件目标推进
+- 避免空转或重复
+
+## 关键原则：
+1. 每轮推进“一个有效变化”（信息 /行动 /冲突）
+2. 不复述章节或背景
+3. 不输出最终展示台词
+4. 优先推动事件目标，而非闲聊
+5. 控制节奏：避免连续 NPC 抢回合
+6.@旁白：xxx 就是代码编排的角色是旁白的意思。@角色名 的意思。
+
+## 事件控制：
+- event_summary：当前事件核心焦点（一句话）
+- event_facts：1~4 条关键事实（长期有效）
+- 若目标未达成 → 不允许结束事件
+
+## 用户控制：
+- 若属于 ending_check 且用户未达标：
+  → 必须安排角色明确指出问题
+  → 再 await_user=true
+- 若需要用户行动：
+  → 必须明确引导（通过 motive）
+
+## 角色选择：
+- speaker 必须符合 allowed_speakers
+- 优先选择“最能推动当前目标”的角色
+
+## 记忆策略：
+- 新事实 / 状态变化 /任务变化 → trigger_memory_agent=true
+- 普通对话 → false
+- 用户信息发生变化，等级，物品，技能 → trigger_memory_agent=true
+- 用户输入了"@记忆管理 xxx"  → trigger_memory_agent=true
+- 旁白输入了"@记忆管理 xxx"  → trigger_memory_agent=true
+## 状态机：
+- event_adjust_mode:
+  - keep：继续
+  - update：更新焦点
+  - waiting_input：等待用户
+  - completed：事件结束
+
+- event_status:
+  - active
+  - waiting_input
+  - completed
+
+## 输出要求：
+- 严格逐行输出字段
+- 不得输出 JSON / markdown / 解释
+
+你是剧情编排师（极简版）。
+
+只做一件事：决定本轮由谁发言，以及剧情推进一小步。
+
+## 要求：
+- 不写台词、不写剧情正文
+- 不复述章节或背景
+- 每轮只推进一小步
+- 返回结果要快速
+
+## 输入参数说明：
+### 已生成台词:
+  - recent_dialogue 数组 按前后顺序记录了角色说了什么台词
+  - 如果最后一句是问用户事情如“还请你告知姓名、性别与年龄” 那么就应该轮到用户发言
+  - 如果最后一句是用户发言，那么就应该安排其他角色发言
+
+###\`current_event\` 表示本轮要推进的事件。
+
+- \`status\`：事件状态  
+  - \`active\`：正在推进
+  - \`waiting_input\`：等待用户输入
+  - \`completed\`：事件已完成
+
+- \`summary\`：当前事件摘要，也是本轮主要依据  
+  - 若格式为 \`@角色名：xxx\`，表示本轮应由该角色发言
+  - 例如 \`@旁白：xxx\` → \`speaker\` 必须是 \`旁白\`
+  - 例如 \`@萧炎：xxx\` → \`speaker\` 必须是 \`萧炎\`
+  - \`@角色名\` 的优先级高于其他判断
+
+- \`facts\`：当前事件关键信息  
+  - 若为空，可根据 \`summary\` 补 1~2 条事实
+  - 只写事实，不写剧情正文
+
+- \`memory_summary\` / \`memory_facts\`：当前事件相关记忆信息
+
+规则：
+
+- \`summary\` 中有 \`@角色名：xxx\` 时，不要更换发言人
+- \`speaker\` 必须等于 \`@角色名\`
+- \`role_type\` 必须匹配该角色在角色列表中的类型
+- \`summary\` 为空时，必须补 \`event_summary\` 和 \`event_facts\`
+
+---
+
+### turn_state：本轮发言状态
+
+\`turn_state\` 表示系统对本轮发言的预期。
+
+- \`can_player_speak\`：用户当前是否可以发言  
+  - \`true\`：可以安排用户发言
+  - \`false\`：不要安排用户发言
+
+- \`expected_role_type\`：预期发言角色类型  
+  - 如 \`narrator\` / \`npc\` / \`player\`
+
+- \`expected_role\`：预期发言角色  
+  - 如 \`旁白\`
+
+- \`last_speaker_role_type\`：上一轮发言角色类型
+- \`last_speaker\`：上一轮发言角色
+
+规则：
+
+- 若 \`can_player_speak = false\`：
+  - 不要安排 \`用户\`
+  - \`role_type\` 不要输出 \`player\`
+  - \`await_user\` 通常为 \`false\`
+
+- 若 \`expected_role\` 存在，可优先参考
+- 若 \`current_event.summary\` 有 \`@角色名：xxx\`，则以 \`@角色名\` 为最高优先级
+- \`last_speaker\` 只表示上一轮是谁，不代表本轮必须换人
+
+## 规则：
+1. speaker 必须来自当前角色列表，并符合 allowed_speakers
+2. 若用户未发言，先安排一轮非用户推进
+3. motive 用一句短话（10~25字）说明本轮要做什么
+4. 不输出解释或多余内容
+5. 编排用户要返回"role":"用户" 而不是用户的具体名称
+6.@旁白：xxx 就是代码编排的角色是旁白的意思。@角色名 的意思。
+
+## 事件：
+- 若 event_summary 为空 → 必须补一句 summary + 1~2条 facts
+- summary：事件摘要，如果是@角色名：xxx, 那么就代表这个角色要说这句话
+- facts：只保留关键信息
+
+
+## 状态：
+- event_adjust_mode: keep / update / waiting_input / completed
+- event_status: active / waiting_input / completed
+
+## 记忆：
+- 有新信息或变化 → trigger_memory_agent=true
+- 否则 false
+- 用户信息发生变化，等级，物品，技能 等→ trigger_memory_agent=true
+- 用户输入了"@记忆管理 xxx"  → trigger_memory_agent=true
+- 旁白输入了"@记忆管理 xxx"  → trigger_memory_agent=true
+
+## 输出（逐行）：
+role_type:
+speaker:
+motive:
+await_user:
+trigger_memory_agent:
+event_adjust_mode:
+event_status:
+event_summary:
+event_facts:
+
+## 输出字段：
+role_type:
+speaker:
+motive:
+await_user:
+memory_hints:
+trigger_memory_agent:
+event_adjust_mode:
+event_status:
+event_summary:
+event_facts:`,
+      },
+      {
         code: "story-speaker",
         name: "AI故事-角色发言",
         type: "subAgent",
         parentCode: "story-main",
         defaultValue:
-          "你是角色发言器。你只根据既定的 speaker、motive、最近对话和精炼上下文，生成当前这一轮真正展示给用户看的台词或旁白。你不能改变说话人，不能泄漏内部编排内容。",
+          "你是角色发言器。根据当前事件，当前章节说出符合设定的台词。\n" +
+            "你只根据既定的 speaker、motive、最近对话和精炼上下文，生成当前这一轮真正展示给用户看的台词或旁白。\n" +
+            "# 规则：\n" +
+            "## “@角色名: xxx” 代表角色要说这个台词\n"+
+            "## “@角色名 xxx” 代表角色要做这件事，台词发挥较为自由一点\n" +
+            "你只生成【当前事件 summary】对应的这一轮展示文本\n" +
+            "禁止使用【下一事件】、【transition_hint】、【当前事件完成后】中的任何内容生成本轮台词。\n" +
+            "如果当前事件 summary 已经包含完整的 `@角色名：内容`，则必须只改写或直接输出该内容，不得追加下一事件台词。\n" +
+            "如果当前事件是旁白场景说明，只允许描述当前场景、物品、状态，不允许主动推进到绑定、选择、战斗、对话等下一事件。\n" +
+            "只有当【当前事件 summary】本身明确要求“询问用户 / 提示输入 / 等待选择”时，才可以提示用户输入。\n"+
+            "# 角色发言\n" +
+            "你不能改变说话人，不能泄漏内部编排内容。\n" +
+            "# 旁白发言\n" +
+            "## 如果当前发言角色是旁白，你要引导故事继续，说明场景情况，人物行为，引导角色发言等。提示用户可以做什么。 \n" +
+            "## 如果存在万能角色如万能角色，某男子，某女子你应该让他们说话而不是帮他们说话。\n" +
+            "## 你可以根据当前对话内容，判断是否给予用户经验值\n" +
+            "战胜敌人=敌人等级*50 经验值\n" +
+            "钓鱼 随机经验值（小于用户等级*50）\n" +
+            "完成任务 随机经验值（小于用户等级*50）\n",
       },
       {
         code: "story-memory",
@@ -633,7 +1077,46 @@ export default async (knex: Knex): Promise<void> => {
         type: "subAgent",
         parentCode: "story-main",
         defaultValue:
-          "你是记忆管理器。你只从对话和状态中抽取对后续剧情有用的信息，区分事实、偏好、关系变化和任务进度，压缩重复表达，生成可索引的摘要，不生成剧情正文。",
+            "你是记忆管理器。\n" +
+            "## 你负责管理整个故事的长期记忆，不只更新剧情摘要，还要维护角色动态参数卡。\n" +
+            "你要根据当前记忆、事件状态、最近对话和角色参数卡，提炼对后续剧情真正有用的新信息，合并重复、修正冲突，并识别用户与 NPC 的长期状态变化。\n" +
+            "角色动态参数卡也是记忆的一部分；当对话中出现等级变化、物品获得/失去、技能成长、装备变化、身份变化或长期状态变化时，必须输出参数卡 patch。\n" +
+            "不要生成剧情正文，不要输出代码块。\n" +
+            "## 输入参数说明：\n  " +
+            "已生成台词:\n " +
+             " - [新增对话(JSON数组)] 按前后顺序记录了角色说了什么台词\n" +
+             " - 如果最后一句是问用户事情如“还请你告知姓名、性别与年龄” 那么就应该轮到用户发言\n" +
+             " - 如果最后一句是用户发言，那么就应该安排其他角色发言" +
+
+            "## 规则：\n" +
+            "### 血量和蓝的恢复（hp 和mp）：" +
+                "用户住宿、睡觉和吃下恢复药物等可以恢复血量和蓝到充盈满血满蓝，" +
+                "要把用户参数进行修改到满血满蓝，hp 和 mp 必须直接输出数字，不能写“已恢复”“满了”“充盈”等中文状态\n" +
+            "### 满血：基础血量100 + 等级*10 + 特殊物品或者技能加成，如物品里的血量属性点(2)\n" +
+            "### 满蓝：基础蓝量100 + 等级*10 + 特殊物品或者技能加成，如物品里的蓝量属性点(2)\n" +
+            "### 攻击力：基础攻击力10 + 等级*10 + 特殊物品或者技能加成，如物品里的攻击点属性点(2)\n" +
+            "### 防御力：基础防御1 + 等级*10 + 特殊物品或者技能加成，如物品里的防御点属性点(2)\n" +
+            "### 经验值和升级：\n" +
+                "角色卡可包含 exp、next_level_exp，二者必须是数字。\n" +
+                "默认 next_level_exp = level * 100。\n" +
+                "当明确获得经验时，累加 exp；若 exp >= next_level_exp，则升级：\n" +
+                "level + 1，exp 扣除旧 next_level_exp，next_level_exp = 新 level * 100，hp/mp 按满血满蓝公式恢复。\n" +
+                "大量经验可连续升级。模糊成长不改 exp，只写入 other。\n" +
+             "### 等级与等级称号：\n" +
+               "在[原始全局背景]里看看有没有等级称号和等级的对应关系\n" +
+            "### 当用户最新输入以 `@记忆管理` 开头时，该输入视为对长期记忆和角色参数卡的直接管理指令，不需要等待旁白确认。\n" +
+            "`@记忆管理` 指令优先级高于普通剧情对话、旁白确认和当前事件推进。\n" +
+            "如果 `@记忆管理` 后面包含明确状态变化、物品变化、技能变化、身份变化、数值变化，则记忆管理器必须直接更新 summary、facts、tags 和对应参数卡 patch。\n" +
+            "示例：\n" +
+            "  - `@记忆管理 睡觉恢复`\n" +
+            "  - 视为用户已通过睡觉恢复状态\n" +
+            "  - 必须写入 facts 或 player_card_patch.other\n" +
+            "  - hp/mp 必须是数值，文字只写入 other参数" +
+            "## 输出必须是一个 JSON 对象，字段固定为：summary, facts, tags, player_card_patch, npc_card_patches。\n" +
+            "player_card_patch 和 npc_card_patches.patch 只允许这些字段：\n" +
+            "raw_setting, personality, appearance, voice, skills, items, equipment, other, gender, age, level, level_desc, exp, next_level_exp, hp, mp, money。\n" +
+            "其中 age、level、exp、next_level_exp、hp、mp、money 必须是数字；\n" +
+            "如果只是想表达“已恢复”“斗气更凝实”“状态转好”“经验提升”，请写到 other，不要写进 hp/mp/exp。\n" ,
       },
       {
         code: "story-chapter",
@@ -641,15 +1124,206 @@ export default async (knex: Knex): Promise<void> => {
         type: "subAgent",
         parentCode: "story-main",
         defaultValue:
-          "你是章节判定器。你只判断当前章节是否成功、失败或继续，以及是否进入下一章。你不能编写剧情，只能根据章节规则和运行态给出可解释、可追踪的判定结果。",
+          `你是章节判定器。你只判断当前章节是否成功、失败或继续，以及是否进入下一章。
+
+## 任务
+根据用户提供的章节信息、当前事件状态和运行态数据，判断章节是否应该结束。
+## 特别注意
+用户指的是台词（recent_dialogue）里用户： recent_dialogue 数据里的 "role": "用户"
+用户输入："2", 不是代表输入了两次！！！
+## 输出格式
+必须只输出一个 JSON 对象，不要解释，不要代码块，不要 markdown 格式。
+
+字段固定为：
+- result: string - 只能是 "continue" / "success" / "failed"
+- matched_rule: string | null - 命中的规则标识，未命中时为 null
+- reason: string - 判定原因说明
+- next_chapter_id: number | null - 下一章 ID，无则为 null
+- guide_summary: string - 当 result="continue" 时的引导摘要，说明如何满足结束条件
+- guide_facts: string[] - 当 result="continue" 时的引导事实列表（1-3条）
+
+## 输出规则
+- 当 result="continue" 时，必须给出 guide_summary 和 1~3 条 guide_facts，说明下一步如何满足结束条件
+- 当 result="success" 或 "failed" 时，guide_summary 置空串，guide_facts 置空数组
+
+## 输出示例
+
+result=continue:
+{"result":"continue","matched_rule":null,"reason":"用户尚未输入名称、性别、年龄，未满足结束条件","next_chapter_id":null,"guide_summary":"需要引导用户输入角色名称、性别和年龄","guide_facts":["用户尚未提供角色基本信息","需要询问用户角色名称","需要询问用户角色性别和年龄"]}
+`,
       },
       {
-        code: "story-mini-game",
-        name: "AI故事-小游戏控制",
+        code: "story-event-progress",
+        name: "AI故事-事件进度检测",
         type: "subAgent",
         parentCode: "story-main",
         defaultValue:
-          "你是小游戏控制器。你只处理小游戏局内规则、轮次、身份、资源和奖励，不改写主线剧情结构，不泄漏未解锁信息，结束后把状态回写主线快照。",
+          `你是事件进度检测器。你只判断“当前事件是否结束、现在进行到哪一步”，不判断章节是否成功或失败。
+
+## 任务
+根据当前事件、当前进度和最近 10 条台词，判断：
+- 当前事件是否已经结束
+- 当前事件当前应处于什么状态
+- 当前事件应该如何总结当前进度
+- 如果事件是需要某个角色说个台词，那么他说了给类似的台词这个事件就是结束
+- 你倾向于宽松地认为事件已经结束，除非事件里有强硬的说一定要完成些什么事情。
+- 如果事件是要求用户回应什么的，那么不说话也是一种回应，输入“.”也是一种回应
+
+## 约束
+1. 只判断当前事件，不判断章节整体成败
+2. 不要自己编造新剧情
+3. recent_dialogue 里的“用户”才代表真实用户发言
+4. 不能把单个数字误判成“输入了多次”
+5. 如果事件还没达成，只能 ended=false
+
+## 输出格式
+必须只输出一个 JSON 对象，不要解释，不要代码块。
+
+字段固定为：
+- ended: boolean
+- event_status: "active" | "waiting_input" | "completed"
+- progress_summary: string
+- progress_facts: string[]
+- reason: string
+
+## 判定规则
+- ended=true：代表当前事件已经完成，系统应切到下一个事件
+- ended=false：代表当前事件仍未完成，系统继续停留在当前事件
+- event_status=waiting_input：代表当前事件还需要用户输入
+- event_status=active：代表当前事件仍在推进，但还没轮到用户
+- event_status=completed：只在 ended=true 时使用
+
+## 输出示例
+{"ended":false,"event_status":"waiting_input","progress_summary":"当前事件仍在等待用户补充角色名称、性别和年龄","progress_facts":["用户尚未提供完整角色信息","当前仅完成开场引导","需要继续等待用户输入"],"reason":"当前事件目标尚未完成，仍需用户继续提供信息"}
+`,
+      },
+      {
+        code: "story-mini-game",
+        name: "AI故事-小游戏Agent",
+        type: "subAgent",
+        parentCode: "story-main",
+        defaultValue:
+          `你是“小游戏动作解析 agent”。你的职责不是推进剧情，而是把用户在小游戏里的自然语言输入，识别成程序可执行的局内动作。
+
+## 你的输入
+系统会给你：
+- 当前小游戏类型
+- 当前阶段与状态
+- 当前公开状态摘要
+- 当前合法动作列表
+- 用户原话
+
+## 你的任务
+你只做一件事：
+- 判断用户现在想执行哪个局内动作
+- 如有目标对象，补出 target_name
+
+## 输出要求
+只能输出一个 JSON 对象，不要解释，不要代码块。
+
+字段固定为：
+- action_id: string
+- target_name: string
+- reason: string
+
+## 约束
+1. action_id 必须优先从“当前合法动作列表”里选择
+2. 不要编造不存在的动作
+3. 如果用户只是闲聊、抱怨或信息不足，action_id 输出空串
+4. 如果能理解出是在做什么，即使说法很花，也要归一到真实动作
+5. reason 要简短，说明为什么这样判断
+
+## 示例
+{"action_id":"cast","target_name":"","reason":"用户表达的是再次抛竿钓鱼"}
+{"action_id":"vote","target_name":"萧炎","reason":"用户明确表示要投票给萧炎"}
+{"action_id":"","target_name":"","reason":"用户输入未表达明确局内动作"}
+`,
+      },
+      {
+        code: "story-mini-game-battle",
+        name: "AI故事-小游戏-战斗",
+        type: "subAgent",
+        parentCode: "story-main",
+        defaultValue:
+                       "你是战斗小游戏动作解析器。" +
+                "## 重点" +
+                "识别攻击、技能攻击、防御、调息回气、查看状态，以及用户提到的敌人目标名称。" +
+
+                "## 规则：\n" +
+                "### 血量和蓝的恢复：住宿和吃下恢复药物等可以恢复血量和蓝\n" +
+                "### 满血：基础血量100 + 等级*10 + 特殊物品或者技能加成，如物品里的血量属性点(2)\n" +
+                "### 满蓝：基础蓝量100 + 等级*10 + 特殊物品或者技能加成，如物品里的蓝量属性点(2)\n" +
+                "### 攻击力：基础攻击力10 + 等级*10 + 特殊物品或者技能加成，如物品里的攻击点属性点(2)\n" +
+                "### 防御力：基础防御1 + 等级*10 + 特殊物品或者技能加成，如物品里的防御点属性点(2)\n" +
+                "像“乾坤大挪移钓法”这种明显不属于战斗语境的说法不要误判为战斗动作。",
+      },
+      {
+        code: "story-mini-game-fishing",
+        name: "AI故事-小游戏-钓鱼",
+        type: "subAgent",
+        parentCode: "story-main",
+        defaultValue:
+          "你是钓鱼小游戏动作解析器。重点识别抛竿、收杆、继续钓鱼、查看状态。像“乾坤大挪移钓法”“再来一竿”“甩一手”这类口语或夸张说法，只要语义是在继续垂钓，就应归一到合法动作。",
+      },
+      {
+        code: "story-mini-game-werewolf",
+        name: "AI故事-小游戏-狼人杀",
+        type: "subAgent",
+        parentCode: "story-main",
+        defaultValue:
+          "你是狼人杀小游戏动作解析器。重点识别发言、进入投票、投票目标、查验目标、救人、毒人、查看记录。请结合当前阶段，只在合法动作里选择。",
+      },
+      {
+        code: "story-mini-game-cultivation",
+        name: "AI故事-小游戏-修炼",
+        type: "subAgent",
+        parentCode: "story-main",
+        defaultValue:
+          "你是修炼小游戏动作解析器。\n" +
+            "重点识别吐纳、观想、稳息、服丹、冲关、收功，也要识别修炼目标、功法/技能名、陪练或指导角色名。\n" +
+            "像“云韵陪练”“运行炼炎决”“让云韵指导炼炎决”“先稳一手”“我想突破一下”这类输入，要归一到当前合法动作里的角色、目标或动作。",
+      },
+      {
+        code: "story-mini-game-mining",
+        name: "AI故事-小游戏-挖矿",
+        type: "subAgent",
+        parentCode: "story-main",
+        defaultValue:
+          "你是挖矿小游戏动作解析器。重点识别勘探、开采、精挖、支护、清障、休息、撤离，也要识别协助角色名。像“云韵协助挖矿”“让海波东帮忙支护”这类输入，要归一到当前合法动作里的角色或挖矿动作。",
+      },
+      {
+        code: "story-mini-game-research-skill",
+        name: "AI故事-小游戏-研发技能",
+        type: "subAgent",
+        parentCode: "story-main",
+        defaultValue:
+          "你是研发技能小游戏提示词。当前玩法主要接受用户直接输入完整研发方案，请围绕技能名称、原理、测试与改良建议理解上下文。若输入包含角色名和“陪练/协助/指导/帮忙”，保留其为协助者语义，不要当作无关文本。",
+      },
+      {
+        code: "story-mini-game-alchemy",
+        name: "AI故事-小游戏-炼药",
+        type: "subAgent",
+        parentCode: "story-main",
+        defaultValue:
+          "你是炼药小游戏提示词。当前玩法主要接受用户直接输入药方、药材搭配、火候与凝丹思路，请围绕炼药主题理解上下文。若输入包含角色名和“陪练/协助/指导/帮忙”，保留其为看火、护炉或指导语义，不要偏离丹药制作。",
+      },
+      {
+        code: "story-mini-game-upgrade-equipment",
+        name: "AI故事-小游戏-升级装备",
+        type: "subAgent",
+        parentCode: "story-main",
+        defaultValue:
+          "你是升级装备小游戏提示词。当前玩法主要接受用户直接输入目标装备和强化方案，请围绕锻打、注灵、材料与稳定度理解上下文。若输入包含角色名和“陪练/协助/指导/帮忙”，保留其为协助强化语义，不要偏离装备强化主题。",
+      },
+      {
+        code: "story-sell-item",
+        name: "AI故事-物品出售",
+        type: "subAgent",
+        parentCode: "story-main",
+        defaultValue:
+          "你是一个物品收购商人，帮助玩家将背包中的物品出售换钱。\n" +
+          "语言风格：简洁自然，符合修仙/古风世界观。\n" +
+          "输出要求：只匹配背包中实际存在的物品，数量不能超过持有量。",
       },
       {
         code: "story-safety",
@@ -689,8 +1363,50 @@ export default async (knex: Knex): Promise<void> => {
           defaultValue: item.defaultValue,
         });
     }
+
+    const legacyOrchestrator = existingCodeMap.get("story-orchestrator")
+      || await knex("t_prompts").where("code", "story-orchestrator").first("id", "defaultValue", "customValue");
+    if (legacyOrchestrator) {
+      for (const code of ["story-orchestrator-compact", "story-orchestrator-advanced"]) {
+        const existed = existingCodeMap.get(code)
+          || await knex("t_prompts").where("code", code).first("id", "defaultValue", "customValue");
+        if (!existed?.id) continue;
+        const patch: Record<string, unknown> = {};
+        if (!String(existed.defaultValue || "").trim() && String(legacyOrchestrator.defaultValue || "").trim()) {
+          patch.defaultValue = legacyOrchestrator.defaultValue;
+        }
+        if (!String(existed.customValue || "").trim() && String(legacyOrchestrator.customValue || "").trim()) {
+          patch.customValue = legacyOrchestrator.customValue;
+        }
+        if (Object.keys(patch).length) {
+          await knex("t_prompts").where("id", existed.id).update(patch);
+        }
+      }
+    }
+
+    const orchestratorCodes = ["story-orchestrator", "story-orchestrator-compact", "story-orchestrator-advanced"];
+    for (const code of orchestratorCodes) {
+      const existed = existingCodeMap.get(code)
+        || await knex("t_prompts").where("code", code).first("id", "defaultValue", "customValue");
+      if (!existed?.id) continue;
+      const nextDefaultValue = stripLegacyStoryMainPrefix(existed.defaultValue);
+      const nextCustomValue = String(existed.customValue || "").trim()
+        ? stripLegacyStoryMainPrefix(existed.customValue)
+        : existed.customValue;
+      const patch: Record<string, unknown> = {};
+      if (String(existed.defaultValue || "") !== nextDefaultValue) {
+        patch.defaultValue = nextDefaultValue;
+      }
+      if (String(existed.customValue || "") !== String(nextCustomValue || "")) {
+        patch.customValue = nextCustomValue;
+      }
+      if (Object.keys(patch).length) {
+        await knex("t_prompts").where("id", existed.id).update(patch);
+      }
+    }
   }
 
   await cleanupDuplicateStorySessions();
   await cleanupStoryChapterDrafts();
+  await backfillStoryChapterRuntimeOutline();
 };

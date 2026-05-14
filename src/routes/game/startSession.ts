@@ -27,6 +27,11 @@ import {
   summarizeNarrativePlan,
   triggerStoryMemoryRefreshInBackground,
 } from "@/modules/game-runtime/engines/NarrativeOrchestrator";
+import { persistSessionMessageRevisitData } from "@/modules/game-runtime/services/SessionService";
+import {
+  initializeChapterProgressForState,
+  syncChapterProgressWithRuntime,
+} from "@/modules/game-runtime/engines/ChapterProgressEngine";
 import u from "@/utils";
 
 const router = express.Router();
@@ -143,9 +148,11 @@ export default router.post(
       const openingMessages: RuntimeMessageInput[] = [];
       let openingPlan: ReturnType<typeof summarizeNarrativePlan> = null;
       if (chapter) {
+        initializeChapterProgressForState(chapter, state);
         const cachedSnapshot = readChapterInitialSnapshotCache({ world, chapter });
         if (cachedSnapshot) {
           state = normalizeSessionState(cachedSnapshot.stateJson, worldId, Number(chapter.id), rolePair, world);
+          syncChapterProgressWithRuntime(chapter, state);
           openingPlan = cachedSnapshot.plan || null;
           openingMessages.push(...((Array.isArray(cachedSnapshot.messages) ? cachedSnapshot.messages : []) as RuntimeMessageInput[]));
         } else {
@@ -191,6 +198,7 @@ export default router.post(
             lastSpeakerRoleType: String(openingMessages[openingMessages.length - 1]?.roleType || "narrator"),
             lastSpeaker: String(openingMessages[openingMessages.length - 1]?.role || state.narrator?.name || "旁白"),
           });
+          syncChapterProgressWithRuntime(chapter, state);
           // 首次没有命中缓存时，异步回填章节初始快照，供后续进入直接复用。
           void prewarmChapterInitialSnapshotCache({
             userId: currentUserId,
@@ -249,7 +257,6 @@ export default router.post(
                     motive: openingPlan.motive,
                     nextRole: openingPlan.nextRole,
                     nextRoleType: openingPlan.nextRoleType,
-                    chapterOutcome: openingPlan.chapterOutcome,
                     memoryHints: openingPlan.memoryHints,
                     triggerMemoryAgent: openingPlan.triggerMemoryAgent,
                   }
@@ -258,6 +265,18 @@ export default router.post(
             createTime: Number(message.createTime || now),
           })),
         );
+        const openingRows = await db("t_sessionMessage")
+          .where({ sessionId })
+          .orderBy("id", "desc")
+          .limit(openingMessages.length);
+        await persistSessionMessageRevisitData({
+          db,
+          rows: openingRows,
+          state,
+          chapterId: currentChapterId,
+          status: "active",
+          capturedAt: now,
+        });
       }
 
       if (chapter && openingPlan?.triggerMemoryAgent) {

@@ -6,7 +6,7 @@ import { validateFields } from "@/middleware/middleware";
 import { isVoiceDesignModelConfig } from "@/lib/modelConfigType";
 const router = express.Router();
 
-const DEDICATED_AVATAR_MATTING_MANUFACTURERS = new Set(["bria", "aliyun_imageseg", "tencent_ci", "local_birefnet"]);
+const DEDICATED_AVATAR_MATTING_MANUFACTURERS = new Set(["bria", "aliyun_imageseg", "tencent_ci", "local_birefnet", "local_modnet"]);
 
 const SLOT_CONFIG_RULES: Record<string, { type: "text" | "image" | "voice" | "voice_design"; modelType?: "asr" | "tts"; manufacturer?: string | string[] }> = {
   storyboardAgent: { type: "text" },
@@ -15,13 +15,15 @@ const SLOT_CONFIG_RULES: Record<string, { type: "text" | "image" | "voice" | "vo
   generateScript: { type: "text" },
   videoPrompt: { type: "text" },
   storyOrchestratorModel: { type: "text" },
+  storyFastSpeakerModel: { type: "text" },
   storySpeakerModel: { type: "text" },
   storyMemoryModel: { type: "text" },
   storyboardImage: { type: "image" },
   assetsImage: { type: "image" },
   editImage: { type: "image" },
   storyImageModel: { type: "image" },
-  storyAvatarMattingModel: { type: "image", manufacturer: ["bria", "aliyun_imageseg", "tencent_ci", "local_birefnet"] },
+  // 头像分离允许绑定专用抠图厂商，也允许绑定火山图像模型做角色前景/背景重建。
+  storyAvatarMattingModel: { type: "image", manufacturer: ["bria", "aliyun_imageseg", "tencent_ci", "local_birefnet", "local_modnet", "volcengine"] },
   storyVoiceDesignModel: { type: "voice_design" },
   storyVoiceModel: { type: "voice", modelType: "tts" },
   storyAsrModel: { type: "voice", modelType: "asr" },

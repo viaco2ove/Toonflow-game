@@ -56,5 +56,6 @@ run.local.cmd
 run.local.ps1
 /Toonflow-game/
 /node_modules_wsl/
+/.wsl_mirror/
 /nul
 /logs2/

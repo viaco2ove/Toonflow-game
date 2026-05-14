@@ -204,6 +204,12 @@ async function generateRoleParameterCardWithAi(input: {
     const result = await u.ai.text.invoke(
       {
         plainTextOutput: true,
+        usageType: "角色参数卡",
+        usageRemark: `${input.worldName || "未知世界"} / ${roleName || "未命名角色"}`,
+        usageMeta: {
+          stage: "roleParameterCard",
+          roleType,
+        },
         messages: [
           { role: "system", content: systemPrompt },
           { role: "user", content: userPrompt },
@@ -228,7 +234,12 @@ async function generateRoleParameterCardWithAi(input: {
       model: (config as JsonRecord)?.model || "",
       message: (err as any)?.message || String(err),
     });
-    return null;
+    // 余额不足或外部模型失败时，直接退回基于静态描述的本地参数卡，避免每次进入故事都重复打失败请求。
+    return normalizeParameterCard({}, {
+      name: roleName,
+      description: roleDesc,
+      voice: roleVoice,
+    });
   }
 }
 

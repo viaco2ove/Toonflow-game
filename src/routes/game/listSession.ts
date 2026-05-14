@@ -2,7 +2,7 @@ import express from "express";
 import { z } from "zod";
 import { validateFields } from "@/middleware/middleware";
 import { error, success } from "@/lib/responseFormat";
-import { getGameDb, parseJsonSafe } from "@/lib/gameEngine";
+import { getGameDb, parseJsonSafe, readDefaultRuntimeEventViewState } from "@/lib/gameEngine";
 import u from "@/utils";
 
 const router = express.Router();
@@ -22,6 +22,14 @@ export default router.post(
   async (req, res) => {
     try {
       const userId = Number((req as any)?.user?.id || 0);
+      console.log("[listSession] 请求详情:", JSON.stringify({
+        body: req.body,
+        userId,
+        userEmail: (req as any)?.user?.email || "",
+        projectId: Number(req.body.projectId),
+        worldId: Number(req.body.worldId),
+        limit: Number(req.body.limit),
+      }));
       if (!Number.isFinite(userId) || userId <= 0) {
         return res.status(401).send(error("用户未登录"));
       }
@@ -43,14 +51,19 @@ export default router.post(
         .select("s.*")
         .orderBy("s.updateTime", "desc")
         .orderBy("s.id", "desc");
+
+      console.log("[listSession] rawSessions 数量:", rawSessions.length);
+
       const rawSessionIds = rawSessions.map((item: any) => String(item.sessionId || "")).filter(Boolean);
       const playableMessageRows = rawSessionIds.length
         ? await db("t_sessionMessage")
           .whereIn("sessionId", rawSessionIds)
           .andWhere("roleType", "player")
           .andWhere("eventType", "on_message")
-          .select("sessionId", "content")
+          .select("sessionId", "content", "roleType", "eventType")
         : [];
+
+      console.log("[listSession] rawSessionIds:", rawSessionIds.length, "playableMessageRows:", playableMessageRows.length);
       const playableSessionIds = new Set<string>(
         playableMessageRows
           .filter((item: any) => String(item.content || "").trim())
@@ -120,6 +133,14 @@ export default router.post(
         const latest = latestMessageMap.get(sessionId);
         const worldRow = worldMap.get(worldIdValue);
         const worldSettings = parseJsonSafe<any>(worldRow?.settings, {});
+        const resolvedChapterTitle = chapterIdValue > 0 ? chapterNameMap.get(chapterIdValue) || "" : "";
+        // listSession 返回的 state 也要同步回当前章节标题。
+        // 否则前端列表页和安卓恢复页会先拿到旧 state.chapterTitle，造成“chapterTitle=第2章，但 state 里还是第1章”。
+        if (runtimeState && typeof runtimeState === "object") {
+          runtimeState.chapterId = chapterIdValue > 0 ? chapterIdValue : null;
+          runtimeState.chapterTitle = resolvedChapterTitle || String(runtimeState.chapterTitle || "").trim();
+        }
+        const eventView = readDefaultRuntimeEventViewState(runtimeState);
         return {
           sessionId,
           worldId: worldIdValue,
@@ -127,14 +148,17 @@ export default router.post(
           worldIntro: String(worldRow?.intro || ""),
           worldCoverPath: String(worldRow?.coverPath || worldSettings?.coverPath || worldSettings?.coverBgPath || ""),
           chapterId: chapterIdValue > 0 ? chapterIdValue : null,
-          chapterTitle: chapterIdValue > 0 ? chapterNameMap.get(chapterIdValue) || "" : "",
+          chapterTitle: resolvedChapterTitle,
           projectId: projectIdValue || null,
           projectName: projectIdValue > 0 ? projectNameMap.get(projectIdValue) || "" : "",
           title: String(item.title || ""),
           status: String(item.status || ""),
           contentVersion: String(item.contentVersion || ""),
           updateTime: Number(item.updateTime || item.createTime || 0),
-          state: parseJsonSafe(item.stateJson, {}),
+          state: runtimeState,
+          currentEventDigest: eventView.currentEventDigest,
+          eventDigestWindow: eventView.eventDigestWindow,
+          eventDigestWindowText: eventView.eventDigestWindowText,
           latestMessage: latest
             ? {
                 id: Number(latest.id || 0),

@@ -16,7 +16,11 @@ export interface BusinessVoicePreset extends GatewayVoicePreset {
   fallbackGender: "male" | "female";
 }
 
-export const BUSINESS_VOICE_PRESET_SEED_TEXT = "你好啊，有什么可以帮到你";
+/**
+ * 生成可复用参考音频时统一使用的稳定朗读文本。
+ * 这里故意使用更长的固定文本，避免参考音频过短导致阿里 clone 通道无法稳定解码。
+ */
+export const BUSINESS_VOICE_PRESET_SEED_TEXT = "恭喜，已成功复刻并合成了属于自己的声音。现在，请保持自然、清晰、稳定的语气，完整读出这段固定示例文本，用于校验音色、节奏与发音质量。愿这份新的声音陪伴你进入故事，清楚表达每一句话，也让角色在之后的对话中拥有稳定、真实、可辨识的声音表现。";
 const BUSINESS_VOICE_PROVIDER = "story_clone_preset";
 
 const BUSINESS_VOICE_PRESETS: BusinessVoicePreset[] = [
@@ -276,7 +280,21 @@ export function fallbackBusinessVoiceId(gender: "male" | "female" | null): strin
   return null;
 }
 
-export function buildGeneratedReferencePath(seed: Record<string, unknown>): string {
-  const hash = createHash("md5").update(JSON.stringify(seed)).digest("hex");
-  return `/system/voice-presets/generated/${hash}.wav`;
+/**
+ * 把角色 id 归一成安全目录名，避免路径里混入空格或特殊字符。
+ */
+function normalizeGeneratedRoleId(roleId?: string | null): string {
+  const normalized = String(roleId || "").trim().replace(/[^a-zA-Z0-9_-]+/g, "_");
+  return normalized || "common";
+}
+
+/**
+ * 生成可复用参考音频的 OSS 路径。
+ * 目录按角色 id 分组，方便排查“这份参考音频是谁生成的”。
+ */
+export function buildGeneratedReferencePath(seed: Record<string, unknown>, roleId?: string | null): string {
+  const hash = createHash("md5").update(JSON.stringify(seed)).digest("hex").slice(0, 16);
+  const roleDir = normalizeGeneratedRoleId(roleId);
+  const mode = String(seed.mode || "generated").trim().replace(/[^a-zA-Z0-9_-]+/g, "_") || "generated";
+  return `/system/voice-presets/generated/${roleDir}/${mode}_${hash}.wav`;
 }

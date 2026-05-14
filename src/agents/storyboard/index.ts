@@ -977,6 +977,14 @@ ${task}
           tools: this.getSubAgentTools(agentType),
           messages: [{ role: "user", content: context }],
           maxStep: 100,
+          usageType: "分镜Agent",
+          usageRemark: `storyboard/${agentType}`,
+          usageMeta: {
+            stage: "storyboardSubAgent",
+            agentType,
+            projectId: this.projectId,
+            scriptId: this.scriptId,
+          },
         },
         promptConfig,
       );
@@ -1074,6 +1082,13 @@ ${task}
         tools: this.getAllTools(),
         messages: this.history,
         maxStep: 100,
+        usageType: "分镜Agent",
+        usageRemark: "storyboard/main",
+        usageMeta: {
+          stage: "storyboardMain",
+          projectId: this.projectId,
+          scriptId: this.scriptId,
+        },
       },
       promptConfig,
     );

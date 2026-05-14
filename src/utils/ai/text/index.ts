@@ -5,6 +5,8 @@ import { devToolsMiddleware } from "@ai-sdk/devtools";
 import { parse } from "best-effort-json-parser";
 import { getModelList, normalizeTextModelName } from "./modelList";
 import { z } from "zod";
+import { writeAiTokenUsageLog } from "@/lib/aiTokenUsageLog";
+import type { LanguageModelUsage } from "ai";
 interface AIInput<T extends Record<string, z.ZodTypeAny> | undefined = undefined> {
   system?: string;
   tools?: Record<string, Tool>;
@@ -14,6 +16,10 @@ interface AIInput<T extends Record<string, z.ZodTypeAny> | undefined = undefined
   plainTextOutput?: boolean;
   prompt?: string;
   messages?: Array<ModelMessage>;
+  usageType?: string;
+  usageRemark?: string;
+  usageChannel?: string;
+  usageMeta?: Record<string, unknown>;
 }
 
 interface AIConfig {
@@ -21,6 +27,11 @@ interface AIConfig {
   apiKey?: string;
   baseURL?: string;
   manufacturer?: string;
+  inputPricePer1M?: number;
+  outputPricePer1M?: number;
+  cacheReadPricePer1M?: number;
+  currency?: string;
+  reasoningEffort?: "minimal" | "low" | "medium" | "high";
 }
 
 const LOG_LEVEL = (process.env.LOG_LEVEL || "").trim().toUpperCase();
@@ -49,6 +60,110 @@ function debugLog(step: string, payload?: Record<string, unknown>) {
   } else {
     console.log("[ai:text]", step);
   }
+}
+
+function normalizeMessageContentSnapshot(input: unknown): string {
+  if (typeof input === "string") return input;
+  if (input == null) return "";
+  try {
+    return JSON.stringify(input);
+  } catch {
+    return String(input);
+  }
+}
+
+function buildUsageAuditMeta(
+  input: AIInput<any>,
+  config: AIConfig,
+  usage: LanguageModelUsage | null | undefined,
+  extra?: Record<string, unknown> | null,
+) {
+  const baseMeta = input.usageMeta && typeof input.usageMeta === "object" ? { ...input.usageMeta } : {};
+  const usageBreakdown = {
+    inputTokens: Number(usage?.inputTokens || 0),
+    outputTokens: Number(usage?.outputTokens || 0),
+    reasoningTokens: Number(usage?.outputTokenDetails?.reasoningTokens || usage?.reasoningTokens || 0),
+    cacheReadTokens: Number(usage?.inputTokenDetails?.cacheReadTokens || usage?.cachedInputTokens || 0),
+    totalTokens: Number(usage?.totalTokens || 0),
+  };
+  return {
+    ...baseMeta,
+    reasoningEffort: String(config?.reasoningEffort || "").trim() || "未指定",
+    request: input.prompt
+      ? { prompt: String(input.prompt || "") }
+      : {
+        system: String(input.system || ""),
+        messages: Array.isArray(input.messages)
+          ? input.messages.map((msg) => ({
+            role: String(msg.role || ""),
+            content: normalizeMessageContentSnapshot((msg as any).content),
+          }))
+          : [],
+      },
+    usage: usageBreakdown,
+    ...(extra || {}),
+  };
+}
+
+async function logTokenUsageByUsage(
+  input: AIInput<any>,
+  config: AIConfig,
+  usage: LanguageModelUsage | null | undefined,
+  extraMeta?: Record<string, unknown> | null,
+) {
+  try {
+    if (!usage) return;
+    const auditMeta = buildUsageAuditMeta(input, config, usage, extraMeta);
+    const usagePayload = {
+      type: input.usageType || "通用文本",
+      manufacturer: config?.manufacturer || "",
+      model: config?.model || "",
+      channel: input.usageChannel || config?.manufacturer || "",
+      inputTokens: Number(usage?.inputTokens || 0),
+      outputTokens: Number(usage?.outputTokens || 0),
+      reasoningTokens: Number(usage?.outputTokenDetails?.reasoningTokens || usage?.reasoningTokens || 0),
+      cacheReadTokens: Number(usage?.inputTokenDetails?.cacheReadTokens || usage?.cachedInputTokens || 0),
+      totalTokens: Number(usage?.totalTokens || 0),
+      reasoningEffort: String(config?.reasoningEffort || "").trim() || "未指定",
+      remark: input.usageRemark || "",
+    };
+    if (TEXT_DEBUG) {
+      console.log("[ai:text:usage]", usagePayload);
+    }
+    await writeAiTokenUsageLog({
+      type: usagePayload.type,
+      manufacturer: usagePayload.manufacturer,
+      model: usagePayload.model,
+      channel: usagePayload.channel,
+      inputTokens: usagePayload.inputTokens,
+      outputTokens: usagePayload.outputTokens,
+      reasoningTokens: usagePayload.reasoningTokens,
+      cacheReadTokens: usagePayload.cacheReadTokens,
+      totalTokens: usagePayload.totalTokens,
+      inputPricePer1M: Number(config?.inputPricePer1M || 0),
+      outputPricePer1M: Number(config?.outputPricePer1M || 0),
+      cacheReadPricePer1M: Number(config?.cacheReadPricePer1M || 0),
+      currency: String(config?.currency || "").trim() || "CNY",
+      remark: usagePayload.remark,
+      meta: auditMeta,
+    });
+  } catch (err) {
+    console.warn("[ai:text] token usage log failed", {
+      manufacturer: config?.manufacturer || "",
+      model: config?.model || "",
+      message: (err as any)?.message || String(err),
+    });
+  }
+}
+
+async function logTokenUsage(input: AIInput<any>, config: AIConfig, result: GenerateTextResult<Record<string, Tool>, any>) {
+  await logTokenUsageByUsage(input, config, (result as any)?.usage, {
+    response: {
+      text: String((result as any)?.text || ""),
+      finishReason: String((result as any)?.finishReason || (result as any)?.finish_reason || ""),
+      warningsCount: Array.isArray((result as any)?.warnings) ? (result as any).warnings.length : 0,
+    },
+  });
 }
 
 function headersToObject(headers?: HeadersInit): Record<string, string> {
@@ -131,6 +246,17 @@ function createDebugFetch(label: string): typeof fetch {
   };
 }
 
+/**
+ * 判断当前厂商是否走 OpenAI 兼容聊天接口。
+ * 这类厂商最终都会复用 @ai-sdk/openai 的 chat 实现，因此 providerOptions 必须挂在 openai 键下。
+ */
+function isOpenAICompatibleManufacturer(manufacturer?: string): boolean {
+  const normalizedManufacturer = String(manufacturer || "").trim();
+  return ["volcengine", "doubao", "other", "openai", "modelScope", "grsai", "t8star", "lmstudio", "autodl_chat", "autodl"].includes(
+    normalizedManufacturer,
+  );
+}
+
 const buildOptions = async (input: AIInput<any>, config: AIConfig = {}) => {
   if (!config || !config?.model || !config?.apiKey || !config?.manufacturer) throw new Error("请检查模型配置是否正确");
   const { apiKey, baseURL, manufacturer } = { ...config };
@@ -160,7 +286,7 @@ const buildOptions = async (input: AIInput<any>, config: AIConfig = {}) => {
     }
   }
 
-  const openAICompatible = ["volcengine", "doubao", "other", "openai", "modelScope", "grsai", "t8star", "lmstudio", "autodl_chat", "autodl"].includes(owned.manufacturer);
+  const openAICompatible = isOpenAICompatibleManufacturer(owned.manufacturer);
   const modelInstance = owned.instance({
     apiKey,
     baseURL: baseURL!,
@@ -211,6 +337,7 @@ const buildOptions = async (input: AIInput<any>, config: AIConfig = {}) => {
     maxStep: maxStep ?? 0,
     outputKeys,
     plainTextOutput: Boolean(input.plainTextOutput),
+    reasoningEffort: config?.reasoningEffort || "",
     messageCount,
     promptPreview: trimPreview(input.prompt || ""),
   });
@@ -231,6 +358,20 @@ const buildOptions = async (input: AIInput<any>, config: AIConfig = {}) => {
       ...(maxStep && { stopWhen: stepCountIs(maxStep) }),
       ...(input.maxRetries !== undefined && { maxRetries: input.maxRetries }),
       ...(output && { output }),
+      ...(
+        config?.reasoningEffort && openAICompatible
+          ? {
+            // 这里必须使用 openai 键，而不是自定义的 openaiCompatible。
+            // @ai-sdk/openai 的 chat provider 会把 reasoningEffort 映射成请求体里的 reasoning_effort。
+            // 之前写成 openaiCompatible 后，SDK 会直接忽略这段配置，最终不会把参数发给火山/豆包。
+            providerOptions: {
+              openai: {
+                reasoningEffort: config.reasoningEffort,
+              },
+            },
+          }
+          : {}
+      ),
     },
     responseFormat: owned.responseFormat,
   };
@@ -255,6 +396,7 @@ ai.invoke = async (input: AIInput<any>, config: AIConfig) => {
 
   try {
     const result = await generateText(options.config);
+    await logTokenUsage(input, config, result as any);
     debugLog("invoke:success", {
       manufacturer: config?.manufacturer || "",
       model: config?.model || "",
@@ -331,6 +473,15 @@ ai.stream = async (input: AIInput, config: AIConfig) => {
 
   try {
     const stream = streamText(options.config);
+    Promise.resolve((stream as any)?.usage)
+      .then((usage) => logTokenUsageByUsage(input, config, usage as LanguageModelUsage))
+      .catch((err) => {
+        console.warn("[ai:text] stream token usage log failed", {
+          manufacturer: config?.manufacturer || "",
+          model: config?.model || "",
+          message: (err as any)?.message || String(err),
+        });
+      });
     debugLog("stream:created", {
       manufacturer: config?.manufacturer || "",
       model: config?.model || "",

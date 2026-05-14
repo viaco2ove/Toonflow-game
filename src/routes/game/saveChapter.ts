@@ -3,6 +3,7 @@ import { z } from "zod";
 import { validateFields } from "@/middleware/middleware";
 import { error, success } from "@/lib/responseFormat";
 import {
+  buildChapterRuntimeOutline,
   getGameDb,
   normalizeChapterFields,
   normalizeChapterOutput,
@@ -24,11 +25,13 @@ export default router.post(
     openingRole: z.string().optional().nullable(),
     openingText: z.string().optional().nullable(),
     bgmPath: z.string().optional().nullable(),
+    bgmAutoPlay: z.boolean().optional().nullable(),
     showCompletionCondition: z.boolean().optional().nullable(),
     title: z.string(),
     content: z.string().optional().nullable(),
     entryCondition: z.any().optional().nullable(),
     completionCondition: z.any().optional().nullable(),
+    runtimeOutline: z.any().optional().nullable(),
     sort: z.number().optional().nullable(),
     status: z.string().optional().nullable(),
   }),
@@ -42,11 +45,13 @@ export default router.post(
         openingRole,
         openingText,
         bgmPath,
+        bgmAutoPlay,
         showCompletionCondition,
         title,
         content,
         entryCondition,
         completionCondition,
+        runtimeOutline: runtimeOutlineInput,
         sort,
         status,
       } = req.body;
@@ -56,6 +61,13 @@ export default router.post(
         openingText,
         entryCondition,
         completionCondition,
+      });
+      const runtimeOutline = buildChapterRuntimeOutline({
+        openingRole: normalizedChapter.openingRole,
+        openingText: normalizedChapter.openingText,
+        content: normalizedChapter.content,
+        completionCondition: normalizedChapter.completionCondition,
+        runtimeOutline: runtimeOutlineInput,
       });
       const db = getGameDb();
       const now = nowTs();
@@ -83,11 +95,15 @@ export default router.post(
         openingRole: normalizedChapter.openingRole,
         openingText: normalizedChapter.openingText,
         bgmPath: String(bgmPath || "").trim(),
+        // 章节背景音乐默认开启，只有作者显式取消勾选时才落成 0。
+        bgmAutoPlay: bgmAutoPlay === false ? 0 : 1,
         showCompletionCondition: showCompletionCondition ? 1 : 0,
         title: String(title || "").trim(),
         content: normalizedChapter.content,
         entryCondition: toJsonText(normalizedChapter.entryCondition, null),
         completionCondition: toJsonText(normalizedChapter.completionCondition, null),
+        // 章节保存时就固化最小运行模板，避免游玩时每次临时推断。
+        runtimeOutline: toJsonText(runtimeOutline, {}),
         sort: Number.isFinite(sortNum) ? sortNum : 0,
         status: String(status || "draft").trim() || "draft",
         updateTime: now,
@@ -106,8 +122,17 @@ export default router.post(
       }
 
       if (existed?.id) {
+        const existedWorldId = Number(existed.worldId || 0);
+        const requestWorldId = Number(worldId || 0);
+        if (existedWorldId > 0 && requestWorldId > 0 && existedWorldId !== requestWorldId) {
+          return res.status(409).send(error("章节与当前故事不匹配，请刷新后重试"));
+        }
         id = Number(existed.id);
-        await db("t_storyChapter").where({ id }).update(payload);
+        await db("t_storyChapter").where({ id }).update({
+          ...payload,
+          // 已存在章节不允许在保存时被移动到别的故事下面。
+          worldId: existedWorldId || requestWorldId,
+        });
       } else {
         let nextSort = payload.sort;
         if (!nextSort) {

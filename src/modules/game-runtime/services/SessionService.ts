@@ -6,9 +6,15 @@ import {
   normalizeSessionState,
   nowTs,
   parseJsonSafe,
+  readDefaultRuntimeEventViewState,
+  readRuntimeCurrentEventDigestState,
+  RuntimeEventDigestState,
+  RuntimeEventViewState,
   toJsonText,
+  upsertRuntimeEventDigestState,
 } from "@/lib/gameEngine";
 import { ensureWorldRolesWithAiParameterCards } from "@/lib/roleParameterCard";
+import { applyExplicitMemoryDirectiveToPlayerCard } from "@/modules/game-runtime/services/PlayerMemoryDirectiveService";
 import { getCurrentUserId } from "@/lib/requestContext";
 import {
   applyMemoryResultToState,
@@ -21,18 +27,33 @@ import {
   applyPlayerProfileFromMessageToState,
   canPlayerSpeakNow,
   resolveOpeningMessage,
+  refreshStoryMemoryBestEffort,
   runNarrativePlan,
   runNarrativeOrchestrator,
   setRuntimeTurnState,
   summarizeNarrativePlan,
   triggerStoryMemoryRefreshInBackground,
 } from "@/modules/game-runtime/engines/NarrativeOrchestrator";
-import { handleMiniGameTurn } from "@/modules/game-runtime/engines/MiniGameController";
+import {
+  applyAiEventProgressResolution,
+  recordChapterProgressSignals,
+  initializeChapterProgressForState,
+  markCurrentUserNodeCompleted,
+  readNextEventProgressHint,
+  syncChapterProgressWithRuntime,
+} from "@/modules/game-runtime/engines/ChapterProgressEngine";
+import { handleMiniGameTurn, isMiniGameActiveState } from "@/modules/game-runtime/engines/MiniGameController";
 import { runTaskProgressEngine } from "@/modules/game-runtime/engines/TaskProgressEngine";
 import {
   applyAttributeChanges,
   runTriggerEngine,
 } from "@/modules/game-runtime/engines/TriggerEngine";
+import { evaluateRuntimeOutcome } from "@/modules/game-runtime/services/ChapterRuntimeService";
+import { evaluateEventProgressByAi } from "@/modules/game-runtime/services/EventProgressRuntimeService";
+import {
+  maybeActivateFreeChapterTaskEvent,
+  maybeResolveActiveFreeChapterTaskEvent,
+} from "@/modules/game-runtime/services/FreeChapterTaskService";
 import { persistSnapshotIfNeeded } from "@/modules/game-runtime/services/SnapshotService";
 import {
   AppliedDelta,
@@ -40,6 +61,162 @@ import {
   TaskProgressChange,
   TriggerHit,
 } from "@/modules/game-runtime/types/runtime";
+import { DebugLogUtil } from "@/utils/debugLogUtil";
+import {miniGameStateManager, MiniGameOrchestrationResult} from "@/modules/game-runtime/engines/MiniGameStateManager";
+
+// ==================== 游玩模式回溯功能内存缓存 ====================
+//
+// 设计：
+//   - 内存层：每个 sessionId 保留最近 SESSION_REVISIT_HOT_SIZE 条，热数据直接命中
+//   - 持久化层：t_sessionMessage.revisitData 字段
+//   - 读取顺序：优先内存 → 数据库字段 → 提示缺少记忆
+
+const SESSION_REVISIT_HOT_SIZE = 10; // 内存保留最近 N 条
+
+interface SessionRevisitCacheItem {
+  sessionId: string;
+  messageId: number;
+  revisitData: SessionMessageRevisitData;
+  capturedAt: number;
+}
+
+// 内存层：sessionId -> 最近 N 条（按 messageId 升序）
+const SESSION_REVISIT_HOT = new Map<string, SessionRevisitCacheItem[]>();
+
+// ==================== Session 编排锁 ====================
+//
+// 防止同一 session 的并发编排请求导致重复台词。
+// 内存级互斥锁：同一 sessionId 同时只允许一个编排/commit 操作执行。
+
+const SESSION_LOCKS = new Map<string, Promise<any>>();
+
+async function withSessionLock<T>(sessionId: string, fn: () => Promise<T>): Promise<T> {
+  const prev = SESSION_LOCKS.get(sessionId) || Promise.resolve();
+  const next = prev.then(() => fn(), (err) => { throw err; });
+  SESSION_LOCKS.set(sessionId, next);
+  try {
+    return await next;
+  } finally {
+    if (SESSION_LOCKS.get(sessionId) === next) {
+      SESSION_LOCKS.delete(sessionId);
+    }
+  }
+}
+
+// 保存回溯点到内存缓存
+function saveSessionRevisitToHotCache(
+  sessionId: string,
+  messageId: number,
+  revisitData: SessionMessageRevisitData,
+): void {
+  const items = SESSION_REVISIT_HOT.get(sessionId) || [];
+  // 移除重复的 messageId
+  const filtered = items.filter((item) => item.messageId !== messageId);
+  // 添加新的
+  filtered.push({
+    sessionId,
+    messageId,
+    revisitData,
+    capturedAt: revisitData.t,
+  });
+  // 按 messageId 排序
+  filtered.sort((a, b) => a.messageId - b.messageId);
+  // 保留最近 N 条
+  const trimmed = filtered.slice(-SESSION_REVISIT_HOT_SIZE);
+  SESSION_REVISIT_HOT.set(sessionId, trimmed);
+}
+
+// 从内存缓存读取回溯点
+function readSessionRevisitFromHotCache(
+  sessionId: string,
+  messageId: number,
+): SessionMessageRevisitData | null {
+  const items = SESSION_REVISIT_HOT.get(sessionId);
+  if (!items) return null;
+  const found = items.find((item) => item.messageId === messageId);
+  return found?.revisitData || null;
+}
+
+// 清空指定 session 的缓存
+export function clearSessionRevisitCache(sessionId: string): void {
+  SESSION_REVISIT_HOT.delete(sessionId);
+}
+
+// 清空所有缓存
+export function clearAllSessionRevisitCaches(): void {
+  SESSION_REVISIT_HOT.clear();
+}
+
+/**
+ * 切章时清理上一章残留的运行态事件缓存。
+ *
+ * 用途：
+ * - 正式游玩链切到下一章后，新章节同样会从 eventIndex=1 开始；
+ * - 如果保留上一章的 currentEvent/currentEventDigest/dynamicEvents/chapterProgress，
+ *   编排师就会把上一章的事件 1 误当成新章节的事件 1 继续使用；
+ * - 这里和调试链保持一致，在真正进入新章节前先把旧章事件缓存清空。
+ */
+function resetSessionChapterRuntimeOnSwitch(
+  state: Record<string, any>,
+  nextChapterId: number | null,
+  previousChapterId?: number | null,
+  nextChapterTitle?: string | null,
+): void {
+  const normalizedNextChapterId = Number(nextChapterId || 0) || 0;
+  const normalizedPreviousChapterId = Number(
+    previousChapterId ?? state.chapterId ?? 0,
+  ) || 0;
+  const chapterSwitched = normalizedNextChapterId > 0
+    && normalizedPreviousChapterId > 0
+    && normalizedNextChapterId !== normalizedPreviousChapterId;
+  if (!chapterSwitched) {
+    return;
+  }
+  // 这些字段都和"当前章节的事件推进"强绑定。
+  // 一旦切章还继续保留，后续读取 current_event 时就会串到上一章。
+  delete state.currentEvent;
+  delete state.currentEventDigest;
+  delete state.eventDigestWindow;
+  delete state.eventDigestWindowText;
+  delete state.dynamicEvents;
+  delete state.chapterProgress;
+  delete state.__pendingEndingGuide;
+  state.chapterId = normalizedNextChapterId;
+  if (String(nextChapterTitle || "").trim()) {
+    state.chapterTitle = String(nextChapterTitle || "").trim();
+  }
+}
+
+/**
+ * 开场白不属于章节事件图，提交或消费开场白后必须回到章节第一个内容事件。
+ *
+ * 用途：
+ * - 防止旧初始快照或开场白裁决把 phase_1 误标为 completed；
+ * - 保证 `/initStory -> /introduction -> /orchestration` 后编排师读取的是事件 1，而不是事件 2。
+ */
+function resetSessionChapterContentProgressForOpening(chapter: any, state: Record<string, any>): void {
+  if (!chapter) return;
+  delete state.currentEvent;
+  delete state.currentEventDigest;
+  delete state.eventDigestWindow;
+  delete state.eventDigestWindowText;
+  delete state.dynamicEvents;
+  delete state.chapterProgress;
+  delete state.__pendingEndingGuide;
+  state.chapterId = Number(chapter.id || 0) || state.chapterId || null;
+  state.chapterTitle = String(chapter.title || "").trim() || String(state.chapterTitle || "").trim();
+  initializeChapterProgressForState(chapter, state);
+  syncChapterProgressWithRuntime(chapter, state);
+}
+
+/**
+ * 判断消息是否为章节外开场白。
+ *
+ * 用途：开场白只负责展示入场文案，不能触发章节判定、事件完成或章节切换。
+ */
+function isOpeningRuntimeEventType(eventType: unknown): boolean {
+  return String(eventType || "").trim() === "on_opening";
+}
 
 export interface AddSessionMessageInput {
   sessionId: string;
@@ -59,11 +236,14 @@ export interface AddSessionMessageResult {
   chapterId: number | null;
   chapter: Record<string, any> | null;
   state: Record<string, any>;
+  currentEventDigest: RuntimeEventViewState["currentEventDigest"];
+  eventDigestWindow: RuntimeEventViewState["eventDigestWindow"];
+  eventDigestWindowText: RuntimeEventViewState["eventDigestWindowText"];
   message: Record<string, any> | null;
   chapterSwitchMessage: Record<string, any> | null;
   narrativeMessage: Record<string, any> | null;
   generatedMessages: Record<string, any>[];
-  narrativePlan: NarrativePlanSummary | null;
+  narrativePlan: any | null;
   triggered: TriggerHit[];
   taskProgress: TaskProgressChange[];
   deltas: AppliedDelta[];
@@ -80,12 +260,35 @@ export interface SessionNarrativePlanResult {
   awaitUser: boolean;
   nextRole: string;
   nextRoleType: string;
-  chapterOutcome: "continue" | "success" | "failed";
-  nextChapterId: number | null;
-  source: "ai" | "fallback";
+  memoryHints: string[];
+  source: "ai" | "fallback" | "rule";
   triggerMemoryAgent: boolean;
   eventType: string;
   presetContent: string | null;
+  eventAdjustMode?: "keep" | "update" | "waiting_input" | "completed";
+  eventIndex?: number;
+  eventKind?: "opening" | "scene" | "user" | "fixed" | "ending";
+  eventSummary?: string;
+  eventFacts?: string[];
+  eventStatus?: "idle" | "active" | "waiting_input" | "completed";
+  speakerMode?: "template" | "fast" | "premium";
+  speakerRouteReason?: string;
+  nextNarrativePlan?: SessionNarrativePlanResult | null;
+  orchestratorRuntime?: {
+    modelKey: string;
+    manufacturer: string;
+    model: string;
+    reasoningEffort: "minimal" | "low" | "medium" | "high" | "";
+    payloadMode: "compact" | "advanced";
+    payloadModeSource: "explicit" | "inferred";
+  };
+}
+
+export interface SessionChapterCommand {
+  type: "init_chapter";
+  chapterId: number;
+  chapterTitle: string;
+  trigger: "chapter_completed";
 }
 
 export interface SessionOrchestrationResult {
@@ -94,7 +297,38 @@ export interface SessionOrchestrationResult {
   chapterId: number | null;
   expectedRole: string;
   expectedRoleType: string;
+  command?: SessionChapterCommand | null;
+  currentEventDigest: RuntimeEventViewState["currentEventDigest"];
+  eventDigestWindow: RuntimeEventViewState["eventDigestWindow"];
+  eventDigestWindowText: RuntimeEventViewState["eventDigestWindowText"];
   plan: SessionNarrativePlanResult | null;
+}
+
+export interface InitSessionChapterResult {
+  sessionId: string;
+  status: string;
+  worldId: number;
+  chapterId: number | null;
+  chapterTitle: string;
+  state: Record<string, any>;
+  chapter: Record<string, any> | null;
+  currentEventDigest: RuntimeEventViewState["currentEventDigest"];
+  eventDigestWindow: RuntimeEventViewState["eventDigestWindow"];
+  eventDigestWindowText: RuntimeEventViewState["eventDigestWindowText"];
+}
+
+type SessionOrchestrationResultSeed = Omit<
+  SessionOrchestrationResult,
+  "currentEventDigest" | "eventDigestWindow" | "eventDigestWindowText"
+>;
+
+export interface SessionMessageRevisitData {
+  v: 1;
+  c: number | null;
+  s: string;
+  r: number;
+  t: number;
+  st: Record<string, any>;
 }
 
 export interface CommitSessionNarrativeTurnInput {
@@ -139,16 +373,393 @@ function normalizeMessageId(value: unknown): number {
   return Number.isFinite(n) ? n : 0;
 }
 
+function normalizeSessionRound(state: Record<string, any>): number {
+  const round = Number(state.round || 0);
+  return Number.isFinite(round) && round >= 0 ? round : 0;
+}
+
+function normalizeSessionChapterId(chapterId: number | null | undefined, state: Record<string, any>): number | null {
+  const explicitChapterId = Number(chapterId || 0);
+  if (Number.isFinite(explicitChapterId) && explicitChapterId > 0) {
+    return explicitChapterId;
+  }
+  const stateChapterId = Number(state.chapterId || 0);
+  return Number.isFinite(stateChapterId) && stateChapterId > 0 ? stateChapterId : null;
+}
+
+export function buildSessionMessageRevisitData(params: {
+  state: Record<string, any>;
+  chapterId: number | null | undefined;
+  status: string;
+  capturedAt?: number;
+}): SessionMessageRevisitData {
+  return {
+    v: 1,
+    c: normalizeSessionChapterId(params.chapterId, params.state),
+    s: String(params.status || "active").trim() || "active",
+    r: normalizeSessionRound(params.state),
+    t: Number(params.capturedAt || nowTs()) || nowTs(),
+    st: parseJsonSafe<Record<string, any>>(toJsonText(params.state, {}), {}),
+  };
+}
+
+export function readSessionMessageRevisitData(
+  input: unknown,
+  sessionId?: string,
+  messageId?: number,
+): SessionMessageRevisitData | null {
+  // 1. 优先从内存缓存读取
+  if (sessionId && messageId && Number.isFinite(messageId) && messageId > 0) {
+    const cached = readSessionRevisitFromHotCache(sessionId, messageId);
+    if (cached) {
+      return cached;
+    }
+  }
+  
+  // 2. 从数据库字段读取
+  const parsed = parseJsonMaybe(input);
+  if (!Object.keys(parsed).length) return null;
+  const state = parseJsonMaybe(parsed.st);
+  if (!Object.keys(state).length) return null;
+  const round = Number(parsed.r || 0);
+  const capturedAt = Number(parsed.t || 0);
+  const chapterId = Number(parsed.c || 0);
+  
+  const result: SessionMessageRevisitData = {
+    v: 1,
+    c: Number.isFinite(chapterId) && chapterId > 0 ? chapterId : null,
+    s: String(parsed.s || "active").trim() || "active",
+    r: Number.isFinite(round) && round >= 0 ? round : 0,
+    t: Number.isFinite(capturedAt) && capturedAt > 0 ? capturedAt : 0,
+    st: state,
+  };
+  
+  // 如果从数据库读取成功，同时缓存到内存
+  if (sessionId && messageId && Number.isFinite(messageId) && messageId > 0) {
+    saveSessionRevisitToHotCache(sessionId, messageId, result);
+  }
+  
+  return result;
+}
+
+export async function persistSessionMessageRevisitData(params: {
+  db: any;
+  rows: Array<Record<string, any> | null | undefined>;
+  state: Record<string, any>;
+  chapterId: number | null | undefined;
+  status: string;
+  capturedAt?: number;
+  sessionId?: string | null; // 添加 sessionId 参数
+}): Promise<void> {
+  const rowIds = params.rows
+    .map((row) => Number(row?.id || 0))
+    .filter((id) => Number.isFinite(id) && id > 0);
+  if (!rowIds.length) return;
+  const revisitData = buildSessionMessageRevisitData({
+    state: params.state,
+    chapterId: params.chapterId,
+    status: params.status,
+    capturedAt: params.capturedAt,
+  });
+  
+  // 保存到内存缓存
+  if (params.sessionId) {
+    rowIds.forEach((messageId) => {
+      saveSessionRevisitToHotCache(params.sessionId!, messageId, revisitData);
+    });
+  }
+  
+  // 持久化到数据库
+  const revisitDataText = toJsonText(revisitData, {});
+  await params.db("t_sessionMessage").whereIn("id", rowIds).update({
+    revisitData: revisitDataText,
+  });
+  const parsedRevisitData = parseJsonMaybe(revisitDataText);
+  params.rows.forEach((row) => {
+    if (!row || typeof row !== "object") return;
+    row.revisitData = parsedRevisitData;
+  });
+}
+
 function buildRecentMessages(rows: any[]): RuntimeMessageInput[] {
   return rows
     .reverse()
     .map((item: any) => ({
+      messageId: Number(item.id || 0),
       role: String(item.role || ""),
       roleType: String(item.roleType || ""),
       eventType: String(item.eventType || ""),
       content: String(item.content || ""),
       createTime: Number(item.createTime || 0),
     }));
+}
+
+/**
+ * 将"正式会话里的用户发言"应用到当前事件进度。
+ *
+ * 用途：
+ * - 先把 trigger / task / delta 等规则信号写进运行态
+ * - 再让 AI 判断当前事件到底推进到了哪一步、是否已经结束
+ * - 只有 AI 不可用时，才回退到旧的用户节点完成逻辑
+ */
+async function applySessionUserEventProgress(params: {
+  userId?: number;
+  chapter: any;
+  state: Record<string, any>;
+  messageId?: number | null;
+  messageContent: string;
+  eventType?: string;
+  triggered?: TriggerHit[];
+  taskProgress?: TaskProgressChange[];
+  deltas?: AppliedDelta[];
+  recentMessages?: RuntimeMessageInput[];
+  traceMeta?: Record<string, any>;
+}): Promise<void> {
+  if (!params.chapter) {
+    return;
+  }
+  initializeChapterProgressForState(params.chapter, params.state);
+  syncChapterProgressWithRuntime(params.chapter, params.state);
+  recordChapterProgressSignals(params.chapter, params.state, {
+    messageContent: params.messageContent,
+    messageRole: String(params.state.player?.name || "用户"),
+    messageRoleType: "player",
+    triggered: params.triggered,
+    taskProgress: params.taskProgress,
+    deltas: params.deltas,
+  });
+  syncChapterProgressWithRuntime(params.chapter, params.state);
+  const resolution = await evaluateEventProgressByAi({
+    userId: params.userId,
+    chapter: params.chapter,
+    state: params.state,
+    messageContent: params.messageContent,
+    messageRole: String(params.state.player?.name || "用户"),
+    messageRoleType: "player",
+    eventType: params.eventType,
+    recentMessages: params.recentMessages,
+    traceMeta: params.traceMeta,
+  });
+  if (DebugLogUtil.isDebugLogEnabled()) {
+    // [story:event_progress:stats] resolution
+    DebugLogUtil.logEventProgressResolution("story:event_progress:stats", {
+      chapter: params.chapter,
+      currentEventIndex: Number(params.state?.chapterProgress?.eventIndex || params.state?.currentEventDigest?.eventIndex || 0),
+      currentPhaseId: params.state?.chapterProgress?.phaseId,
+      currentPhaseLabel: params.state?.chapterProgress?.phaseId,
+      ended: resolution?.ended,
+      eventStatus: resolution?.eventStatus,
+      nextEventIndex: Number(readNextEventProgressHint(params.chapter, params.state)?.index || 0),
+      nextEventSummary: readNextEventProgressHint(params.chapter, params.state)?.summary,
+    });
+  }
+  if (resolution) {
+    applyAiEventProgressResolution({
+      chapter: params.chapter,
+      state: params.state,
+      resolution,
+    });
+    syncChapterProgressWithRuntime(params.chapter, params.state);
+    return;
+  }
+  markCurrentUserNodeCompleted(params.chapter, params.state, params.messageId ?? null);
+  syncChapterProgressWithRuntime(params.chapter, params.state);
+}
+
+/**
+ * 在正式 `/game/orchestration` 前，对"最近一条已落库消息"补做一次事件进度检测。
+ *
+ * 用途：
+ * - 之前事件进度 AI 只在用户消息提交时运行，旁白/NPC 自动续写不会触发；
+ * - 当旁白已经把当前事件推进到"等待用户输入"时，后端若不先检测，就会继续错误编排下一句旁白；
+ * - 这里在真正进入编排前补一刀，命中 `waiting_input` 后立即把输入权交还给用户。
+ */
+async function applySessionPreOrchestrationEventProgress(params: {
+  userId: number;
+  world: any;
+  chapter: any;
+  state: Record<string, any>;
+  recentMessages: RuntimeMessageInput[];
+  traceMeta?: Record<string, any>;
+}): Promise<void> {
+  const latestRecentMessage = params.recentMessages[params.recentMessages.length - 1];
+  const latestMessageId = Number(latestRecentMessage?.messageId || 0);
+  const latestRoleType = String(latestRecentMessage?.roleType || "").trim().toLowerCase();
+  const latestEventType = String(latestRecentMessage?.eventType || "").trim();
+  const latestContent = String(latestRecentMessage?.content || "").trim();
+  if (!params.chapter || !latestMessageId || !latestContent) {
+    return;
+  }
+  if (latestEventType === "on_opening") {
+    return;
+  }
+  if (latestRoleType === "player" && latestEventType === "on_message") {
+    return;
+  }
+  const progressCursor = Number(params.state?.orchestrationEventProgressMessageId || 0);
+  if (progressCursor === latestMessageId) {
+    return;
+  }
+
+  const resolution = await evaluateEventProgressByAi({
+    userId: params.userId,
+    chapter: params.chapter,
+    state: params.state,
+    messageContent: latestContent,
+    messageRole: String(latestRecentMessage?.role || ""),
+    messageRoleType: String(latestRecentMessage?.roleType || ""),
+    eventType: latestEventType,
+    recentMessages: params.recentMessages,
+    traceMeta: {
+      ...(params.traceMeta || {}),
+      stage: "pre_orchestration",
+      latestMessageId,
+    },
+  });
+  params.state.orchestrationEventProgressMessageId = latestMessageId;
+  if (!resolution) {
+    return;
+  }
+
+  const progressApplied = applyAiEventProgressResolution({
+    chapter: params.chapter,
+    state: params.state,
+    resolution,
+  });
+  syncChapterProgressWithRuntime(params.chapter, params.state);
+  if (DebugLogUtil.isDebugLogEnabled()) {
+    DebugLogUtil.logEventProgressResolution("story:event_progress:stats", {
+      chapter: params.chapter,
+      currentEventIndex: Number(params.state?.chapterProgress?.eventIndex || params.state?.currentEventDigest?.eventIndex || 0),
+      currentPhaseId: params.state?.chapterProgress?.phaseId,
+      currentPhaseLabel: params.state?.chapterProgress?.phaseId,
+      ended: resolution?.ended,
+      eventStatus: resolution?.eventStatus,
+      nextEventIndex: Number(readNextEventProgressHint(params.chapter, params.state)?.index || 0),
+      nextEventSummary: readNextEventProgressHint(params.chapter, params.state)?.summary,
+    });
+  }
+  if (progressApplied.enteredUserPhase || resolution.eventStatus === "waiting_input") {
+    allowPlayerTurn(
+      params.state,
+      params.world,
+      String(latestRecentMessage?.roleType || "narrator"),
+      String(latestRecentMessage?.role || params.state.narrator?.name || "旁白"),
+    );
+  }
+}
+
+function readMemoryCursorMessageId(state: Record<string, any>): number {
+  const cursor = parseJsonMaybe(state?.memoryCursor);
+  const id = Number(cursor.lastMessageId || 0);
+  return Number.isFinite(id) && id > 0 ? id : 0;
+}
+
+function readMemoryCursor(state: Record<string, any>): Record<string, any> {
+  return parseJsonMaybe(state?.memoryCursor);
+}
+
+function readStableMemoryEventDigest(state: Record<string, any>): RuntimeEventDigestState & {
+  stableEventSummary: string;
+  stableEventFacts: string[];
+  stableMemorySummary: string;
+  stableMemoryFacts: string[];
+} {
+  const digest = readRuntimeCurrentEventDigestState(state);
+  return {
+    ...digest,
+    stableEventSummary: String(digest.eventSummary || "").trim(),
+    stableEventFacts: Array.isArray(digest.eventFacts)
+      ? digest.eventFacts.map((item) => String(item || "").trim()).filter(Boolean).slice(0, 6)
+      : [],
+    stableMemorySummary: String(digest.memorySummary || "").trim(),
+    stableMemoryFacts: Array.isArray(digest.memoryFacts)
+      ? digest.memoryFacts.map((item) => String(item || "").trim()).filter(Boolean).slice(0, 6)
+      : [],
+  };
+}
+
+function hasMemoryEventDelta(state: Record<string, any>): boolean {
+  const cursor = readMemoryCursor(state);
+  const currentEventDigest = readStableMemoryEventDigest(state);
+  const cursorFacts = Array.isArray(cursor.lastEventFacts)
+    ? cursor.lastEventFacts.map((item) => String(item || "").trim()).filter(Boolean)
+    : [];
+  const currentFacts = currentEventDigest.stableEventFacts;
+  return Number(cursor.lastEventIndex || 0) !== Number(currentEventDigest.eventIndex || 0)
+    || String(cursor.lastEventKind || "").trim() !== String(currentEventDigest.eventKind || "").trim()
+    || String(cursor.lastEventSummary || "").trim() !== currentEventDigest.stableEventSummary
+    || cursorFacts.join("｜") !== currentFacts.join("｜");
+}
+
+function setMemoryCursor(state: Record<string, any>, lastMessageId: number, updateTime: number): void {
+  const cursor = readMemoryCursor(state);
+  const stableLastMessageId = Number.isFinite(lastMessageId) && lastMessageId > 0
+    ? lastMessageId
+    : Number.isFinite(Number(cursor.lastMessageId || 0)) && Number(cursor.lastMessageId || 0) > 0
+      ? Number(cursor.lastMessageId || 0)
+      : 0;
+  const currentEventDigest = readStableMemoryEventDigest(state);
+  state.memoryCursor = {
+    lastMessageId: stableLastMessageId,
+    lastEventIndex: currentEventDigest.eventIndex,
+    lastEventKind: currentEventDigest.eventKind,
+    lastEventSummary: currentEventDigest.stableEventSummary,
+    lastEventFacts: currentEventDigest.stableEventFacts,
+    updateTime: Number.isFinite(updateTime) && updateTime > 0 ? updateTime : nowTs(),
+  };
+}
+
+function buildMemoryEventDeltaInput(state: Record<string, any>): RuntimeMessageInput | null {
+  const currentEventDigest = readStableMemoryEventDigest(state);
+  const eventFacts = currentEventDigest.stableEventFacts;
+  const memoryFacts = currentEventDigest.stableMemoryFacts;
+  return {
+    messageId: null,
+    role: "系统",
+    roleType: "system",
+    eventType: "on_event_memory_delta",
+    content: [
+      `事件#${Number(currentEventDigest.eventIndex || 1)} ${String(currentEventDigest.eventKind || "scene")}`,
+      currentEventDigest.stableEventSummary,
+      eventFacts.length ? `事件事实：${eventFacts.join("；")}` : "",
+    ].filter(Boolean).join("\n"),
+    createTime: nowTs(),
+    memoryDelta: {
+      eventIndex: Number(currentEventDigest.eventIndex || 1),
+      eventKind: String(currentEventDigest.eventKind || "scene"),
+      eventSummary: currentEventDigest.stableEventSummary,
+      eventFacts,
+      memorySummary: currentEventDigest.stableMemorySummary,
+      memoryFacts,
+    },
+  };
+}
+
+async function loadIncrementalMessagesForMemory(db: any, sessionId: string, state: Record<string, any>): Promise<RuntimeMessageInput[]> {
+  const lastMessageId = readMemoryCursorMessageId(state);
+  const rows = lastMessageId > 0
+    ? await db("t_sessionMessage")
+      .where({ sessionId })
+      .andWhere("id", ">", lastMessageId)
+      .orderBy("id", "asc")
+      .limit(20)
+    : await db("t_sessionMessage")
+      .where({ sessionId })
+      .orderBy("id", "desc")
+      .limit(20);
+  const recentMessages = buildRecentMessages(rows);
+  if (!hasMemoryEventDelta(state)) {
+    return recentMessages;
+  }
+  const eventDeltaInput = buildMemoryEventDeltaInput(state);
+  if (!eventDeltaInput) {
+    return recentMessages;
+  }
+  return [
+    ...recentMessages,
+    eventDeltaInput,
+  ];
 }
 
 function resolveDefaultRoleName(roleType: string, state: Record<string, any>): string {
@@ -202,6 +813,32 @@ function buildSessionExpectedSpeaker(state: Record<string, any>) {
   };
 }
 
+/**
+ * 为"当前已轮到用户输入"的正式会话编排结果构造一个最小计划。
+ *
+ * 用途：
+ * - `/game/orchestration` 必须稳定返回 `role/roleType/motive/awaitUser`；
+ * - 之前 waiting_input 分支直接回 `plan: null`，前端就会拿到空角色、空类型；
+ * - 这里显式返回"用户可输入"的计划，避免把正常等待用户误渲染成空编排结果。
+ */
+function buildWaitingForUserSessionPlan(state: Record<string, any>): SessionNarrativePlanResult {
+  const playerName = String(state.player?.name || "用户").trim() || "用户";
+  return buildSessionPlanResult({
+    role: "用户",
+    roleType: "player",
+    motive: `等待${playerName}输入下一步行动`,
+    awaitUser: true,
+    nextRole: "",
+    nextRoleType: "",
+    source: "rule",
+    triggerMemoryAgent: false,
+    eventType: "on_waiting_input",
+    presetContent: "",
+    eventAdjustMode: "waiting_input",
+    eventStatus: "waiting_input",
+  })!;
+}
+
 function buildSessionPlanResult(plan: ({
   role?: unknown;
   roleType?: unknown;
@@ -209,12 +846,21 @@ function buildSessionPlanResult(plan: ({
   awaitUser?: unknown;
   nextRole?: unknown;
   nextRoleType?: unknown;
-  chapterOutcome?: unknown;
-  nextChapterId?: unknown;
+  memoryHints?: unknown;
   source?: unknown;
   triggerMemoryAgent?: unknown;
   eventType?: unknown;
   presetContent?: unknown;
+  eventAdjustMode?: unknown;
+  eventIndex?: unknown;
+  eventKind?: unknown;
+  eventSummary?: unknown;
+  eventFacts?: unknown;
+  eventStatus?: unknown;
+  speakerMode?: unknown;
+  speakerRouteReason?: unknown;
+  nextNarrativePlan?: unknown;
+  orchestratorRuntime?: unknown;
 }) | null | undefined): SessionNarrativePlanResult | null {
   if (!plan) return null;
   return {
@@ -224,19 +870,96 @@ function buildSessionPlanResult(plan: ({
     awaitUser: Boolean(plan.awaitUser),
     nextRole: String(plan.nextRole || "").trim(),
     nextRoleType: String(plan.nextRoleType || "").trim(),
-    chapterOutcome: plan.chapterOutcome === "failed"
-      ? "failed"
-      : plan.chapterOutcome === "success"
-        ? "success"
-        : "continue",
-    nextChapterId: Number.isFinite(Number(plan.nextChapterId)) && Number(plan.nextChapterId) > 0
-      ? Number(plan.nextChapterId)
-      : null,
-    source: plan.source === "fallback" ? "fallback" : "ai",
+    source: plan.source === "fallback"
+      ? "fallback"
+      : plan.source === "rule"
+        ? "rule"
+        : "ai",
     triggerMemoryAgent: Boolean(plan.triggerMemoryAgent),
     eventType: String(plan.eventType || "on_orchestrated_reply").trim() || "on_orchestrated_reply",
     presetContent: String(plan.presetContent || "").trim() || null,
+    eventAdjustMode: plan.eventAdjustMode === "update"
+      ? "update"
+      : plan.eventAdjustMode === "waiting_input"
+        ? "waiting_input"
+        : plan.eventAdjustMode === "completed"
+          ? "completed"
+          : "keep",
+    eventIndex: Number.isFinite(Number(plan.eventIndex)) ? Math.max(1, Number(plan.eventIndex)) : undefined,
+    eventKind: plan.eventKind === "opening"
+      ? "opening"
+      : plan.eventKind === "user"
+        ? "user"
+        : plan.eventKind === "fixed"
+          ? "fixed"
+          : plan.eventKind === "ending"
+            ? "ending"
+          : plan.eventKind === "scene"
+            ? "scene"
+            : undefined,
+    eventSummary: String(plan.eventSummary || "").trim(),
+    eventFacts: Array.isArray(plan.eventFacts)
+      ? plan.eventFacts.map((item) => String(item || "").trim()).filter(Boolean)
+      : [],
+    eventStatus: plan.eventStatus === "active"
+      ? "active"
+      : plan.eventStatus === "waiting_input"
+        ? "waiting_input"
+        : plan.eventStatus === "completed"
+          ? "completed"
+          : plan.eventStatus === "idle"
+            ? "idle"
+            : undefined,
+    speakerMode: plan.speakerMode === "template"
+      ? "template"
+      : plan.speakerMode === "fast"
+        ? "fast"
+        : plan.speakerMode === "premium"
+          ? "premium"
+          : undefined,
+    speakerRouteReason: String(plan.speakerRouteReason || "").trim(),
+    memoryHints: Array.isArray(plan.memoryHints)
+      ? plan.memoryHints.map((item) => String(item || "").trim()).filter(Boolean)
+      : [],
+    nextNarrativePlan: plan.nextNarrativePlan
+      ? buildSessionPlanResult(plan.nextNarrativePlan as any)
+      : null,
+    orchestratorRuntime: (() => {
+      const raw = parseJsonMaybe(plan.orchestratorRuntime);
+      if (!Object.keys(raw).length) return undefined;
+      const reasoningEffort = String(raw.reasoningEffort || "").trim().toLowerCase();
+      return {
+        modelKey: String(raw.modelKey || "").trim(),
+        manufacturer: String(raw.manufacturer || "").trim(),
+        model: String(raw.model || "").trim(),
+        reasoningEffort: reasoningEffort === "minimal" || reasoningEffort === "low" || reasoningEffort === "medium" || reasoningEffort === "high"
+          ? reasoningEffort
+          : "",
+        payloadMode: String(raw.payloadMode || "").trim().toLowerCase() === "advanced" ? "advanced" : "compact",
+        payloadModeSource: String(raw.payloadModeSource || "").trim().toLowerCase() === "explicit" ? "explicit" : "inferred",
+      };
+    })(),
   };
+}
+
+/**
+ * 对外返回正式会话编排结果时，隐藏"下一个是谁"字段。
+ *
+ * 用途：
+ * - 后端内部仍然需要 nextRole/nextRoleType 来维护 turnState；
+ * - 但接口返回给前端时，只允许暴露"当前谁说、为什么说"，禁止前端消费下一位角色。
+ */
+function buildPublicSessionPlanResult(plan: SessionNarrativePlanResult | null): SessionNarrativePlanResult | null {
+  if (!plan) return null;
+  return {
+    ...plan,
+    nextRole: "",
+    nextRoleType: "",
+  };
+}
+
+function buildEventView(state: Record<string, any>) {
+  return readDefaultRuntimeEventViewState(state);
 }
 
 function getPendingSessionChapterId(state: Record<string, any>): number | null {
@@ -252,6 +975,33 @@ function setPendingSessionChapterId(state: Record<string, any>, chapterId: numbe
   delete state.pendingChapterId;
 }
 
+/**
+ * 判断当前会话是否已经显式完成下一章初始化，等待新章节首轮编排。
+ *
+ * 用途：
+ * - `/orchestration` 在收到 `init_chapter` 命令前不能偷偷进入下一章；
+ * - `/initchapter` 完成后再把这个标记设为 true，让下一次 `/orchestration`
+ *   明确走"新章节启动编排"而不是继续沿用旧章节残局。
+ */
+function getPendingSessionChapterStart(state: Record<string, any>): boolean {
+  return state?.pendingChapterStart === true;
+}
+
+/**
+ * 写入"下一次编排应该从新章节开场开始"的显式标记。
+ *
+ * 用途：
+ * - 只有 `/initchapter` 才允许把 pendingChapterStart 设为 true；
+ * - 一旦 `/orchestration` 消费完新章节开场，就立刻清掉，避免重复开场。
+ */
+function setPendingSessionChapterStart(state: Record<string, any>, enabled: boolean): void {
+  if (enabled) {
+    state.pendingChapterStart = true;
+    return;
+  }
+  delete state.pendingChapterStart;
+}
+
 function getPendingSessionNarrativePlan(state: Record<string, any>): SessionNarrativePlanResult | null {
   return buildSessionPlanResult(state?.pendingNarrativePlan);
 }
@@ -259,9 +1009,35 @@ function getPendingSessionNarrativePlan(state: Record<string, any>): SessionNarr
 function setPendingSessionNarrativePlan(state: Record<string, any>, plan: SessionNarrativePlanResult | null): void {
   if (plan) {
     state.pendingNarrativePlan = plan;
+    const isMiniGameMode = miniGameStateManager.isMiniGameMode(state || {});
+    if (DebugLogUtil.isDebugLogEnabled() && isMiniGameMode) {
+     console.log("[story:mini_game:agent] 把小游戏的编排计划存入 state.pendingNarrativePlan ", JSON.stringify(plan));
+    }
     return;
   }
+  const isMiniGameMode = miniGameStateManager.isMiniGameMode(state || {});
+  if (DebugLogUtil.isDebugLogEnabled() && isMiniGameMode) {
+     console.log("[story:mini_game:agent] 把小游戏的编排计划移出 state.pendingNarrativePlan ", JSON.stringify(plan));
+  }
   delete state.pendingNarrativePlan;
+}
+
+function cloneSessionRuntimeValue<T>(input: T): T {
+  try {
+    return JSON.parse(JSON.stringify(input ?? null)) as T;
+  } catch {
+    return input;
+  }
+}
+
+// 正式会话也用统一 tag 串起请求链路，方便和调试态一起比对重复调用。
+function logSessionOrchestrationKeyNode(node: string, traceMeta: Record<string, unknown>, extra?: Record<string, unknown>) {
+  if (!DebugLogUtil.isDebugLogEnabled()) return;
+  console.log("[game:orchestrator:key_nodes]", JSON.stringify({
+    node,
+    ...traceMeta,
+    ...(extra || {}),
+  }));
 }
 
 function applyPlanTurnStateToSessionState(
@@ -275,17 +1051,50 @@ function applyPlanTurnStateToSessionState(
     roleType?: string;
   },
 ) {
-  const shouldYieldToPlayer = Boolean(plan.awaitUser) || String(plan.nextRoleType || "").trim().toLowerCase() === "player";
+  const speakingRoleType = String(plan.roleType || "").trim().toLowerCase();
+  const hasNonPlayerLineToGenerate = Boolean(String(plan.role || "").trim()) && speakingRoleType !== "player";
+  // 编排结果里的 nextRole/awaitUser 只描述"这句台词之后"的方向。
+  // 如果当前还有旁白/NPC 台词要生成，必须等 /streamlines 落库后才能把输入权交还用户。
+  const shouldYieldToPlayer = !hasNonPlayerLineToGenerate && Boolean(plan.awaitUser);
   if (shouldYieldToPlayer) {
     allowPlayerTurn(state, world, String(plan.roleType || "narrator"), String(plan.role || state.narrator?.name || "旁白"));
     return;
   }
   setRuntimeTurnState(state, world, {
     canPlayerSpeak: false,
-    expectedRoleType: String(plan.nextRoleType || "narrator"),
+    // 编辑师现在允许不再返回 nextRoleType。
+    // 这里优先沿用显式值，缺失时回退到当前发言角色类型，再回退到旁白。
+    expectedRoleType: String(plan.nextRoleType || plan.roleType || "narrator"),
     expectedRole: String(plan.nextRole || plan.role || state.narrator?.name || "旁白"),
     lastSpeakerRoleType: String(plan.roleType || "narrator"),
     lastSpeaker: String(plan.role || state.narrator?.name || "旁白"),
+  });
+}
+
+// 正式会话只在裁决完成后提交一次 plan，避免 candidatePlan 提前污染 session state。
+function applySessionNarrativePlanToState(params: {
+  userId: number;
+  world: any;
+  chapter: any;
+  state: Record<string, any>;
+  recentMessages: RuntimeMessageInput[];
+  plan: Awaited<ReturnType<typeof runNarrativePlan>>;
+}) {
+  applyOrchestratorResultToState(params.state, params.plan);
+  applyNarrativeMemoryHintsToState(params.state, params.plan.memoryHints);
+  if (params.plan.triggerMemoryAgent) {
+    triggerStoryMemoryRefreshInBackground({
+      userId: params.userId,
+      world: params.world,
+      chapter: params.chapter,
+      state: params.state,
+      recentMessages: params.recentMessages,
+    });
+  }
+  applyPlanTurnStateToSessionState(params.state, params.world, params.plan);
+  return buildSessionPlanResult({
+    ...params.plan,
+    eventType: "on_orchestrated_reply",
   });
 }
 
@@ -297,6 +1106,153 @@ async function countSessionMessages(db: any, sessionId: string): Promise<number>
   const raw = Array.isArray(row) ? row[0]?.count : row?.count;
   const count = Number(raw || 0);
   return Number.isFinite(count) && count >= 0 ? count : 0;
+}
+
+// 正式会话并发执行"章节判定 + 候选编排"，最后只提交裁决后的 finalPlan。
+async function runConcurrentSessionJudgeAndNarrative(params: {
+  userId: number;
+  world: any;
+  chapter: any;
+  state: Record<string, any>;
+  recentMessages: RuntimeMessageInput[];
+  latestRecentMessage: RuntimeMessageInput;
+  sessionStatus: string;
+  fallbackChapterId: number | null;
+  traceMeta: Record<string, unknown>;
+}) {
+  const candidateState = cloneSessionRuntimeValue(params.state);
+  const candidateRecentMessages = cloneSessionRuntimeValue(params.recentMessages);
+  logSessionOrchestrationKeyNode("session_concurrent_arbiter:start", params.traceMeta, {
+    recentMessageCount: params.recentMessages.length,
+  });
+  const candidatePlanPromise = runNarrativePlan({
+    userId: params.userId,
+    world: params.world,
+    chapter: params.chapter,
+    state: candidateState,
+    recentMessages: candidateRecentMessages,
+    playerMessage: "",
+    maxRetries: 0,
+    allowControlHints: false,
+    allowStateDelta: false,
+    traceMeta: {
+      ...params.traceMeta,
+      planMode: "candidate",
+    },
+  });
+  const mergedOutcome = await evaluateRuntimeOutcome({
+    userId: params.userId,
+    chapter: params.chapter,
+    state: params.state,
+    messageContent: String(params.latestRecentMessage?.content || ""),
+    eventType: String(params.latestRecentMessage?.eventType || "on_message"),
+    meta: {},
+    recentMessages: params.recentMessages,
+    fallbackStatus: params.sessionStatus,
+    fallbackChapterId: params.fallbackChapterId,
+    applyToState: true,
+    traceMeta: {
+      ...params.traceMeta,
+      judgeMode: "primary",
+    },
+  });
+  logSessionOrchestrationKeyNode("session_concurrent_arbiter:judge_done", params.traceMeta, {
+    outcome: mergedOutcome.outcome,
+    hasPendingEndingGuide: params.state.__pendingEndingGuide === true,
+  });
+  const discardCandidatePlan = () => {
+    void candidatePlanPromise.catch(() => null);
+  };
+  if (mergedOutcome.outcome !== "continue") {
+    logSessionOrchestrationKeyNode("session_concurrent_arbiter:discard_candidate", params.traceMeta, {
+      reason: `judge_${mergedOutcome.outcome}`,
+    });
+    discardCandidatePlan();
+    return {
+      mergedOutcome,
+      plan: null as SessionNarrativePlanResult | null,
+    };
+  }
+  if (params.state.__pendingEndingGuide === true) {
+    logSessionOrchestrationKeyNode("session_concurrent_arbiter:rerun_with_guide", params.traceMeta, {
+      reason: "judge_continue_requires_guide",
+    });
+    discardCandidatePlan();
+    const finalPlan = await runNarrativePlan({
+      userId: params.userId,
+      world: params.world,
+      chapter: params.chapter,
+      state: params.state,
+      recentMessages: params.recentMessages,
+      playerMessage: "",
+      maxRetries: 0,
+      allowControlHints: false,
+      allowStateDelta: false,
+      traceMeta: {
+        ...params.traceMeta,
+        planMode: "final",
+      },
+    });
+    return {
+      mergedOutcome,
+      plan: applySessionNarrativePlanToState({
+        userId: params.userId,
+        world: params.world,
+        chapter: params.chapter,
+        state: params.state,
+        recentMessages: params.recentMessages,
+        plan: finalPlan,
+      }),
+    };
+  }
+  try {
+    const candidatePlan = await candidatePlanPromise;
+    logSessionOrchestrationKeyNode("session_concurrent_arbiter:reuse_candidate", params.traceMeta, {
+      role: String(candidatePlan.role || ""),
+      awaitUser: Boolean(candidatePlan.awaitUser),
+    });
+    return {
+      mergedOutcome,
+      plan: applySessionNarrativePlanToState({
+        userId: params.userId,
+        world: params.world,
+        chapter: params.chapter,
+        state: params.state,
+        recentMessages: params.recentMessages,
+        plan: candidatePlan,
+      }),
+    };
+  } catch (err) {
+    logSessionOrchestrationKeyNode("session_concurrent_arbiter:candidate_failed", params.traceMeta, {
+      reason: String((err as any)?.message || "candidate_failed"),
+    });
+    const finalPlan = await runNarrativePlan({
+      userId: params.userId,
+      world: params.world,
+      chapter: params.chapter,
+      state: params.state,
+      recentMessages: params.recentMessages,
+      playerMessage: "",
+      maxRetries: 0,
+      allowControlHints: false,
+      allowStateDelta: false,
+      traceMeta: {
+        ...params.traceMeta,
+        planMode: "fallback_final",
+      },
+    });
+    return {
+      mergedOutcome,
+      plan: applySessionNarrativePlanToState({
+        userId: params.userId,
+        world: params.world,
+        chapter: params.chapter,
+        state: params.state,
+        recentMessages: params.recentMessages,
+        plan: finalPlan,
+      }),
+    };
+  }
 }
 
 async function insertSessionNarrativeMessages(params: {
@@ -351,6 +1307,7 @@ function scheduleSessionMemoryRefresh(params: {
   chapter: any;
   state: Record<string, any>;
   recentMessages: RuntimeMessageInput[];
+  lastMessageId: number;
 }) {
   triggerStoryMemoryRefreshInBackground({
     userId: params.userId,
@@ -363,6 +1320,19 @@ function scheduleSessionMemoryRefresh(params: {
       if (!row) return;
       const latestState = parseJsonSafe<Record<string, any>>(row.stateJson, {});
       applyMemoryResultToState(latestState, memory);
+      const currentEventDigest = readStableMemoryEventDigest(latestState);
+      upsertRuntimeEventDigestState(latestState, {
+        eventIndex: currentEventDigest.eventIndex,
+        memorySummary: String(memory.summary || "").trim(),
+        memoryFacts: Array.isArray(memory.facts)
+          ? memory.facts.map((item) => String(item || "").trim()).filter(Boolean).slice(0, 8)
+          : [],
+        updateTime: nowTs(),
+        summarySource: currentEventDigest.summarySource === "ai"
+          ? "ai"
+          : "memory",
+      });
+      setMemoryCursor(latestState, params.lastMessageId, nowTs());
       await getGameDb()("t_gameSession").where({ sessionId: params.sessionId }).update({
         stateJson: toJsonText(latestState, {}),
         updateTime: nowTs(),
@@ -404,13 +1374,17 @@ async function loadSessionWorld(db: any, worldId: number) {
 }
 
 export async function addSessionMessage(input: AddSessionMessageInput): Promise<AddSessionMessageResult> {
+  let narrativeMessageRow: any = null;  // 移到函数开头，避免 used before declaration
+  const narrativeMessageRows: any[] = [];  // 移到函数开头
   const db = getGameDb();
   const now = nowTs();
   const sessionId = String(input.sessionId || "").trim();
   if (!sessionId) {
     throw new SessionServiceError(400, "sessionId 不能为空");
   }
-
+  if (!DebugLogUtil.isDebugLogEnabled()) {
+    console.log(`[story:streamlines:stats] sesionid=${sessionId}`);
+  }
   const sessionRow = await db("t_gameSession").where({ sessionId }).first();
   if (!sessionRow) {
     throw new SessionServiceError(404, "会话不存在");
@@ -460,6 +1434,10 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
   const currentChapter = prevChapterId
     ? normalizeChapterOutput(await db("t_storyChapter").where({ id: prevChapterId }).first())
     : null;
+  if (currentChapter) {
+    initializeChapterProgressForState(currentChapter, state);
+    syncChapterProgressWithRuntime(currentChapter, state);
+  }
   let asyncMemoryRefreshRequested = false;
   let asyncMemoryRefreshChapter: any = null;
 
@@ -470,6 +1448,12 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
     contentPreview: messageContent.slice(0, 120),
     time: now,
   });
+
+  // 显式 @记忆管理 指令要在正式会话里同步写回用户参数卡，
+  // 不能只停留在记忆摘要层，否则用户详情面板看不到新增物品/装备/技能。
+  if (roleTypeValue === "player" && eventTypeValue === "on_message" && messageContent.trim()) {
+    applyExplicitMemoryDirectiveToPlayerCard(state, messageContent);
+  }
 
   if (roleTypeValue === "player" && eventTypeValue === "on_message" && messageContent.trim()) {
     const rawRecentMessages = await db("t_sessionMessage").where({ sessionId }).orderBy("id", "desc").limit(20);
@@ -484,7 +1468,121 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
       mode: "session",
     });
 
-      if (miniGameResult?.intercepted) {
+    if (miniGameResult?.intercepted) {
+      const pendingPlan = miniGameResult.pendingNarrativePlan;
+      // 小游戏退出/中止时，必须清除可能残留的 pendingNarrativePlan，
+      // 否则后续编排会被过期的 plan 挡住，导致"自动推进没有产出新内容"的死循环。
+      // 参见 h1.md 分析。
+      const miniGameEventType = String(miniGameResult.message?.eventType || "");
+      const isMiniGameEnded = miniGameEventType === "on_mini_game_abort"
+        || miniGameEventType === "on_mini_game_finish"
+        || !isMiniGameActiveState(state);
+
+      // 输出小游戏拦截日志
+      if (DebugLogUtil.isDebugLogEnabled()) {
+        console.log("[story:mini_game:agent] 小游戏拦截", JSON.stringify({
+          sessionId,
+          intercepted: true,
+          hasPendingPlan: !!pendingPlan,
+          eventType: miniGameEventType,
+          isMiniGameEnded: Boolean(isMiniGameEnded),
+          gameType: pendingPlan?.source === "rule" ? "小游戏编排" : (((state?.miniGame as Record<string, any>)?.rulebook as Record<string, any>)?.gameType || "未知"),
+          motive: String(pendingPlan?.motive || miniGameResult.message?.content || "").trim().slice(0, 100),
+        }));
+      }
+
+      if (isMiniGameEnded) {
+          if (DebugLogUtil.isDebugLogEnabled()) {
+              console.log("[story:mini_game:agent] 退出状态",isMiniGameEnded);
+          }
+        // 小游戏已结束，清除残留的 pendingNarrativePlan 和 heldNarrativePlan
+        if (getPendingSessionNarrativePlan(state)) {
+          setPendingSessionNarrativePlan(state, null);
+        }
+        if (state.heldNarrativePlan) {
+          delete state.heldNarrativePlan;
+        }
+      }
+      if (pendingPlan) {
+        // 有编排计划：只写入 session.pendingNarrativePlan，由后续 orchestration/streamlines 消费。
+        // 这里不能提前把输入权交还用户，否则前端会误以为小游戏回合已经结束。
+        setPendingSessionNarrativePlan(state, pendingPlan as any);
+        applyPlanTurnStateToSessionState(state, world, pendingPlan as any);
+        // 记录小游戏回合日志
+        const orchestration: MiniGameOrchestrationResult = {
+          intercepted: true,
+          eventType: pendingPlan.eventType || "on_mini_game",
+          narration: pendingPlan.presetContent || pendingPlan.motive || "",
+          isStart: pendingPlan.eventType === "on_mini_game_start",
+          isEnd: pendingPlan.eventType === "on_mini_game_abort" || pendingPlan.eventType === "on_mini_game_finish",
+          awaitUser: pendingPlan.awaitUser ?? true,
+          nextPhase: null,
+        };
+        const miniGameStateInfo = miniGameStateManager.getMiniGameStateInfo(state);
+        const turnType = miniGameStateManager.detectTurnType(state, messageContent, orchestration);
+        miniGameStateManager.logMiniGameTurn(turnType, {
+          gameType: miniGameStateInfo.gameType,
+          displayName: miniGameStateInfo.displayName,
+          phase: miniGameStateInfo.phase,
+          userInput: messageContent,
+          eventType: orchestration.eventType,
+        });
+        // 小游戏走编排通道时，也要将 messages（含陪练发言）插入数据库，确保陪练台词落库。
+        // 这些 messages 已经在 handleMiniGameTurn 中由 resolveMiniGameStepMessages 生成。
+        const miniGameMessages = miniGameResult.messages && miniGameResult.messages.length
+          ? miniGameResult.messages
+          : miniGameResult.message
+            ? [miniGameResult.message]
+            : [];
+        for (const item of miniGameMessages) {
+          const inserted = await db("t_sessionMessage").insert({
+            sessionId,
+            role: String(item.role || state.narrator?.name || "旁白"),
+            roleType: String(item.roleType || "narrator"),
+            content: String(item.content || ""),
+            eventType: String(item.eventType || "on_mini_game"),
+            meta: toJsonText(item.meta || {}, {}),
+            createTime: now,
+          });
+          const narrativeMessageId = normalizeMessageId(inserted);
+          const insertedRow = await db("t_sessionMessage").where({ id: narrativeMessageId }).first();
+          if (insertedRow) {
+            narrativeMessageRows.push(insertedRow);
+            narrativeMessageRow = insertedRow;
+          }
+        }
+        // 不再直接插入旁白消息，小游戏旁白由 /game/streamlines 生成
+      } else {
+        allowPlayerTurn(
+          state,
+          world,
+          String(miniGameResult.message?.roleType || "narrator"),
+          String(miniGameResult.message?.role || state.narrator?.name || "旁白"),
+        );
+        // 插入 miniGame messages
+        const miniGameMessages = miniGameResult.messages && miniGameResult.messages.length
+          ? miniGameResult.messages
+          : miniGameResult.message
+            ? [miniGameResult.message]
+            : [];
+        for (const item of miniGameMessages) {
+          const inserted = await db("t_sessionMessage").insert({
+            sessionId,
+            role: String(item.role || state.narrator?.name || "旁白"),
+            roleType: String(item.roleType || "narrator"),
+            content: String(item.content || ""),
+            eventType: String(item.eventType || "on_mini_game"),
+            meta: toJsonText(item.meta || {}, {}),
+            createTime: now,
+          });
+          const narrativeMessageId = normalizeMessageId(inserted);
+          const insertedRow = await db("t_sessionMessage").where({ id: narrativeMessageId }).first();
+          if (insertedRow) {
+            narrativeMessageRows.push(insertedRow);
+            narrativeMessageRow = insertedRow;
+          }
+        }
+      }
       if (attrDeltas.length > 0) {
         const deltaRows = attrDeltas.map((delta) => ({
           sessionId,
@@ -500,23 +1598,15 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
         await db("t_entityStateDelta").insert(deltaRows);
       }
 
-      let narrativeMessageRow: any = null;
-      if (miniGameResult.message) {
-        const inserted = await db("t_sessionMessage").insert({
-          sessionId,
-          role: String(miniGameResult.message.role || state.narrator?.name || "旁白"),
-          roleType: String(miniGameResult.message.roleType || "narrator"),
-          content: String(miniGameResult.message.content || ""),
-          eventType: String(miniGameResult.message.eventType || "on_mini_game"),
-          meta: toJsonText(miniGameResult.message.meta || {}, {}),
-          createTime: now,
-        });
-        const narrativeMessageId = normalizeMessageId(inserted);
-        narrativeMessageRow = await db("t_sessionMessage").where({ id: narrativeMessageId }).first();
+	      if (currentChapter) {
+	        syncChapterProgressWithRuntime(currentChapter, state);
+	      }
+	      const stateJson = toJsonText(state, {});
+      if (DebugLogUtil.isDebugLogEnabled()) {
+        const inv = (state as any)?.inventory;
+        console.log("[SessionService] 保存前 state.inventory:", JSON.stringify(inv));
       }
-
-      const stateJson = toJsonText(state, {});
-      await db("t_gameSession").where({ sessionId }).update({
+	      await db("t_gameSession").where({ sessionId }).update({
         stateJson,
         chapterId: prevChapterId,
         status: prevStatus,
@@ -540,17 +1630,37 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
       });
 
       const messageRow = await db("t_sessionMessage").where({ id: messageId }).first();
+      await persistSessionMessageRevisitData({
+        db,
+        rows: [messageRow, narrativeMessageRow],
+        state,
+        chapterId: prevChapterId,
+        status: prevStatus,
+        capturedAt: now,
+      });
+      const eventView = buildEventView(state);
+      // 如果有编排计划（小游戏或普通编排），返回它
+      const returnedPlan = state.pendingNarrativePlan
+        ? buildSessionPlanResult(state.pendingNarrativePlan)
+        : miniGameResult?.pendingNarrativePlan
+          ? buildSessionPlanResult(miniGameResult.pendingNarrativePlan as any)
+          : null;
       return {
         sessionId,
         status: prevStatus,
         chapterId: prevChapterId,
         chapter: currentChapter || null,
         state,
+        currentEventDigest: eventView.currentEventDigest,
+        eventDigestWindow: eventView.eventDigestWindow,
+        eventDigestWindowText: eventView.eventDigestWindowText,
         message: normalizeMessageOutput(messageRow),
         chapterSwitchMessage: null,
         narrativeMessage: narrativeMessageRow ? normalizeMessageOutput(narrativeMessageRow) : null,
-        generatedMessages: narrativeMessageRow ? [normalizeMessageOutput(narrativeMessageRow)].filter(Boolean) as Record<string, any>[] : [],
-        narrativePlan: null,
+        generatedMessages: narrativeMessageRows
+          .map((row) => normalizeMessageOutput(row))
+          .filter(Boolean) as Record<string, any>[],
+        narrativePlan: returnedPlan,
         triggered: [],
         taskProgress: [],
         deltas: attrDeltas,
@@ -593,6 +1703,212 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
   ];
   let nextChapterId = taskResult.nextChapterId;
   let sessionStatus = taskResult.sessionStatus;
+  if (currentChapter) {
+    if (roleTypeValue === "player" && eventTypeValue === "on_message" && messageContent.trim()) {
+      const rawRecentMessagesForProgress = await db("t_sessionMessage").where({ sessionId }).orderBy("id", "desc").limit(20);
+      const recentMessagesForProgress = buildRecentMessages(rawRecentMessagesForProgress);
+      await applySessionUserEventProgress({
+        userId: currentUserId,
+        chapter: currentChapter,
+        state,
+        messageId,
+        messageContent,
+        eventType: eventTypeValue,
+        triggered,
+        taskProgress: taskResult.taskProgressChanges,
+        deltas: appliedDeltas,
+        recentMessages: recentMessagesForProgress,
+        traceMeta: {
+          route: "/game/addMessage",
+          sessionId,
+          chapterId: Number(currentChapter.id || 0),
+          userId: currentUserId,
+        },
+      });
+      /**
+       * 如果当前已经处于"任务小游戏"中，就优先判定本轮动作是否触发任务成功/失败。
+       *
+       * 用途：
+       * - 任务中的用户输入应先服务于当前任务，而不是继续走普通自由剧情旁白；
+       * - 一旦命中成功/失败，就要立刻发奖励、结束任务、关闭任务面板，并直接返回任务收尾文案。
+       */
+      const resolvedFreeChapterTask = await maybeResolveActiveFreeChapterTaskEvent({
+        userId: currentUserId,
+        world,
+        chapter: currentChapter,
+        state,
+        recentMessages: recentMessagesForProgress,
+        playerMessage: messageContent,
+      });
+      if (resolvedFreeChapterTask) {
+        setRuntimeTurnState(state, world, {
+          canPlayerSpeak: true,
+          expectedRoleType: "player",
+          expectedRole: String(state.player?.name || "用户"),
+          lastSpeakerRoleType: "narrator",
+          lastSpeaker: String(state.narrator?.name || "旁白"),
+        });
+        syncChapterProgressWithRuntime(currentChapter, state);
+        const taskNarrativeRows = await insertSessionNarrativeMessages({
+          db,
+          sessionId,
+          state,
+          messages: [{
+            role: String(state.narrator?.name || "旁白"),
+            roleType: "narrator",
+            eventType: "on_task_resolution",
+            content: resolvedFreeChapterTask.narration,
+            createTime: now,
+          }],
+          now,
+          eventTypeFallback: "on_task_resolution",
+        });
+        const latestRecentRows = await db("t_sessionMessage").where({ sessionId }).orderBy("id", "desc").limit(20);
+        const latestRecentMessages = buildRecentMessages(latestRecentRows);
+        await refreshStoryMemoryBestEffort({
+          userId: currentUserId,
+          world,
+          chapter: currentChapter,
+          state,
+          recentMessages: latestRecentMessages,
+        });
+        const lastNarrativeMessageId = Number(taskNarrativeRows[taskNarrativeRows.length - 1]?.id || messageId || 0);
+        setMemoryCursor(state, lastNarrativeMessageId, nowTs());
+        const stateJson = toJsonText(state, {});
+        await db("t_gameSession").where({ sessionId }).update({
+          stateJson,
+          chapterId: state.chapterId || prevChapterId,
+          status: sessionStatus,
+          updateTime: now,
+        });
+        const snapshotResult = await persistSnapshotIfNeeded({
+          db,
+          sessionId,
+          stateJson,
+          round: Number(state.round || 0),
+          now,
+          policy: {
+            saveSnapshot: input.saveSnapshot,
+            nextChapterId: state.chapterId || prevChapterId,
+            prevChapterId,
+            sessionStatus,
+            prevStatus,
+            round: Number(state.round || 0),
+          },
+        });
+        scheduleSessionRoleParameterCardRefresh({
+          userId: currentUserId,
+          world,
+        });
+        const messageRow = await db("t_sessionMessage").where({ id: messageId }).first();
+        const narrativeRow = taskNarrativeRows[taskNarrativeRows.length - 1]
+          ? await db("t_sessionMessage").where({ id: Number(taskNarrativeRows[taskNarrativeRows.length - 1].id || 0) }).first()
+          : null;
+        await persistSessionMessageRevisitData({
+          db,
+          rows: [messageRow, narrativeRow],
+          state,
+          chapterId: state.chapterId || prevChapterId,
+          status: sessionStatus,
+          capturedAt: now,
+          sessionId,
+        });
+        const activeChapterId = Number(state.chapterId || prevChapterId || 0) || null;
+        const activeChapter = activeChapterId
+          ? normalizeChapterOutput(await db("t_storyChapter").where({ id: activeChapterId }).first())
+          : null;
+        const eventView = buildEventView(state);
+        return {
+          sessionId,
+          status: sessionStatus,
+          chapterId: activeChapterId,
+          chapter: activeChapter,
+          state,
+          currentEventDigest: eventView.currentEventDigest,
+          eventDigestWindow: eventView.eventDigestWindow,
+          eventDigestWindowText: eventView.eventDigestWindowText,
+          message: normalizeMessageOutput(messageRow),
+          chapterSwitchMessage: null,
+          narrativeMessage: narrativeRow ? normalizeMessageOutput(narrativeRow) : null,
+          generatedMessages: taskNarrativeRows,
+          narrativePlan: null,
+          triggered,
+          taskProgress: taskResult.taskProgressChanges,
+          deltas: appliedDeltas,
+          snapshotSaved: snapshotResult.snapshotSaved,
+          snapshotReason: snapshotResult.snapshotReason,
+        };
+      }
+      /**
+       * 自由章节里"领取推荐任务"不是普通的一句用户输入，而是要正式切入一个动态任务事件。
+       *
+       * 这里放在事件进度检测之后执行，原因是：
+       * 1. 先保留静态引导事件的正常完成判定；
+       * 2. 再把"用户选中了哪一个任务"升级成新的动态事件；
+       * 3. 新事件创建后立刻把回合交给旁白，让旁白继续描述任务开场，而不是继续等待用户输入。
+       */
+      const activatedFreeChapterTask = await maybeActivateFreeChapterTaskEvent({
+        userId: currentUserId,
+        world,
+        chapter: currentChapter,
+        state,
+        recentMessages: recentMessagesForProgress,
+        playerMessage: messageContent,
+      });
+      if (activatedFreeChapterTask) {
+        // 任务领取成功后，应由旁白先补充任务过程、成功条件与失败条件。
+        setRuntimeTurnState(state, world, {
+          canPlayerSpeak: false,
+          expectedRoleType: "narrator",
+          expectedRole: String(state.narrator?.name || "旁白"),
+          lastSpeakerRoleType: "player",
+          lastSpeaker: roleValue,
+        });
+        /**
+         * 任务接取后立即刷新一次记忆。
+         *
+         * 用途：
+         * - 让"正在执行的任务"立刻写入记忆摘要/事实和用户参数卡相关上下文；
+         * - 避免用户刚接任务时，记忆管理还停留在接任务前的状态。
+         */
+        await refreshStoryMemoryBestEffort({
+          userId: currentUserId,
+          world,
+          chapter: currentChapter,
+          state,
+          recentMessages: recentMessagesForProgress,
+        });
+        setMemoryCursor(state, messageId, nowTs());
+        syncChapterProgressWithRuntime(currentChapter, state);
+      }
+    } else {
+      recordChapterProgressSignals(currentChapter, state, {
+        messageContent,
+        triggered,
+        taskProgress: taskResult.taskProgressChanges,
+        deltas: appliedDeltas,
+      });
+      syncChapterProgressWithRuntime(currentChapter, state);
+    }
+  }
+  if (currentChapter) {
+    const recentMessagesForOutcome = roleTypeValue === "player" && eventTypeValue === "on_message"
+      ? buildRecentMessages(await db("t_sessionMessage").where({ sessionId }).orderBy("id", "desc").limit(20))
+      : [];
+    const mergedOutcome = await evaluateRuntimeOutcome({
+      chapter: currentChapter,
+      state,
+      messageContent,
+      eventType: eventTypeValue,
+      meta: metaObj,
+      recentMessages: recentMessagesForOutcome,
+      fallbackStatus: sessionStatus,
+      fallbackChapterId: nextChapterId || prevChapterId,
+      applyToState: true,
+    });
+    sessionStatus = mergedOutcome.sessionStatus;
+    nextChapterId = mergedOutcome.nextChapterId;
+  }
   if (sessionStatus === "chapter_completed" && (!nextChapterId || nextChapterId === prevChapterId)) {
     const resolvedNextChapterId = await resolveNextChapterIdByOrder(db, Number(sessionRow.worldId || 0), prevChapterId);
     if (resolvedNextChapterId && resolvedNextChapterId !== prevChapterId) {
@@ -600,7 +1916,16 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
       sessionStatus = "active";
     }
   }
-  state.chapterId = nextChapterId;
+  const hasPendingNextChapter = Boolean(nextChapterId && nextChapterId !== prevChapterId);
+  if (hasPendingNextChapter) {
+    setPendingSessionChapterId(state, nextChapterId);
+    setPendingSessionChapterStart(state, false);
+    state.chapterId = prevChapterId;
+  } else {
+    setPendingSessionChapterId(state, null);
+    setPendingSessionChapterStart(state, false);
+    state.chapterId = nextChapterId;
+  }
 
   if (appliedDeltas.length > 0) {
     const deltaRows = appliedDeltas.map((delta) => ({
@@ -619,9 +1944,6 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
 
   if (input.orchestrate === false) {
     if (roleTypeValue === "player" && eventTypeValue === "on_message" && messageContent.trim()) {
-      if (nextChapterId && nextChapterId !== prevChapterId) {
-        setPendingSessionChapterId(state, nextChapterId);
-      }
       setRuntimeTurnState(state, world, {
         canPlayerSpeak: false,
         expectedRoleType: "narrator",
@@ -629,11 +1951,14 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
         lastSpeakerRoleType: "player",
         lastSpeaker: roleValue,
       });
+      if (currentChapter) {
+        syncChapterProgressWithRuntime(currentChapter, state);
+      }
     }
     const stateJson = toJsonText(state, {});
     await db("t_gameSession").where({ sessionId }).update({
       stateJson,
-      chapterId: nextChapterId,
+      chapterId: state.chapterId || prevChapterId,
       status: sessionStatus,
       updateTime: now,
     });
@@ -645,7 +1970,7 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
       now,
       policy: {
         saveSnapshot: input.saveSnapshot,
-        nextChapterId,
+        nextChapterId: state.chapterId || prevChapterId,
         prevChapterId,
         sessionStatus,
         prevStatus,
@@ -657,15 +1982,28 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
       world,
     });
     const messageRow = await db("t_sessionMessage").where({ id: messageId }).first();
-    const activeChapter = nextChapterId
-      ? normalizeChapterOutput(await db("t_storyChapter").where({ id: nextChapterId }).first())
+    await persistSessionMessageRevisitData({
+      db,
+      rows: [messageRow],
+      state,
+      chapterId: state.chapterId || prevChapterId,
+      status: sessionStatus,
+      capturedAt: now,
+    });
+    const activeChapterId = Number(state.chapterId || prevChapterId || 0) || null;
+    const activeChapter = activeChapterId
+      ? normalizeChapterOutput(await db("t_storyChapter").where({ id: activeChapterId }).first())
       : null;
+    const eventView = buildEventView(state);
     return {
       sessionId,
       status: sessionStatus,
-      chapterId: nextChapterId,
+      chapterId: activeChapterId,
       chapter: activeChapter,
       state,
+      currentEventDigest: eventView.currentEventDigest,
+      eventDigestWindow: eventView.eventDigestWindow,
+      eventDigestWindowText: eventView.eventDigestWindowText,
       message: normalizeMessageOutput(messageRow),
       chapterSwitchMessage: null,
       narrativeMessage: null,
@@ -680,66 +2018,9 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
   }
 
   let chapterSwitchMessageRow: any = null;
-  let narrativeMessageRow: any = null;
   let generatedMessages: Record<string, any>[] = [];
-  let narrativePlan: NarrativePlanSummary | null = null;
-  if (nextChapterId && nextChapterId !== prevChapterId) {
-    const switchedChapter = normalizeChapterOutput(await db("t_storyChapter").where({ id: nextChapterId }).first());
-    if (switchedChapter) {
-      const openingMessage = resolveOpeningMessage(world, switchedChapter);
-      const transitionMessages: RuntimeMessageInput[] = [];
-      if (openingMessage && String(openingMessage.content || "").trim()) {
-        transitionMessages.push({
-          role: String(openingMessage.role || state.narrator?.name || "旁白"),
-          roleType: String(openingMessage.roleType || "narrator"),
-          eventType: String(openingMessage.eventType || "on_enter_chapter"),
-          content: String(openingMessage.content || ""),
-          createTime: now,
-        });
-      }
-      setRuntimeTurnState(state, world, {
-        canPlayerSpeak: false,
-        expectedRoleType: "narrator",
-        expectedRole: String(state.narrator?.name || "旁白"),
-        lastSpeakerRoleType: String(transitionMessages[transitionMessages.length - 1]?.roleType || "narrator"),
-        lastSpeaker: String(transitionMessages[transitionMessages.length - 1]?.role || state.narrator?.name || "旁白"),
-      });
-      const orchestrator = await runNarrativeOrchestrator({
-        userId: currentUserId,
-        world,
-        chapter: switchedChapter,
-        state,
-        recentMessages: transitionMessages,
-        playerMessage: "",
-        maxRetries: 0,
-      });
-      narrativePlan = summarizeNarrativePlan(orchestrator);
-      asyncMemoryRefreshRequested = Boolean(orchestrator.triggerMemoryAgent);
-      asyncMemoryRefreshChapter = switchedChapter;
-      const orchestrated = await advanceNarrativeUntilPlayerTurn({
-        userId: currentUserId,
-        world,
-        chapter: switchedChapter,
-        state,
-        recentMessages: transitionMessages,
-        playerMessage: "",
-        initialResult: orchestrator,
-        maxAutoTurns: 1,
-      });
-      transitionMessages.push(...orchestrated.messages);
-      applyNarrativeMemoryHintsToState(state, orchestrator.memoryHints);
-      generatedMessages = await insertSessionNarrativeMessages({
-        db,
-        sessionId,
-        state,
-        messages: transitionMessages,
-        now,
-        eventTypeFallback: "on_orchestrated_reply",
-      });
-      chapterSwitchMessageRow = generatedMessages[0] || null;
-      narrativeMessageRow = generatedMessages[generatedMessages.length - 1] || null;
-    }
-  } else if (roleTypeValue === "player" && eventTypeValue === "on_message" && messageContent.trim()) {
+  let narrativePlan: any | null = null;
+  if (!(nextChapterId && nextChapterId !== prevChapterId) && roleTypeValue === "player" && eventTypeValue === "on_message" && messageContent.trim()) {
     const playChapter = nextChapterId
       ? normalizeChapterOutput(await db("t_storyChapter").where({ id: nextChapterId }).first())
       : null;
@@ -754,6 +2035,8 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
         recentMessages,
         playerMessage: messageContent,
         maxRetries: 0,
+        allowControlHints: false,
+        allowStateDelta: false,
       });
       narrativePlan = summarizeNarrativePlan(orchestrator);
       asyncMemoryRefreshRequested = Boolean(orchestrator.triggerMemoryAgent);
@@ -778,6 +2061,7 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
         eventTypeFallback: "on_orchestrated_reply",
       });
       narrativeMessageRow = generatedMessages[generatedMessages.length - 1] || null;
+      syncChapterProgressWithRuntime(playChapter, state);
 
     }
   }
@@ -785,7 +2069,7 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
   const stateJson = toJsonText(state, {});
   await db("t_gameSession").where({ sessionId }).update({
     stateJson,
-    chapterId: nextChapterId,
+    chapterId: state.chapterId || prevChapterId,
     status: sessionStatus,
     updateTime: now,
   });
@@ -798,7 +2082,7 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
     now,
     policy: {
       saveSnapshot: input.saveSnapshot,
-      nextChapterId,
+      nextChapterId: state.chapterId || prevChapterId,
       prevChapterId,
       sessionStatus,
       prevStatus,
@@ -807,15 +2091,22 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
   });
 
   if (asyncMemoryRefreshRequested && asyncMemoryRefreshChapter) {
-    const rawRecentMessagesForMemory = await db("t_sessionMessage").where({ sessionId }).orderBy("id", "desc").limit(20);
+    const recentMessagesForMemory = await loadIncrementalMessagesForMemory(db, sessionId, state);
+    const lastMemoryMessageId = recentMessagesForMemory.reduce((max, item) => {
+      const currentId = Number(item?.messageId || 0);
+      return Number.isFinite(currentId) && currentId > max ? currentId : max;
+    }, 0);
+    if (recentMessagesForMemory.length) {
     scheduleSessionMemoryRefresh({
       sessionId,
       userId: currentUserId,
       world,
       chapter: asyncMemoryRefreshChapter,
       state,
-      recentMessages: buildRecentMessages(rawRecentMessagesForMemory),
+      recentMessages: recentMessagesForMemory,
+      lastMessageId: lastMemoryMessageId,
     });
+    }
   }
   scheduleSessionRoleParameterCardRefresh({
     userId: currentUserId,
@@ -823,15 +2114,28 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
   });
 
   const messageRow = await db("t_sessionMessage").where({ id: messageId }).first();
-  const activeChapter = nextChapterId
-    ? normalizeChapterOutput(await db("t_storyChapter").where({ id: nextChapterId }).first())
+  await persistSessionMessageRevisitData({
+    db,
+    rows: [messageRow, chapterSwitchMessageRow, ...generatedMessages],
+    state,
+    chapterId: state.chapterId || prevChapterId,
+    status: sessionStatus,
+    capturedAt: now,
+  });
+  const activeChapterId = Number(state.chapterId || prevChapterId || 0) || null;
+  const activeChapter = activeChapterId
+    ? normalizeChapterOutput(await db("t_storyChapter").where({ id: activeChapterId }).first())
     : null;
+  const eventView = buildEventView(state);
   return {
     sessionId,
     status: sessionStatus,
-    chapterId: nextChapterId,
+    chapterId: activeChapterId,
     chapter: activeChapter,
     state,
+    currentEventDigest: eventView.currentEventDigest,
+    eventDigestWindow: eventView.eventDigestWindow,
+    eventDigestWindowText: eventView.eventDigestWindowText,
     message: normalizeMessageOutput(messageRow),
     chapterSwitchMessage: chapterSwitchMessageRow,
     narrativeMessage: narrativeMessageRow,
@@ -886,6 +2190,21 @@ export async function continueSessionNarrative(sessionIdInput: string): Promise<
 
   const rawRecentMessages = await db("t_sessionMessage").where({ sessionId }).orderBy("id", "desc").limit(20);
   const recentMessages = buildRecentMessages(rawRecentMessages);
+  const requestTrace = {
+    requestId: `continue_session_${sessionId}_${nowTs()}_${Math.random().toString(36).slice(2, 8)}`,
+    route: "/game/continueSessionNarrative",
+    branch: "session_continue",
+    sessionId,
+    worldId: Number(sessionRow.worldId || 0),
+    chapterId: prevChapterId || 0,
+    userId: currentUserId,
+  };
+  logSessionOrchestrationKeyNode("session_continue:accepted", requestTrace, {
+    recentMessageCount: recentMessages.length,
+  });
+
+  // 续写链没有新的用户输入，章节判定必须等待新台词生成后再执行，因此保留串行流程。
+  logSessionOrchestrationKeyNode("session_continue:runNarrativeOrchestrator:start", requestTrace);
   const orchestrator = await runNarrativeOrchestrator({
     userId: currentUserId,
     world,
@@ -894,6 +2213,16 @@ export async function continueSessionNarrative(sessionIdInput: string): Promise<
     recentMessages,
     playerMessage: "",
     maxRetries: 0,
+    allowControlHints: false,
+    allowStateDelta: false,
+    traceMeta: {
+      ...requestTrace,
+      planMode: "session_continue",
+    },
+  });
+  logSessionOrchestrationKeyNode("session_continue:runNarrativeOrchestrator:done", requestTrace, {
+    role: String(orchestrator.role || ""),
+    awaitUser: Boolean(orchestrator.awaitUser),
   });
   const narrativePlan = summarizeNarrativePlan(orchestrator);
   applyNarrativeMemoryHintsToState(state, orchestrator.memoryHints);
@@ -916,11 +2245,53 @@ export async function continueSessionNarrative(sessionIdInput: string): Promise<
     now,
     eventTypeFallback: "on_orchestrated_reply",
   });
-  const sessionStatus = orchestrator.chapterOutcome === "failed" ? "failed" : prevStatus;
+  const latestGeneratedMessage = generatedMessages[generatedMessages.length - 1];
+  logSessionOrchestrationKeyNode("session_continue:chapter_outcome:start", requestTrace, {
+    latestEventType: String(latestGeneratedMessage?.eventType || "on_orchestrated_reply"),
+  });
+  const mergedOutcome = await evaluateRuntimeOutcome({
+    chapter,
+    state,
+    messageContent: String(latestGeneratedMessage?.content || ""),
+    eventType: String(latestGeneratedMessage?.eventType || "on_orchestrated_reply"),
+    meta: {},
+    recentMessages,
+    fallbackStatus: prevStatus,
+    fallbackChapterId: prevChapterId,
+    applyToState: true,
+    traceMeta: {
+      ...requestTrace,
+      judgeMode: "session_continue",
+    },
+  });
+  logSessionOrchestrationKeyNode("session_continue:chapter_outcome:done", requestTrace, {
+    outcome: mergedOutcome.outcome,
+    nextChapterId: mergedOutcome.nextChapterId,
+  });
+  let sessionStatus = mergedOutcome.sessionStatus;
+  let nextChapterId = mergedOutcome.nextChapterId;
+  if (sessionStatus === "chapter_completed" && (!nextChapterId || nextChapterId === prevChapterId)) {
+    const resolvedNextChapterId = await resolveNextChapterIdByOrder(db, Number(sessionRow.worldId || 0), prevChapterId);
+    if (resolvedNextChapterId && resolvedNextChapterId !== prevChapterId) {
+      nextChapterId = resolvedNextChapterId;
+      sessionStatus = "active";
+    }
+  }
+  if (nextChapterId && nextChapterId !== prevChapterId) {
+    setPendingSessionChapterId(state, nextChapterId);
+    setPendingSessionChapterStart(state, false);
+    state.chapterId = prevChapterId;
+  } else {
+    setPendingSessionChapterId(state, null);
+    setPendingSessionChapterStart(state, false);
+    state.chapterId = nextChapterId;
+  }
+  initializeChapterProgressForState(chapter, state);
+  syncChapterProgressWithRuntime(chapter, state);
   const stateJson = toJsonText(state, {});
   await db("t_gameSession").where({ sessionId }).update({
     stateJson,
-    chapterId: prevChapterId,
+    chapterId: state.chapterId || prevChapterId,
     status: sessionStatus,
     updateTime: now,
   });
@@ -933,7 +2304,7 @@ export async function continueSessionNarrative(sessionIdInput: string): Promise<
     now,
     policy: {
       saveSnapshot: true,
-      nextChapterId: prevChapterId,
+      nextChapterId: state.chapterId || prevChapterId,
       prevChapterId,
       sessionStatus,
       prevStatus,
@@ -942,36 +2313,46 @@ export async function continueSessionNarrative(sessionIdInput: string): Promise<
   });
 
   if (orchestrator.triggerMemoryAgent) {
-    const recentMessagesForMemory = [
-      ...recentMessages,
-      ...generatedMessages.map((item) => ({
-        role: String(item.role || ""),
-        roleType: String(item.roleType || ""),
-        eventType: String(item.eventType || ""),
-        content: String(item.content || ""),
-        createTime: Number(item.createTime || now),
-      })),
-    ];
-    scheduleSessionMemoryRefresh({
-      sessionId,
-      userId: currentUserId,
-      world,
-      chapter,
-      state,
-      recentMessages: recentMessagesForMemory.slice(-20),
-    });
+    const recentMessagesForMemory = await loadIncrementalMessagesForMemory(db, sessionId, state);
+    const lastMemoryMessageId = recentMessagesForMemory.reduce((max, item) => {
+      const currentId = Number(item?.messageId || 0);
+      return Number.isFinite(currentId) && currentId > max ? currentId : max;
+    }, 0);
+    if (recentMessagesForMemory.length) {
+      scheduleSessionMemoryRefresh({
+        sessionId,
+        userId: currentUserId,
+        world,
+        chapter,
+        state,
+        recentMessages: recentMessagesForMemory,
+        lastMessageId: lastMemoryMessageId,
+      });
+    }
   }
   scheduleSessionRoleParameterCardRefresh({
     userId: currentUserId,
     world,
   });
+  await persistSessionMessageRevisitData({
+    db,
+    rows: generatedMessages,
+    state,
+    chapterId: state.chapterId || prevChapterId,
+    status: sessionStatus,
+    capturedAt: now,
+  });
 
+  const eventView = buildEventView(state);
   return {
     sessionId,
     status: sessionStatus,
-    chapterId: prevChapterId,
-    chapter,
+    chapterId: Number(state.chapterId || prevChapterId || 0) || null,
+    chapter: state.chapterId ? normalizeChapterOutput(await db("t_storyChapter").where({ id: state.chapterId }).first()) : null,
     state,
+    currentEventDigest: eventView.currentEventDigest,
+    eventDigestWindow: eventView.eventDigestWindow,
+    eventDigestWindowText: eventView.eventDigestWindowText,
     message: null,
     chapterSwitchMessage: null,
     narrativeMessage: generatedMessages[generatedMessages.length - 1] || null,
@@ -986,11 +2367,15 @@ export async function continueSessionNarrative(sessionIdInput: string): Promise<
 }
 
 export async function orchestrateSessionTurn(sessionIdInput: string): Promise<SessionOrchestrationResult> {
-  const db = getGameDb();
   const sessionId = String(sessionIdInput || "").trim();
   if (!sessionId) {
     throw new SessionServiceError(400, "sessionId 不能为空");
   }
+  return withSessionLock(sessionId, async () => orchestrateSessionTurnInner(sessionId));
+}
+
+async function orchestrateSessionTurnInner(sessionId: string): Promise<SessionOrchestrationResult> {
+  const db = getGameDb();
 
   const sessionRow = await db("t_gameSession").where({ sessionId }).first();
   if (!sessionRow) {
@@ -1014,7 +2399,32 @@ export async function orchestrateSessionTurn(sessionIdInput: string): Promise<Se
   );
   const rawRecentMessages = await db("t_sessionMessage").where({ sessionId }).orderBy("id", "desc").limit(20);
   const recentMessages = buildRecentMessages(rawRecentMessages);
-  const finalizeOrchestrationResult = async (result: SessionOrchestrationResult): Promise<SessionOrchestrationResult> => {
+  const requestTrace = {
+    requestId: `orch_session_${sessionId}_${nowTs()}_${Math.random().toString(36).slice(2, 8)}`,
+    route: "/game/orchestration",
+    branch: "session",
+    sessionId,
+    worldId: Number(sessionRow.worldId || 0),
+    chapterId: currentChapterId || 0,
+    userId: currentUserId,
+  };
+  logSessionOrchestrationKeyNode("session_request:accepted", requestTrace, {
+    recentMessageCount: recentMessages.length,
+  });
+  const finalizeOrchestrationResult = async (result: SessionOrchestrationResultSeed): Promise<SessionOrchestrationResult> => {
+    const activeChapter = result.chapterId
+      ? normalizeChapterOutput(await db("t_storyChapter").where({ id: result.chapterId }).first())
+      : null;
+    if (activeChapter) {
+      resetSessionChapterRuntimeOnSwitch(
+        state,
+        Number(activeChapter.id || 0) || null,
+        currentChapterId,
+        String(activeChapter.title || "").trim(),
+      );
+      initializeChapterProgressForState(activeChapter, state);
+      syncChapterProgressWithRuntime(activeChapter, state);
+    }
     const expectedSpeaker = buildSessionExpectedSpeaker(state);
     setPendingSessionNarrativePlan(state, result.plan);
     await db("t_gameSession").where({ sessionId }).update({
@@ -1023,17 +2433,31 @@ export async function orchestrateSessionTurn(sessionIdInput: string): Promise<Se
       status: result.status,
       updateTime: nowTs(),
     });
+    const eventView = buildEventView(state);
     return {
       ...result,
       expectedRole: expectedSpeaker.expectedRole,
       expectedRoleType: expectedSpeaker.expectedRoleType,
+      currentEventDigest: eventView.currentEventDigest,
+      eventDigestWindow: eventView.eventDigestWindow,
+      eventDigestWindowText: eventView.eventDigestWindowText,
+      command: result.command || null,
+      plan: buildPublicSessionPlanResult(result.plan),
     };
   };
 
   const buildChapterStartPlan = async (chapter: any): Promise<SessionOrchestrationResult> => {
+    resetSessionChapterRuntimeOnSwitch(
+      state,
+      Number(chapter.id || 0) || null,
+      currentChapterId,
+      String(chapter.title || "").trim(),
+    );
     state.chapterId = Number(chapter.id || 0) || null;
+    state.chapterTitle = String(chapter.title || "").trim() || String(state.chapterTitle || "").trim();
     const openingMessage = resolveOpeningMessage(world, chapter);
     setPendingSessionChapterId(state, null);
+    setPendingSessionChapterStart(state, false);
     setRuntimeTurnState(state, world, {
       canPlayerSpeak: false,
       expectedRoleType: "narrator",
@@ -1055,8 +2479,6 @@ export async function orchestrateSessionTurn(sessionIdInput: string): Promise<Se
           awaitUser: false,
           nextRole: String(state.narrator?.name || "旁白"),
           nextRoleType: "narrator",
-          chapterOutcome: "continue",
-          nextChapterId: null,
           source: "fallback",
           triggerMemoryAgent: false,
           eventType: String(openingMessage.eventType || "on_enter_chapter"),
@@ -1069,28 +2491,73 @@ export async function orchestrateSessionTurn(sessionIdInput: string): Promise<Se
       world,
       chapter,
       state,
-      recentMessages: [],
+      // 切章启动同样需要保留最近对话窗口，避免编排师完全丢失上一轮真实上下文。
+      recentMessages,
       playerMessage: "",
       maxRetries: 0,
+      allowControlHints: false,
+      allowStateDelta: false,
+      traceMeta: {
+        ...requestTrace,
+        planMode: "chapter_start",
+        chapterId: Number(chapter.id || 0),
+      },
     });
-    applyOrchestratorResultToState(state, plan);
-    applyNarrativeMemoryHintsToState(state, plan.memoryHints);
-    applyPlanTurnStateToSessionState(state, world, plan);
+    const builtPlan = applySessionNarrativePlanToState({
+      userId: currentUserId,
+      world,
+      chapter,
+      state,
+      // 角色发言器也要看到相同的最近对话，否则会出现编排师与落地台词上下文不一致。
+      recentMessages,
+      plan,
+    });
     return finalizeOrchestrationResult({
       sessionId,
-      status: plan.chapterOutcome === "failed" ? "failed" : sessionStatus,
+      status: sessionStatus,
       chapterId: Number(chapter.id || 0) || null,
       expectedRole: "",
       expectedRoleType: "",
-      plan: buildSessionPlanResult({
-        ...plan,
-        eventType: "on_orchestrated_reply",
-      }),
+      plan: builtPlan,
     });
   };
 
   const pendingChapterId = getPendingSessionChapterId(state);
-  if (pendingChapterId) {
+  const pendingChapterStart = getPendingSessionChapterStart(state);
+  if (pendingChapterId && pendingChapterStart) {
+    if (DebugLogUtil.isDebugLogEnabled()) {
+      console.log("[story:orchestrator:runtime] 判断为不走到模型。原因：pendingChapterId_with_pendingChapterStart", JSON.stringify({
+        sessionId,
+        chapterId: currentChapterId,
+        pendingChapterId,
+        pendingChapterStart,
+      }));
+    }
+    const nextChapter = normalizeChapterOutput(await db("t_storyChapter").where({ id: pendingChapterId }).first());
+    if (!nextChapter) {
+      setPendingSessionChapterId(state, null);
+      setPendingSessionChapterStart(state, false);
+      return finalizeOrchestrationResult({
+        sessionId,
+        status: sessionStatus,
+        chapterId: currentChapterId,
+        expectedRole: "",
+        expectedRoleType: "",
+        command: null,
+        plan: null,
+      });
+    }
+    return buildChapterStartPlan(nextChapter);
+  }
+  if (pendingChapterId && !pendingChapterStart) {
+    if (DebugLogUtil.isDebugLogEnabled()) {
+      console.log("[story:orchestrator:runtime] 判断为不走到模型。原因：pendingChapterId_without_pendingChapterStart", JSON.stringify({
+        sessionId,
+        chapterId: currentChapterId,
+        pendingChapterId,
+        pendingChapterStart,
+      }));
+    }
     const nextChapter = normalizeChapterOutput(await db("t_storyChapter").where({ id: pendingChapterId }).first());
     if (!nextChapter) {
       setPendingSessionChapterId(state, null);
@@ -1100,9 +2567,13 @@ export async function orchestrateSessionTurn(sessionIdInput: string): Promise<Se
         chapterId: currentChapterId,
         expectedRole: "",
         expectedRoleType: "",
+        command: null,
         plan: null,
       });
     }
+    // 对外不再暴露 init_chapter 命令，正式切章改由服务端在下一轮编排时自行消化。
+    // 这里把 pendingChapterStart 直接切成 true，随后继续走统一的新章节开场编排。
+    setPendingSessionChapterStart(state, true);
     return buildChapterStartPlan(nextChapter);
   }
 
@@ -1121,72 +2592,323 @@ export async function orchestrateSessionTurn(sessionIdInput: string): Promise<Se
     throw new SessionServiceError(400, "当前章节不存在");
   }
 
+  // 延迟提升：如果存在 heldNarrativePlan（如陪练回合），在前端主动请求编排时提升为 pendingNarrativePlan。
+  // 这确保旁白语音有充足时间播完，陪练回合不会和旁白回合打架。
+  if (state.heldNarrativePlan && !state.pendingNarrativePlan) {
+    if (DebugLogUtil.isDebugLogEnabled()) {
+      console.log("[story:orchestrator:runtime] heldNarrativePlan promoted to pendingNarrativePlan", JSON.stringify({
+        sessionId,
+        role: String(state.heldNarrativePlan.role || ""),
+        roleType: String(state.heldNarrativePlan.roleType || ""),
+      }));
+    }
+    setPendingSessionNarrativePlan(state, state.heldNarrativePlan as any);
+    delete state.heldNarrativePlan;
+  }
+
+  const pendingNarrativePlan = getPendingSessionNarrativePlan(state);
+  if (pendingNarrativePlan) {
+    // 小游戏已退出但 pendingNarrativePlan 残留时，说明是小游戏退出不干净，
+    // 需要清除过期的 plan，否则编排会一直被它挡住不走大模型。
+    if (!isMiniGameActiveState(state)) {
+      if (DebugLogUtil.isDebugLogEnabled()) {
+        console.log("[story:orchestrator:runtime] 清除过期 pendingNarrativePlan，小游戏已不在 active 状态", JSON.stringify({
+          sessionId,
+          chapterId: Number(chapter?.id || 0),
+          planRole: String(pendingNarrativePlan.role || ""),
+          planRoleType: String(pendingNarrativePlan.roleType || ""),
+          planAwaitUser: Boolean(pendingNarrativePlan.awaitUser),
+          planEventType: String(pendingNarrativePlan.eventType || ""),
+        }));
+      }
+      setPendingSessionNarrativePlan(state, null);
+      if (state.heldNarrativePlan) {
+        delete state.heldNarrativePlan;
+      }
+    } else {
+      // 小游戏的旁白播报 / 敌人回合都通过 pendingNarrativePlan 进入正式编排链。
+      // 这里必须优先返回，避免再跑普通剧情编排把小游戏回合冲掉。
+      if (DebugLogUtil.isDebugLogEnabled()) {
+        console.log("[story:orchestrator:runtime] 判断为不走到模型。原因：pendingNarrativePlan_exists", JSON.stringify({
+          sessionId,
+          chapterId: Number(chapter?.id || 0),
+          planRole: String(pendingNarrativePlan.role || ""),
+          planRoleType: String(pendingNarrativePlan.roleType || ""),
+          planAwaitUser: Boolean(pendingNarrativePlan.awaitUser),
+          planEventType: String(pendingNarrativePlan.eventType || ""),
+        }));
+      }
+      return finalizeOrchestrationResult({
+        sessionId,
+        status: sessionStatus,
+        chapterId: Number(chapter.id || 0) || null,
+        expectedRole: "",
+        expectedRoleType: "",
+        command: null,
+        plan: pendingNarrativePlan,
+      });
+    }
+  }
+
   if (!recentMessages.length) {
+    if (DebugLogUtil.isDebugLogEnabled()) {
+      console.log("[story:orchestrator:runtime] 判断为不走到模型。原因：no_recentMessages", JSON.stringify({
+        sessionId,
+        chapterId: Number(chapter?.id || 0),
+      }));
+    }
     return buildChapterStartPlan(chapter);
   }
+  await applySessionPreOrchestrationEventProgress({
+    userId: currentUserId,
+    world,
+    chapter,
+    state,
+    recentMessages,
+    traceMeta: {
+      ...requestTrace,
+      route: "/game/orchestration",
+    },
+  });
   if (canPlayerSpeakNow(state, world)) {
+    if (DebugLogUtil.isDebugLogEnabled()) {
+      console.log("[story:orchestrator:runtime] 判断为不走到模型。原因：canPlayerSpeakNow", JSON.stringify({
+        sessionId,
+        chapterId: Number(chapter?.id || 0),
+      }));
+    }
     return finalizeOrchestrationResult({
       sessionId,
       status: sessionStatus,
       chapterId: Number(chapter.id || 0) || null,
       expectedRole: "",
       expectedRoleType: "",
-      plan: null,
+      command: null,
+      // 命中 waiting_input 时，要明确告诉前端"现在轮到用户"，不能再回空 plan。
+      plan: buildWaitingForUserSessionPlan(state),
     });
   }
 
-  const plan = await runNarrativePlan({
+  const latestRecentMessage = recentMessages[recentMessages.length - 1];
+  if (isOpeningRuntimeEventType(latestRecentMessage?.eventType)) {
+    resetSessionChapterContentProgressForOpening(chapter, state);
+    logSessionOrchestrationKeyNode("session_opening:skip_judge", requestTrace, {
+      reason: "opening_is_outside_chapter_event_graph",
+      resetEventIndex: Number(state.chapterProgress?.eventIndex || state.currentEvent?.index || 0),
+    });
+    if (DebugLogUtil.isDebugLogEnabled()) {
+      console.log("[story:orchestrator:runtime] 判断为不走到模型。原因：opening_is_outside_chapter_event_graph", JSON.stringify({
+        sessionId,
+        chapterId: Number(chapter?.id || 0),
+      }));
+    }
+    const plan = await runNarrativePlan({
+      userId: currentUserId,
+      world,
+      chapter,
+      state,
+      recentMessages,
+      playerMessage: "",
+      maxRetries: 0,
+      allowControlHints: false,
+      allowStateDelta: false,
+      traceMeta: {
+        ...requestTrace,
+        chapterId: Number(chapter.id || 0),
+        planMode: "after_opening",
+      },
+    });
+    const builtPlan = applySessionNarrativePlanToState({
+      userId: currentUserId,
+      world,
+      chapter,
+      state,
+      recentMessages,
+      plan,
+    });
+    return finalizeOrchestrationResult({
+      sessionId,
+      status: sessionStatus,
+      chapterId: Number(chapter.id || 0) || null,
+      expectedRole: "",
+      expectedRoleType: "",
+      command: null,
+      plan: builtPlan,
+    });
+  }
+  if (DebugLogUtil.isDebugLogEnabled()) {
+    console.log("[story:orchestrator:runtime] 走大模型编排", JSON.stringify({
+      sessionId,
+      chapterId: Number(chapter?.id || 0),
+      recentMessageCount: recentMessages.length,
+      latestEventType: String(latestRecentMessage?.eventType || ""),
+    }));
+  }
+  const arbitration = await runConcurrentSessionJudgeAndNarrative({
     userId: currentUserId,
     world,
     chapter,
     state,
     recentMessages,
-    playerMessage: "",
-    maxRetries: 0,
+    latestRecentMessage,
+    sessionStatus,
+    fallbackChapterId: Number(chapter.id || 0) || null,
+    traceMeta: {
+      ...requestTrace,
+      chapterId: Number(chapter.id || 0),
+    },
   });
-  applyOrchestratorResultToState(state, plan);
-  applyNarrativeMemoryHintsToState(state, plan.memoryHints);
+  const mergedOutcome = arbitration.mergedOutcome;
+  const plan = arbitration.plan;
 
-  let nextStatus = plan.chapterOutcome === "failed" ? "failed" : sessionStatus;
-  let nextChapterId = Number(chapter.id || 0) || null;
+  let nextStatus = mergedOutcome.sessionStatus;
+  let nextChapterId = mergedOutcome.nextChapterId;
   let nextChapter = chapter;
-  if (plan.chapterOutcome === "success") {
-    const resolvedNextChapterId = Number(plan.nextChapterId || 0) || await resolveNextChapterIdByOrder(db, Number(sessionRow.worldId || 0), Number(chapter.id || 0));
+  if (mergedOutcome.outcome === "success") {
+    const resolvedNextChapterId = Number(mergedOutcome.nextChapterId || 0)
+      || await resolveNextChapterIdByOrder(db, Number(sessionRow.worldId || 0), Number(chapter.id || 0));
     if (resolvedNextChapterId && resolvedNextChapterId !== Number(chapter.id || 0)) {
       const resolvedNextChapter = normalizeChapterOutput(await db("t_storyChapter").where({ id: resolvedNextChapterId }).first());
-      if (resolvedNextChapter) {
-        if (String(plan.role || "").trim()) {
-          setPendingSessionChapterId(state, resolvedNextChapterId);
-        } else {
-          nextChapter = resolvedNextChapter;
-          nextChapterId = resolvedNextChapterId;
-          return buildChapterStartPlan(resolvedNextChapter);
+        if (resolvedNextChapter) {
+          if (String(plan?.role || "").trim()) {
+            setPendingSessionChapterId(state, resolvedNextChapterId);
+            // 当前章的收尾台词还要先落库展示，下一章启动标记延后到下一轮 orchestration 自动消费。
+            setPendingSessionChapterStart(state, false);
+          }
+          nextChapter = chapter;
+          nextChapterId = Number(chapter.id || 0) || currentChapterId;
+          return finalizeOrchestrationResult({
+            sessionId,
+            status: nextStatus,
+            chapterId: nextChapterId,
+            expectedRole: "",
+            expectedRoleType: "",
+            plan,
+          });
         }
       }
-    }
   }
-  applyPlanTurnStateToSessionState(state, world, plan);
+  const eventView = buildEventView(state);
   const result: SessionOrchestrationResult = {
     sessionId,
     status: nextStatus,
     chapterId: nextChapterId,
     expectedRole: "",
     expectedRoleType: "",
-    plan: buildSessionPlanResult({
-      ...plan,
-      eventType: "on_orchestrated_reply",
-    }),
+    command: null,
+    currentEventDigest: eventView.currentEventDigest,
+    eventDigestWindow: eventView.eventDigestWindow,
+    eventDigestWindowText: eventView.eventDigestWindowText,
+    plan,
   };
   return finalizeOrchestrationResult(result);
 }
 
-export async function commitSessionNarrativeTurn(input: CommitSessionNarrativeTurnInput): Promise<AddSessionMessageResult> {
+/**
+ * 显式初始化正式会话的下一章节运行态。
+ *
+ * 用途：
+ * - 章节结束后不再在 `/orchestration` 里偷偷切章；
+ * - 前端必须先调用 `/initchapter`，把下一章事件图、turnState、pending 标记都准备好；
+ * - 随后再次调用 `/orchestration`，才会真正生成下一章的开场编排。
+ */
+export async function initSessionChapter(sessionIdInput: string, chapterIdInput?: number | null): Promise<InitSessionChapterResult> {
   const db = getGameDb();
-  const now = nowTs();
+  const sessionId = String(sessionIdInput || "").trim();
+  if (!sessionId) {
+    throw new SessionServiceError(400, "sessionId 不能为空");
+  }
+
+  const sessionRow = await db("t_gameSession").where({ sessionId }).first();
+  if (!sessionRow) {
+    throw new SessionServiceError(404, "会话不存在");
+  }
+  const currentUserId = getCurrentUserId(0);
+  if (currentUserId > 0 && Number(sessionRow.userId || 0) !== currentUserId) {
+    throw new SessionServiceError(403, "无权访问该会话");
+  }
+
+  const prevChapterId = Number(sessionRow.chapterId || 0) || null;
+  const world = await loadSessionWorld(db, Number(sessionRow.worldId || 0));
+  const rolePair = normalizeRolePair(world?.playerRole, world?.narratorRole);
+  const state = normalizeSessionState(
+    sessionRow.stateJson,
+    Number(sessionRow.worldId || 0),
+    prevChapterId,
+    rolePair,
+    world,
+  );
+
+  const explicitChapterId = Number(chapterIdInput || 0) || null;
+  const pendingChapterId = getPendingSessionChapterId(state);
+  const targetChapterId = explicitChapterId || pendingChapterId;
+  if (!targetChapterId) {
+    throw new SessionServiceError(409, "当前没有待初始化的下一章节");
+  }
+
+  const chapter = normalizeChapterOutput(
+    await db("t_storyChapter").where({ id: targetChapterId, worldId: Number(sessionRow.worldId || 0) }).first(),
+  );
+  if (!chapter) {
+    throw new SessionServiceError(404, "目标章节不存在");
+  }
+
+  resetSessionChapterRuntimeOnSwitch(
+    state,
+    Number(chapter.id || 0) || null,
+    prevChapterId,
+    String(chapter.title || "").trim(),
+  );
+  state.chapterId = Number(chapter.id || 0) || null;
+  state.chapterTitle = String(chapter.title || "").trim() || String(state.chapterTitle || "").trim();
+  setPendingSessionChapterId(state, Number(chapter.id || 0) || null);
+  setPendingSessionChapterStart(state, true);
+  setPendingSessionNarrativePlan(state, null);
+  initializeChapterProgressForState(chapter, state);
+  syncChapterProgressWithRuntime(chapter, state);
+  setRuntimeTurnState(state, world, {
+    canPlayerSpeak: false,
+    expectedRoleType: "narrator",
+    expectedRole: String(state.narrator?.name || "旁白"),
+    lastSpeakerRoleType: String(state.turnState?.lastSpeakerRoleType || "narrator"),
+    lastSpeaker: String(state.turnState?.lastSpeaker || state.narrator?.name || "旁白"),
+  });
+
+  const stateJson = toJsonText(state, {});
+  await db("t_gameSession").where({ sessionId }).update({
+    stateJson,
+    chapterId: Number(chapter.id || 0) || null,
+    status: String(sessionRow.status || "active").trim() || "active",
+    updateTime: nowTs(),
+  });
+
+  const eventView = buildEventView(state);
+  return {
+    sessionId,
+    status: String(sessionRow.status || "active").trim() || "active",
+    worldId: Number(sessionRow.worldId || 0),
+    chapterId: Number(chapter.id || 0) || null,
+    chapterTitle: String(chapter.title || ""),
+    state,
+    chapter,
+    currentEventDigest: eventView.currentEventDigest,
+    eventDigestWindow: eventView.eventDigestWindow,
+    eventDigestWindowText: eventView.eventDigestWindowText,
+  };
+}
+
+export async function commitSessionNarrativeTurn(input: CommitSessionNarrativeTurnInput): Promise<AddSessionMessageResult> {
   const sessionId = String(input.sessionId || "").trim();
   if (!sessionId) {
     throw new SessionServiceError(400, "sessionId 不能为空");
   }
+  return withSessionLock(sessionId, async () => commitSessionNarrativeTurnInner(input));
+}
+
+async function commitSessionNarrativeTurnInner(input: CommitSessionNarrativeTurnInput): Promise<AddSessionMessageResult> {
+  const db = getGameDb();
+  const now = nowTs();
+  const sessionId = String(input.sessionId || "").trim();
   const sessionRow = await db("t_gameSession").where({ sessionId }).first();
   if (!sessionRow) {
     throw new SessionServiceError(404, "会话不存在");
@@ -1199,17 +2921,25 @@ export async function commitSessionNarrativeTurn(input: CommitSessionNarrativeTu
   const rolePair = normalizeRolePair(world?.playerRole, world?.narratorRole);
   const prevChapterId = Number(sessionRow.chapterId || 0) || null;
   const prevStatus = String(sessionRow.status || "active");
+  // 正式会话的运行态必须以服务端已落库 stateJson 为准。
+  //
+  // 用途：
+  // - `/orchestration` 已经先把 pendingNarrativePlan / turnState 写回数据库；
+  // - 前端在流式台词结束后再调用 `/commitNarrativeTurn` 时，手里的本地 state 可能还是旧快照；
+  // - 如果这里继续优先信 input.state，会把刚写好的服务端 turnState 覆盖回旧值，出现
+  //   "画面已经显示旁白，但输入框仍提示等待上一位角色继续发言"的卡死现象。
   const state = normalizeSessionState(
-    input.state ?? sessionRow.stateJson,
+    sessionRow.stateJson,
     Number(sessionRow.worldId || 0),
     prevChapterId,
     rolePair,
     world,
   );
   const pendingPlan = getPendingSessionNarrativePlan(state);
-  const nextChapterId = Number(input.chapterId || prevChapterId || 0) || null;
-  const sessionStatus = String(input.status || prevStatus || "active").trim() || "active";
+  let nextChapterId = Number(input.chapterId || prevChapterId || 0) || null;
+  let sessionStatus = String(input.status || prevStatus || "active").trim() || "active";
   const createTime = Number(input.createTime || now) || now;
+  const committedEventType = String(input.eventType || pendingPlan?.eventType || "on_orchestrated_reply").trim() || "on_orchestrated_reply";
   const insertedRows = await insertSessionNarrativeMessages({
     db,
     sessionId,
@@ -1217,18 +2947,140 @@ export async function commitSessionNarrativeTurn(input: CommitSessionNarrativeTu
     messages: [{
       role: String(input.role || pendingPlan?.role || state.narrator?.name || "旁白"),
       roleType: String(input.roleType || pendingPlan?.roleType || "narrator"),
-      eventType: String(input.eventType || pendingPlan?.eventType || "on_orchestrated_reply"),
+      eventType: committedEventType,
       content: String(input.content || ""),
       createTime,
     }],
     now: createTime,
-    eventTypeFallback: String(input.eventType || pendingPlan?.eventType || "on_orchestrated_reply"),
+    eventTypeFallback: committedEventType,
   });
   setPendingSessionNarrativePlan(state, null);
+  // 延迟提升：如果 pendingPlan 有 nextNarrativePlan（如陪练回合），
+  // 不立即提升为 pendingNarrativePlan，而是存入 heldNarrativePlan。
+  // 这样旁白语音有充足时间播完，等前端下次请求编排时再提升。
+  if (pendingPlan?.nextNarrativePlan) {
+    state.heldNarrativePlan = pendingPlan.nextNarrativePlan;
+    if (DebugLogUtil.isDebugLogEnabled()) {
+      console.log("[story:next_plan:stats] nextNarrativePlan held (delayed promotion)", {
+        role: (pendingPlan.nextNarrativePlan as any)?.role,
+        roleType: (pendingPlan.nextNarrativePlan as any)?.roleType,
+      });
+    }
+    // 打上陪练回合的 log tag
+    const heldRoleType = String((pendingPlan.nextNarrativePlan as any)?.roleType || "");
+    if (heldRoleType && !["narrator", "player", "narrator_person"].includes(heldRoleType)) {
+      miniGameStateManager.logMiniGameTurn("mentor_turn", {
+        gameType: miniGameStateManager.getMiniGameStateInfo(state).gameType,
+        displayName: miniGameStateManager.getMiniGameStateInfo(state).displayName,
+        phase: miniGameStateManager.getMiniGameStateInfo(state).phase,
+        eventType: String((pendingPlan.nextNarrativePlan as any)?.eventType || ""),
+      });
+    }
+  }
+  const chapter = nextChapterId
+    ? normalizeChapterOutput(await db("t_storyChapter").where({ id: nextChapterId }).first())
+    : null;
+  if (chapter) {
+    const latestGeneratedMessage = insertedRows[insertedRows.length - 1];
+    const latestEventType = String(latestGeneratedMessage?.eventType || committedEventType).trim();
+    const isOpeningCommit = isOpeningRuntimeEventType(latestEventType);
+    // 开场白属于章节外的入场台词，只能落库展示，不能触发章节事件完成、切换或同步推进。
+    if (isOpeningCommit) {
+      resetSessionChapterContentProgressForOpening(chapter, state);
+    } else {
+      const mergedOutcome = await evaluateRuntimeOutcome({
+        chapter,
+        state,
+        messageContent: String(latestGeneratedMessage?.content || input.content || ""),
+        eventType: latestEventType || committedEventType,
+        meta: {},
+        recentMessages: insertedRows.map((item) => ({
+          role: String(item.role || ""),
+          roleType: String(item.roleType || ""),
+          eventType: String(item.eventType || ""),
+          content: String(item.content || ""),
+          createTime: Number(item.createTime || 0),
+        })),
+        fallbackStatus: sessionStatus,
+        fallbackChapterId: nextChapterId,
+        applyToState: true,
+      });
+      sessionStatus = mergedOutcome.sessionStatus;
+      nextChapterId = mergedOutcome.nextChapterId;
+      const outcome = mergedOutcome.outcome;
+      if (DebugLogUtil.isDebugLogEnabled()) {
+        // [story:chapter_ending_check:stats] current_chapter
+        DebugLogUtil.logCurrentChapter("story:chapter_ending_check:stats", chapter);
+        console.log(`[story:chapter_ending_check:stats] sessionStatus: ${sessionStatus}`);
+        console.log(`[story:chapter_ending_check:stats] outcome: ${outcome}`);
+        console.log(`[story:chapter_ending_check:stats] nextChapterId: ${nextChapterId}`);
+      }
+      if (sessionStatus === "chapter_completed" && (!nextChapterId || nextChapterId === prevChapterId)) {
+        const resolvedNextChapterId = await resolveNextChapterIdByOrder(db, Number(sessionRow.worldId || 0), prevChapterId);
+        if (resolvedNextChapterId && resolvedNextChapterId !== prevChapterId) {
+          nextChapterId = resolvedNextChapterId;
+          sessionStatus = "active";
+        }
+      }
+      if (nextChapterId && nextChapterId !== prevChapterId) {
+        setPendingSessionChapterId(state, nextChapterId);
+        setPendingSessionChapterStart(state, false);
+        state.chapterId = prevChapterId;
+      } else {
+        setPendingSessionChapterId(state, null);
+        setPendingSessionChapterStart(state, false);
+        state.chapterId = nextChapterId;
+      }
+      initializeChapterProgressForState(chapter, state);
+      syncChapterProgressWithRuntime(chapter, state);
+    }
+  }
+
+  const committedRole = String(input.role || pendingPlan?.role || state.narrator?.name || "旁白");
+  const committedRoleType = String(input.roleType || pendingPlan?.roleType || "narrator");
+  const hasPendingChapterSwitch = Boolean(
+    Number((state as any)?.pendingChapterId || 0) > 0
+    && Number((state as any)?.pendingChapterId || 0) !== Number(prevChapterId || 0),
+  );
+  const isOpeningCommit = isOpeningRuntimeEventType(committedEventType);
+
+  // 台词真正落库后，要立刻把 session turnState 推进到"这句之后"的状态。
+  //
+  // 用途：
+  // - orchestration 只负责预编排，不代表这一句已经真正提交；
+  // - 如果 commit 后不显式推进 turnState，storyInfo / listSession 仍可能读到旧 expectedRole；
+  // - 前端就会继续显示"等待上一位角色发言"，直到回溯或刷新才恢复。
+  const heldPlan = state.heldNarrativePlan
+    ? buildSessionPlanResult(state.heldNarrativePlan as any)
+    : null;
+  if (hasPendingChapterSwitch || isOpeningCommit) {
+    setRuntimeTurnState(state, world, {
+      canPlayerSpeak: false,
+      expectedRoleType: "narrator",
+      expectedRole: String(state.narrator?.name || "旁白"),
+      lastSpeakerRoleType: committedRoleType,
+      lastSpeaker: committedRole,
+    });
+  } else if (heldPlan) {
+    // 有 heldNarrativePlan（如陪练回合），turnState 指向下一轮编排，
+    // 但不立即暴露 pendingNarrativePlan，等前端下次请求编排时提升。
+    applyPlanTurnStateToSessionState(state, world, heldPlan);
+  } else if (pendingPlan?.awaitUser) {
+    allowPlayerTurn(state, world, committedRoleType, committedRole);
+  } else {
+    setRuntimeTurnState(state, world, {
+      canPlayerSpeak: false,
+      expectedRoleType: String(pendingPlan?.nextRoleType || pendingPlan?.roleType || "narrator"),
+      expectedRole: String(pendingPlan?.nextRole || pendingPlan?.role || state.narrator?.name || "旁白"),
+      lastSpeakerRoleType: committedRoleType,
+      lastSpeaker: committedRole,
+    });
+  }
+
   const stateJson = toJsonText(state, {});
   await db("t_gameSession").where({ sessionId }).update({
     stateJson,
-    chapterId: nextChapterId,
+    chapterId: state.chapterId || prevChapterId,
     status: sessionStatus,
     updateTime: now,
   });
@@ -1240,26 +3092,39 @@ export async function commitSessionNarrativeTurn(input: CommitSessionNarrativeTu
     now,
     policy: {
       saveSnapshot: input.saveSnapshot,
-      nextChapterId,
+      nextChapterId: state.chapterId || prevChapterId,
       prevChapterId,
       sessionStatus,
       prevStatus,
       round: Number(state.round || 0),
     },
   });
-  const chapter = nextChapterId
-    ? normalizeChapterOutput(await db("t_storyChapter").where({ id: nextChapterId }).first())
-    : null;
+  await persistSessionMessageRevisitData({
+    db,
+    rows: insertedRows,
+    state,
+    chapterId: state.chapterId || prevChapterId,
+    status: sessionStatus,
+    capturedAt: now,
+  });
   scheduleSessionRoleParameterCardRefresh({
     userId: currentUserId,
     world,
   });
+  const activeChapterId = Number(state.chapterId || prevChapterId || 0) || null;
+  const activeChapter = activeChapterId
+    ? normalizeChapterOutput(await db("t_storyChapter").where({ id: activeChapterId }).first())
+    : null;
+  const eventView = buildEventView(state);
   return {
     sessionId,
     status: sessionStatus,
-    chapterId: nextChapterId,
-    chapter,
+    chapterId: activeChapterId,
+    chapter: activeChapter,
     state,
+    currentEventDigest: eventView.currentEventDigest,
+    eventDigestWindow: eventView.eventDigestWindow,
+    eventDigestWindowText: eventView.eventDigestWindowText,
     message: null,
     chapterSwitchMessage: null,
     narrativeMessage: insertedRows[insertedRows.length - 1] || null,

@@ -1,16 +1,22 @@
 import { db } from "./db";
 import { getCurrentUserId } from "@/lib/requestContext";
+import { parseStoryRuntimeSettingsBlob } from "@/lib/storyRuntimeSettings";
 interface AiConfig {
   model?: string;
   apiKey: string;
   baseURL?: string;
   manufacturer: string;
+  payloadMode?: "compact" | "advanced";
+  reasoningEffort?: "minimal" | "low" | "medium" | "high";
 }
 
 const STRICT_MODEL_KEYS = new Set([
   "storyOrchestratorModel",
+  "storyChapterJudgeModel",
+  "storyFastSpeakerModel",
   "storySpeakerModel",
   "storyMemoryModel",
+  "storyMiniGameModel",
   "storyImageModel",
   "storyAvatarMattingModel",
   "storyVoiceModel",
@@ -25,6 +31,7 @@ export default async function getPromptAi(key: string, userId?: number): Promise
   }
   const strictMode = STRICT_MODEL_KEYS.has(String(key || "").trim());
   const setting = await db("t_setting").where({ userId: resolvedUserId }).select("languageModel").first();
+  const runtimeSettings = parseStoryRuntimeSettingsBlob(setting?.languageModel);
   let selectedConfigId = 0;
   try {
     const parsed = JSON.parse(String(setting?.languageModel || "{}"));
@@ -37,12 +44,23 @@ export default async function getPromptAi(key: string, userId?: number): Promise
   if (selectedConfigId > 0) {
     aiConfigData = await db("t_config")
       .where({ id: selectedConfigId, userId: resolvedUserId })
-      .select("model", "apiKey", "baseUrl as baseURL", "manufacturer")
+      .select("model", "apiKey", "baseUrl as baseURL", "manufacturer", "reasoningEffort")
       .first();
   }
 
+  const appendStoryRuntimeConfig = (input: any): AiConfig | {} => {
+    if (!input || typeof input !== "object") return {};
+    if (key === "storyOrchestratorModel") {
+      return {
+        ...(input as AiConfig),
+        payloadMode: runtimeSettings.storyOrchestratorPayloadMode,
+      };
+    }
+    return input as AiConfig;
+  };
+
   if (strictMode || selectedConfigId > 0) {
-    return aiConfigData ? (aiConfigData as AiConfig) : {};
+    return aiConfigData ? appendStoryRuntimeConfig(aiConfigData) : {};
   }
 
   if (!aiConfigData) {
@@ -52,14 +70,18 @@ export default async function getPromptAi(key: string, userId?: number): Promise
       .where("t_aiModelMap.key", key)
       .where("t_config.userId", resolvedUserId)
       .select("t_config.model", "t_config.apiKey", "t_config.baseUrl as baseURL", "t_config.manufacturer")
+      .select("t_config.reasoningEffort")
       .first();
   }
 
   if (!aiConfigData) {
     const fallbackTypeMap: Record<string, string> = {
       storyOrchestratorModel: "text",
+      storyChapterJudgeModel: "text",
+      storyFastSpeakerModel: "text",
       storySpeakerModel: "text",
       storyMemoryModel: "text",
+      storyMiniGameModel: "text",
       storyImageModel: "image",
       storyAvatarMattingModel: "image",
       storyVoiceModel: "voice",
@@ -83,12 +105,12 @@ export default async function getPromptAi(key: string, userId?: number): Promise
         })
         .orderByRaw("case when manufacturer in ('t8star','openai') then 0 else 1 end")
         .orderBy("id", "desc")
-        .select("model", "apiKey", "baseUrl as baseURL", "manufacturer");
+        .select("model", "apiKey", "baseUrl as baseURL", "manufacturer", "reasoningEffort");
       aiConfigData = await query.first();
     }
   }
 
   if (aiConfigData) {
-    return aiConfigData as AiConfig;
+    return appendStoryRuntimeConfig(aiConfigData);
   } else return {};
 }

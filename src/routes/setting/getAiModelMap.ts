@@ -1,6 +1,7 @@
 import express from "express";
 import u from "@/utils";
 import { success } from "@/lib/responseFormat";
+import { getStoryRuntimeSettings } from "@/lib/storyRuntimeSettings";
 
 const router = express.Router();
 
@@ -8,6 +9,7 @@ export default router.post("/", async (req, res) => {
   const userId = Number((req as any)?.user?.id || 0);
   const mapRows = await u.db("t_aiModelMap").select("id", "name", "key").orderBy("id", "asc");
   const setting = await u.db("t_setting").where({ userId }).select("languageModel").first();
+  const runtimeSettings = await getStoryRuntimeSettings(userId);
 
   let languageModelMap: Record<string, number> = {};
   try {
@@ -50,6 +52,9 @@ export default router.post("/", async (req, res) => {
       configId: configId > 0 ? configId : null,
       model: config?.model || null,
       manufacturer: config?.manufacturer || null,
+      payloadMode: String(row.key || "") === "storyOrchestratorModel"
+        ? runtimeSettings.storyOrchestratorPayloadMode
+        : null,
     };
   });
 

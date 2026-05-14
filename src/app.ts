@@ -11,6 +11,7 @@ import u from "@/utils";
 import jwt from "jsonwebtoken";
 import { getUploadRootDir } from "@/lib/runtimePaths";
 import { runWithRequestContext } from "@/lib/requestContext";
+import { jsonGzipMiddleware } from "@/middleware/jsonGzip";
 import { enforceResourceIsolation } from "@/middleware/resourceIsolation";
 import { startSessionMemoryWorker, stopSessionMemoryWorker } from "@/modules/game-runtime/services/SessionMemoryWorker";
 import { syncBundledVoicePresetSeeds } from "@/lib/voicePresetSeeds";
@@ -53,6 +54,7 @@ export default async function startServe(randomPort: Boolean = false) {
   app.use(cors({ origin: "*" }));
   app.use(express.json({ limit: "100mb" }));
   app.use(express.urlencoded({ extended: true, limit: "100mb" }));
+  app.use(jsonGzipMiddleware);
 
   const rootDir = getUploadRootDir();
 
@@ -67,6 +69,8 @@ export default async function startServe(randomPort: Boolean = false) {
   if (syncedVoicePresetSeeds > 0) {
     console.log(`[voice] synced bundled preset seeds: ${syncedVoicePresetSeeds}`);
   }
+  // 调试回溯需要跨热更新/重启保留临时文件，这里不再启动即清空。
+
   startSessionMemoryWorker();
 
   app.use(express.static(rootDir));
@@ -156,6 +160,14 @@ export function closeServe(): Promise<void> {
     }
   });
 }
+
+// 进程退出不再删除调试回溯文件，避免热更新/重启后回溯点全部丢失。
+function onProcessExit() {
+  try { stopSessionMemoryWorker(); } catch { /* ignore */ }
+}
+process.on("exit", onProcessExit);
+process.on("SIGINT", () => { onProcessExit(); process.exit(0); });
+process.on("SIGTERM", () => { onProcessExit(); process.exit(0); });
 
 const isElectron = typeof process.versions?.electron !== "undefined";
 if (!isElectron) startServe();

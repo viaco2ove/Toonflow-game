@@ -1,0 +1,4 @@
+export NODE_ENV=prod
+export PORT=60002
+export OSSURL=https://xxx:8443
+export DB_PATH=/root/toonflow-data/db.sqlite

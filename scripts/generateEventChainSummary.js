@@ -1,0 +1,444 @@
+const fs = require("fs");
+const path = require("path");
+
+/**
+ * 读取当前仓库里可用的日志候选，便于找不到文件时给出可操作提示。
+ */
+function listAvailableLogCandidates() {
+  const searchRoots = [
+    path.resolve("logs"),
+    path.resolve("logs/event_log"),
+  ];
+  const results = [];
+  for (const root of searchRoots) {
+    if (!fs.existsSync(root) || !fs.statSync(root).isDirectory()) {
+      continue;
+    }
+    const entries = fs.readdirSync(root, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isFile()) continue;
+      const fullPath = path.join(root, entry.name);
+      if (!/\.(log|md)$/i.test(entry.name)) continue;
+      results.push(fullPath);
+    }
+  }
+  return Array.from(new Set(results)).sort();
+}
+
+/**
+ * 解析输入路径。
+ *
+ * 用途：
+ * - 兼容用户直接传 `logs/app-xxxx.log`
+ * - 兼容只传文件名时自动去 `logs/`、`logs/event_log/` 下补找
+ * - 找不到时直接给出当前仓库内可用日志，避免只抛裸 `ENOENT`
+ */
+function resolveInputPath(inputPath) {
+  const rawInputPath = String(inputPath || "").trim();
+  const directPath = path.resolve(rawInputPath);
+  if (fs.existsSync(directPath)) {
+    return directPath;
+  }
+  const baseName = path.basename(rawInputPath);
+  const candidates = [
+    directPath,
+    path.resolve("logs", rawInputPath),
+    path.resolve("logs", baseName),
+    path.resolve("logs/event_log", rawInputPath),
+    path.resolve("logs/event_log", baseName),
+  ];
+  const resolved = candidates.find((candidate) => fs.existsSync(candidate));
+  if (resolved) {
+    return resolved;
+  }
+  const availableLogs = listAvailableLogCandidates()
+    .map((item) => path.relative(process.cwd(), item) || item)
+    .slice(0, 20);
+  const availableTips = availableLogs.length
+    ? `\n当前可用日志示例：\n- ${availableLogs.join("\n- ")}`
+    : "\n当前仓库下未找到 logs/ 或 logs/event_log/ 中的日志文件。";
+  throw new Error(`日志文件不存在：${rawInputPath}${availableTips}`);
+}
+
+/**
+ * 解析命令行参数，得到输入日志和输出 md 路径。
+ */
+function parseCliArgs(argv) {
+  const directArgs = argv.filter((item) => !item.startsWith("--"));
+  const inputArg = argv.find((item) => item.startsWith("--input=")) || directArgs[0] || "";
+  const outputArg = argv.find((item) => item.startsWith("--output=")) || directArgs[1] || "";
+  const inputPath = inputArg.startsWith("--input=") ? inputArg.slice("--input=".length) : inputArg;
+  if (!inputPath) {
+    throw new Error("缺少日志文件路径，示例：node scripts/generateEventChainSummary.js logs/app-2026-04-13.log");
+  }
+  const normalizedInputPath = resolveInputPath(inputPath);
+  const defaultOutputPath = path.resolve(
+    "logs/event_log",
+    `${path.basename(normalizedInputPath, path.extname(normalizedInputPath))}.event_chain.summary.md`,
+  );
+  const outputPath = outputArg
+    ? path.resolve(outputArg.startsWith("--output=") ? outputArg.slice("--output=".length) : outputArg)
+    : defaultOutputPath;
+  return {
+    inputPath: normalizedInputPath,
+    outputPath,
+  };
+}
+
+/**
+ * 从整行日志中提取最后一个 JSON 对象。
+ */
+function parseJsonFromLogLine(line) {
+  const jsonStart = line.indexOf("{");
+  if (jsonStart < 0) return null;
+  try {
+    return JSON.parse(line.slice(jsonStart));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 统一读取字符串值。
+ */
+function readString(input) {
+  return String(input ?? "").trim();
+}
+
+/**
+ * 从表格日志里提取中间内容列。
+ */
+function extractTableContent(line, label) {
+  const pattern = new RegExp(`\\| ${escapeRegExp(label)} \\| (.*?) \\| (?:\\d+|-) \\|(?: (?:\\d+|-) \\|)?$`);
+  const matched = line.match(pattern);
+  return matched && matched[1] ? matched[1].trim() : "";
+}
+
+/**
+ * 从 `xxx=yyy` 格式里提取尾部值。
+ */
+function extractAfter(line, marker) {
+  const index = line.indexOf(marker);
+  if (index < 0) return "";
+  return line.slice(index + marker.length).trim();
+}
+
+/**
+ * 从 `index:1 ↩ summary:xxx` 拼接文本里提取字段。
+ */
+function extractField(text, field) {
+  return text
+    .split("↩")
+    .map((item) => item.trim())
+    .find((item) => item.startsWith(`${field}:`))
+    ?.slice(field.length + 1)
+    .trim() || "";
+}
+
+/**
+ * 清理表格列被误吞进来的尾部统计值，避免摘要里出现 `| 152` 这类脏后缀。
+ */
+function stripTrailingTableStats(text) {
+  return String(text || "").replace(/\s+\|\s+\d+\s*$/, "").trim();
+}
+
+/**
+ * 从 JSON 字符串里抽取简单文本字段。
+ */
+function extractJsonTextField(rawJsonText, field) {
+  const matched = rawJsonText.match(new RegExp(`"${escapeRegExp(field)}"\\s*:\\s*"([^"]*)"`, "m"));
+  return matched && matched[1] ? matched[1].trim() : "";
+}
+
+/**
+ * 从日志里的对话 JSON 片段提取用户输入内容。
+ *
+ * 用途：
+ * - `story:memory:stats | 新增对话 |` 会带一段 JSON 数组，但当前摘要脚本没有消费它；
+ * - 这里直接按 roleType=player + eventType=on_message 抽取用户输入；
+ * - 过滤掉 `@记忆管理` 这类内部提示，尽量只保留真实用户发言。
+ */
+function extractUserMessagesFromDialogueJson(rawJsonText) {
+  const normalized = String(rawJsonText || "");
+  if (!normalized) return [];
+  const compact = normalized.replace(/↩/g, "\n");
+  const blockPattern = /\{[\s\S]*?"roleType"\s*:\s*"player"[\s\S]*?"eventType"\s*:\s*"on_message"[\s\S]*?"content"\s*:\s*"([^"]*)"[\s\S]*?\}/g;
+  const results = [];
+  let matched;
+  while ((matched = blockPattern.exec(compact)) !== null) {
+    const content = String(matched[1] || "").trim();
+    if (!content) continue;
+    if (content.startsWith("@记忆管理")) continue;
+    results.push(content);
+  }
+  return Array.from(new Set(results));
+}
+
+/**
+ * 转义正则特殊字符，避免日志字段名导致匹配异常。
+ */
+function escapeRegExp(input) {
+  return String(input).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * 直接从日志文本生成事件链摘要 markdown。
+ */
+function generateEventChainSummaryMarkdown(logFilePath, outputMarkdownPath) {
+  const rawLog = fs.readFileSync(logFilePath, "utf8");
+  const lines = rawLog.split(/\r?\n/);
+  const entries = [];
+  let currentEntry = null;
+  let currentContext = {};
+  let pendingEntryPatch = {};
+
+  /**
+   * 把当前上下文灌进 entry。
+   *
+   * 用途：
+   * - 章节、会话状态、下一章等日志常常不会和“当前事件”出现在同一行；
+   * - 如果不做上下文继承，摘要里就会出现大量“未知”。
+   */
+  const applyContextToEntry = (entry) => {
+    if (!entry) return entry;
+    return {
+      ...currentContext,
+      ...entry,
+      chapterTitle: entry.chapterTitle || currentContext.chapterTitle || "",
+      sessionStatus: entry.sessionStatus || currentContext.sessionStatus || "",
+      outcome: entry.outcome || currentContext.outcome || "",
+      nextChapterId: entry.nextChapterId || currentContext.nextChapterId || "",
+    };
+  };
+
+  /**
+   * 把当前编排轮次里“先出现、后归属”的字段暂存起来。
+   *
+   * 用途：
+   * - 真实日志里 `response_preview/current_chapter` 往往早于 `当前事件`；
+   * - 如果此时直接创建 entry，会生成 `current_event: 0 ,无` 这种伪条目；
+   * - 正确做法是先缓存，等读到 `当前事件` 后再一次性归属到该条目。
+   */
+  const assignEntryField = (field, value) => {
+    if (!value) return;
+    if (currentEntry) {
+      currentEntry[field] = value;
+      return;
+    }
+    pendingEntryPatch[field] = value;
+  };
+
+  /**
+   * 从编排返回摘要里提取 trigger_memory_agent。
+   */
+  const readTriggerMemoryAgentFromResponse = (responseText) => {
+    const direct = extractField(responseText, "trigger_memory_agent");
+    if (direct) return direct;
+    const normalized = String(responseText || "").toLowerCase();
+    if (normalized.includes("trigger_memory_agent: true")) return "true";
+    if (normalized.includes("trigger_memory_agent: false")) return "false";
+    return "";
+  };
+
+  /**
+   * 有实际内容的条目才写入结果。
+   */
+  const pushCurrentEntry = () => {
+    if (!currentEntry) return;
+    if (
+      !currentEntry.currentEventSummary
+      && !currentEntry.orchestratorResponse
+      && !currentEntry.speech
+      && !currentEntry.eventStage
+    ) {
+      currentEntry = null;
+      return;
+    }
+    entries.push(currentEntry);
+    currentEntry = null;
+  };
+
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    if (line.includes("[game:orchestrator:key_nodes]")) {
+      const payload = parseJsonFromLogLine(line);
+      if (payload) {
+        currentContext = {
+          ...currentContext,
+          requestId: readString(payload.requestId),
+          sessionId: readString(payload.sessionId),
+          debugRuntimeKey: readString(payload.debugRuntimeKey),
+        };
+        const node = readString(payload.node);
+        if (node === "session_opening:first_dialogue_preset") {
+          assignEntryField(
+            "orchestratorResponse",
+            `opening_first_dialogue_preset role=${readString(payload.role)} roleType=${readString(payload.roleType)} awaitUser=${readString(payload.awaitUser)}`,
+          );
+        }
+      }
+    }
+    if (line.includes("[story:orchestrator:stats] | 当前事件 | ")) {
+      pushCurrentEntry();
+      const currentEventText = extractTableContent(line, "当前事件");
+        currentEntry = applyContextToEntry({
+          ...currentContext,
+          ...pendingEntryPatch,
+          currentEventIndex: extractField(currentEventText, "index"),
+          currentEventSummary: stripTrailingTableStats(extractField(currentEventText, "summary") || currentEventText),
+        });
+      pendingEntryPatch = {};
+      continue;
+    }
+    if (!currentEntry && line.includes("[story:streamlines:stats] | 当前事件 | ")) {
+      pushCurrentEntry();
+      const currentEventText = extractTableContent(line, "当前事件");
+      currentEntry = applyContextToEntry({
+        ...currentContext,
+        ...pendingEntryPatch,
+        currentEventIndex: extractField(currentEventText, "index"),
+        currentEventSummary: stripTrailingTableStats(extractField(currentEventText, "summary") || currentEventText),
+      });
+      pendingEntryPatch = {};
+      continue;
+    }
+    if (line.includes("[story:orchestrator:stats] current_chapter=")) {
+      const payload = parseJsonFromLogLine(line.replace("[story:orchestrator:stats] current_chapter=", ""));
+      if (payload) {
+        currentContext.chapterTitle = readString(payload.title);
+        if (currentEntry) {
+          currentEntry = applyContextToEntry(currentEntry);
+          currentEntry.chapterTitle = currentContext.chapterTitle;
+        }
+      }
+      continue;
+    }
+    if (line.includes("[story:orchestrator:stats] response_preview=")) {
+      const orchestratorResponse = extractAfter(line, "response_preview=");
+      assignEntryField("orchestratorResponse", orchestratorResponse);
+      assignEntryField("triggerMemoryAgent", readTriggerMemoryAgentFromResponse(orchestratorResponse));
+      continue;
+    }
+    if (line.includes("[story:memory:runtime] triggerMemoryAgent=")) {
+      assignEntryField("triggerMemoryAgent", extractAfter(line, "triggerMemoryAgent="));
+      continue;
+    }
+    if (line.includes("[story:memory:stats] | 新增对话 | ")) {
+      const dialogueJson = extractTableContent(line, "新增对话");
+      const userMessages = extractUserMessagesFromDialogueJson(dialogueJson);
+      if (userMessages.length > 0) {
+        assignEntryField("userInput", userMessages.join("；"));
+      }
+      continue;
+    }
+    if (!currentEntry) continue;
+    if (line.includes("[story:streamlines:stats] | 本轮动机 | ")) {
+      currentEntry.motive = stripTrailingTableStats(extractTableContent(line, "本轮动机"));
+      continue;
+    }
+    if (line.includes("[story:streamlines:stats] | 返回内容 | ")) {
+      currentEntry.speech = extractTableContent(line, "返回内容");
+      continue;
+    }
+    if (line.includes("[story:event_progress:runtime]")) {
+      const payload = parseJsonFromLogLine(line);
+      if (payload) {
+        const responseText = readString(payload.responseText);
+        currentEntry.eventStage = [
+          `event_status=${responseText.includes("\"event_status\": \"waiting_input\"") ? "waiting_input" : responseText.includes("\"event_status\": \"completed\"") ? "completed" : "active"}`,
+          `ended=${responseText.includes("\"ended\": true") ? "true" : "false"}`,
+          `progress_summary=${extractJsonTextField(responseText, "progress_summary")}`,
+        ].join("，");
+      }
+      continue;
+    }
+    if (line.includes("[story:event_progress:stats] resolution=")) {
+      currentEntry.eventProgressResolution = extractAfter(line, "resolution=");
+      continue;
+    }
+    if (line.includes("[story:chapter_ending_check:runtime]")) {
+      const payload = parseJsonFromLogLine(line);
+      if (payload) {
+        const responseText = readString(payload.responseText);
+        currentContext.chapterTitle = extractJsonTextField(responseText, "chapter_title") || currentContext.chapterTitle || "";
+        currentEntry.chapterTitle = currentContext.chapterTitle || currentEntry.chapterTitle;
+        currentEntry.chapterJudge = [
+          `result=${extractJsonTextField(responseText, "result")}`,
+          `reason=${extractJsonTextField(responseText, "reason")}`,
+          `guide_summary=${extractJsonTextField(responseText, "guide_summary")}`,
+        ].join("，");
+      }
+      continue;
+    }
+    if (line.includes("[story:chapter_ending_check:stats] sessionStatus:")) {
+      currentContext.sessionStatus = extractAfter(line, "sessionStatus:");
+      currentEntry.sessionStatus = currentContext.sessionStatus;
+      continue;
+    }
+    if (line.includes("[story:chapter_ending_check:stats] outcome:")) {
+      currentContext.outcome = extractAfter(line, "outcome:");
+      currentEntry.outcome = currentContext.outcome;
+      continue;
+    }
+    if (line.includes("[story:chapter_ending_check:stats] nextChapterId:")) {
+      currentContext.nextChapterId = extractAfter(line, "nextChapterId:");
+      currentEntry.nextChapterId = currentContext.nextChapterId;
+    }
+  }
+
+  pushCurrentEntry();
+
+  const markdownLines = [
+    "# 事件链分析摘要",
+    "",
+    ...entries.flatMap((entry) => {
+      const summary = entry.currentEventSummary || "无";
+      const currentEventIndex = entry.currentEventIndex || "0";
+      const sessionLikeId = entry.sessionId || entry.debugRuntimeKey || entry.requestId || "未知";
+      const chapterTitle = entry.chapterTitle || "未知";
+      const linesForEntry = [
+        `- 编排,current_event: ${currentEventIndex} ,${summary}`,
+        `  - sesesion_id: ${sessionLikeId}`,
+        `  - chapterTitle: ${chapterTitle}`,
+      ];
+      if (entry.orchestratorResponse) linesForEntry.push(`  - 返回了，${entry.orchestratorResponse}`);
+      if (entry.userInput) linesForEntry.push(`  - 用户输入：${entry.userInput}`);
+      if (entry.triggerMemoryAgent) linesForEntry.push(`  - 记忆管理触发：${entry.triggerMemoryAgent}`);
+      if (entry.motive) linesForEntry.push(`  - 本轮动机，${entry.motive}`);
+      if (entry.speech) linesForEntry.push(`  - 台词： ${entry.speech}`);
+      if (entry.eventStage) {
+        linesForEntry.push(`  - 事件阶段：${entry.eventStage}`);
+        if (entry.eventProgressResolution) {
+          linesForEntry.push(`  - 事件进度处理结果：${entry.eventProgressResolution}`);
+        }
+      }
+      if (entry.chapterJudge) {
+        linesForEntry.push(`  - 章节判定：${entry.chapterJudge}`);
+        linesForEntry.push(`  sessionStatus：${entry.sessionStatus || ""}`);
+        linesForEntry.push(`  nextChapterId：${entry.nextChapterId || ""}`);
+      }
+      linesForEntry.push("");
+      return linesForEntry;
+    }),
+  ];
+
+  fs.mkdirSync(path.dirname(outputMarkdownPath), { recursive: true });
+  fs.writeFileSync(outputMarkdownPath, `${markdownLines.join("\n").trim()}\n`, "utf8");
+  return {
+    outputPath: outputMarkdownPath,
+    entryCount: entries.length,
+  };
+}
+
+/**
+ * 脚本主入口。
+ */
+function main() {
+  const { inputPath, outputPath } = parseCliArgs(process.argv.slice(2));
+  const result = generateEventChainSummaryMarkdown(inputPath, outputPath);
+  console.log(`[debug:event-chain] input=${inputPath}`);
+  console.log(`[debug:event-chain] output=${result.outputPath}`);
+  console.log(`[debug:event-chain] entries=${result.entryCount}`);
+}
+
+main();

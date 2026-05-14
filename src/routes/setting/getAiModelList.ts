@@ -70,6 +70,17 @@ export default router.post(
     }
 
     if (type === "image") {
+      const volcengineDefaults = [
+        { label: "doubao-seedream-5-0-260128", value: "doubao-seedream-5-0-260128" },
+        { label: "doubao-seedream-4-5-251128", value: "doubao-seedream-4-5-251128" },
+        { label: "doubao-seedream-4-0-250828", value: "doubao-seedream-4-0-250828" },
+      ];
+      if (!result.volcengine) result.volcengine = [];
+      for (const item of volcengineDefaults) {
+        const exists = result.volcengine.some((model) => String(model?.value || "") === item.value);
+        if (!exists) result.volcengine.push(item);
+      }
+
       const briaDefaults = [
         { label: "RMBG-2.0", value: "RMBG-2.0" },
       ];
@@ -97,6 +108,15 @@ export default router.post(
       for (const item of localBiRefNetDefaults) {
         const exists = result.local_birefnet.some((model) => String(model?.value || "") === item.value);
         if (!exists) result.local_birefnet.push(item);
+      }
+
+      const localModNetDefaults = [
+        { label: "modnet-photographic-portrait", value: "modnet-photographic-portrait" },
+      ];
+      if (!result.local_modnet) result.local_modnet = [];
+      for (const item of localModNetDefaults) {
+        const exists = result.local_modnet.some((model) => String(model?.value || "") === item.value);
+        if (!exists) result.local_modnet.push(item);
       }
     }
 

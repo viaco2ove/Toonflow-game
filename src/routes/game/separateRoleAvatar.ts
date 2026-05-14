@@ -6,7 +6,12 @@ import { v4 as uuidv4 } from "uuid";
 import { z } from "zod";
 import { validateFields } from "@/middleware/middleware";
 import { error, success } from "@/lib/responseFormat";
-import { LOCAL_BIREFNET_MANUFACTURER, getLocalAvatarMattingStatus, runLocalBiRefNetMatting } from "@/lib/localAvatarMatting";
+import {
+  LOCAL_BIREFNET_MANUFACTURER,
+  LOCAL_MODNET_MANUFACTURER,
+  getLocalAvatarMattingStatus,
+  runLocalBiRefNetMatting,
+} from "@/lib/localAvatarMatting";
 import u from "@/utils";
 
 const router = express.Router();
@@ -71,7 +76,7 @@ type SeparateRoleAvatarResult = {
   backgroundFilePath: string;
 };
 
-type ImageAiConfig = {
+export type ImageAiConfig = {
   model?: string;
   apiKey: string;
   baseURL?: string;
@@ -185,7 +190,7 @@ async function normalizeRoleSource(dataUrl: string): Promise<Buffer> {
     .toBuffer();
 }
 
-async function normalizeRoleSourceForMatting(dataUrl: string): Promise<Buffer> {
+export async function normalizeRoleSourceForMatting(dataUrl: string): Promise<Buffer> {
   const source = extractBase64Buffer(dataUrl);
   return await sharp(source, { animated: true, pages: 1 })
     .resize(MODEL_INPUT_SIZE, MODEL_INPUT_SIZE, {
@@ -292,7 +297,7 @@ async function chromaKeyForeground(input: Buffer): Promise<Buffer> {
   }).png().toBuffer();
 }
 
-async function normalizeForegroundLayer(input: Buffer, options?: { skipChromaKey?: boolean }): Promise<Buffer> {
+export async function normalizeForegroundLayer(input: Buffer, options?: { skipChromaKey?: boolean }): Promise<Buffer> {
   const prepared = options?.skipChromaKey
     ? await sharp(input).ensureAlpha().png().toBuffer()
     : await chromaKeyForeground(input);
@@ -327,11 +332,11 @@ async function normalizeForegroundLayer(input: Buffer, options?: { skipChromaKey
     .toBuffer();
 }
 
-async function normalizeBackgroundLayer(input: Buffer): Promise<Buffer> {
+export async function normalizeBackgroundLayer(input: Buffer): Promise<Buffer> {
   return await fillOpaqueCanvas(input, AVATAR_BG_SIZE, AVATAR_BG_SIZE);
 }
 
-async function createApproximateBackgroundLayer(source: Buffer, foreground: Buffer): Promise<Buffer> {
+export async function createApproximateBackgroundLayer(source: Buffer, foreground: Buffer): Promise<Buffer> {
   const sourcePng = await sharp(source)
     .removeAlpha()
     .png()
@@ -386,7 +391,7 @@ async function resolveImageConfig(userId: number) {
   throw new Error("未配置可用图像模型，请先配置 AI生图 或 图片编辑 模型");
 }
 
-async function resolveAvatarMattingConfig(userId: number): Promise<ImageAiConfig | null> {
+export async function resolveAvatarMattingConfig(userId: number): Promise<ImageAiConfig | null> {
   const config = await u.getPromptAi("storyAvatarMattingModel", userId);
   if ((config as any)?.manufacturer) {
     return config as ImageAiConfig;
@@ -394,24 +399,38 @@ async function resolveAvatarMattingConfig(userId: number): Promise<ImageAiConfig
   return null;
 }
 
-function isBriaAvatarMattingConfig(config: ImageAiConfig | null | undefined): config is ImageAiConfig {
+export function isBriaAvatarMattingConfig(config: ImageAiConfig | null | undefined): config is ImageAiConfig {
   return String(config?.manufacturer || "").trim().toLowerCase() === "bria"
     && !!String(config?.apiKey || "").trim();
 }
 
-function isAliyunAvatarMattingConfig(config: ImageAiConfig | null | undefined): config is ImageAiConfig {
+export function isAliyunAvatarMattingConfig(config: ImageAiConfig | null | undefined): config is ImageAiConfig {
   return String(config?.manufacturer || "").trim().toLowerCase() === "aliyun_imageseg"
     && !!String(config?.apiKey || "").trim();
 }
 
-function isTencentAvatarMattingConfig(config: ImageAiConfig | null | undefined): config is ImageAiConfig {
+export function isTencentAvatarMattingConfig(config: ImageAiConfig | null | undefined): config is ImageAiConfig {
   return String(config?.manufacturer || "").trim().toLowerCase() === "tencent_ci"
     && !!String(config?.apiKey || "").trim()
     && !!String(config?.baseURL || "").trim();
 }
 
-function isLocalBiRefNetAvatarMattingConfig(config: ImageAiConfig | null | undefined): config is ImageAiConfig {
-  return String(config?.manufacturer || "").trim().toLowerCase() === LOCAL_BIREFNET_MANUFACTURER;
+/**
+ * 判断当前头像分离配置是否使用火山图像模型。
+ *
+ * 用途：
+ * - 允许用户为“头像分离”单独绑定火山模型，而不是强依赖通用 AI 生图配置；
+ * - 复用现有图生图前景/背景重建链路，避免引入额外厂商 SDK。
+ */
+export function isVolcengineAvatarMattingConfig(config: ImageAiConfig | null | undefined): config is ImageAiConfig {
+  return String(config?.manufacturer || "").trim().toLowerCase() === "volcengine"
+    && !!String(config?.apiKey || "").trim()
+    && !!String(config?.model || "").trim();
+}
+
+export function isLocalBiRefNetAvatarMattingConfig(config: ImageAiConfig | null | undefined): config is ImageAiConfig {
+  const manufacturer = String(config?.manufacturer || "").trim().toLowerCase();
+  return manufacturer === LOCAL_BIREFNET_MANUFACTURER || manufacturer === LOCAL_MODNET_MANUFACTURER;
 }
 
 function normalizeBriaBaseUrl(baseURL?: string): string {
@@ -847,7 +866,7 @@ async function waitBriaResultImageUrl(config: ImageAiConfig, responseData: any):
   throw new Error("Bria 异步任务超时，请稍后重试");
 }
 
-async function callBriaEdit(
+export async function callBriaEdit(
   config: ImageAiConfig,
   path: "remove_background" | "erase_foreground",
   payload: Record<string, unknown>,
@@ -868,7 +887,7 @@ async function callBriaEdit(
   return await fetchRemoteImageBuffer(imageUrl);
 }
 
-async function callAliyunMatting(
+export async function callAliyunMatting(
   input: Buffer,
   config: ImageAiConfig,
 ): Promise<Buffer> {
@@ -900,7 +919,7 @@ async function callAliyunMatting(
   return await fetchRemoteImageBuffer(imageUrl);
 }
 
-async function callTencentPortraitMatting(
+export async function callTencentPortraitMatting(
   input: Buffer,
   config: ImageAiConfig,
 ): Promise<Buffer> {
@@ -1117,6 +1136,7 @@ async function runLocalBiRefNetAvatarMattingJob(
   config: ImageAiConfig,
 ): Promise<SeparateRoleAvatarResult> {
   const modelName = String(config.model || "").trim();
+  const localModelLabel = modelName.toLowerCase().startsWith("modnet") ? "MODNet" : "BiRefNet";
   const [status, mattingInput] = await Promise.all([
     getLocalAvatarMattingStatus({
       manufacturer: config.manufacturer,
@@ -1125,19 +1145,19 @@ async function runLocalBiRefNetAvatarMattingJob(
     normalizeRoleSourceForMatting(normalizedInput),
   ]);
   if (status.status !== "installed") {
-    throw new Error(`${status.message || "本地 BiRefNet 尚未安装"}。请先在设置 > 模型配置 > 头像分离里完成安装`);
+    throw new Error(`${status.message || `本地 ${localModelLabel} 尚未安装`}。请先在设置 > 模型配置 > 头像分离里完成安装`);
   }
   let foregroundRaw: Buffer;
   try {
     foregroundRaw = await runLocalBiRefNetMatting(mattingInput, modelName);
   } catch (err) {
-    throw new Error(`本地 BiRefNet 前景分离失败: ${u.error(err).message}`);
+    throw new Error(`本地 ${localModelLabel} 前景分离失败: ${u.error(err).message}`);
   }
   let backgroundBuffer: Buffer;
   try {
     backgroundBuffer = await createApproximateBackgroundLayer(mattingInput, foregroundRaw);
   } catch (err) {
-    throw new Error(`本地 BiRefNet 背景构建失败: ${u.error(err).message}`);
+    throw new Error(`本地 ${localModelLabel} 背景构建失败: ${u.error(err).message}`);
   }
   const foregroundBuffer = await normalizeForegroundLayer(foregroundRaw, { skipChromaKey: true });
   return await saveSeparatedRoleAvatarFiles(payload, foregroundBuffer, backgroundBuffer);
@@ -1147,9 +1167,27 @@ async function runImageModelAvatarMattingJob(
   payload: SeparateRoleAvatarPayload & { userId: number; projectId: number | null },
   normalizedInput: string,
 ): Promise<SeparateRoleAvatarResult> {
+  return await runConfiguredImageModelAvatarMattingJob(
+    payload,
+    normalizedInput,
+    await resolveImageConfig(payload.userId),
+  );
+}
+
+/**
+ * 使用指定图像模型完成头像分离。
+ *
+ * 用途：
+ * - 复用现有“前景重建 + 背景补全”逻辑；
+ * - 支持把头像分离槽位直接绑定到火山图像模型，而不强制依赖通用生图槽位。
+ */
+async function runConfiguredImageModelAvatarMattingJob(
+  payload: SeparateRoleAvatarPayload & { userId: number; projectId: number | null },
+  normalizedInput: string,
+  config: ImageAiConfig,
+): Promise<SeparateRoleAvatarResult> {
   const safeName = String(payload.name || "").trim() || "角色";
   const modelInputDataUrl = await createImageModelInputDataUrl(normalizedInput);
-  const config = await resolveImageConfig(payload.userId);
 
   const [foregroundBuffer, backgroundBuffer] = await Promise.all([
     generateImageModelForegroundBuffer(modelInputDataUrl, safeName, config),
@@ -1261,6 +1299,19 @@ async function runSeparateRoleAvatarJob(
         userId: payload.userId,
         projectId: payload.projectId,
         manufacturer: avatarMattingConfig.manufacturer,
+        message: u.error(err).message,
+      });
+    }
+  }
+  if (isVolcengineAvatarMattingConfig(avatarMattingConfig)) {
+    try {
+      return await runConfiguredImageModelAvatarMattingJob(payload, normalizedInput, avatarMattingConfig);
+    } catch (err) {
+      console.warn("[separateRoleAvatar] volcengine avatar matting failed, fallback to image model", {
+        userId: payload.userId,
+        projectId: payload.projectId,
+        manufacturer: avatarMattingConfig.manufacturer,
+        model: avatarMattingConfig.model,
         message: u.error(err).message,
       });
     }

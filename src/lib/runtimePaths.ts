@@ -67,3 +67,10 @@ export function getVoicePresetSeedDir(): string {
     : process.cwd();
   return path.join(baseDir, "res", "voice-presets");
 }
+
+export function getTmpDebugRevisitDir(): string {
+  const fallback = isElectronRuntime()
+    ? path.join(getUserDataDir(), "Toonflow-game/tmp/debug-revisit")
+    : path.join(process.cwd(), "Toonflow-game/tmp/debug-revisit");
+  return fallback;
+}

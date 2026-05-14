@@ -80,8 +80,8 @@ server {
 EOF
 
 # 配置 nginx 主配置，日志输出到 stderr/stdout
-RUN sed -i 's|error_log /var/log/nginx/error.log warn;|error_log /dev/stderr warn;|g' /etc/nginx/nginx.conf || true && \
-    sed -i 's|access_log /var/log/nginx/access.log main;|access_log /dev/stdout main;|g' /etc/nginx/nginx.conf || true
+RUN sed -i 's|error_log /var/log/nginx/error.log warn;|error_log /dev/stderr warn;|g' /etc/nginx/toonflow || true && \
+    sed -i 's|access_log /var/log/nginx/access.log main;|access_log /dev/stdout main;|g' /etc/nginx/toonflow || true
 
 # 配置 supervisor
 RUN cat > /etc/supervisord.conf << 'EOF'

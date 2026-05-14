@@ -18,7 +18,7 @@
 <img src="./docs/logo.png" alt="Toonflow Logo" height="120"/>
 
 # Toonflow
-
+Toonflow 是"Toonflow Game" 的前身，在当前项目更多是残留功能而不是主要功能。
   <p align="center">
     <b>
       AI短剧工厂
@@ -43,53 +43,58 @@
   </p>
   
   > 🚀 **一站式短剧工程**：从文本到角色，从分镜到视频，0门槛全流程AI化，创作效率提升10倍+！
-   🚀 **多角色沉浸感ai故事游戏**: 体验沉浸式ai故事游戏，感受角色互动的魅力！
+  
 </div>
+
+# "Toonflow Game"
+"Toonflow Game" 在Toonflow基础上进行的二度开发
+ 🚀 **多角色沉浸感ai故事游戏**: 体验沉浸式ai故事游戏，感受角色互动的魅力！
+
+## github url
+https://github.com/topics/toonflow-game
+https://github.com/viaco2ove/Toonflow-game.git
+https://github.com/viaco2ove/Toonflow-game-vedio-web.git
+https://github.com/viaco2ove/Toonflow-game-web.git
+https://github.com/viaco2ove/Toonflow-game-android.git
 
 ---
 # 🌟 主要功能
-类似字节猫箱一样的多角色 ai 游戏
+多角色 ai 游戏
+![img.png](img.png)
+
+## 特殊功能
+- 在输入框输入“#小游戏” 可以进行查看钓鱼等小游戏的玩法。
+![img_1.png](img_1.png)
+
+- 在输入框输入“@记忆管理 xxx” 可以要求ai 变更人物参数
+如：@记忆管理 睡觉恢复，可以恢复hp mp
+
+- 战斗属性
+### 血量和蓝的恢复（hp 和mp）：" +
+```
+"用户住宿、睡觉和吃下恢复药物等可以恢复血量和蓝到充盈满血满蓝，" +
+"要把用户参数进行修改到满血满蓝，hp 和 mp 必须直接输出数字，不能写“已恢复”“满了”“充盈”等中文状态\n" +
+"### 满血：基础血量100 + 等级*10 + 特殊物品或者技能加成，如物品里的血量属性点(2)\n" +
+"### 满蓝：基础蓝量100 + 等级*10 + 特殊物品或者技能加成，如物品里的蓝量属性点(2)\n" +
+"### 攻击力：基础攻击力10 + 等级*10 + 特殊物品或者技能加成，如物品里的攻击点属性点(2)\n" +
+"### 防御力：基础防御1 + 等级*10 + 特殊物品或者技能加成，如物品里的防御点属性点(2)\n"
+```
+
+- @记忆管理 下个章节
+理论上可行
+- @事件进度检测 下个事件
+理论上可行
+
+- @角色名 xxx
+可以呼叫这个角色
+
 
 # 🌟 主要功能(old)
-
-Toonflow 是一款 AI 工具，能够利用 AI 技术将小说自动转化为剧本，并结合 AI 生成的图片和视频，实现高效的短剧创作。借助 Toonflow，可以轻松完成从文字到影像的全流程，让短剧制作变得更加智能与便捷。
-
-- ✅ **角色生成**  
-   自动分析原始小说文本，智能识别并生成角色设定，包括外貌、性格、身份等详细信息，为后续剧本与画面创作提供可靠基础。
-- ✅ **剧本生成**  
-   基于选定事件和章节，系统自动生成结构化剧本，涵盖对白、场景描述、剧情走向，实现从文学文本到影视剧本的高效转换。
-- ✅ **分镜制作**  
-   根据剧本内容，智能生成分镜提示词与画面设计，细化前中后景、角色动态、道具设定和场景布局，自动根据剧本生成分镜，为视频制作提供完整路线蓝图。
-- ✅ **视频合成**  
-   集成 AI 图像与视频技术，可使用 AI 生成视频片段。整合在线编辑，支持个性化调整输出，让影视创作高效协同、快捷落地。
-
+[README.V1.md](README.V1.md)
 ---
 
-# 📦 应用场景
-
-- 短视频内容创作
-- 小说影视化实验
-- AI 文学改编工具
-- 剧本开发与快速原型
-- 视频素材生成
-
----
-
-# 🔰 使用指南
-
-## 📺 视频教程
-
-https://www.bilibili.com/video/BV1na6wB6Ea2
-[![Toonflow 8 分钟快速上手 AI 视频](./docs/videoCover.png)](https://www.bilibili.com/video/BV1na6wB6Ea2)
-
-**Toonflow 8 分钟快速上手 AI 视频**
-👉 [点击观看](https://www.bilibili.com/video/BV1na6wB6Ea2/?share_source=copy_web&vd_source=5b718c25439a901a34c7bc0c1d35b38e)
-
-📱 手机微信扫码观看
-
-<img src="./docs/videoQR.png" alt="微信扫码观看" width="150"/>
-
----
+## 本地模型安装
+[本地头像分离模型安装.md](md/modeapi/image/%E6%9C%AC%E5%9C%B0%E5%A4%B4%E5%83%8F%E5%88%86%E7%A6%BB%E6%A8%A1%E5%9E%8B%E5%AE%89%E8%A3%85.md)
 
 # 🚀 安装
 
@@ -167,7 +172,7 @@ GIT=gitee BRANCH=dev docker.md-compose -f docker.md/docker.md-compose.yml up -d 
 
 ```shell
 # 先克隆项目（如已有则跳过）
-git clone https://github.com/HBAI-Ltd/Toonflow-app.git
+git clone https://github.com/viaco2ove/Toonflow-game.git
 cd Toonflow-app
 
 # 使用本地源码构建
@@ -242,7 +247,7 @@ npm install -g yarn pm2
 
 ```bash
 cd /opt
-git clone https://github.com/HBAI-Ltd/Toonflow-app.git
+git clone https://github.com/viaco2ove/Toonflow-game.git
 cd Toonflow-app
 yarn install
 yarn build
@@ -337,7 +342,7 @@ pm2 monit             # 监控面板
    **从 GitHub 克隆：**
 
    ```bash
-   git clone https://github.com/HBAI-Ltd/Toonflow-app.git
+   git clone https://github.com/viaco2ove/Toonflow-game.git
    cd Toonflow-app
    ```
 
@@ -563,7 +568,43 @@ Toonflow 基于 AGPL-3.0 协议开源发布，许可证详情：https://www.gnu.
 
 [![Star History Chart](https://api.star-history.com/svg?repos=HBAI-Ltd/Toonflow-app&type=timeline&legend=top-left)](https://www.star-history.com/#HBAI-Ltd/Toonflow-app&type=timeline&legend=top-left)
 
----
+# 配置建议
+  最低配置（开发/测试环境）
+   配置项                                                                               │ 建议值
+  ──────────────────────────────────────────────────────────────────────────────────────┼─────────────────────────────────────────────────────────────────────────────────────      
+   CPU                                                                                  │ 2 核
+   内存                                                                                 │ 4 GB
+   硬盘                                                                                 │ 40 GB SSD
+   带宽                                                                                 │ 5 Mbps
+   操作系统                                                                             │ Ubuntu 22.04 LTS / Debian 12
+
+  推荐配置（生产环境）
+   配置项                                                                               │ 建议值
+  ──────────────────────────────────────────────────────────────────────────────────────┼─────────────────────────────────────────────────────────────────────────────────────      
+   CPU                                                                                  │ 4 核
+   内存                                                                                 │ 8 GB
+   硬盘                                                                                 │ 80 GB SSD
+   带宽                                                                                 │ 10 Mbps+
+   操作系统                                                                             │ Ubuntu 22.04 LTS / Debian 12
+  --------
+  项目依赖分析
+  技术栈：                                                                                                                                                                          
+
+  - 后端：Node.js 24 + Express + TypeScript
+  - 数据库：SQLite（better-sqlite3）
+  - 前端：构建后为静态 HTML，通过 Nginx 提供服务
+  - 进程管理：PM2 + Supervisor
+  - AI 服务：依赖多个 AI Provider（OpenAI、DeepSeek、Google、Anthropic 等）
+  - 图像处理：Sharp（图片处理库）
+
+  关键依赖：
+
+  - 需要调用外部 AI API（OpenAI、DeepSeek、智谱等）
+  - 图片处理（Sharp 库需要编译原生模块）
+  - 文件存储（阿里云 COS、腾讯云 COS）
+  --------
+内存2g :单人轻度使用 
+
 
 # 🙏 致谢
 

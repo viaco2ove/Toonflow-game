@@ -36,11 +36,12 @@ import { getStoryVoiceDesignConfig, synthesizeVoiceDesignBuffer, type VoiceDesig
 import FormData from "form-data";
 import { synthesizeAliyunDirectCosyVoiceBuffer } from "@/lib/aliyunCosyVoice";
 import { mixPcmWavBuffers } from "@/lib/wavMix";
+import { normalizeAudioBufferToPcmWav } from "@/lib/audioNormalize";
 import { v4 as uuidv4 } from "uuid";
 
 const router = express.Router();
 
-type VoiceMode = "text" | "clone" | "mix" | "prompt_voice";
+export type VoiceMode = "text" | "clone" | "mix" | "prompt_voice";
 type DirectAliyunCustomVoiceMode = Extract<VoiceMode, "clone" | "mix" | "prompt_voice">;
 
 const DIRECT_ALIYUN_CUSTOM_VOICE_CACHE = new Map<string, { voiceId: string; createdAt: number }>();
@@ -58,6 +59,13 @@ const DIRECT_AUDIO_CONTENT_TYPE_MAP: Record<string, string> = {
 
 function trimText(input?: unknown): string {
   return String(input || "").trim();
+}
+
+/**
+ * 只在 DEBUG 日志级别打印阿里参考音频直链诊断，方便排查 clone 为什么解码失败。
+ */
+function isVoicePreviewDebugEnabled(): boolean {
+  return String(process.env.LOG_LEVEL || "").trim().toUpperCase() === "DEBUG";
 }
 
 function normalizePreviewFormat(input?: unknown): string {
@@ -124,6 +132,33 @@ function isPublicHttpUrl(url?: string | null): boolean {
   }
 }
 
+/**
+ * 轻量校验公网参考音频直链是否真的返回音频内容。
+ * 这里的目的是在把 URL 交给阿里 clone 前，先拦掉返回 HTML 落地页/跳转页的坏链接。
+ */
+async function assertDirectAliyunReferenceAudioUrlUsable(url: string): Promise<void> {
+  const response = await axios.get(url, {
+    responseType: "arraybuffer",
+    timeout: 15000,
+    maxRedirects: 5,
+    headers: {
+      Range: "bytes=0-127",
+    },
+    validateStatus: (status) => status >= 200 && status < 400,
+  });
+  const contentType = String(response.headers["content-type"] || "").toLowerCase();
+  const probe = Buffer.from(response.data || []).slice(0, 64);
+  const probeText = probe.toString("utf8").trim().toLowerCase();
+  const isWave = probe.slice(0, 4).toString("ascii") === "RIFF" && probe.slice(8, 12).toString("ascii") === "WAVE";
+  const isMp3 = probe.slice(0, 3).toString("ascii") === "ID3"
+    || (probe.length >= 2 && probe[0] === 0xff && (probe[1]! & 0xe0) === 0xe0);
+  const isHtml = contentType.includes("text/html") || probeText.startsWith("<!doctype html") || probeText.startsWith("<html");
+  const isAudioType = contentType.startsWith("audio/") || contentType.includes("octet-stream");
+  if (isHtml || (!isAudioType && !isWave && !isMp3)) {
+    throw new Error(`参考音频公网地址不是原始音频直链: ${url}`);
+  }
+}
+
 function buildDirectAliyunVoiceName(seed: string, maxLength: number): string {
   const normalized = trimText(seed).toLowerCase().replace(/[^a-z0-9]+/g, "");
   const fallback = "voice";
@@ -151,7 +186,29 @@ function setDirectAliyunCustomVoiceCache(cacheKey: string, voiceId: string) {
   });
 }
 
-function buildProxyAudioUrl(req: express.Request, configId: number | null | undefined, source: string): string {
+/**
+ * 删除阿里直连专属音色的本地缓存。
+ * 当上游已经回收或拒绝旧 voice_id 时，需要主动丢掉本地缓存，避免反复复用失效值。
+ */
+function deleteDirectAliyunCustomVoiceCache(cacheKey: string) {
+  if (!trimText(cacheKey)) return;
+  DIRECT_ALIYUN_CUSTOM_VOICE_CACHE.delete(cacheKey);
+}
+
+/**
+ * 判断当前错误是否属于 CosyVoice 的 InvalidParameter。
+ * 这类错误大概率表示复用的 voice_id 已失效、尚未就绪，或与当前模型不再兼容。
+ */
+function isCosyVoiceInvalidParameterError(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err || "");
+  return /CosyVoice 任务失败\(InvalidParameter\)|InvalidParameter/i.test(message);
+}
+
+/**
+ * 把内部 OSS/上游返回的音频地址转换成前端可直接访问的代理地址。
+ * 生成音色文件、试听和正式运行时都复用这条代理链，避免设备直连内网地址失败。
+ */
+export function buildProxyAudioUrl(req: express.Request, configId: number | null | undefined, source: string): string {
   const rawSource = String(source || "").trim();
   if (!rawSource) return "";
   const configuredBase = String(process.env.OSSURL || "").trim().replace(/\/+$/, "");
@@ -172,6 +229,30 @@ function buildProxyAudioUrl(req: express.Request, configId: number | null | unde
   params.set("source", rawSource);
   if (rawToken) params.set("token", rawToken);
   return `${publicBase}/voice/audioProxy?${params.toString()}`;
+}
+
+/**
+ * 混合音色只有本地/代理语音网关才需要通过 `/voices` 推断 provider。
+ * 阿里云直连没有这个预设列表接口，不能再去请求 `${baseUrl}/voices`。
+ */
+async function resolveMixProviderForPreview(options: {
+  directAliyun: boolean;
+  mixVoiceIds: string[];
+  baseUrl: string;
+  headers: Record<string, string>;
+  manufacturer: string;
+}): Promise<string> {
+  if (options.directAliyun || !options.mixVoiceIds.length) {
+    return "";
+  }
+  const mixProviders = Array.from(
+    new Set(
+      filterVoicePresetsByManufacturer(await fetchVoicePresets(options.baseUrl, options.headers), options.manufacturer)
+        .filter((item: { voiceId: string; provider: string }) => options.mixVoiceIds.includes(item.voiceId) && item.provider)
+        .map((item: { provider: string }) => item.provider),
+    ),
+  );
+  return mixProviders.length === 1 ? String(mixProviders[0] || "").trim() : "";
 }
 
 function normalizeBase64(input?: string | null): string {
@@ -209,7 +290,11 @@ function inferAudioMimeType(source?: string | null): string {
   return DIRECT_AUDIO_CONTENT_TYPE_MAP[ext] || "audio/wav";
 }
 
-async function loadReferenceAudioBuffer(referenceAudioPath: string): Promise<Buffer> {
+/**
+ * 读取参考音频的原始 Buffer。
+ * 支持 data url、http(s) 链接以及 OSS 相对路径，供 clone/生成音色文件复用。
+ */
+export async function loadReferenceAudioBuffer(referenceAudioPath: string): Promise<Buffer> {
   const raw = String(referenceAudioPath || "").trim();
   if (!raw) {
     throw new Error("克隆模式需要参考音频");
@@ -434,7 +519,15 @@ async function resolveDirectAliyunReferenceAudioUrl(referenceAudioSource: string
   }
   if (!/^https?:\/\//i.test(source) && !/^data:/i.test(source)) {
     const externalUrl = await u.oss.getExternalUrl(source);
+    if (isVoicePreviewDebugEnabled()) {
+      console.log("[voice:preview:aliyun_ref_url]", JSON.stringify({
+        stage: "getExternalUrl",
+        source,
+        externalUrl,
+      }));
+    }
     if (isPublicHttpUrl(externalUrl)) {
+      await assertDirectAliyunReferenceAudioUrlUsable(externalUrl);
       return externalUrl;
     }
   }
@@ -442,7 +535,15 @@ async function resolveDirectAliyunReferenceAudioUrl(referenceAudioSource: string
   const buffer = await loadReferenceAudioBuffer(source);
   const ext = inferAudioExt(source);
   const uploadedUrl = await u.oss.uploadTemp(buffer, `aliyun-direct-ref-${sha1(source).slice(0, 12)}.${ext}`);
+  if (isVoicePreviewDebugEnabled()) {
+    console.log("[voice:preview:aliyun_ref_url]", JSON.stringify({
+      stage: "uploadTemp",
+      source,
+      uploadedUrl: trimText(uploadedUrl || ""),
+    }));
+  }
   if (isPublicHttpUrl(uploadedUrl)) {
+    await assertDirectAliyunReferenceAudioUrlUsable(trimText(uploadedUrl));
     return trimText(uploadedUrl);
   }
 
@@ -466,10 +567,106 @@ function extractDirectAliyunCustomVoiceId(data: Record<string, any> | null | und
     data?.output?.voice_id
     || data?.output?.voiceID
     || data?.output?.voiceId
+    || data?.output?.voice
     || data?.voice_id
     || data?.voiceID
-    || data?.voiceId,
+    || data?.voiceId
+    || data?.voice,
   );
+}
+
+type GeneratedReferenceMeta = {
+  customVoiceId?: string;
+  requestModel?: string;
+  targetModel?: string;
+  generatedBy?: string;
+  roleId?: string;
+  createdAt?: number;
+};
+
+type SynthesizedReferenceAudioResult = {
+  audioPath: string;
+  customVoiceId?: string;
+  customVoiceFresh?: boolean;
+  requestModel?: string;
+  targetModel?: string;
+};
+
+/**
+ * 构造参考音频缓存种子。
+ *
+ * 用途：
+ * - 让缓存命中只依赖真正影响生成结果的字段；
+ * - `prompt_voice` 不再受无关的 `voiceId/mixVoices` 漂移影响；
+ * - 把目标模型并入缓存键，避免同一 configId 改模型后继续复用旧缓存。
+ */
+function buildReferenceAudioCacheSeed(options: {
+  manufacturer: string;
+  configId: number;
+  targetModel: string;
+  mode: VoiceMode;
+  voiceId: string;
+  textSeed: string;
+  promptText: string;
+  mixVoices: Array<{ voiceId: string; weight?: number | null }>;
+}): Record<string, unknown> {
+  const baseSeed: Record<string, unknown> = {
+    manufacturer: options.manufacturer,
+    configId: options.configId,
+    targetModel: trimText(options.targetModel),
+    mode: options.mode,
+    textSeed: options.textSeed,
+  };
+  if (options.mode === "prompt_voice") {
+    baseSeed.promptText = trimText(options.promptText);
+    return baseSeed;
+  }
+  if (options.mode === "mix") {
+    baseSeed.mixVoices = normalizeMixVoiceItems(options.mixVoices);
+    return baseSeed;
+  }
+  baseSeed.voiceId = trimText(options.voiceId);
+  return baseSeed;
+}
+
+/**
+ * 为生成参考音频构造 sidecar 元数据路径。
+ * 这份元数据主要记录阿里第一次“创建专属音色”时返回的 voice_id，后续同模型试听时可直接复用。
+ */
+function buildGeneratedReferenceMetaPath(audioPath: string): string {
+  const rawPath = trimText(audioPath);
+  if (!rawPath) return "";
+  return rawPath.replace(/\.[^.\/\\]+$/, ".meta.json");
+}
+
+/**
+ * 读取参考音频 sidecar 元数据。
+ * sidecar 仅用于优化试听链路；读不到时直接回退旧 clone 路径，不阻塞主流程。
+ */
+async function readGeneratedReferenceMeta(audioPath: string): Promise<GeneratedReferenceMeta | null> {
+  const metaPath = buildGeneratedReferenceMetaPath(audioPath);
+  if (!metaPath || !(await u.oss.fileExists(metaPath))) return null;
+  try {
+    const buffer = await u.oss.getFile(metaPath);
+    const parsed = JSON.parse(buffer.toString("utf8"));
+    return parsed && typeof parsed === "object" ? (parsed as GeneratedReferenceMeta) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 写入参考音频 sidecar 元数据。
+ * 这里把“第一次创建专属音色”的结果和参考音频文件绑定起来，避免后续又拿这份音频去二次复刻。
+ */
+async function writeGeneratedReferenceMeta(audioPath: string, meta: GeneratedReferenceMeta): Promise<void> {
+  const metaPath = buildGeneratedReferenceMetaPath(audioPath);
+  if (!metaPath) return;
+  try {
+    await u.oss.writeFile(metaPath, Buffer.from(JSON.stringify(meta), "utf8"));
+  } catch (err) {
+    console.warn("[voice] persist generated reference meta failed:", err instanceof Error ? err.message : String(err));
+  }
 }
 
 function isDirectAliyunPromptVoiceConfigCompatible(targetModel: string, voiceDesignConfig?: VoiceDesignConfig | null): boolean {
@@ -502,6 +699,10 @@ function buildDirectAliyunCustomVoiceCacheKey(options: {
   }));
 }
 
+/**
+ * 创建或复用阿里云直连专属音色。
+ * 这里统一封装 prompt_voice / clone / mix 三类入口，必要时允许显式跳过缓存重建 voice_id。
+ */
 async function createDirectAliyunCustomVoice(options: {
   config: any;
   mode: DirectAliyunCustomVoiceMode;
@@ -510,6 +711,7 @@ async function createDirectAliyunCustomVoice(options: {
   sampleRate?: number | null;
   mixVoices?: Array<{ voiceId: string; weight?: number | null }>;
   voiceDesignConfig?: VoiceDesignConfig | null;
+  bypassCache?: boolean;
 }): Promise<{ voiceId: string; fresh: boolean; responseData: Record<string, any> | null }> {
   const targetModel = normalizeAliyunDirectTtsModel(trimText(options.config?.model));
   const requestedSampleRate = normalizePreviewSampleRate(options.sampleRate) || 24000;
@@ -521,7 +723,7 @@ async function createDirectAliyunCustomVoice(options: {
     promptText: options.promptText,
     mixVoices: options.mixVoices,
   });
-  const cachedVoiceId = getDirectAliyunCustomVoiceCache(cacheKey);
+  const cachedVoiceId = !options.bypassCache ? getDirectAliyunCustomVoiceCache(cacheKey) : "";
   if (cachedVoiceId) {
     return { voiceId: cachedVoiceId, fresh: false, responseData: null };
   }
@@ -768,7 +970,11 @@ async function synthesizeDirectAliyunReferenceBuffer(options: {
   return Buffer.from(audioResponse.data);
 }
 
-async function synthesizeReferenceAudioFromMode(options: {
+/**
+ * 按当前绑定模式生成“可复用参考音频文件”。
+ * text/mix/prompt_voice 最终都会落成一个 wav 文件，供后续统一走 clone 通道。
+ */
+export async function synthesizeReferenceAudioFromMode(options: {
   config: any;
   manufacturer: string;
   baseUrl: string;
@@ -782,7 +988,8 @@ async function synthesizeReferenceAudioFromMode(options: {
   textSeed?: string;
   userId: number;
   voiceDesignConfig?: VoiceDesignConfig | null;
-}): Promise<string> {
+  roleId?: string | null;
+}): Promise<SynthesizedReferenceAudioResult> {
   const {
     config,
     manufacturer,
@@ -797,17 +1004,46 @@ async function synthesizeReferenceAudioFromMode(options: {
     textSeed = BUSINESS_VOICE_PRESET_SEED_TEXT,
     userId,
     voiceDesignConfig = null,
+    roleId = "",
   } = options;
+  const normalizedRoleId = trimText(roleId) || "";
+  const currentTargetModel = normalizeAliyunDirectTtsModel(trimText(config?.model));
 
-  const cachePath = buildGeneratedReferencePath({
+  const cachePath = buildGeneratedReferencePath(buildReferenceAudioCacheSeed({
     manufacturer,
     configId: Number(config?.id || 0),
+    targetModel: currentTargetModel,
     mode,
     voiceId,
+    textSeed,
     promptText,
-    mixVoices: normalizeMixVoiceItems(mixVoices),
-  });
+    mixVoices,
+  }), normalizedRoleId);
   if (await u.oss.fileExists(cachePath)) {
+    const cachedMeta = await readGeneratedReferenceMeta(cachePath);
+    const cachedTargetModel = normalizeAliyunDirectTtsModel(trimText(cachedMeta?.targetModel));
+    if (!cachedTargetModel || cachedTargetModel === currentTargetModel) {
+      return {
+        audioPath: cachePath,
+        customVoiceId: trimText(cachedMeta?.customVoiceId) || undefined,
+        customVoiceFresh: false,
+        requestModel: trimText(cachedMeta?.requestModel) || undefined,
+        targetModel: trimText(cachedMeta?.targetModel) || undefined,
+      };
+    }
+  }
+
+  /**
+   * 参考音频最终会进入 clone 通道，因此这里统一把落盘格式收成阿里可稳定解码的 PCM WAV。
+   * 否则语音设计模型返回的 float wav / 其它封装格式会在下一步 clone 时直接报 DecoderError。
+   */
+  async function writeCloneReadyReference(buffer: Buffer, sourceExt?: string | null) {
+    const normalizedBuffer = await normalizeAudioBufferToPcmWav({
+      buffer,
+      sourceExt,
+      sampleRate: 24000,
+    });
+    await u.oss.writeFile(cachePath, normalizedBuffer);
     return cachePath;
   }
 
@@ -820,8 +1056,25 @@ async function synthesizeReferenceAudioFromMode(options: {
       preferredName: voiceId || "story_prompt_voice",
       format: "wav",
     });
-    await u.oss.writeFile(cachePath, designed.buffer);
-    return cachePath;
+    const audioPath = await writeCloneReadyReference(designed.buffer, inferAudioExt(designed.sourceUrl || "preview.wav"));
+    const customVoiceId = extractDirectAliyunCustomVoiceId(designed.responseData);
+    if (customVoiceId) {
+      await writeGeneratedReferenceMeta(audioPath, {
+        customVoiceId,
+        requestModel: designed.requestModel,
+        targetModel: designed.targetModel,
+        generatedBy: mode,
+        roleId: normalizedRoleId || undefined,
+        createdAt: Date.now(),
+      });
+    }
+    return {
+      audioPath,
+      customVoiceId: customVoiceId || undefined,
+      customVoiceFresh: Boolean(customVoiceId),
+      requestModel: designed.requestModel,
+      targetModel: designed.targetModel,
+    };
   }
 
   let sourceUrl = "";
@@ -848,8 +1101,7 @@ async function synthesizeReferenceAudioFromMode(options: {
         })),
       );
       const mixedBuffer = mixPcmWavBuffers(buffers);
-      await u.oss.writeFile(cachePath, mixedBuffer);
-      return cachePath;
+      return { audioPath: await writeCloneReadyReference(mixedBuffer, "wav") };
     }
     if (mode !== "text") {
       throw new Error("当前语音模型不支持该绑定模式");
@@ -864,8 +1116,7 @@ async function synthesizeReferenceAudioFromMode(options: {
         format: "wav",
         sampleRate,
       });
-      await u.oss.writeFile(cachePath, buffer);
-      return cachePath;
+      return { audioPath: await writeCloneReadyReference(buffer, "wav") };
     }
     const buffer = await synthesizeDirectAliyunReferenceBuffer({
       config,
@@ -875,8 +1126,7 @@ async function synthesizeReferenceAudioFromMode(options: {
       text: textSeed,
       sampleRate,
     });
-    await u.oss.writeFile(cachePath, buffer);
-    return cachePath;
+    return { audioPath: await writeCloneReadyReference(buffer, "wav") };
   } else {
     const payload: Record<string, any> = {
       text: textSeed,
@@ -904,7 +1154,9 @@ async function synthesizeReferenceAudioFromMode(options: {
   if (!String(sourceUrl || "").trim()) {
     throw new Error("未能生成参考音色");
   }
-  return persistDerivedReferenceAudio(cachePath, sourceUrl);
+  const persistedPath = await persistDerivedReferenceAudio(cachePath, sourceUrl);
+  const persistedBuffer = await loadReferenceAudioBuffer(persistedPath);
+  return { audioPath: await writeCloneReadyReference(persistedBuffer, inferAudioExt(sourceUrl || persistedPath)) };
 }
 
 // 语音预览
@@ -912,6 +1164,7 @@ export default router.post(
   "/",
   validateFields({
     configId: z.number().optional().nullable(),
+    roleId: z.string().optional().nullable(),
     text: z.string(),
     mode: z.enum(["text", "clone", "mix", "prompt_voice"]).optional(),
     voiceId: z.string().optional().nullable(),
@@ -939,6 +1192,7 @@ export default router.post(
     try {
       const {
         configId,
+        roleId,
         text,
         mode = "text",
         voiceId,
@@ -961,6 +1215,7 @@ export default router.post(
         hasReferenceAudioPath: !!String(referenceAudioPath || "").trim(),
         promptTextLength: String(promptText || "").trim().length,
         mixVoiceCount: Array.isArray(mixVoices) ? mixVoices.length : 0,
+        roleId: String(roleId || "").trim() || null,
       };
 
       const userId = Number((req as any)?.user?.id || 0);
@@ -1101,12 +1356,33 @@ export default router.post(
       } else if (mode === "clone") {
         if (resolvedReferenceAudioSource) {
           if (directAliyun) {
-            const customVoice = await createDirectAliyunCustomVoice({
-              config,
-              mode,
-              referenceAudioSource: resolvedReferenceAudioSource,
-              sampleRate: normalizedSampleRate,
-            });
+            const explicitCustomVoiceId = trimText(effectiveVoiceId);
+            const generatedMeta = !/^https?:\/\//i.test(resolvedReferenceAudioSource) && !/^data:/i.test(resolvedReferenceAudioSource)
+              ? await readGeneratedReferenceMeta(resolvedReferenceAudioSource)
+              : null;
+            // 如果这份参考音频本身就是阿里“提示词设计/官方设计”第一次返回的结果，
+            // 并且目标模型一致，就直接复用当时返回的专属 voice_id，不再把同一份音频拿去二次复刻。
+            const reusableCustomVoiceId = trimText(generatedMeta?.customVoiceId);
+            const reusableTargetModel = normalizeAliyunDirectTtsModel(trimText(generatedMeta?.targetModel));
+            const currentTargetModel = normalizeAliyunDirectTtsModel(String(config.model || "").trim());
+            const customVoice = explicitCustomVoiceId
+              ? {
+                  voiceId: explicitCustomVoiceId,
+                  fresh: false,
+                  responseData: null,
+                }
+              : reusableCustomVoiceId && reusableTargetModel === currentTargetModel
+              ? {
+                  voiceId: reusableCustomVoiceId,
+                  fresh: false,
+                  responseData: null,
+                }
+              : await createDirectAliyunCustomVoice({
+                  config,
+                  mode,
+                  referenceAudioSource: resolvedReferenceAudioSource,
+                  sampleRate: normalizedSampleRate,
+                });
             const synthesized = await synthesizeDirectAliyunPreviewAudioWithRetry({
               config,
               headers,
@@ -1150,21 +1426,17 @@ export default router.post(
           return res.status(400).send(error("混合模式需要选择音色"));
         }
         const mixIds = mixList.map((item: { voice_id: string }) => String(item.voice_id || "").trim()).filter(Boolean);
-        if (mixIds.length) {
-          const mixProviders = Array.from(
-            new Set(
-              filterVoicePresetsByManufacturer(await fetchVoicePresets(baseUrl, headers), manufacturer)
-                .filter((item: { voiceId: string; provider: string }) => mixIds.includes(item.voiceId) && item.provider)
-                .map((item: { provider: string }) => item.provider),
-            ),
-          );
-          if (mixProviders.length === 1) {
-            if (!directAliyun) {
-              payload.provider = mixProviders[0];
-            }
-          }
+        const mixProvider = await resolveMixProviderForPreview({
+          directAliyun,
+          mixVoiceIds: mixIds,
+          baseUrl,
+          headers,
+          manufacturer,
+        });
+        if (mixProvider) {
+          payload.provider = mixProvider;
         }
-        const generatedReferencePath = await synthesizeReferenceAudioFromMode({
+        const generatedReference = await synthesizeReferenceAudioFromMode({
           config,
           manufacturer,
           baseUrl,
@@ -1176,12 +1448,13 @@ export default router.post(
           sampleRate: normalizedSampleRate,
           resolvedProvider: String(payload.provider || ""),
           userId,
+          roleId: String(roleId || "").trim(),
         });
         if (directAliyun) {
           const customVoice = await createDirectAliyunCustomVoice({
             config,
             mode,
-            referenceAudioSource: generatedReferencePath,
+            referenceAudioSource: generatedReference.audioPath,
             sampleRate: normalizedSampleRate,
             mixVoices: normalizedMixVoices,
           });
@@ -1203,7 +1476,7 @@ export default router.post(
               ...synthesized.data,
               customVoiceId: customVoice.voiceId,
               customVoiceMode: mode,
-              compatibilityReferencePath: generatedReferencePath,
+              compatibilityReferencePath: generatedReference.audioPath,
             },
           }));
         }
@@ -1211,46 +1484,18 @@ export default router.post(
           req,
           userId,
           text,
-          generatedReferencePath,
+          generatedReference.audioPath,
           BUSINESS_VOICE_PRESET_SEED_TEXT,
           payload.format,
           speed,
         );
-        return res.status(200).send(success({ audioUrl: cloned.audioUrl, data: { ...cloned.data, compatibilityReferencePath: generatedReferencePath } }));
+        return res.status(200).send(success({ audioUrl: cloned.audioUrl, data: { ...cloned.data, compatibilityReferencePath: generatedReference.audioPath } }));
       } else if (mode === "prompt_voice") {
         if (!promptText) {
           return res.status(400).send(error("提示词模式需要填写提示词"));
         }
-        if (directAliyun) {
-          const customVoice = await createDirectAliyunCustomVoice({
-            config,
-            mode,
-            promptText: String(promptText || "").trim(),
-            sampleRate: normalizedSampleRate,
-            voiceDesignConfig,
-          });
-          const synthesized = await synthesizeDirectAliyunPreviewAudioWithRetry({
-            config,
-            headers,
-            userId,
-            text,
-            voiceId: customVoice.voiceId,
-            format: payload.format,
-            sampleRate: normalizedSampleRate,
-            speed,
-            fresh: customVoice.fresh,
-          });
-          const audioUrl = buildProxyAudioUrl(req, config?.id, synthesized.sourceUrl);
-          return res.status(200).send(success({
-            audioUrl,
-            data: {
-              ...synthesized.data,
-              customVoiceId: customVoice.voiceId,
-              customVoiceMode: mode,
-            },
-          }));
-        }
-        const generatedReferencePath = await synthesizeReferenceAudioFromMode({
+        const normalizedRoleId = String(roleId || "").trim();
+        const generatedReference = await synthesizeReferenceAudioFromMode({
           config,
           manufacturer,
           baseUrl,
@@ -1263,17 +1508,99 @@ export default router.post(
           resolvedProvider,
           userId,
           voiceDesignConfig,
+          roleId: normalizedRoleId,
         });
+        if (directAliyun) {
+          // 阿里官方提示词设计第一次返回的就是专属音色。
+          // 这里优先直接复用这个 voice_id，避免生成后又把 preview_audio 拿去二次复刻。
+          let customVoice = generatedReference.customVoiceId
+            ? {
+                voiceId: generatedReference.customVoiceId,
+                fresh: Boolean(generatedReference.customVoiceFresh),
+                responseData: null,
+              }
+            : await createDirectAliyunCustomVoice({
+                config,
+                mode: "clone",
+                referenceAudioSource: generatedReference.audioPath,
+                sampleRate: normalizedSampleRate,
+              });
+          let customVoiceMode = generatedReference.customVoiceId ? "prompt_voice" : "clone";
+          let synthesized: { sourceUrl: string; data: Record<string, any> };
+          try {
+            synthesized = await synthesizeDirectAliyunPreviewAudioWithRetry({
+              config,
+              headers,
+              userId,
+              text,
+              voiceId: customVoice.voiceId,
+              format: payload.format,
+              sampleRate: normalizedSampleRate,
+              speed,
+              fresh: customVoice.fresh,
+            });
+          } catch (err) {
+            if (!isCosyVoiceInvalidParameterError(err)) {
+              throw err;
+            }
+            // 这里说明复用到的旧 voice_id 已经被 CosyVoice 拒绝。
+            // 直接基于当前参考音频重新创建一份 clone 专属音色，再重试一次正式试听。
+            const staleVoiceCacheKey = buildDirectAliyunCustomVoiceCacheKey({
+              configId: Number(config?.id || 0),
+              targetModel: normalizeAliyunDirectTtsModel(trimText(config?.model)),
+              mode: "clone",
+              referenceAudioSource: generatedReference.audioPath,
+            });
+            deleteDirectAliyunCustomVoiceCache(staleVoiceCacheKey);
+            customVoice = await createDirectAliyunCustomVoice({
+              config,
+              mode: "clone",
+              referenceAudioSource: generatedReference.audioPath,
+              sampleRate: normalizedSampleRate,
+              bypassCache: true,
+            });
+            customVoiceMode = "clone";
+            await writeGeneratedReferenceMeta(generatedReference.audioPath, {
+              customVoiceId: customVoice.voiceId,
+              requestModel: generatedReference.requestModel,
+              targetModel: generatedReference.targetModel || normalizeAliyunDirectTtsModel(trimText(config?.model)),
+              generatedBy: "clone",
+              roleId: normalizedRoleId || undefined,
+              createdAt: Date.now(),
+            });
+            synthesized = await synthesizeDirectAliyunPreviewAudioWithRetry({
+              config,
+              headers,
+              userId,
+              text,
+              voiceId: customVoice.voiceId,
+              format: payload.format,
+              sampleRate: normalizedSampleRate,
+              speed,
+              fresh: customVoice.fresh,
+            });
+          }
+          const audioUrl = buildProxyAudioUrl(req, config?.id, synthesized.sourceUrl);
+          return res.status(200).send(success({
+            audioUrl,
+            data: {
+              ...synthesized.data,
+              customVoiceId: customVoice.voiceId,
+              customVoiceMode,
+              compatibilityReferencePath: generatedReference.audioPath,
+            },
+          }));
+        }
         const cloned = await synthesizeWithLocalClone(
           req,
           userId,
           text,
-          generatedReferencePath,
+          generatedReference.audioPath,
           BUSINESS_VOICE_PRESET_SEED_TEXT,
           payload.format,
           speed,
         );
-        return res.status(200).send(success({ audioUrl: cloned.audioUrl, data: { ...cloned.data, compatibilityReferencePath: generatedReferencePath } }));
+        return res.status(200).send(success({ audioUrl: cloned.audioUrl, data: { ...cloned.data, compatibilityReferencePath: generatedReference.audioPath } }));
       }
 
       let data: Record<string, any> = {};

@@ -10,24 +10,58 @@ import {
 } from "@/lib/gameEngine";
 import {
   applyPlayerProfileFromMessageToState,
+  allowPlayerTurn,
   runStorySpeakerContent,
   RuntimeMessageInput,
   runtimeStoryRoles,
+  setRuntimeTurnState,
 } from "@/modules/game-runtime/engines/NarrativeOrchestrator";
 import {
+  applyDebugNarrativeMessageProgress,
+  cacheAndBuildDebugStateSnapshot,
   asDebugMessage,
+  buildDebugMessageWithRevisitData,
   buildDebugRecentMessages,
   debugMessageSchema,
+  evaluateDebugRuntimeOutcome,
+  getPendingDebugChapterId,
+  isDebugFreePlotActive,
   loadCachedDebugRuntimeState,
+  resolveNextChapter,
+  saveDebugRevisitPoint,
+  setPendingDebugChapterId,
+  syncDebugChapterRuntime,
 } from "./debugRuntimeShared";
 import u from "@/utils";
+import { DebugLogUtil } from "@/utils/debugLogUtil";
+import { miniGameStateManager } from "@/modules/game-runtime/engines/MiniGameStateManager";
 
 const router = express.Router();
 
-function writeStreamLine(res: express.Response, payload: Record<string, unknown>) {
-  res.write(`${JSON.stringify(payload)}\n`);
+/**
+ * 刷新流式响应头，确保浏览器能尽快收到 NDJSON 事件。
+ */
+function flushStreamResponse(res: express.Response) {
+  if (typeof res.flushHeaders === "function") {
+    res.flushHeaders();
+  }
+  const anyRes = res as express.Response & { flush?: () => void };
+  if (typeof anyRes.flush === "function") {
+    anyRes.flush();
+  }
 }
 
+/**
+ * 向前端写入一条 NDJSON 流事件。
+ */
+function writeStreamLine(res: express.Response, payload: Record<string, unknown>) {
+  res.write(`${JSON.stringify(payload)}\n`);
+  flushStreamResponse(res);
+}
+
+/**
+ * 把完整台词拆成较小的流式片段，便于前端逐段显示。
+ */
 function splitTextIntoChunks(text: string): string[] {
   const normalized = String(text || "").replace(/\r/g, "").trim();
   if (!normalized) return [];
@@ -44,6 +78,9 @@ function splitTextIntoChunks(text: string): string[] {
   return chunks;
 }
 
+/**
+ * 从分片缓冲里提取完整句子事件，给前端做逐句高亮或字幕显示。
+ */
 function collectSentenceEvents(buffer: string, chunk: string) {
   const sentences: string[] = [];
   let nextBuffer = `${buffer}${chunk}`;
@@ -62,6 +99,10 @@ function collectSentenceEvents(buffer: string, chunk: string) {
   };
 }
 
+/**
+ * /game/streamlines 只负责流式生成当前这句台词。
+ * 其他运行态、事件视图、角色卡等信息禁止混入响应体，统一由 storyInfo 接口查询。
+ */
 export default router.post(
   "/",
   validateFields({
@@ -105,6 +146,7 @@ export default router.post(
       let chapter: any = null;
       let messages: RuntimeMessageInput[] = [];
       let state: Record<string, any> = {};
+
       if (sessionId) {
         const sessionRow = await db("t_gameSession").where({ sessionId }).first();
         if (!sessionRow) {
@@ -135,9 +177,22 @@ export default router.post(
         const pendingPlan = parseJsonSafe<Record<string, unknown>>(state?.pendingNarrativePlan, {});
         if (!Object.keys(plan).length && Object.keys(pendingPlan).length) {
           Object.assign(plan, pendingPlan);
+        } else if (Object.keys(pendingPlan).length) {
+          // 小游戏编排接口只返回 role/roleType/motive，这里从 pendingPlan 补全 eventType 等关键字段
+          if (!plan.eventType && pendingPlan.eventType) {
+            plan.eventType = pendingPlan.eventType;
+          }
+          if (!plan.source && pendingPlan.source) {
+            plan.source = pendingPlan.source;
+          }
+          if (!plan.presetContent && pendingPlan.presetContent) {
+            plan.presetContent = pendingPlan.presetContent;
+          }
         }
+        // 小游戏模式时，只用小游戏相关的消息，避免章节事件污染小游戏台词
+        const isMiniGamePlan = pendingPlan && String(pendingPlan.source || "") === "rule";
         const rawRecentMessages = await db("t_sessionMessage").where({ sessionId }).orderBy("id", "desc").limit(20);
-        messages = rawRecentMessages
+        let allMessages = rawRecentMessages
           .reverse()
           .map((item: any) => ({
             role: String(item.role || ""),
@@ -146,6 +201,16 @@ export default router.post(
             content: String(item.content || ""),
             createTime: Number(item.createTime || 0),
           }));
+        // 小游戏模式下过滤，只保留 on_mini_game 系列消息
+        if (isMiniGamePlan) {
+          messages = allMessages.filter((m: { eventType?: string }) => m.eventType?.startsWith("on_mini_game"));
+          // 如果过滤后消息太少（小于3条），补上最新的几条
+          if (messages.length < 3 && allMessages.length > 0) {
+            messages = allMessages.slice(-3);
+          }
+        } else {
+          messages = allMessages;
+        }
       } else {
         world = await db("t_storyWorld as w")
           .leftJoin("t_project as p", "w.projectId", "p.id")
@@ -154,6 +219,7 @@ export default router.post(
           .select("w.*")
           .first();
       }
+
       if (!world) {
         res.status(404);
         writeStreamLine(res, { type: "error", data: { message: "未找到故事" } });
@@ -169,9 +235,10 @@ export default router.post(
         }
         chapter = normalizeChapterOutput(chapter);
       }
+
       if (!chapter) {
         res.status(404);
-        writeStreamLine(res, { type: "error", data: { message: "当前没有章节可调试" } });
+        writeStreamLine(res, { type: "error", data: { message: "当前没有章节可游玩或者调试" } });
         return;
       }
 
@@ -196,7 +263,12 @@ export default router.post(
           createTime: Number(item.createTime || 0),
         }));
       }
-      const recentMessages = buildDebugRecentMessages(messages, String(state.player?.name || rolePair.playerRole.name || "用户"), playerContent);
+
+      const recentMessages = buildDebugRecentMessages(
+        messages,
+        String(state.player?.name || rolePair.playerRole.name || "用户"),
+        playerContent,
+      );
       const roleName = String(plan.role || "").trim();
       const roleType = String(plan.roleType || "").trim() || "narrator";
       const eventType = String(plan.eventType || "on_orchestrated_reply").trim() || "on_orchestrated_reply";
@@ -211,25 +283,59 @@ export default router.post(
         },
       });
 
-      let content = presetContent;
-      if (!content) {
-        const roles = runtimeStoryRoles(world, state);
-        const currentRole = roles.find((item) => item.name === roleName)
-          || roles.find((item) => item.roleType === roleType && roleType !== "player")
-          || null;
-        if (!currentRole) {
-          throw new Error("当前流式发言角色不存在");
+      const roles = runtimeStoryRoles(world, state);
+      const currentRole = roles.find((item) => item.name === roleName)
+        || roles.find((item) => item.roleType === roleType && roleType !== "player")
+        || null;
+      if (!currentRole) {
+        throw new Error("当前流式发言角色不存在");
+      }
+      // 预置文本不再直接回填到聊天框。
+      //
+      // 用途：
+      // - 避免接口一返回就先插入固定文案，导致页面立刻出现“获取台词中”的伪台词框；
+      // - opening / 规则分支 / 兜底分支仍可把旧 preset 文本当作生成提示，而不是最终输出；
+      // - 这样所有正式台词统一经过 speaker 模型，输出风格才不会一半模板一半模型。
+      const effectiveMotive = String(plan.motive || "").trim() || presetContent;
+      let content = "";
+
+      // 小游戏规则说明回合（on_mini_game_start）直接使用 presetContent 作为最终输出，
+      // 跳过 speaker 模型。原因：规则说明包含完整的可选项列表，speaker 有字数限制会丢失关键信息。
+      const isMiniGameStartEvent = eventType === "on_mini_game_start" && presetContent;
+      if (isMiniGameStartEvent) {
+        content = presetContent;
+      } else {
+        let heartbeatTimer: NodeJS.Timeout | null = null;
+        try {
+          heartbeatTimer = setInterval(() => {
+            try {
+              writeStreamLine(res, {
+                type: "heartbeat",
+                data: {
+                  stage: "speaker_generating",
+                  timestamp: Date.now(),
+                },
+              });
+            } catch {
+              // 响应关闭后忽略心跳异常，避免心跳本身干扰主链路。
+            }
+          }, 5000);
+          content = await runStorySpeakerContent({
+            userId,
+            world,
+            chapter,
+            state,
+            recentMessages,
+            playerMessage: playerContent,
+            currentRole,
+            motive: effectiveMotive,
+            eventType,
+          });
+        } finally {
+          if (heartbeatTimer) {
+            clearInterval(heartbeatTimer);
+          }
         }
-        content = await runStorySpeakerContent({
-          userId,
-          world,
-          chapter,
-          state,
-          recentMessages,
-          playerMessage: playerContent,
-          currentRole,
-          motive: String(plan.motive || "").trim(),
-        });
       }
 
       const chunks = splitTextIntoChunks(content);
@@ -247,16 +353,143 @@ export default router.post(
         writeStreamLine(res, { type: "sentence", data: { text: tailSentence } });
       }
 
+      const emittedMessage: RuntimeMessageInput = {
+        role: roleName || "旁白",
+        roleType,
+        eventType,
+        content,
+        createTime: Date.now(),
+      };
+
+      if (!sessionId) {
+        // 调试链仍然要在服务端推进运行态和回溯快照，只是不把这些信息塞进台词流响应。
+        syncDebugChapterRuntime(chapter, state);
+        const normalizedEventType = String(emittedMessage.eventType || "").trim().toLowerCase();
+        const isOpeningMessage = normalizedEventType === "on_opening";
+        const phaseAdvance = isOpeningMessage
+          ? { enteredUserPhase: false }
+          : await applyDebugNarrativeMessageProgress({
+            chapter,
+            state,
+            role: String(emittedMessage.role || ""),
+            roleType: String(emittedMessage.roleType || ""),
+            eventType: String(emittedMessage.eventType || ""),
+            content: String(emittedMessage.content || ""),
+            recentMessages: [...recentMessages, emittedMessage],
+            userId,
+          });
+        const debugFreePlotActive = isDebugFreePlotActive(state);
+        const outcome = isOpeningMessage
+          ? {
+            result: "continue" as const,
+            nextChapterId: null,
+            matchedBy: "none" as const,
+            matchedRule: null,
+          }
+          : await evaluateDebugRuntimeOutcome({
+            chapter,
+            state,
+            messageContent: String(emittedMessage.content || ""),
+            eventType: String(emittedMessage.eventType || ""),
+            meta: {},
+            recentMessages: [...recentMessages, emittedMessage],
+            debugFreePlotActive,
+          });
+
+        if (outcome.result === "failed") {
+          setRuntimeTurnState(state, world, {
+            canPlayerSpeak: false,
+            expectedRoleType: "narrator",
+            expectedRole: String(rolePair.narratorRole.name || "旁白"),
+            lastSpeakerRoleType: roleType,
+            lastSpeaker: roleName || rolePair.narratorRole.name || "旁白",
+          });
+        } else if (outcome.result === "success") {
+          const nextChapter = await resolveNextChapter(db, worldId, chapter, outcome.nextChapterId);
+          if (DebugLogUtil.isDebugLogEnabled()) {
+            // 这里记录当前台词落地后真正解析出来的下一章，避免摘要里只看到模型返回的空 nextChapterId。
+            console.log(`[story:chapter_ending_check:stats] sessionStatus: chapter_completed`);
+            console.log(`[story:chapter_ending_check:stats] outcome: success`);
+            console.log(`[story:chapter_ending_check:stats] nextChapterId: ${nextChapter ? String(nextChapter.id || "") : ""}`);
+          }
+          if (!nextChapter) {
+            (state as any).debugFreePlot = {
+              active: true,
+              fromChapterId: Number(chapter.id || 0),
+              unlockedAt: Date.now(),
+            };
+          } else {
+            setPendingDebugChapterId(state, Number(nextChapter.id || 0));
+            setRuntimeTurnState(state, world, {
+              canPlayerSpeak: false,
+              expectedRoleType: "narrator",
+              expectedRole: String(rolePair.narratorRole.name || "旁白"),
+              lastSpeakerRoleType: roleType,
+              lastSpeaker: roleName || rolePair.narratorRole.name || "旁白",
+            });
+          }
+        } else if (isOpeningMessage) {
+          setRuntimeTurnState(state, world, {
+            canPlayerSpeak: false,
+            expectedRoleType: "narrator",
+            expectedRole: String(rolePair.narratorRole.name || "旁白"),
+            lastSpeakerRoleType: roleType,
+            lastSpeaker: roleName || rolePair.narratorRole.name || "旁白",
+          });
+        } else if (phaseAdvance.enteredUserPhase) {
+          allowPlayerTurn(state, world, roleType, roleName || rolePair.narratorRole.name || "旁白");
+        } else {
+          // streamlines 不允许决定“下一个具体是谁”，这里只维持系统继续推进的通用态。
+          setRuntimeTurnState(state, world, {
+            canPlayerSpeak: false,
+            expectedRoleType: "narrator",
+            expectedRole: String(rolePair.narratorRole.name || "旁白"),
+            lastSpeakerRoleType: roleType,
+            lastSpeaker: roleName || rolePair.narratorRole.name || "旁白",
+          });
+        }
+
+        const fullMessages = [...messages, emittedMessage];
+        const debugMessageCount = Math.max(0, Number(state.debugMessageCount || 0)) + 1;
+        state.debugMessageCount = debugMessageCount;
+        const snapshot = cacheAndBuildDebugStateSnapshot({
+          userId,
+          worldId,
+          state,
+        });
+        const debugRuntimeKey = String(snapshot.debugRuntimeKey || "");
+        saveDebugRevisitPoint(
+          debugRuntimeKey,
+          state,
+          fullMessages,
+          Number(chapter.id || 0) || null,
+          debugMessageCount,
+        );
+      }
+
+      // 判断是剧情模式还是小游戏模式，用于日志输出
+      const isMiniGameMode = miniGameStateManager.isMiniGameMode(state || {});
+      if (DebugLogUtil.isDebugLogEnabled()) {
+        if (isMiniGameMode) {
+          const gameInfo = miniGameStateManager.getMiniGameStateInfo(state || {});
+          console.log(`[story:streamlines:debug] 小游戏模式 - ${gameInfo.displayName || gameInfo.gameType} | ${gameInfo.phaseName || gameInfo.phase || "unknown"} | motive: ${String(plan.motive || "").slice(0, 50)}`);
+        } else {
+          console.log(`[story:streamlines:debug] 剧情模式 - role: ${roleName}, eventType: ${eventType}, contentPreview: ${String(content || "").slice(0, 80)}`);
+        }
+      }
+
       writeStreamLine(res, {
         type: "done",
         data: {
           content,
-          message: asDebugMessage({
-            role: roleName || "旁白",
-            roleType,
-            eventType,
-            content,
-          }),
+          message: !sessionId
+            ? buildDebugMessageWithRevisitData(
+              emittedMessage,
+              String(state.debugRuntimeKey || ""),
+              Math.max(1, Number(state.debugMessageCount || 1)),
+              true,
+            )
+            : asDebugMessage(emittedMessage),
         },
       });
     } catch (err) {
