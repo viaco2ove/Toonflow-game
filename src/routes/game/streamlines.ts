@@ -100,10 +100,291 @@ function collectSentenceEvents(buffer: string, chunk: string) {
 }
 
 /**
+ * /game/streamlines/introduction 只流式回放章节写死的 opening preset。
+ * 其他运行态、事件视图、角色卡等信息禁止混入响应体，统一由 storyInfo 接口查询。
+ */
+function createIntroductionHandler() {
+  return async (req: express.Request, res: express.Response) => {
+    res.setHeader("Content-Type", "application/x-ndjson; charset=utf-8");
+    res.setHeader("Cache-Control", "no-cache, no-transform");
+    res.setHeader("Connection", "keep-alive");
+    res.setHeader("X-Accel-Buffering", "no");
+
+    try {
+      const plan = (req.body.plan || {}) as Record<string, unknown>;
+      const role = String(plan.role || "旁白").trim() || "旁白";
+      const roleType = String(plan.roleType || "narrator").trim() || "narrator";
+      const eventType = String(plan.eventType || "on_opening").trim() || "on_opening";
+      const presetContent = String(plan.presetContent || "").trim();
+      if (!presetContent) {
+        throw new Error("开场白为空，无法播放");
+      }
+
+      writeStreamLine(res, {
+        type: "start",
+        data: {
+          role,
+          roleType,
+          eventType,
+        },
+      });
+
+      const chunks = splitTextIntoChunks(presetContent);
+      let sentenceBuffer = "";
+      for (const chunk of chunks) {
+        writeStreamLine(res, { type: "delta", data: { text: chunk } });
+        const collected = collectSentenceEvents(sentenceBuffer, chunk);
+        sentenceBuffer = collected.buffer;
+        for (const sentence of collected.sentences) {
+          writeStreamLine(res, { type: "sentence", data: { text: sentence } });
+        }
+      }
+      const tailSentence = sentenceBuffer.trim();
+      if (tailSentence) {
+        writeStreamLine(res, { type: "sentence", data: { text: tailSentence } });
+      }
+
+      const emittedMessage: RuntimeMessageInput = {
+        role,
+        roleType,
+        eventType,
+        content: presetContent,
+        createTime: Date.now(),
+      };
+
+      const sessionId = String(req.body.sessionId || "").trim();
+      if (!sessionId) {
+        const db = getGameDb();
+        const userId = Number((req as any)?.user?.id || 0);
+        if (!Number.isFinite(userId) || userId <= 0) {
+          res.status(401);
+          writeStreamLine(res, { type: "error", data: { message: "用户未登录" } });
+          return;
+        }
+
+        const worldId = Number(req.body.worldId || 0);
+        const chapterId = Number(req.body.chapterId || 0);
+        const world = await db("t_storyWorld as w")
+          .leftJoin("t_project as p", "w.projectId", "p.id")
+          .where("w.id", worldId)
+          .where("p.userId", userId)
+          .select("w.*")
+          .first();
+        if (!world) {
+          res.status(404);
+          writeStreamLine(res, { type: "error", data: { message: "未找到故事" } });
+          return;
+        }
+
+        let chapter = chapterId > 0
+          ? await db("t_storyChapter").where({ id: chapterId, worldId }).first()
+          : null;
+        if (!chapter) {
+          chapter = await db("t_storyChapter").where({ worldId }).orderBy("sort", "asc").orderBy("id", "asc").first();
+        }
+        chapter = normalizeChapterOutput(chapter);
+        if (!chapter) {
+          res.status(404);
+          writeStreamLine(res, { type: "error", data: { message: "当前没有章节可调试" } });
+          return;
+        }
+
+        const rolePair = normalizeRolePair(world.playerRole, world.narratorRole);
+        const cachedRuntimeState = loadCachedDebugRuntimeState(req.body.state, userId, worldId);
+        const state = normalizeSessionState(
+          cachedRuntimeState || req.body.state,
+          worldId,
+          Number(chapter.id || 0),
+          rolePair,
+          world,
+        );
+        const messages = normalizeRuntimeMessages(req.body.messages);
+        const progress = await applyDebugIntroductionProgress({
+          db,
+          userId,
+          worldId,
+          world,
+          chapter,
+          state,
+          messages,
+          emittedMessage,
+        });
+
+        writeStreamLine(res, {
+          type: "done",
+          data: {
+            content: presetContent,
+            message: progress.message,
+            state: progress.state,
+            chapterId: progress.chapterId,
+            chapterTitle: progress.chapterTitle,
+            endDialog: progress.endDialog,
+            endDialogDetail: progress.endDialogDetail,
+          },
+        });
+        return;
+      }
+
+      writeStreamLine(res, {
+        type: "done",
+        data: {
+          content: presetContent,
+          message: asDebugMessage(emittedMessage),
+        },
+      });
+    } catch (err) {
+      writeStreamLine(res, {
+        type: "error",
+        data: {
+          message: u.error(err).message,
+        },
+      });
+    } finally {
+      res.end();
+    }
+  };
+}
+
+/**
+ * 把输入消息标准化成运行时消息。
+ */
+function normalizeRuntimeMessages(messages: unknown): RuntimeMessageInput[] {
+  return Array.isArray(messages)
+    ? messages.map((item) => {
+      const record = item as Record<string, unknown>;
+      return {
+        role: String(record.role || ""),
+        roleType: String(record.roleType || ""),
+        eventType: String(record.eventType || ""),
+        content: String(record.content || ""),
+        createTime: Number(record.createTime || 0),
+      };
+    })
+    : [];
+}
+
+/**
+ * 调试 opening 落地后，服务端也要把运行态推进到"等待下一句正文"。
+ */
+async function applyDebugIntroductionProgress(input: {
+  db: ReturnType<typeof getGameDb>;
+  userId: number;
+  worldId: number;
+  world: any;
+  chapter: any;
+  state: Record<string, any>;
+  messages: RuntimeMessageInput[];
+  emittedMessage: RuntimeMessageInput;
+}) {
+  const {
+    db,
+    userId,
+    worldId,
+    world,
+    chapter,
+    state,
+    messages,
+    emittedMessage,
+  } = input;
+  const rolePair = normalizeRolePair(world?.playerRole, world?.narratorRole);
+  const recentMessages = buildDebugRecentMessages(
+    messages,
+    String(state.player?.name || rolePair.playerRole.name || "用户"),
+    "",
+  );
+
+  syncDebugChapterRuntime(chapter, state);
+  const debugFreePlotActive = isDebugFreePlotActive(state);
+  const outcome = await evaluateDebugRuntimeOutcome({
+    chapter,
+    state,
+    messageContent: String(emittedMessage.content || ""),
+    eventType: String(emittedMessage.eventType || ""),
+    meta: {},
+    recentMessages: [...recentMessages, emittedMessage],
+    debugFreePlotActive,
+  });
+
+  if (outcome.result === "failed") {
+    setRuntimeTurnState(state, world, {
+      canPlayerSpeak: false,
+      expectedRoleType: "narrator",
+      expectedRole: String(rolePair.narratorRole.name || "旁白"),
+      lastSpeakerRoleType: String(emittedMessage.roleType || "narrator"),
+      lastSpeaker: String(emittedMessage.role || rolePair.narratorRole.name || "旁白"),
+    });
+  } else if (outcome.result === "success") {
+    const nextChapter = await resolveNextChapter(db, worldId, chapter, outcome.nextChapterId);
+    if (DebugLogUtil.isDebugLogEnabled()) {
+      console.log("[story:chapter_ending_check:stats] sessionStatus: chapter_completed");
+      console.log("[story:chapter_ending_check:stats] outcome: success");
+      console.log(`[story:chapter_ending_check:stats] nextChapterId: ${nextChapter ? String(nextChapter.id || "") : ""}`);
+    }
+    if (!nextChapter) {
+      (state as any).debugFreePlot = {
+        active: true,
+        fromChapterId: Number(chapter.id || 0),
+        unlockedAt: Date.now(),
+      };
+    } else {
+      setPendingDebugChapterId(state, Number(nextChapter.id || 0));
+      setRuntimeTurnState(state, world, {
+        canPlayerSpeak: false,
+        expectedRoleType: "narrator",
+        expectedRole: String(rolePair.narratorRole.name || "旁白"),
+        lastSpeakerRoleType: String(emittedMessage.roleType || "narrator"),
+        lastSpeaker: String(emittedMessage.role || rolePair.narratorRole.name || "旁白"),
+      });
+    }
+  } else {
+    setRuntimeTurnState(state, world, {
+      canPlayerSpeak: false,
+      expectedRoleType: "narrator",
+      expectedRole: String(rolePair.narratorRole.name || "旁白"),
+      lastSpeakerRoleType: String(emittedMessage.roleType || "narrator"),
+      lastSpeaker: String(emittedMessage.role || rolePair.narratorRole.name || "旁白"),
+    });
+  }
+
+  const fullMessages = [...messages, emittedMessage];
+  const debugMessageCount = Math.max(0, Number(state.debugMessageCount || 0)) + 1;
+  state.debugMessageCount = debugMessageCount;
+  const snapshot = cacheAndBuildDebugStateSnapshot({
+    userId,
+    worldId,
+    state,
+  });
+  const debugRuntimeKey = String(snapshot.debugRuntimeKey || "");
+  saveDebugRevisitPoint(
+    debugRuntimeKey,
+    state,
+    fullMessages,
+    Number(chapter.id || 0) || null,
+    debugMessageCount,
+  );
+  return {
+    state,
+    chapterId: Number(chapter.id || 0) || null,
+    chapterTitle: String(chapter.title || ""),
+    endDialog: String(state.debugEndDialog || "").trim() || null,
+    endDialogDetail: String(state.debugEndDialogDetail || "").trim(),
+    message: buildDebugMessageWithRevisitData(
+      emittedMessage,
+      debugRuntimeKey,
+      Math.max(1, debugMessageCount),
+      true,
+    ),
+  };
+}
+
+// 注册 /introduction 子路由（前端调用 /game/streamlines/introduction）
+router.post("/introduction", createIntroductionHandler());
+
+/**
  * /game/streamlines 只负责流式生成当前这句台词。
  * 其他运行态、事件视图、角色卡等信息禁止混入响应体，统一由 storyInfo 接口查询。
  */
-export default router.post(
+router.post(
   "/",
   validateFields({
     sessionId: z.string().optional().nullable(),
@@ -504,3 +785,5 @@ export default router.post(
     }
   },
 );
+
+export default router;
