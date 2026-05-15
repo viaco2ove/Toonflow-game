@@ -138,24 +138,66 @@ function isPublicHttpUrl(url?: string | null): boolean {
  * 这里的目的是在把 URL 交给阿里 clone 前，先拦掉返回 HTML 落地页/跳转页的坏链接。
  */
 async function assertDirectAliyunReferenceAudioUrlUsable(url: string): Promise<void> {
-  const response = await axios.get(url, {
-    responseType: "arraybuffer",
-    timeout: 15000,
-    maxRedirects: 5,
-    headers: {
-      Range: "bytes=0-127",
-    },
-    validateStatus: (status) => status >= 200 && status < 400,
-  });
+  let response: axios.AxiosResponse | null = null;
+  try {
+    response = await axios.get(url, {
+      responseType: "arraybuffer",
+      timeout: 15000,
+      maxRedirects: 5,
+      headers: {
+        Range: "bytes=0-127",
+      },
+      validateStatus: (status) => status >= 200 && status < 400,
+    });
+  } catch (err) {
+    const axiosErr = axios.isAxiosError(err) ? err : null;
+    const status = axiosErr?.response?.status;
+    const statusText = axiosErr?.response?.statusText;
+    const responseUrl = axiosErr?.response?.request?.res?.responseUrl || url;
+    const message = axiosErr instanceof Error ? axiosErr.message : String(err);
+    console.error(`[voice:preview:ref_check] axios error for URL: ${url}`, JSON.stringify({
+      status,
+      statusText,
+      responseUrl,
+      message,
+      code: axiosErr?.code,
+      headers: axiosErr?.response?.headers ? Object.fromEntries(
+        Object.entries(axiosErr.response.headers as Record<string, string>)
+          .filter(([k]) => /content-type|content-length|x-oss|etag/i.test(k))
+      ) : undefined,
+    }));
+    throw new Error(`参考音频公网地址不可访问 (HTTP ${status || "?"}): ${url}`);
+  }
+
   const contentType = String(response.headers["content-type"] || "").toLowerCase();
-  const probe = Buffer.from(response.data || []).slice(0, 64);
-  const probeText = probe.toString("utf8").trim().toLowerCase();
+  const probe = Buffer.from(response.data || []).slice(0, 128);
+  const probeText = probe.toString("utf8").replace(/\0/g, ".").trim();
   const isWave = probe.slice(0, 4).toString("ascii") === "RIFF" && probe.slice(8, 12).toString("ascii") === "WAVE";
   const isMp3 = probe.slice(0, 3).toString("ascii") === "ID3"
     || (probe.length >= 2 && probe[0] === 0xff && (probe[1]! & 0xe0) === 0xe0);
   const isHtml = contentType.includes("text/html") || probeText.startsWith("<!doctype html") || probeText.startsWith("<html");
   const isAudioType = contentType.startsWith("audio/") || contentType.includes("octet-stream");
+
+  if (isVoicePreviewDebugEnabled()) {
+    console.log("[voice:preview:ref_check]", JSON.stringify({
+      url,
+      status: response.status,
+      contentType,
+      isWave,
+      isMp3,
+      isHtml,
+      isAudioType,
+      probeLength: probe.length,
+      probePreview: probeText.slice(0, 80),
+    }));
+  }
+
   if (isHtml || (!isAudioType && !isWave && !isMp3)) {
+    console.error(`[voice:preview:ref_check] rejected: ${url}`, JSON.stringify({
+      reason: isHtml ? "html_content" : "non_audio_binary",
+      contentType,
+      probePreview: probeText.slice(0, 80),
+    }));
     throw new Error(`参考音频公网地址不是原始音频直链: ${url}`);
   }
 }
@@ -520,33 +562,41 @@ async function resolveDirectAliyunReferenceAudioUrl(referenceAudioSource: string
   }
   if (!/^https?:\/\//i.test(source) && !/^data:/i.test(source)) {
     const externalUrl = await u.oss.getExternalUrl(source);
+    const isPublic = isPublicHttpUrl(externalUrl);
     if (isVoicePreviewDebugEnabled()) {
       console.log("[voice:preview:aliyun_ref_url]", JSON.stringify({
         stage: "getExternalUrl",
         source,
         externalUrl,
+        isPublic,
       }));
     }
-    if (isPublicHttpUrl(externalUrl)) {
+    if (isPublic) {
       await assertDirectAliyunReferenceAudioUrlUsable(externalUrl);
       return externalUrl;
     }
+    // 非公网 URL 时的错误信息
+    console.error(`[voice:preview:aliyun_ref_url] not public URL: ${externalUrl}`);
   }
 
   const buffer = await loadReferenceAudioBuffer(source);
   const ext = inferAudioExt(source);
   const uploadedUrl = await u.oss.uploadTemp(buffer, `aliyun-direct-ref-${sha1(source).slice(0, 12)}.${ext}`);
+  const isPublic = isPublicHttpUrl(uploadedUrl);
   if (isVoicePreviewDebugEnabled()) {
     console.log("[voice:preview:aliyun_ref_url]", JSON.stringify({
       stage: "uploadTemp",
       source,
       uploadedUrl: trimText(uploadedUrl || ""),
+      isPublic,
     }));
   }
-  if (isPublicHttpUrl(uploadedUrl)) {
+  if (isPublic) {
     await assertDirectAliyunReferenceAudioUrlUsable(trimText(uploadedUrl));
     return trimText(uploadedUrl);
   }
+  // 上传后仍然不是公网 URL 时的错误信息
+  console.error(`[voice:preview:aliyun_ref_url] uploadTemp returned non-public URL: ${uploadedUrl || "(null)"}`);
 
   throw new Error("阿里云官方声音复刻需要公网可访问的参考音频，请配置 TEMP_OSS 或使用公网音频地址");
 }
@@ -816,12 +866,42 @@ async function createDirectAliyunCustomVoice(options: {
     throw new Error("当前阿里云直连模型缺少 API Key");
   }
 
+  if (isVoicePreviewDebugEnabled()) {
+    console.log("[voice:preview:custom_voice] creating/updating custom voice", JSON.stringify({
+      mode: options.mode,
+      targetModel,
+      endpoint: endpoint.slice(0, 80),
+      apiKeyPrefix: apiKey.slice(0, 8) + "***",
+      payloadKeys: Object.keys(payload),
+      inputKeys: Object.keys(payload?.input || {}),
+      hasUrl: Boolean(payload?.input?.url),
+      hasAudioData: Boolean(payload?.input?.audio?.data),
+      preferredName,
+      sampleRate: requestedSampleRate,
+      cacheHit: Boolean(cachedVoiceId),
+    }));
+  }
+
   const response = await axios.post(endpoint, payload, {
     headers: {
       Authorization: `Bearer ${apiKey}`,
       "Content-Type": "application/json",
     },
     timeout: 120000,
+  }).catch((err) => {
+    const axiosErr = axios.isAxiosError(err) ? err : null;
+    console.error("[voice:preview:custom_voice] API call failed", JSON.stringify({
+      mode: options.mode,
+      targetModel,
+      status: axiosErr?.response?.status,
+      statusText: axiosErr?.response?.statusText,
+      code: axiosErr?.code,
+      errorCode: axiosErr?.response?.data?.code,
+      errorMessage: axiosErr?.response?.data?.message,
+      requestId: axiosErr?.response?.headers?.["x-acs-request-id"],
+      endpoint: endpoint.slice(0, 80),
+    }));
+    throw err;
   });
   const responseData = response.data && typeof response.data === "object" ? response.data : null;
   const voiceId = extractDirectAliyunCustomVoiceId(responseData);
@@ -1752,6 +1832,7 @@ export default router.post(
         responseStatus = 400;
         responseMessage = responseMessage || upstreamMessage || "语音预览请求无效";
       }
+      // 打印更详细的错误信息
       console.error("[voice] preview failed", {
         ...debugContext,
         message: responseMessage,
@@ -1760,9 +1841,12 @@ export default router.post(
           ? {
               code: axiosErr.code,
               status: axiosErr.response?.status,
+              statusText: axiosErr.response?.statusText,
               method: axiosErr.config?.method,
               url: axiosErr.config?.url,
+              requestBody: axiosErr.config?.data,
               responseData: axiosErr.response?.data,
+              requestId: axiosErr.response?.headers?.["x-acs-request-id"] || axiosErr.response?.headers?.["x-request-id"],
             }
           : null,
       });
