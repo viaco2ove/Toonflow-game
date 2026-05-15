@@ -40,6 +40,39 @@ RESTART_OR_START_APP_CMD = (
 )
 LAST_ACTION_LOG = "暂无操作记录"
 
+APP_LOG_DIR = f"{APP_DIR}/logs"
+APP_LOG_FILE = f"{APP_LOG_DIR}/app-$(date +%Y-%m-%d).log"
+
+
+def get_app_logs(lines: int = 2000) -> str:
+    """获取后端应用日志最新N行"""
+    today_log = f"{APP_LOG_DIR}/app-{datetime.now().strftime('%Y-%m-%d')}.log"
+    if os.path.exists(today_log):
+        log_file = today_log
+    else:
+        # 尝试找最近的日志文件
+        try:
+            all_logs = sorted([f for f in os.listdir(APP_LOG_DIR) if f.startswith("app-") and f.endswith(".log")])
+            log_file = f"{APP_LOG_DIR}/{all_logs[-1]}" if all_logs else None
+        except:
+            log_file = None
+
+    if not log_file:
+        return f"日志文件不存在：{today_log}"
+
+    try:
+        with open(log_file, 'r', encoding='utf-8', errors='ignore') as f:
+            all_lines = f.readlines()
+        return ''.join(all_lines[-lines:])
+    except Exception as e:
+        return f"读取日志失败：{str(e)}"
+
+
+def get_pm2_logs(lines: int = 500) -> str:
+    """获取PM2进程日志"""
+    result = run(f"pm2 logs {shlex.quote(APP_NAME)} --nostream --lines {lines} 2>&1")
+    return result
+
 
 @dataclass
 class CommandResult:
@@ -413,6 +446,8 @@ def home() -> str:
             <a class="action dark" href="/deploy/sync-web">构建Web端</a>
             <a class="action" href="/nginx/restart">重启Nginx</a>
             <a class="action dark" href="/app/restart">重启后端</a>
+            <a class="action dark" href="/app/logs">📜 查看日志</a>
+            <a class="action dark" href="/app/pm2-logs">📋 PM2日志</a>
             <br>
             <form action="/git/switch-branch" method="get" style="margin-top:10px">
               <label>切换Web分支：</label>
@@ -501,3 +536,66 @@ def git_force_sync_all():
 @app.get("/healthz", response_class=PlainTextResponse)
 def healthz():
     return "ok"
+
+
+@app.get("/app/logs", response_class=HTMLResponse)
+def view_app_logs():
+    """查看后端应用日志"""
+    lines = 2000
+    logs = get_app_logs(lines)
+    logs_escaped = html.escape(logs).replace("\n", "<br>")
+
+    return f"""
+    <html>
+    <head>
+      <meta charset="utf-8">
+      <title>后端日志 - Toonflow</title>
+      <style>
+        body {{font-family:monospace;background:#0a0a0a;color:#4ade80;margin:0;padding:20px}}
+        h1 {{color:#fff;margin-bottom:20px}}
+        a {{color:#60a5fa;margin-right:20px;text-decoration:none}}
+        pre {{background:#111;padding:20px;border-radius:8px;max-height:80vh;overflow:auto;font-size:12px;line-height:1.4}}
+        .timestamp {{color:#fbbf24}}
+        .error {{color:#f87171}}
+        .warn {{color:#fbbf24}}
+      </style>
+    </head>
+    <body>
+      <h1>后端日志 (最新{lines}行)</h1>
+      <a href="/">返回管理页</a>
+      <a href="/app/logs?refresh=1">刷新</a>
+      <a href="/app/pm2-logs">PM2日志</a>
+      <pre>{logs_escaped}</pre>
+    </body>
+    </html>
+    """
+
+
+@app.get("/app/pm2-logs", response_class=HTMLResponse)
+def view_pm2_logs():
+    """查看PM2进程日志"""
+    lines = 500
+    logs = get_pm2_logs(lines)
+    logs_escaped = html.escape(logs).replace("\n", "<br>")
+
+    return f"""
+    <html>
+    <head>
+      <meta charset="utf-8">
+      <title>PM2日志 - Toonflow</title>
+      <style>
+        body {{font-family:monospace;background:#0a0a0a;color:#4ade80;margin:0;padding:20px}}
+        h1 {{color:#fff;margin-bottom:20px}}
+        a {{color:#60a5fa;margin-right:20px;text-decoration:none}}
+        pre {{background:#111;padding:20px;border-radius:8px;max-height:80vh;overflow:auto;font-size:12px;line-height:1.4}}
+      </style>
+    </head>
+    <body>
+      <h1>PM2日志 (最新{lines}行)</h1>
+      <a href="/">返回管理页</a>
+      <a href="/app/logs">应用日志</a>
+      <a href="/app/pm2-logs">刷新</a>
+      <pre>{logs_escaped}</pre>
+    </body>
+    </html>
+    """

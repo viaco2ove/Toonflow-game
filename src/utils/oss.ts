@@ -154,13 +154,14 @@ function encodeOssObjectKey(objectKey: string): string {
  */
 function buildAliyunSignedGetUrl(config: AliyunTempOssConfig, objectKey: string): string {
   const expires = Math.floor(Date.now() / 1000) + config.signedUrlExpiresSeconds;
-  const canonicalResource = `/${config.bucket}/${objectKey}`;
+  const encodedObjectKey = encodeOssObjectKey(objectKey);
+  const canonicalResource = `/${config.bucket}/${encodedObjectKey}`;
   const stringToSign = `GET\n\n\n${expires}\n${canonicalResource}`;
   const signature = crypto
     .createHmac("sha1", config.accessKeySecret)
     .update(stringToSign)
     .digest("base64");
-  const url = new URL(`${config.uploadHost}/${encodeOssObjectKey(objectKey)}`);
+  const url = new URL(`${config.uploadHost}/${encodedObjectKey}`);
   url.searchParams.set("OSSAccessKeyId", config.accessKeyId);
   url.searchParams.set("Expires", String(expires));
   url.searchParams.set("Signature", signature);
