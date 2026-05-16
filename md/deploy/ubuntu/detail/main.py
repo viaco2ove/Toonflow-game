@@ -74,6 +74,11 @@ def get_pm2_logs(lines: int = 500) -> str:
     return result
 
 
+def clear_pm2_logs() -> str:
+    """清空PM2进程日志"""
+    return run(f"pm2 flush {shlex.quote(APP_NAME)} 2>&1")
+
+
 @dataclass
 class CommandResult:
     output: str
@@ -585,17 +590,36 @@ def view_pm2_logs():
       <title>PM2日志 - Toonflow</title>
       <style>
         body {{font-family:monospace;background:#0a0a0a;color:#4ade80;margin:0;padding:20px}}
-        h1 {{color:#fff;margin-bottom:20px}}
+        h1 {{color:#fff;margin-bottom:20px;display:flex;align-items:center;gap:10px}}
         a {{color:#60a5fa;margin-right:20px;text-decoration:none}}
         pre {{background:#111;padding:20px;border-radius:8px;max-height:80vh;overflow:auto;font-size:12px;line-height:1.4}}
+        .btn-clear {{
+          background:#dc2626;color:#fff;border:none;padding:8px 16px;border-radius:6px;
+          cursor:pointer;font-size:14px;font-weight:600
+        }}
+        .btn-clear:hover {{background:#b91c1c}}
+        .actions {{display:flex;align-items:center;gap:10px;margin-bottom:10px}}
       </style>
     </head>
     <body>
       <h1>PM2日志 (最新{lines}行)</h1>
-      <a href="/">返回管理页</a>
-      <a href="/app/logs">应用日志</a>
-      <a href="/app/pm2-logs">刷新</a>
+      <div class="actions">
+        <a href="/">返回管理页</a>
+        <a href="/app/logs">应用日志</a>
+        <a href="/app/pm2-logs">刷新</a>
+        <form action="/app/pm2-logs/clear" method="post" style="display:inline">
+          <button class="btn-clear" type="submit" onclick="return confirm('确定要清空PM2日志吗？')">🗑 清空日志</button>
+        </form>
+      </div>
       <pre>{logs_escaped}</pre>
     </body>
     </html>
     """
+
+
+@app.post("/app/pm2-logs/clear")
+def clear_pm2_logs_handler():
+    """清空PM2进程日志"""
+    output = clear_pm2_logs()
+    set_last_action_log("清空PM2日志", output)
+    return RedirectResponse("/app/pm2-logs")
