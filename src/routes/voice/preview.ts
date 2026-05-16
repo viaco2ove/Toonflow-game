@@ -155,16 +155,18 @@ async function assertDirectAliyunReferenceAudioUrlUsable(url: string): Promise<v
     const statusText = axiosErr?.response?.statusText;
     const responseUrl = axiosErr?.response?.request?.res?.responseUrl || url;
     const message = axiosErr instanceof Error ? axiosErr.message : String(err);
-    console.error(`[voice:preview:ref_check] axios error for URL: ${url}`, JSON.stringify({
-      status,
+    const ossHeaders = axiosErr?.response?.headers ? Object.fromEntries(
+      Object.entries(axiosErr.response.headers as Record<string, string>)
+        .filter(([k]) => /content-type|content-length|x-oss|x-dr|etag/i.test(k))
+    ) : null;
+    console.error(`[voice:preview:ref_check] failed: ${url}`, JSON.stringify({
+      httpStatus: status,
       statusText,
-      responseUrl,
+      finalUrl: responseUrl,
       message,
       code: axiosErr?.code,
-      headers: axiosErr?.response?.headers ? Object.fromEntries(
-        Object.entries(axiosErr.response.headers as Record<string, string>)
-          .filter(([k]) => /content-type|content-length|x-oss|etag/i.test(k))
-      ) : undefined,
+      errno: axiosErr?.errno,
+      headers: ossHeaders,
     }));
     throw new Error(`参考音频公网地址不可访问 (HTTP ${status || "?"}): ${url}`);
   }
@@ -178,19 +180,18 @@ async function assertDirectAliyunReferenceAudioUrlUsable(url: string): Promise<v
   const isHtml = contentType.includes("text/html") || probeText.startsWith("<!doctype html") || probeText.startsWith("<html");
   const isAudioType = contentType.startsWith("audio/") || contentType.includes("octet-stream");
 
-  if (isVoicePreviewDebugEnabled()) {
-    console.log("[voice:preview:ref_check]", JSON.stringify({
-      url,
-      status: response.status,
-      contentType,
-      isWave,
-      isMp3,
-      isHtml,
-      isAudioType,
-      probeLength: probe.length,
-      probePreview: probeText.slice(0, 80),
-    }));
-  }
+  // 始终打印诊断信息（不只是 DEBUG 模式）
+  console.log("[voice:preview:ref_check]", JSON.stringify({
+    url,
+    httpStatus: response.status,
+    contentType,
+    isWave,
+    isMp3,
+    isHtml,
+    isAudioType,
+    probeLength: probe.length,
+    probePreview: probeText.slice(0, 80),
+  }));
 
   if (isHtml || (!isAudioType && !isWave && !isMp3)) {
     console.error(`[voice:preview:ref_check] rejected: ${url}`, JSON.stringify({
@@ -898,11 +899,22 @@ async function createDirectAliyunCustomVoice(options: {
       code: axiosErr?.code,
       errorCode: axiosErr?.response?.data?.code,
       errorMessage: axiosErr?.response?.data?.message,
-      requestId: axiosErr?.response?.headers?.["x-acs-request-id"],
+      requestId: axiosErr?.response?.headers?.["x-acs-request-id"] || axiosErr?.response?.headers?.["x-request-id"],
       endpoint: endpoint.slice(0, 80),
+      responseBody: axiosErr?.response?.data,
     }));
     throw err;
   });
+  // 成功时的日志（方便追踪 voice_id 返回）
+  if (isVoicePreviewDebugEnabled()) {
+    console.log("[voice:preview:custom_voice] success", JSON.stringify({
+      mode: options.mode,
+      targetModel,
+      voiceId: extractDirectAliyunCustomVoiceId(response.data),
+      responseKeys: Object.keys(response.data || {}),
+      requestId: response.headers?.["x-acs-request-id"] || response.headers?.["x-request-id"],
+    }));
+  }
   const responseData = response.data && typeof response.data === "object" ? response.data : null;
   const voiceId = extractDirectAliyunCustomVoiceId(responseData);
   if (!voiceId) {
