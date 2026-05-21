@@ -1872,6 +1872,16 @@ export function applyAiEventProgressResolution(input: {
   const isCurrentStageCompleted = input.resolution.ended
     || /已完成.*推进至|已完成.*等待|已完成.*进入|场景.*完成|阶段.*完成|推进到.*阶段/i.test(progressSummary);
 
+  // 打印 stage 状态日志
+  console.log("[story:event_progress:runtime][stage]", JSON.stringify({
+    phaseId: current.phaseId,
+    stageIndex: currentStageIndex,
+    totalStages: currentPhase?.stages?.length || 0,
+    isCurrentStageCompleted,
+    ended: input.resolution.ended,
+    progressSummary: progressSummary.slice(0, 100),
+  }));
+
   // 如果当前 phase 有 stages，且当前 stage 已完成，尝试推进
   if (currentPhase && currentPhase.stages && currentPhase.stages.length > 0 && isCurrentStageCompleted) {
     const nextStageIndex = currentStageIndex + 1;
@@ -1889,7 +1899,7 @@ export function applyAiEventProgressResolution(input: {
         eventStatus: enteredUserPhase ? "waiting_input" : input.resolution.eventStatus,
       });
 
-      console.log("[stage:advance:applyAi]", JSON.stringify({
+      console.log("[story:event_progress:runtime][stage][stageIndex]", JSON.stringify({
         phaseId: currentPhase.id,
         fromStage: currentStageIndex,
         toStage: nextStageIndex,
