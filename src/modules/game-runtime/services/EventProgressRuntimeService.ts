@@ -2,6 +2,7 @@ import u from "@/utils";
 import {
   isFreeChapterRuntimeMode,
   JsonRecord,
+  normalizeChapterRuntimeOutline,
   readChapterProgressState,
   readPhaseAwareRuntimeCurrentEventDigestState,
 } from "@/lib/gameEngine";
@@ -17,7 +18,7 @@ import { z } from "zod";
  *
  * 用途：
  * - 给 AI 提供当前事件、当前进度和最近 10 条对话
- * - 只判断“当前事件是否结束、现在进行到哪一步”
+ * - 只判断"当前事件是否结束、现在进行到哪一步"
  * - 明确告诉 AI：当前事件完成后应切到哪个下一事件，减少它在边界上的猜测
  */
 export interface EvaluateEventProgressInput {
@@ -64,11 +65,11 @@ function normalizeTraceMeta(input: unknown): JsonRecord {
 }
 
 /**
- * 判断是否要在事件进度检测里屏蔽“已完成的自由章节静态引导事件”。
+ * 判断是否要在事件进度检测里屏蔽"已完成的自由章节静态引导事件"。
  *
  * 作用：
  * - 自由章节里，任务结束后 state 可能短暂仍残留最后一个静态引导事件；
- * - 如果事件进度检测继续读取这个 completed 事件，会误以为当前轮还在围绕“任务推荐引导”推进；
+ * - 如果事件进度检测继续读取这个 completed 事件，会误以为当前轮还在围绕"任务推荐引导"推进；
  * - 这里只在没有进行中任务的前提下，将其视为自由剧情等待态。
  */
 function shouldSuppressCompletedFreeChapterGuideEvent(input: {
@@ -232,7 +233,7 @@ async function resolveEventProgressModel(userId?: number) {
  * 组装给事件进度检测 agent 的最小输入快照。
  */
 function buildEventProgressInputSnapshot(input: EvaluateEventProgressInput): JsonRecord {
-  // 事件进度检测和编排、判章必须使用同一套“phase 感知事件读取逻辑”，
+  // 事件进度检测和编排、判章必须使用同一套"phase 感知事件读取逻辑"，
   // 否则 phaseId 已经进到事件2，但这里仍按旧 digest 读到事件1，就会出现 1/2/0 混乱。
   const chapterProgress = readChapterProgressState(input.state) as unknown as Record<string, unknown>;
   const currentEvent = readPhaseAwareRuntimeCurrentEventDigestState(input.chapter, input.state);
@@ -242,6 +243,15 @@ function buildEventProgressInputSnapshot(input: EvaluateEventProgressInput): Jso
     eventFlowType: normalizeScalarText(currentEvent.eventFlowType),
     eventStatus: normalizeEventStatus(currentEvent.eventStatus || chapterProgress.eventStatus),
   });
+
+  // 读取当前 phase 的 stages 信息
+  const outline = normalizeChapterRuntimeOutline(input.chapter?.runtimeOutline);
+  const currentPhaseId = normalizeScalarText(chapterProgress.phaseId);
+  const currentPhase = outline.phases.find((p) => p.id === currentPhaseId);
+  const stageIndex = Number(chapterProgress.stageIndex || 0);
+  const currentStage = currentPhase?.stages?.[stageIndex] || null;
+  const nextStage = currentPhase?.stages?.[stageIndex + 1] || null;
+
   const recentDialogue = Array.isArray(input.recentMessages)
     ? input.recentMessages
         .slice(-10)
@@ -283,12 +293,30 @@ function buildEventProgressInputSnapshot(input: EvaluateEventProgressInput): Jso
     current_progress: {
       phase_id: normalizeScalarText(chapterProgress.phaseId),
       phase_index: Number(chapterProgress.phaseIndex || 0),
+      stage_index: stageIndex,
+      total_stages: currentPhase?.stages?.length || 0,
       user_node_status: normalizeScalarText(chapterProgress.userNodeStatus) || "idle",
       pending_goal: normalizeScalarText(chapterProgress.pendingGoal),
       completed_events: Array.isArray(chapterProgress.completedEvents)
         ? chapterProgress.completedEvents.map((item) => normalizeScalarText(item)).filter(Boolean)
         : [],
     },
+    current_stage: currentStage
+      ? {
+        index: stageIndex,
+        label: normalizeScalarText(currentStage.label),
+        kind: normalizeScalarText(currentStage.kind),
+        summary: normalizeScalarText(currentStage.targetSummary),
+      }
+      : null,
+    next_stage: nextStage
+      ? {
+        index: stageIndex + 1,
+        label: normalizeScalarText(nextStage.label),
+        kind: normalizeScalarText(nextStage.kind),
+        summary: normalizeScalarText(nextStage.targetSummary),
+      }
+      : null,
     next_event: nextEvent
       ? {
         index: Number(nextEvent.index || 0),
@@ -333,6 +361,14 @@ function buildEventProgressDebugSnapshot(snapshot: JsonRecord): JsonRecord {
     typeof snapshot.next_event === "object" && snapshot.next_event !== null
       ? snapshot.next_event as Record<string, unknown>
       : {};
+  const currentStage =
+    typeof snapshot.current_stage === "object" && snapshot.current_stage !== null
+      ? snapshot.current_stage as Record<string, unknown>
+      : null;
+  const nextStage =
+    typeof snapshot.next_stage === "object" && snapshot.next_stage !== null
+      ? snapshot.next_stage as Record<string, unknown>
+      : null;
   const recentDialogue = Array.isArray(snapshot.recent_dialogue)
     ? snapshot.recent_dialogue as Array<Record<string, unknown>>
     : [];
@@ -350,12 +386,30 @@ function buildEventProgressDebugSnapshot(snapshot: JsonRecord): JsonRecord {
     currentProgress: {
       phaseId: normalizeScalarText(currentProgress.phase_id),
       phaseIndex: Number(currentProgress.phase_index || 0),
+      stageIndex: Number(currentProgress.stage_index || 0),
+      totalStages: Number(currentProgress.total_stages || 0),
       userNodeStatus: normalizeScalarText(currentProgress.user_node_status),
       pendingGoal: normalizeScalarText(currentProgress.pending_goal),
       completedEvents: Array.isArray(currentProgress.completed_events)
         ? currentProgress.completed_events.map((item) => normalizeScalarText(item)).filter(Boolean)
         : [],
     },
+    currentStage: currentStage
+      ? {
+        index: Number(currentStage.index || 0),
+        label: normalizeScalarText(currentStage.label),
+        kind: normalizeScalarText(currentStage.kind),
+        summary: normalizeScalarText(currentStage.summary),
+      }
+      : null,
+    nextStage: nextStage
+      ? {
+        index: Number(nextStage.index || 0),
+        label: normalizeScalarText(nextStage.label),
+        kind: normalizeScalarText(nextStage.kind),
+        summary: normalizeScalarText(nextStage.summary),
+      }
+      : null,
     nextEvent: {
       index: Number(nextEvent.index || 0),
       kind: normalizeScalarText(nextEvent.kind),

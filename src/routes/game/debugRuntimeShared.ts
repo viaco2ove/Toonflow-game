@@ -337,8 +337,8 @@ function compactTextList(input: unknown, limit = 6): string[] {
     .slice(0, limit);
 }
 
-export function buildDebugStateSnapshot(state: Record<string, any>, debugRuntimeKey: string) {
-  const eventView = readDefaultRuntimeEventViewState(state);
+export function buildDebugStateSnapshot(state: Record<string, any>, debugRuntimeKey: string, chapter?: any) {
+  const eventView = readDefaultRuntimeEventViewState(state, chapter);
   const chapterProgress = readChapterProgressState(state);
   const currentEvent = readRuntimeCurrentEventState(state);
   const snapshot: Record<string, any> = {
@@ -420,6 +420,7 @@ export function cacheAndBuildDebugStateSnapshot(params: {
   userId: number;
   worldId: number;
   state: Record<string, any>;
+  chapter?: any;
 }) {
   const debugRuntimeKey = cacheDebugRuntimeState(
     params.state,
@@ -427,7 +428,7 @@ export function cacheAndBuildDebugStateSnapshot(params: {
     params.worldId,
     readDebugRuntimeKey(params.state),
   );
-  return buildDebugStateSnapshot(params.state, debugRuntimeKey);
+  return buildDebugStateSnapshot(params.state, debugRuntimeKey, params.chapter);
 }
 
 export function isDebugFreePlotActive(state: unknown): boolean {

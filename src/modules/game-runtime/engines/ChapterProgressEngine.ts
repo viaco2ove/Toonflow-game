@@ -33,7 +33,7 @@ function asRecord(input: unknown): JsonRecord {
 }
 
 /**
- * 读取章节运行时编排图；老章节没有显式 phases 时，会自动补一个“章节内容”兜底事件。
+ * 读取章节运行时编排图；老章节没有显式 phases 时，会自动补一个"章节内容"兜底事件。
  */
 function readRuntimeOutline(chapter: any): ChapterRuntimeOutline {
   const outline = normalizeChapterRuntimeOutline(asRecord(chapter).runtimeOutline);
@@ -78,6 +78,7 @@ function buildSyntheticChapterContentPhase(chapter: any): ChapterRuntimePhase | 
     label: "章节内容",
     kind: "scene",
     targetSummary: summary,
+    stages: [],
     nextPhaseIds: [],
     defaultNextPhaseId: null,
     allowedSpeakers: [],
@@ -109,7 +110,7 @@ function normalizeCompletedEvents(input: string[]): string[] {
  */
 function normalizeSignalText(input: unknown): string {
   return String(input || "")
-    .replace(/[\s，。、“”"'‘’：:；;（）()【】\[\]\-—_·•・⋯…,.!?！？]/g, "")
+    .replace(/[\s，。、"""'‘’：:；;（）()【】\[\]\-—_·•・⋯…,.!?！？]/g, "")
     .trim()
     .toLowerCase();
 }
@@ -194,7 +195,7 @@ function arePhaseCompletionEventsMatched(
 }
 
 /**
- * 根据当前 progress 解析“当前应处于哪个 phase”。
+ * 根据当前 progress 解析"当前应处于哪个 phase"。
  */
 function resolveCurrentOrInitialPhase(
   outline: ChapterRuntimeOutline,
@@ -213,7 +214,7 @@ function resolveCurrentOrInitialPhase(
       };
     }
   }
-  // 从前往后找到第一个“未完成且满足前置条件”的 phase，作为当前事件。
+  // 从前往后找到第一个"未完成且满足前置条件"的 phase，作为当前事件。
   for (let index = 0; index < outline.phases.length; index += 1) {
     const phase = outline.phases[index];
     if (isPhaseCompleted(completedEvents, phase.id)) {
@@ -312,7 +313,7 @@ function readCompletionCondition(chapter: any): unknown {
 }
 
 /**
- * 判断当前章节是否需要补一个“结束条件检查”事件。
+ * 判断当前章节是否需要补一个"结束条件检查"事件。
  */
 function hasChapterEndingEvent(chapter: any, outline: ChapterRuntimeOutline): boolean {
   return outline.endingRules.success.length > 0
@@ -440,7 +441,7 @@ function buildEndingEventFacts(input: {
 }
 
 /**
- * 将当前运行态切换到“章节结束条件检查事件”。
+ * 将当前运行态切换到"章节结束条件检查事件"。
  */
 function updateEndingState(
   chapter: any,
@@ -489,7 +490,7 @@ function updateEndingState(
     pendingGoal: endingSummary,
     ...extraPatch,
   });
-  // 运行态里只保留一个 ending 动态事件，避免重复生成多个“结束条件检查”卡片。
+  // 运行态里只保留一个 ending 动态事件，避免重复生成多个"结束条件检查"卡片。
   const existingEnding = existingDynamicEvents
     .map((item) => normalizeRuntimeDynamicEventState(item))
     .find((item) => isEndingDynamicEvent(item)) || null;
@@ -585,7 +586,7 @@ function ensureFreeChapterDynamicEventState(
     : Math.max(minimumEventIndex, Number(runtimeEvent.index || current.eventIndex || 1));
   const rawEventStatus = String(extraPatch.eventStatus || current.eventStatus || "active").trim().toLowerCase();
   // 自由章节切入动态事件时要保留 waiting_input / completed 状态，
-  // 不能一律重置成 active，否则 UI 会继续显示“处理中”，并触发多余自动编排。
+  // 不能一律重置成 active，否则 UI 会继续显示"处理中"，并触发多余自动编排。
   const eventStatus: "idle" | "active" | "waiting_input" | "completed" = rawEventStatus === "completed"
     ? "completed"
     : rawEventStatus === "waiting_input"
@@ -704,10 +705,10 @@ function resolveNextPhaseFromGraph(
 }
 
 /**
- * 读取“当前事件完成后将进入哪个事件”的提示信息。
+ * 读取"当前事件完成后将进入哪个事件"的提示信息。
  *
  * 用途：
- * - 给事件进度检测 agent 明确补充“切换边界”
+ * - 给事件进度检测 agent 明确补充"切换边界"
  * - 避免 agent 只能看到当前事件内容，却不知道完成后应该转入哪一个下一事件
  */
 export function readNextEventProgressHint(chapter: any, state: JsonRecord): {
@@ -723,7 +724,7 @@ export function readNextEventProgressHint(chapter: any, state: JsonRecord): {
   if (!outline.phases.length || !current.phaseId) {
     return null;
   }
-  // 这里模拟“当前事件已完成”后的 completedEvents，再解析下一事件，
+  // 这里模拟"当前事件已完成"后的 completedEvents，再解析下一事件，
   // 目的是告诉 agent 当前事件结束后该切到谁，而不是让它自己猜 phase graph。
   const simulatedCompletedEvents = markPhaseCompleted(
     normalizeCompletedEvents(Array.isArray(current.completedEvents) ? current.completedEvents : []),
@@ -736,8 +737,8 @@ export function readNextEventProgressHint(chapter: any, state: JsonRecord): {
     current.phaseIndex,
   );
   const nextPhase = nextPhaseInfo.phase;
-  // resolveNextPhaseFromGraph 在候选为空时会回退到“当前首个未完成 phase”。
-  // 对“读取下一事件提示”来说，这会把最后一个静态事件错误地回成它自己，
+  // resolveNextPhaseFromGraph 在候选为空时会回退到"当前首个未完成 phase"。
+  // 对"读取下一事件提示"来说，这会把最后一个静态事件错误地回成它自己，
   // 进而让编排模型误以为还要继续重复当前引导内容。
   const hasRealNextPhase = Boolean(
     nextPhase
@@ -789,13 +790,28 @@ function updatePhaseState(
   extraPatch: Partial<JsonRecord> = {},
 ) {
   const eventIndex = phaseIndex >= 0 ? phaseIndex + 1 : 1;
-  const eventKind = (phase?.kind || "scene") as "opening" | "scene" | "user" | "fixed" | "ending";
+  const phaseKind = (phase?.kind || "scene") as "opening" | "scene" | "user" | "fixed" | "ending";
+
+  // 如果 phase 有 stages 且第一个 stage 是 user 类型，立即等待用户输入
+  // 如果第一个 stage 是 scene 类型，则设置 eventStatus = "active"，让编排生成旁白/NPC 开场白
+  const firstStage = phase?.stages && phase.stages.length > 0 ? phase.stages[0] : null;
+  const isFirstStageUser = firstStage && firstStage.kind === "user";
+  const hasSceneStages = firstStage && firstStage.kind === "scene";
+
+  // scene stages 需要先编排旁白/NPC 开场白，不能直接等待用户
+  const effectiveUserNodeStatus = hasSceneStages ? "idle" : (isFirstStageUser ? "waiting_input" : userNodeStatus);
+  const eventKind = isFirstStageUser ? "user" : phaseKind;
   const eventSummary = String(phase?.targetSummary || phase?.label || "").trim();
-  const eventStatus: "idle" | "active" | "waiting_input" | "completed" = userNodeStatus === "waiting_input"
+  const eventStatus: "idle" | "active" | "waiting_input" | "completed" = effectiveUserNodeStatus === "waiting_input"
     ? "waiting_input"
-    : phase
-      ? "active"
-      : "idle";
+    : (phase && hasSceneStages) ? "active" : (phase ? "active" : "idle");
+
+  // 保留现有的 stageIndex，除非 extraPatch 明确指定
+  const current = readChapterProgressState(state);
+  const existingStageIndex = current.stageIndex || 0;
+  const shouldResetStageIndex = extraPatch.hasOwnProperty("stageIndex")
+    || (current.phaseId !== phase?.id && phase?.id); // phase 切换时才重置
+
   setChapterProgressState(state, {
     phaseId: String(phase?.id || "").trim(),
     phaseIndex,
@@ -805,8 +821,9 @@ function updatePhaseState(
     eventStatus,
     userNodeId: userNodeId || "",
     userNodeIndex,
-    userNodeStatus,
+    userNodeStatus: effectiveUserNodeStatus,
     pendingGoal: resolvePendingGoal(phase, outline, userNodeId),
+    stageIndex: shouldResetStageIndex ? (extraPatch.stageIndex ?? 0) : existingStageIndex,
     ...extraPatch,
   });
   // phase 变更后立刻同步 dynamicEvents/currentEvent，避免 UI 和 AI 读取到不同步的事件状态。
@@ -856,12 +873,53 @@ function buildRuntimeDynamicEvents(
         : existing?.summarySource === "system"
           ? "system"
           : "phase";
+
+    // 生成带状态的 summary："[i]stage1 → []stage2 → [s]stage3"
+    const phaseCompleted = isPhaseCompleted(completedEvents, phase.id);
+    const isCurrentPhase = current.phaseId === phase.id;
+    const currentStageIndex = current.stageIndex || 0;
+    const stages = Array.isArray(phase.stages) ? phase.stages : [];
+
+    // 始终基于 stages 生成带状态的 summary
+    let summary: string;
+    if (stages.length > 0) {
+      const stageParts = stages.map((stage, stageIdx) => {
+        let status = "";
+        if (phaseCompleted) {
+          status = "s"; // 整个 phase 已完成
+        } else if (isCurrentPhase) {
+          if (stageIdx < currentStageIndex) {
+            status = "s"; // 已完成的 stage
+          } else if (stageIdx === currentStageIndex) {
+            // 当前 stage，根据 eventStatus 判断
+            if (current.eventStatus === "waiting_input" || current.eventStatus === "active") {
+              status = "i"; // 进行中
+            } else if (current.eventStatus === "completed") {
+              status = "s";
+            } else {
+              status = "i";
+            }
+          } else {
+            status = ""; // 未开始
+          }
+        } else if (current.phaseIndex > index) {
+          status = "s"; // 更早的 phase 已完成
+        } else {
+          status = ""; // 未开始
+        }
+        return `[${status}]${stage.label}`;
+      });
+      summary = stageParts.join(" → ");
+    } else {
+      summary = String(phase.targetSummary || phase.label || "").trim();
+    }
+
     return {
       eventIndex: index + 1,
       phaseId: String(phase.id || "").trim(),
       kind: phase.kind || "scene",
       flowType: "chapter_content",
-      summary: String(existing?.summary || phase.targetSummary || phase.label || "").trim(),
+      summary,
       runtimeFacts: Array.isArray(existing?.runtimeFacts) ? existing.runtimeFacts : [],
       summarySource,
       memorySummary: String(existing?.memorySummary || "").trim(),
@@ -1008,7 +1066,7 @@ function fixedEventMatches(input: {
   ctx: ConditionContext;
 }): boolean {
   const normalizedId = normalizeSignalText(input.id);
-  // fixed event 只能被明确 signal 或条件表达式命中，避免用户只输入“2”就误命中“输入不符合要求2次”。
+  // fixed event 只能被明确 signal 或条件表达式命中，避免用户只输入"2"就误命中"输入不符合要求2次"。
   if (normalizedId && input.strictSignalTexts.some((item) => item === normalizedId)) {
     return true;
   }
@@ -1335,6 +1393,7 @@ export function markCurrentUserNodeCompleted(chapter: any, state: JsonRecord, me
 
 /**
  * 旁白/NPC 发言后尝试推进章节内容事件。
+ * 改造：支持 stage 级别推进，逐条线性推进
  */
 export function advanceChapterProgressAfterNarrative(chapter: any, state: JsonRecord, input?: {
   messageContent?: string;
@@ -1342,17 +1401,19 @@ export function advanceChapterProgressAfterNarrative(chapter: any, state: JsonRe
   messageRoleType?: string;
 }): {
   phaseChanged: boolean;
+  stageAdvanced: boolean;
   enteredUserPhase: boolean;
   matchedPhaseSignal: boolean;
 } {
   const outline = readRuntimeOutline(chapter);
   const current = readChapterProgressState(state);
 
-  // 先做完整性校验，便于排查“为什么事件没推进”的问题。
+  // 先做完整性校验，便于排查"为什么事件没推进"的问题。
   const validation = validateEventCompleteness(chapter, state);
   console.log("[event:completeness:check]", JSON.stringify({
     chapterId: Number(chapter?.id || 0),
     eventIndex: current.eventIndex,
+    stageIndex: current.stageIndex,
     isComplete: validation.isComplete,
     hasStarted: validation.hasStarted,
     hasProgressed: validation.hasProgressed,
@@ -1361,7 +1422,7 @@ export function advanceChapterProgressAfterNarrative(chapter: any, state: JsonRe
   }));
 
   if (!outline.phases.length) {
-    return { phaseChanged: false, enteredUserPhase: false, matchedPhaseSignal: false };
+    return { phaseChanged: false, stageAdvanced: false, enteredUserPhase: false, matchedPhaseSignal: false };
   }
   const currentPhaseIndex = outline.phases.findIndex((item) => item.id === current.phaseId);
   if (currentPhaseIndex < 0) {
@@ -1369,15 +1430,78 @@ export function advanceChapterProgressAfterNarrative(chapter: any, state: JsonRe
     const synced = readChapterProgressState(state);
     return {
       phaseChanged: synced.phaseId !== current.phaseId,
+      stageAdvanced: false,
       enteredUserPhase: synced.userNodeStatus === "waiting_input",
       matchedPhaseSignal: false,
     };
   }
   const currentPhase = outline.phases[currentPhaseIndex];
+
+  // 如果当前 phase 有 stages，检查 stage 级别推进
+  if (currentPhase.stages.length > 0) {
+    const currentStageIndex = current.stageIndex || 0;
+    const currentStage = currentPhase.stages[currentStageIndex];
+
+    // 如果当前 stage 是 user 类型，不应该在这里推进
+    if (currentStage && currentStage.kind === "user") {
+      syncChapterProgressWithRuntime(chapter, state);
+      return {
+        phaseChanged: false,
+        stageAdvanced: false,
+        enteredUserPhase: readChapterProgressState(state).userNodeStatus === "waiting_input",
+        matchedPhaseSignal: false,
+      };
+    }
+
+    // 旁白/NPC 的文本本身就是推进 scene 事件的主要信号来源。
+    const signalTexts = collectSignalTexts({
+      messageContent: input?.messageContent,
+      messageRole: input?.messageRole,
+      messageRoleType: input?.messageRoleType,
+    });
+
+    // stage 级别的推进：逐条线性推进，不需要信号匹配
+    const nextStageIndex = currentStageIndex + 1;
+    if (nextStageIndex < currentPhase.stages.length) {
+      // 还有下一个 stage，推进到下一个 stage
+      const nextStage = currentPhase.stages[nextStageIndex];
+      const enteredUserPhase = nextStage.kind === "user";
+
+      setChapterProgressState(state, {
+        stageIndex: nextStageIndex,
+        eventSummary: nextStage.targetSummary || nextStage.label,
+        userNodeId: nextStage.userNodeId || "",
+        userNodeStatus: enteredUserPhase ? "waiting_input" : "idle",
+        eventStatus: enteredUserPhase ? "waiting_input" : "active",
+      });
+
+      console.log("[stage:advance]", JSON.stringify({
+        phaseId: currentPhase.id,
+        fromStage: currentStageIndex,
+        toStage: nextStageIndex,
+        stageLabel: nextStage.label,
+        stageKind: nextStage.kind,
+        enteredUserPhase,
+      }));
+
+      return {
+        phaseChanged: false,
+        stageAdvanced: true,
+        enteredUserPhase,
+        matchedPhaseSignal: true,
+      };
+    }
+
+    // 所有 stage 完成，推进到下一个 phase
+    // 继续下面的 phase 推进逻辑
+  }
+
+  // 无 stages 或所有 stage 已完成的 phase 推进逻辑
   if (currentPhase.kind === "user") {
     syncChapterProgressWithRuntime(chapter, state);
     return {
       phaseChanged: false,
+      stageAdvanced: false,
       enteredUserPhase: readChapterProgressState(state).userNodeStatus === "waiting_input",
       matchedPhaseSignal: false,
     };
@@ -1391,7 +1515,7 @@ export function advanceChapterProgressAfterNarrative(chapter: any, state: JsonRe
   const matchedPhaseSignal = phaseSignalMatches(signalTexts, currentPhase);
   const matchedPhaseCompletion = arePhaseCompletionEventsMatched(current.completedEvents, currentPhase);
   if (signalTexts.length && !matchedPhaseSignal && !matchedPhaseCompletion) {
-    return { phaseChanged: false, enteredUserPhase: false, matchedPhaseSignal: false };
+    return { phaseChanged: false, stageAdvanced: false, enteredUserPhase: false, matchedPhaseSignal: false };
   }
   const completedEvents = markPhaseCompleted(
     normalizeCompletedEvents(Array.isArray(current.completedEvents) ? current.completedEvents : []),
@@ -1406,6 +1530,7 @@ export function advanceChapterProgressAfterNarrative(chapter: any, state: JsonRe
       });
       return {
         phaseChanged: true,
+        stageAdvanced: false,
         enteredUserPhase: false,
         matchedPhaseSignal,
       };
@@ -1418,6 +1543,7 @@ export function advanceChapterProgressAfterNarrative(chapter: any, state: JsonRe
       });
       return {
         phaseChanged: true,
+        stageAdvanced: false,
         enteredUserPhase: false,
         matchedPhaseSignal: true,
       };
@@ -1426,15 +1552,24 @@ export function advanceChapterProgressAfterNarrative(chapter: any, state: JsonRe
       completedEvents,
       eventStatus: "completed",
     });
-    return { phaseChanged: false, enteredUserPhase: false, matchedPhaseSignal: true };
+    return { phaseChanged: false, stageAdvanced: false, enteredUserPhase: false, matchedPhaseSignal: true };
   }
-  const nextUserNodeId = nextPhase.kind === "user"
-    ? (nextPhase.userNodeId || current.userNodeId || null)
-    : current.userNodeId || null;
+
+  // 检查下一个 phase 是否有 stages
+  const nextPhaseFirstStage = nextPhase.stages.length > 0 ? nextPhase.stages[0] : null;
+  const enteredUserPhase = nextPhaseFirstStage
+    ? nextPhaseFirstStage.kind === "user"
+    : nextPhase.kind === "user";
+
+  const nextUserNodeId = nextPhaseFirstStage
+    ? nextPhaseFirstStage.userNodeId
+    : (nextPhase.kind === "user"
+      ? (nextPhase.userNodeId || current.userNodeId || null)
+      : current.userNodeId || null);
   const nextUserNodeIndex = nextUserNodeId
     ? outline.userNodes.findIndex((item) => item.id === nextUserNodeId)
     : -1;
-  const enteredUserPhase = nextPhase.kind === "user";
+
   updatePhaseState(
     outline,
     state,
@@ -1445,11 +1580,14 @@ export function advanceChapterProgressAfterNarrative(chapter: any, state: JsonRe
     enteredUserPhase ? "waiting_input" : "idle",
     {
       completedEvents,
+      stageIndex: 0, // 重置 stageIndex
+      eventSummary: nextPhaseFirstStage?.targetSummary || nextPhase.targetSummary,
       eventStatus: enteredUserPhase ? "waiting_input" : "active",
     },
   );
   return {
     phaseChanged: true,
+    stageAdvanced: false,
     enteredUserPhase,
     matchedPhaseSignal: true,
   };
@@ -1546,7 +1684,7 @@ export interface EventCompletenessValidation {
 }
 
 /**
- * 验证当前事件是否经历了“开始 -> 推进 -> 完成”的完整生命周期。
+ * 验证当前事件是否经历了"开始 -> 推进 -> 完成"的完整生命周期。
  */
 export function validateEventCompleteness(chapter: any, state: JsonRecord): EventCompletenessValidation {
   const outline = readRuntimeOutline(chapter);
@@ -1639,7 +1777,7 @@ export interface NextEventDecision {
  * AI 事件进度检测结果。
  *
  * 用途：
- * - 让 AI 只回答“当前事件是否结束、当前摘要/事实是什么”
+ * - 让 AI 只回答"当前事件是否结束、当前摘要/事实是什么"
  * - 事件切换仍然复用本文件已有的 phase graph 推进逻辑
  */
 export interface AiEventProgressResolution {
@@ -1688,8 +1826,9 @@ function mergeAiProgressFacts(
  * 将 AI 的事件进度检测结果应用到运行态。
  *
  * 说明：
- * - 未结束：只更新当前事件摘要、事实和状态
- * - 已结束：将当前 phase 标记完成，并按 phase graph 切到下一事件
+ * - 未结束：检查当前 stage 是否完成，完成则推进
+ * - 已结束：标记当前 phase 完成，推进到下一个 phase
+ * - AI 不可用时，回退到 advanceChapterProgressAfterNarrative 规则推进
  */
 export function applyAiEventProgressResolution(input: {
   chapter: any;
@@ -1697,6 +1836,7 @@ export function applyAiEventProgressResolution(input: {
   resolution: AiEventProgressResolution;
 }): {
   phaseChanged: boolean;
+  stageAdvanced: boolean;
   enteredUserPhase: boolean;
 } {
   const outline = readRuntimeOutline(input.chapter);
@@ -1710,7 +1850,7 @@ export function applyAiEventProgressResolution(input: {
     input.resolution.reason,
   );
 
-  // AI 的 progress_summary 只代表“运行态进度归纳”，不能覆盖 phase graph 里的原始事件定义。
+  // AI 的 progress_summary 只代表"运行态进度归纳"，不能覆盖 phase graph 里的原始事件定义。
   // 否则下一轮编排读到的就会是泛化描述，而不是章节作者真正写的事件摘要。
   upsertRuntimeEventDigestState(input.state, {
     eventIndex: current.eventIndex,
@@ -1721,6 +1861,56 @@ export function applyAiEventProgressResolution(input: {
     summarySource: "ai",
   });
 
+  // 检查当前 phase 是否有 stages
+  const currentPhaseIndex = outline.phases.findIndex((item) => item.id === current.phaseId);
+  const currentPhase = currentPhaseIndex >= 0 ? outline.phases[currentPhaseIndex] : null;
+
+  // 判断当前 stage 是否完成
+  // 1. ended=true 表示整个事件结束，当前 stage 必然完成
+  // 2. progress_summary 包含"已完成...推进至..."或"已完成...等待..."等表述
+  const currentStageIndex = current.stageIndex || 0;
+  const isCurrentStageCompleted = input.resolution.ended
+    || /已完成.*推进至|已完成.*等待|已完成.*进入|场景.*完成|阶段.*完成|推进到.*阶段/i.test(progressSummary);
+
+  // 如果当前 phase 有 stages，且当前 stage 已完成，尝试推进
+  if (currentPhase && currentPhase.stages && currentPhase.stages.length > 0 && isCurrentStageCompleted) {
+    const nextStageIndex = currentStageIndex + 1;
+
+    if (nextStageIndex < currentPhase.stages.length) {
+      // 还有下一个 stage，推进到下一个 stage
+      const nextStage = currentPhase.stages[nextStageIndex];
+      const enteredUserPhase = nextStage.kind === "user";
+
+      setChapterProgressState(input.state, {
+        stageIndex: nextStageIndex,
+        eventSummary: nextStage.targetSummary || nextStage.label,
+        userNodeId: nextStage.userNodeId || "",
+        userNodeStatus: enteredUserPhase ? "waiting_input" : "idle",
+        eventStatus: enteredUserPhase ? "waiting_input" : input.resolution.eventStatus,
+      });
+
+      console.log("[stage:advance:applyAi]", JSON.stringify({
+        phaseId: currentPhase.id,
+        fromStage: currentStageIndex,
+        toStage: nextStageIndex,
+        stageLabel: nextStage.label,
+        stageKind: nextStage.kind,
+        enteredUserPhase,
+        ended: input.resolution.ended,
+      }));
+
+      syncRuntimeCurrentEventFromChapterProgress(input.state);
+      return {
+        phaseChanged: false,
+        stageAdvanced: true,
+        enteredUserPhase,
+      };
+    }
+
+    // 所有 stage 完成，标记当前 phase 完成，继续推进到下一个 phase
+  }
+
+  // ended=false 且没有 stage 推进：只更新状态
   if (!input.resolution.ended) {
     setChapterProgressState(input.state, {
       eventStatus: input.resolution.eventStatus,
@@ -1728,6 +1918,7 @@ export function applyAiEventProgressResolution(input: {
     syncRuntimeCurrentEventFromChapterProgress(input.state);
     return {
       phaseChanged: false,
+      stageAdvanced: false,
       enteredUserPhase: input.resolution.eventStatus === "waiting_input",
     };
   }
@@ -1739,15 +1930,16 @@ export function applyAiEventProgressResolution(input: {
     syncRuntimeCurrentEventFromChapterProgress(input.state);
     return {
       phaseChanged: false,
+      stageAdvanced: false,
       enteredUserPhase: false,
     };
   }
 
+  // 标记当前 phase 完成
   const completedEvents = markPhaseCompleted(
     normalizeCompletedEvents(Array.isArray(current.completedEvents) ? current.completedEvents : []),
     current.phaseId,
   );
-  const currentPhaseIndex = outline.phases.findIndex((item) => item.id === current.phaseId);
   const nextPhaseInfo = resolveNextPhaseFromGraph(outline, current.phaseId, completedEvents, currentPhaseIndex);
   const nextPhase = nextPhaseInfo.phase;
   if (!nextPhase) {
@@ -1764,8 +1956,9 @@ export function applyAiEventProgressResolution(input: {
       );
       return {
         phaseChanged: true,
+        stageAdvanced: false,
         // 自由章节静态引导收尾后，应立即把控制权交还给用户，
-        // 避免继续自动编排，把“任务推荐/任务选择”来回重复说多遍。
+        // 避免继续自动编排，把"任务推荐/任务选择"来回重复说多遍。
         enteredUserPhase: true,
       };
     }
@@ -1776,6 +1969,7 @@ export function applyAiEventProgressResolution(input: {
       });
       return {
         phaseChanged: true,
+        stageAdvanced: false,
         enteredUserPhase: false,
       };
     }
@@ -1786,17 +1980,22 @@ export function applyAiEventProgressResolution(input: {
     syncRuntimeCurrentEventFromChapterProgress(input.state);
     return {
       phaseChanged: false,
+      stageAdvanced: false,
       enteredUserPhase: false,
     };
   }
 
-  const nextUserNodeId = nextPhase.kind === "user"
-    ? (nextPhase.userNodeId || current.userNodeId || null)
-    : (current.userNodeId || null);
+  // 检查下一个 phase 是否第一个 stage 是 user 类型
+  const nextPhaseFirstStage = nextPhase.stages && nextPhase.stages.length > 0 ? nextPhase.stages[0] : null;
+  const nextPhaseIsUserPhase = nextPhaseFirstStage ? nextPhaseFirstStage.kind === "user" : nextPhase.kind === "user";
+  const nextUserNodeId = nextPhaseFirstStage
+    ? nextPhaseFirstStage.userNodeId
+    : (nextPhaseIsUserPhase ? (nextPhase.userNodeId || current.userNodeId || null) : current.userNodeId || null);
   const nextUserNodeIndex = nextUserNodeId
     ? outline.userNodes.findIndex((item) => item.id === nextUserNodeId)
     : -1;
-  const enteredUserPhase = nextPhase.kind === "user";
+  const enteredUserPhase = nextPhaseIsUserPhase;
+
   updatePhaseState(
     outline,
     input.state,
@@ -1810,8 +2009,10 @@ export function applyAiEventProgressResolution(input: {
       eventStatus: enteredUserPhase ? "waiting_input" : "active",
     },
   );
+
   return {
     phaseChanged: true,
+    stageAdvanced: false,
     enteredUserPhase,
   };
 }

@@ -943,7 +943,14 @@ function resolveCurrentPhaseEventSummary(input: {
     || input.fixedEvent?.label
     || input.currentPhase.label
   );
-  return shortText(summarySource, 120) || "当前事件未命名";
+  // 多行旁白场景（如连续 @旁白：台词）需要更多空间才能完整保留。
+  // 每行约 80 字符，给足够行数容纳连续的旁白/角色台词。
+  const lines = String(summarySource || "").split("\n");
+  const lineCount = lines.length;
+  const effectiveLimit = lineCount > 1
+    ? Math.max(240, lineCount * 80)
+    : 120;
+  return shortText(summarySource, effectiveLimit) || "当前事件未命名";
 }
 
 function readCurrentRuntimeEventContext(chapter: any, state: JsonRecord): {
@@ -1198,12 +1205,19 @@ function buildPromptSafeEventSummary(input: {
     const fallbackSummary = summarizeDirectiveLikeTextFull(input.chapterDirective);
     return fallbackSummary || normalizeScalarText(input.currentPhaseLabel) || "当前事件未命名";
   }
+  // 多行旁白/角色台词场景需要更多空间，防止 AI 把多行合并成一条。
+  // 包含 `@角色：` 格式的行说明有明确的说话者序列，需要完整保留给模型。
+  const lines = rawSummary.split("\n");
+  const hasSpeakerLines = lines.some((line) => /^@\S+：/.test(line.trim()));
+  const effectiveLimit = hasSpeakerLines
+    ? Math.max(input.limit * 2, 280)
+    : input.limit;
   if (!looksLikeDirectiveStructure(rawSummary) && !looksLikeDirectiveLeak(rawSummary, input.chapterDirective, "")) {
-    return rawSummary || normalizeScalarText(input.currentPhaseLabel) || "当前事件未命名";
+    return shortText(rawSummary, effectiveLimit) || normalizeScalarText(input.currentPhaseLabel) || "当前事件未命名";
   }
   const directiveSummary = summarizeDirectiveLikeTextFull(rawSummary)
     || summarizeDirectiveLikeTextFull(input.chapterDirective);
-  return directiveSummary || normalizeScalarText(input.currentPhaseLabel) || "当前事件未命名";
+  return shortText(directiveSummary || normalizeScalarText(input.currentPhaseLabel) || "当前事件未命名", effectiveLimit);
 }
 
 // 过滤当前事件事实里的正文残留，同时保留必要的“说话者/饰演者”身份线索。
@@ -1223,6 +1237,22 @@ function buildPromptSafeEventFacts(input: {
       return shortText(summarizeDirectiveLikeText(item, 48), 48);
     })
     .filter(Boolean);
+}
+
+// 从事件摘要正文里提取 @角色： 格式的角色名，防止多角色场景下角色混淆。
+function extractSpeakersFromEventSummary(eventSummary: string): string[] {
+  const speakers: string[] = [];
+  const lines = String(eventSummary || "").split("\n");
+  for (const line of lines) {
+    const matched = line.match(/^@\S+/);
+    if (matched) {
+      const name = matched[0].slice(1).trim(); // 去掉 @ 前缀
+      if (name && name !== "旁白" && name !== "系统") {
+        speakers.push(name);
+      }
+    }
+  }
+  return speakers;
 }
 
 // 生成 prompt 专用的阶段目标，章节正文阶段只保留一句用途说明，避免整段剧情正文泄漏。
@@ -2618,6 +2648,8 @@ function looksLikeDirectiveLeak(content: unknown, chapterDirective: unknown, ope
 
   const directiveHits = directiveParagraphs(chapterDirective)
     .slice(0, 4)
+    // 排除 @角色名：台词 格式的行，这些是旁白/角色的台词，模型输出它们是正常的，不算泄漏。
+    .filter((item) => !/^@\S+：/.test(item.trim()))
     .filter((item) => item.length > 8 && trimmed.includes(item.slice(0, Math.min(28, item.length))));
   return directiveHits.length > 0;
 }
@@ -2821,8 +2853,26 @@ export function allowPlayerTurn(state: JsonRecord, world: any, lastSpeakerRoleTy
 }
 
 // 判断当前是否轮到用户发言。
+// 除了检查 turnState.canPlayerSpeak 外，也检查章节进度是否处于用户发言阶段，
+// 避免 turnState 未同步导致误判。
 export function canPlayerSpeakNow(state: JsonRecord, world: any): boolean {
-  return readRuntimeTurnState(state, world).canPlayerSpeak;
+  if (readRuntimeTurnState(state, world).canPlayerSpeak) {
+    return true;
+  }
+  // 兜底：如果章节进度已进入用户发言阶段，也允许用户发言
+  const progress = readChapterProgressState(state);
+  if (progress && progress.userNodeStatus === "waiting_input") {
+    return true;
+  }
+  // stage 级别检查：如果 stageIndex === 0 且第一个 stage 是 user 类型，也允许用户发言
+  if (progress && progress.stageIndex === 0) {
+    const outline = normalizeChapterRuntimeOutline(world?.runtimeOutline);
+    const currentPhase = outline.phases.find((p) => p.id === progress.phaseId);
+    if (currentPhase?.stages && currentPhase.stages.length > 0 && currentPhase.stages[0].kind === "user") {
+      return true;
+    }
+  }
+  return false;
 }
 
 // 在角色列表里找第一个指定类型的角色。
@@ -3459,7 +3509,12 @@ function buildOrchestratorPromptPayload(input: {
     }),
     phaseAllowedSpeakers: shouldSuppressCompletedGuide
       ? []
-      : Array.isArray(input.currentPhase?.allowedSpeakers) ? input.currentPhase.allowedSpeakers : [],
+      : (() => {
+        // 显式允许角色 + 从正文台词行里提取的角色名，防止角色混淆。
+        const explicit = Array.isArray(input.currentPhase?.allowedSpeakers) ? input.currentPhase.allowedSpeakers : [];
+        const fromContent = extractSpeakersFromEventSummary(input.currentEvent.eventSummary);
+        return Array.from(new Set([...explicit, ...fromContent]));
+      })(),
 
     // recentDialogue / latestPlayerMessage 是这轮最直接的触发因素，决定模型怎么承接上下文。
     recentDialogue: input.compactMode

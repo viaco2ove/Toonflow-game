@@ -66,6 +66,7 @@ const VOLCENGINE_OBJECT_RESPONSE_MODELS = new Set([
   "doubao-seed-1-6-251015",
   "doubao-seed-1-6-lite-251015",
   "doubao-seed-1-6-flash-250828",
+  "doubao-seed-character-251128",
 ]);
 
 export function normalizeTextModelName(manufacturer: unknown, model: unknown): string {
@@ -137,6 +138,13 @@ const DOUBAO_TEXT_MODELS: DefaultOwned[] = [
   },
   {
     model: "doubao-seed-1-6-flash-250828",
+    responseFormat: "object",
+    image: true,
+    think: true,
+    tool: true,
+  },
+  {
+    model: "doubao-seed-character-251128",
     responseFormat: "object",
     image: true,
     think: true,

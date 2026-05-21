@@ -344,11 +344,18 @@ function generateEventChainSummaryMarkdown(logFilePath, outputMarkdownPath) {
       const payload = parseJsonFromLogLine(line);
       if (payload) {
         const responseText = readString(payload.responseText);
+        const inputSnapshot = payload.inputSnapshot || {};
+        const currentProgress = inputSnapshot.currentProgress || {};
+        const stageIndex = currentProgress.stageIndex;
+        const totalStages = currentProgress.totalStages;
         currentEntry.eventStage = [
           `event_status=${responseText.includes("\"event_status\": \"waiting_input\"") ? "waiting_input" : responseText.includes("\"event_status\": \"completed\"") ? "completed" : "active"}`,
           `ended=${responseText.includes("\"ended\": true") ? "true" : "false"}`,
           `progress_summary=${extractJsonTextField(responseText, "progress_summary")}`,
         ].join("，");
+        if (typeof stageIndex === "number" && typeof totalStages === "number") {
+          currentEntry.stageInfo = `stageIndex=${stageIndex}/${totalStages}`;
+        }
       }
       continue;
     }
@@ -408,6 +415,9 @@ function generateEventChainSummaryMarkdown(logFilePath, outputMarkdownPath) {
       if (entry.speech) linesForEntry.push(`  - 台词： ${entry.speech}`);
       if (entry.eventStage) {
         linesForEntry.push(`  - 事件阶段：${entry.eventStage}`);
+        if (entry.stageInfo) {
+          linesForEntry.push(`  - ${entry.stageInfo}`);
+        }
         if (entry.eventProgressResolution) {
           linesForEntry.push(`  - 事件进度处理结果：${entry.eventProgressResolution}`);
         }

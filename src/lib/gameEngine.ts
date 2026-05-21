@@ -31,6 +31,7 @@ export interface ChapterProgressState {
   chapterId: number; // 当前章节ID，用于区分不同章节的事件状态
   phaseId: string;
   phaseIndex: number;
+  stageIndex: number; // 当前 phase 内的 stage 索引，默认 0
   eventIndex: number;
   eventKind: "opening" | "scene" | "user" | "fixed" | "ending";
   eventSummary: string;
@@ -68,6 +69,27 @@ export interface RuntimeDynamicEventState {
   userNodeId: string;
 }
 
+// Stage 进度状态
+export type StageProgressStatus = "" | "i" | "s" | "f";
+// "": 未开始
+// "i": 进行中
+// "s": 完成
+// "f": 失败
+
+// Stage 进度项
+export interface StageProgressItem {
+  index: number;
+  label: string;
+  status: StageProgressStatus;
+}
+
+// Stage 进度列表
+export interface StageProgress {
+  phaseId: string;
+  phaseLabel: string;
+  stages: StageProgressItem[];
+}
+
 export interface RuntimeEventDigestState {
   eventIndex: number;
   eventKind: RuntimeCurrentEventState["kind"];
@@ -81,12 +103,16 @@ export interface RuntimeEventDigestState {
   updateTime: number;
   allowedRoles: string[];
   userNodeId: string;
+  // Stage 进度信息
+  stageProgress: StageProgress | null;
 }
 
 export interface RuntimeEventViewState {
   currentEventDigest: RuntimeEventDigestState;
   eventDigestWindow: RuntimeEventDigestState[];
   eventDigestWindowText: string;
+  // 包含所有事件的 stage 进度（用于 UI 显示完整事件链）
+  allEventStageProgress: StageProgress[];
 }
 
 // 根据事件类型和 phase 信息推断运行时事件所属的流程类型，
@@ -134,11 +160,22 @@ export interface ChapterRuntimeUserNode {
   suggestions: string[];
 }
 
+// Phase 内的 stage 定义，逐条线性推进
+export interface ChapterRuntimeStage {
+  id: string;
+  label: string;
+  kind: "scene" | "user";
+  targetSummary: string;
+  userNodeId: string | null;
+  body: string;
+}
+
 export interface ChapterRuntimePhase {
   id: string;
   label: string;
   kind: "opening" | "scene" | "user" | "fixed";
   targetSummary: string;
+  stages: ChapterRuntimeStage[]; // phase 内的 stage 列表，逐条线性推进
   userNodeId: string | null;
   allowedSpeakers: string[];
   nextPhaseIds: string[];
@@ -388,7 +425,9 @@ function getPhaseRuntimeMarker(phaseId: string): string {
 // 判断 section 标题是否是“用户行动/用户节点”一类交互段，
 // 决定该段在运行时应转成 user phase。
 function isUserNodeHeading(input: string): boolean {
-  return /用户行动|用户交互|用户节点|唯一干预机会/u.test(String(input || ""));
+  const h = String(input || "");
+  // ##标题 / ###用户发言 格式也支持
+  return /用户行动|用户交互|用户节点|唯一干预机会|用户发言/u.test(h);
 }
 
 // 判断 section 标题是否显式声明为“非事件”说明块。
@@ -401,24 +440,55 @@ function isNonEventHeading(input: string): boolean {
 
 // 将 markdown 风格的 `## 标题` 正文切成运行时 section，
 // 章节运行时提纲解析完全依赖这个分段结果。
-function extractRuntimeSections(input: unknown): Array<{ heading: string; body: string }> {
+// 改造：### 子标题作为 stage 收集到 phase 内，不再拆成独立 section
+function extractRuntimeSections(input: unknown): Array<{ heading: string; body: string; stages: Array<{ heading: string; body: string }> }> {
   const text = normalizeEditorText(input);
   if (!text) return [];
-  // 只识别二级标题 `##` 作为运行时 section。
-  // `###` 常用于 `## 非事件` 说明块内部的子标题，不能被误切成独立事件。
-  const headingRegex = /^##(?!#)\s*(.+)$/gm;
-  const sections: Array<{ heading: string; body: string }> = [];
-  const matches = Array.from(text.matchAll(headingRegex));
-  for (let i = 0; i < matches.length; i += 1) {
-    const current = matches[i];
-    const next = matches[i + 1];
+  const sections: Array<{ heading: string; body: string; stages: Array<{ heading: string; body: string }> }> = [];
+
+  // 第一步：识别所有 ## 一级标题
+  const h2Regex = /^##(?!#)\s*(.+)$/gm;
+  const h2Matches = Array.from(text.matchAll(h2Regex));
+
+  for (let i = 0; i < h2Matches.length; i += 1) {
+    const current = h2Matches[i];
+    const next = h2Matches[i + 1];
     const bodyStart = (current.index ?? 0) + current[0].length;
     const bodyEnd = next?.index ?? text.length;
-    sections.push({
-      heading: String(current[1] || "").trim(),
-      body: text.slice(bodyStart, bodyEnd).trim(),
-    });
+    const sectionBody = text.slice(bodyStart, bodyEnd).trim();
+
+    // 第二步：如果 ## 下有 ### 子标题，收集为 stages
+    const h3Regex = /^###(?!#)\s*(.+)$/gm;
+    const h3Matches = Array.from(sectionBody.matchAll(h3Regex));
+
+    if (h3Matches.length > 0) {
+      // 有 ### 子标题：收集为 stages，不再拆成多个 section
+      const stages: Array<{ heading: string; body: string }> = [];
+      for (let j = 0; j < h3Matches.length; j += 1) {
+        const h3Current = h3Matches[j];
+        const h3Next = h3Matches[j + 1];
+        const h3BodyStart = (h3Current.index ?? 0) + h3Current[0].length;
+        const h3BodyEnd = h3Next?.index ?? sectionBody.length;
+        stages.push({
+          heading: String(h3Current[1] || "").trim(),
+          body: sectionBody.slice(h3BodyStart, h3BodyEnd).trim(),
+        });
+      }
+      sections.push({
+        heading: String(current[1] || "").trim(),
+        body: sectionBody,
+        stages,
+      });
+    } else {
+      // 无 ###：整个 ## body 作为一个 section，stages 为空
+      sections.push({
+        heading: String(current[1] || "").trim(),
+        body: sectionBody,
+        stages: [],
+      });
+    }
   }
+
   return sections;
 }
 
@@ -603,6 +673,7 @@ function collectRelatedFixedEventIds(
 
 // 将章节正文解析成运行时 phase 列表。
 // 如果章节作者没有显式写 runtimeOutline.phases，这里会根据 section 自动生成。
+// 改造：### 子标题作为 stage 收集到 phase.stages 中
 function extractRuntimePhasesFromContent(
   input: unknown,
   userNodes: ChapterRuntimeUserNode[],
@@ -632,15 +703,57 @@ function extractRuntimePhasesFromContent(
         heading: section.heading,
         body: phaseDirectives.cleanedBody,
       }, fixedEvents);
+
+    // 构建 stages 列表
+    const stages: ChapterRuntimeStage[] = [];
+    if (section.stages.length > 0) {
+      // 有 stages：逐个构建
+      section.stages.forEach((stage, stageIndex) => {
+        const stageDirectives = parsePhaseDirectiveLines(stage.body);
+        const isUserStage = isUserNodeHeading(stage.heading);
+        const stageUserNode = isUserStage ? userNodes[userNodeCursor] || null : null;
+        if (isUserStage) {
+          userNodeCursor += 1;
+        }
+        stages.push({
+          id: `${phaseId}_stage_${stageIndex + 1}_${slugifyRuntimeKey(stage.heading, String(stageIndex + 1))}`,
+          label: stage.heading || `步骤 ${stageIndex + 1}`,
+          kind: isUserStage ? "user" : "scene",
+          targetSummary: normalizeRuntimeMultilineSummary(
+            stageDirectives.cleanedBody,
+            stage.heading || `步骤 ${stageIndex + 1}`,
+          ),
+          userNodeId: stageUserNode?.id || null,
+          body: stageDirectives.cleanedBody,
+        });
+      });
+    }
+
+    // phase 的 kind 保持 "scene"，因为 stage 推进由事件进度检测器决定
+    // user phase 的判断由 advanceChapterProgressAfterNarrative 中的 stage.kind === "user" 处理
+    const phaseKind = isUserPhase && stages.length === 0 ? "user" : "scene";
+
+    // phase 的 targetSummary 汇总所有 stage 的摘要
+    const phaseTargetSummary = stages.length > 0
+      ? stages.map((s) => s.label).join(" → ")
+      : normalizeRuntimeMultilineSummary(
+          phaseDirectives.cleanedBody,
+          section.heading || `阶段 ${index + 1}`,
+        );
+
+    // phase 的 userNodeId 取最后一个 user stage 的 userNodeId
+    const lastUserStage = stages.length > 0
+      ? [...stages].reverse().find((s) => s.kind === "user")
+      : null;
+    const phaseUserNodeId = lastUserStage?.userNodeId || userNode?.id || null;
+
     phaseDrafts.push({
       id: phaseId,
       label: section.heading || `阶段 ${index + 1}`,
-      kind: isUserPhase ? "user" : "scene",
-      targetSummary: normalizeRuntimeMultilineSummary(
-        phaseDirectives.cleanedBody,
-        section.heading || `阶段 ${index + 1}`,
-      ),
-      userNodeId: userNode?.id || null,
+      kind: phaseKind,
+      targetSummary: phaseTargetSummary,
+      stages,
+      userNodeId: phaseUserNodeId,
       allowedSpeakers: Array.from(new Set([
         ...phaseDirectives.allowedSpeakers,
         ...(isUserPhase ? [userNode?.promptRole || "系统"] : []),
@@ -683,6 +796,7 @@ function extractRuntimePhasesFromContent(
       label: draft.label,
       kind: draft.kind,
       targetSummary: draft.targetSummary,
+      stages: draft.stages,
       userNodeId: draft.userNodeId,
       allowedSpeakers: draft.allowedSpeakers,
       nextPhaseIds: nextPhaseIds.length ? Array.from(new Set(nextPhaseIds)) : (sequentialNextId ? [sequentialNextId] : []),
@@ -923,34 +1037,48 @@ export function normalizeChapterRuntimeOutline(input: unknown): ChapterRuntimeOu
       .filter((item) => item.role && item.content)
     : [];
   const phases = Array.isArray(base.phases)
-    ? base.phases.map((item, index) => ({
-      id: String((item as any)?.id || `phase_${index + 1}`).trim() || `phase_${index + 1}`,
-      label: String((item as any)?.label || `阶段 ${index + 1}`).trim() || `阶段 ${index + 1}`,
-      kind: ["opening", "scene", "user", "fixed"].includes(String((item as any)?.kind || "").trim())
-        ? String((item as any)?.kind || "").trim() as ChapterRuntimePhase["kind"]
-        : "scene",
-      targetSummary: String((item as any)?.targetSummary || "").trim(),
-      userNodeId: String((item as any)?.userNodeId || "").trim() || null,
-      allowedSpeakers: Array.isArray((item as any)?.allowedSpeakers)
-        ? (item as any).allowedSpeakers.map((entry: unknown) => String(entry || "").trim()).filter(Boolean)
-        : [],
-      nextPhaseIds: Array.isArray((item as any)?.nextPhaseIds)
-        ? (item as any).nextPhaseIds.map((entry: unknown) => String(entry || "").trim()).filter(Boolean)
-        : [],
-      defaultNextPhaseId: String((item as any)?.defaultNextPhaseId || "").trim() || null,
-      requiredEventIds: Array.isArray((item as any)?.requiredEventIds)
-        ? (item as any).requiredEventIds.map((entry: unknown) => String(entry || "").trim()).filter(Boolean)
-        : [],
-      completionEventIds: Array.isArray((item as any)?.completionEventIds)
-        ? (item as any).completionEventIds.map((entry: unknown) => String(entry || "").trim()).filter(Boolean)
-        : [],
-      advanceSignals: Array.isArray((item as any)?.advanceSignals)
-        ? (item as any).advanceSignals.map((entry: unknown) => String(entry || "").trim()).filter(Boolean)
-        : [],
-      relatedFixedEventIds: Array.isArray((item as any)?.relatedFixedEventIds)
-        ? (item as any).relatedFixedEventIds.map((entry: unknown) => String(entry || "").trim()).filter(Boolean)
-        : [],
-    }))
+    ? base.phases.map((item, index) => {
+      const rawStages = Array.isArray((item as any)?.stages) ? (item as any).stages : [];
+      const stages: ChapterRuntimeStage[] = rawStages.map((stage: any, stageIndex: number) => ({
+        id: String(stage?.id || `stage_${index + 1}_${stageIndex + 1}`).trim() || `stage_${index + 1}_${stageIndex + 1}`,
+        label: String(stage?.label || `步骤 ${stageIndex + 1}`).trim() || `步骤 ${stageIndex + 1}`,
+        kind: ["scene", "user"].includes(String(stage?.kind || "").trim())
+          ? String(stage?.kind || "").trim() as ChapterRuntimeStage["kind"]
+          : "scene",
+        targetSummary: String(stage?.targetSummary || "").trim(),
+        userNodeId: String(stage?.userNodeId || "").trim() || null,
+        body: String(stage?.body || "").trim(),
+      }));
+      return {
+        id: String((item as any)?.id || `phase_${index + 1}`).trim() || `phase_${index + 1}`,
+        label: String((item as any)?.label || `阶段 ${index + 1}`).trim() || `阶段 ${index + 1}`,
+        kind: ["opening", "scene", "user", "fixed"].includes(String((item as any)?.kind || "").trim())
+          ? String((item as any)?.kind || "").trim() as ChapterRuntimePhase["kind"]
+          : "scene",
+        targetSummary: String((item as any)?.targetSummary || "").trim(),
+        stages,
+        userNodeId: String((item as any)?.userNodeId || "").trim() || null,
+        allowedSpeakers: Array.isArray((item as any)?.allowedSpeakers)
+          ? (item as any).allowedSpeakers.map((entry: unknown) => String(entry || "").trim()).filter(Boolean)
+          : [],
+        nextPhaseIds: Array.isArray((item as any)?.nextPhaseIds)
+          ? (item as any).nextPhaseIds.map((entry: unknown) => String(entry || "").trim()).filter(Boolean)
+          : [],
+        defaultNextPhaseId: String((item as any)?.defaultNextPhaseId || "").trim() || null,
+        requiredEventIds: Array.isArray((item as any)?.requiredEventIds)
+          ? (item as any).requiredEventIds.map((entry: unknown) => String(entry || "").trim()).filter(Boolean)
+          : [],
+        completionEventIds: Array.isArray((item as any)?.completionEventIds)
+          ? (item as any).completionEventIds.map((entry: unknown) => String(entry || "").trim()).filter(Boolean)
+          : [],
+        advanceSignals: Array.isArray((item as any)?.advanceSignals)
+          ? (item as any).advanceSignals.map((entry: unknown) => String(entry || "").trim()).filter(Boolean)
+          : [],
+        relatedFixedEventIds: Array.isArray((item as any)?.relatedFixedEventIds)
+          ? (item as any).relatedFixedEventIds.map((entry: unknown) => String(entry || "").trim()).filter(Boolean)
+          : [],
+      };
+    })
     : [];
   const userNodes = Array.isArray(base.userNodes)
     ? base.userNodes.map((item, index) => ({
@@ -1480,6 +1608,7 @@ const DEFAULT_CHAPTER_PROGRESS_STATE: ChapterProgressState = {
   chapterId: 0,
   phaseId: "",
   phaseIndex: 0,
+  stageIndex: 0,
   eventIndex: 1,
   eventKind: "scene",
   eventSummary: "",
@@ -1647,6 +1776,7 @@ function buildRuntimeEventDigestState(input: {
   updateTime?: number | null;
   allowedRoles?: string[] | null;
   userNodeId?: string | null;
+  stageProgress?: StageProgress | null;
 }): RuntimeEventDigestState {
   return {
     eventIndex: Number.isFinite(Number(input.eventIndex)) ? Math.max(1, Number(input.eventIndex)) : 1,
@@ -1667,22 +1797,135 @@ function buildRuntimeEventDigestState(input: {
       ? input.allowedRoles.map((item) => String(item || "").trim()).filter(Boolean)
       : [],
     userNodeId: String(input.userNodeId || "").trim(),
+    stageProgress: input.stageProgress || null,
   };
+}
+
+/**
+ * 根据章节 runtimeOutline 和当前进度，构建 stage 进度列表。
+ * 用于 UI 显示事件链进度。
+ */
+export function buildStageProgressList(
+  chapter: any,
+  state: unknown,
+): StageProgress[] {
+  const outline = normalizeChapterRuntimeOutline(chapter?.runtimeOutline);
+  const phases = Array.isArray(outline.phases) ? outline.phases : [];
+  if (!phases.length) {
+    console.log("[buildStageProgressList] no phases found, outline:", JSON.stringify(outline).slice(0, 500));
+    return [];
+  }
+
+  const progress = readChapterProgressState(state);
+  const completedEvents = Array.isArray(progress.completedEvents) ? progress.completedEvents : [];
+  const result: StageProgress[] = [];
+
+  for (let i = 0; i < phases.length; i++) {
+    const phase = phases[i];
+    if (!phase.stages || phase.stages.length === 0) {
+      // 没有 stages 的 phase，跳过
+      continue;
+    }
+
+    const stages: StageProgressItem[] = [];
+    const currentPhaseId = progress.phaseId;
+    const currentStageIndex = progress.stageIndex || 0;
+    const isCurrentPhase = phase.id === currentPhaseId;
+    const isPhaseCompleted = completedEvents.some((e) => e === `phase:${phase.id}`);
+
+    for (let j = 0; j < phase.stages.length; j++) {
+      const stage = phase.stages[j];
+      let status: StageProgressStatus = "";
+
+      if (isPhaseCompleted) {
+        // phase 已完成，所有 stages 都标记为完成
+        status = "s";
+      } else if (isCurrentPhase) {
+        // 当前 phase
+        if (j < currentStageIndex) {
+          status = "s"; // 已完成
+        } else if (j === currentStageIndex) {
+          // 当前 stage，根据 eventStatus 判断
+          if (progress.eventStatus === "waiting_input") {
+            status = "i"; // 等待用户输入，进行中
+          } else if (progress.eventStatus === "active") {
+            status = "i"; // 进行中
+          } else if (progress.eventStatus === "completed") {
+            status = "s"; // 已完成
+          } else {
+            status = "i"; // 默认进行中
+          }
+        } else {
+          status = ""; // 未开始
+        }
+      } else if (completedEvents.some((e) => e === `phase:${phase.id}`)) {
+        status = "s"; // phase 已完成
+      } else {
+        status = ""; // 未开始
+      }
+
+      stages.push({
+        index: j,
+        label: stage.label,
+        status,
+      });
+    }
+
+    result.push({
+      phaseId: phase.id,
+      phaseLabel: phase.label,
+      stages,
+    });
+  }
+
+  return result;
+}
+
+/**
+ * 根据 phaseId 和当前进度，获取当前 stage 进度。
+ */
+export function buildCurrentStageProgress(
+  chapter: any,
+  state: unknown,
+): StageProgress | null {
+  const allProgress = buildStageProgressList(chapter, state);
+  const progress = readChapterProgressState(state);
+  return allProgress.find((p) => p.phaseId === progress.phaseId) || null;
+}
+
+// 根据 phaseId 和当前进度，获取指定 phase 的 stage 进度。
+export function buildStageProgressForPhase(
+  chapter: any,
+  state: unknown,
+  phaseId: string,
+): StageProgress | null {
+  const allProgress = buildStageProgressList(chapter, state);
+  return allProgress.find((p) => p.phaseId === phaseId) || null;
 }
 
 // 读取指定索引的事件 digest。
 // 优先使用动态事件；没有时再退到 currentEvent + chapterProgress。
-export function readRuntimeEventDigestByIndexState(state: unknown, eventIndex: number): RuntimeEventDigestState | null {
+export function readRuntimeEventDigestByIndexState(state: unknown, eventIndex: number, chapter?: any): RuntimeEventDigestState | null {
   if (!isRecord(state)) return null;
   const normalizedEventIndex = Number.isFinite(Number(eventIndex)) ? Math.max(1, Number(eventIndex)) : 0;
   if (!normalizedEventIndex) return null;
   const dynamicEvent = readRuntimeDynamicEventByIndex(state, normalizedEventIndex);
   if (dynamicEvent) {
+    const stageProgress = chapter && dynamicEvent.phaseId
+      ? buildStageProgressForPhase(chapter, state, dynamicEvent.phaseId)
+      : null;
+
+    // 生成带状态的 summary
+    let eventSummary = dynamicEvent.summary;
+    if (stageProgress && stageProgress.stages.length > 0) {
+      eventSummary = stageProgress.stages.map((s) => `[${s.status}]${s.label}`).join(" → ");
+    }
+
     return buildRuntimeEventDigestState({
       eventIndex: dynamicEvent.eventIndex,
       eventKind: dynamicEvent.kind,
       eventFlowType: dynamicEvent.flowType,
-      eventSummary: dynamicEvent.summary,
+      eventSummary,
       eventFacts: dynamicEvent.runtimeFacts,
       eventStatus: dynamicEvent.status,
       summarySource: dynamicEvent.summarySource,
@@ -1691,6 +1934,7 @@ export function readRuntimeEventDigestByIndexState(state: unknown, eventIndex: n
       updateTime: dynamicEvent.updateTime,
       allowedRoles: dynamicEvent.allowedRoles,
       userNodeId: dynamicEvent.userNodeId,
+      stageProgress,
     });
   }
   const currentEvent = readRuntimeCurrentEventState(state);
@@ -1711,9 +1955,9 @@ export function readRuntimeEventDigestByIndexState(state: unknown, eventIndex: n
 }
 
 // 读取当前事件 digest。
-export function readRuntimeCurrentEventDigestState(state: unknown): RuntimeEventDigestState {
+export function readRuntimeCurrentEventDigestState(state: unknown, chapter?: any): RuntimeEventDigestState {
   const currentEvent = readRuntimeCurrentEventState(state);
-  return readRuntimeEventDigestByIndexState(state, currentEvent.index)
+  return readRuntimeEventDigestByIndexState(state, currentEvent.index, chapter)
     || buildRuntimeEventDigestState({
       eventIndex: currentEvent.index,
       eventKind: currentEvent.kind,
@@ -1791,14 +2035,14 @@ export function readPhaseAwareRuntimeCurrentEventDigestState(chapter: any, state
 
 // 读取当前事件附近的事件窗口。
 // 这是事件时间线视图的核心数据源。
-export function readRuntimeEventDigestWindowState(state: unknown, windowSize = 10): RuntimeEventDigestState[] {
+export function readRuntimeEventDigestWindowState(state: unknown, windowSize = 10, chapter?: any): RuntimeEventDigestState[] {
   if (!isRecord(state)) return [];
   const currentEvent = readRuntimeCurrentEventState(state);
   const dynamicEvents = normalizeRuntimeDynamicEventList(state.dynamicEvents);
   const normalizedWindowSize = Number.isFinite(Number(windowSize)) ? Math.max(1, Number(windowSize)) : 10;
   const currentIndex = dynamicEvents.findIndex((item) => Number(item.eventIndex || 0) === Number(currentEvent.index || 0));
   if (currentIndex < 0) {
-    return [readRuntimeCurrentEventDigestState(state)];
+    return [readRuntimeCurrentEventDigestState(state, chapter)];
   }
   const beforeCount = Math.floor((normalizedWindowSize - 1) / 2);
   let start = Math.max(0, currentIndex - beforeCount);
@@ -1808,10 +2052,10 @@ export function readRuntimeEventDigestWindowState(state: unknown, windowSize = 1
   }
   const items = dynamicEvents.slice(start, end);
   if (!items.length) {
-    return [readRuntimeCurrentEventDigestState(state)];
+    return [readRuntimeCurrentEventDigestState(state, chapter)];
   }
   return items
-    .map((item) => readRuntimeEventDigestByIndexState(state, item.eventIndex))
+    .map((item) => readRuntimeEventDigestByIndexState(state, item.eventIndex, chapter))
     .filter((item): item is RuntimeEventDigestState => Boolean(item));
 }
 
@@ -1875,22 +2119,30 @@ export function readRuntimeEventDigestWindowTextState(state: unknown, options?: 
 }
 
 // 构造完整的事件视图对象。
-export function readRuntimeEventViewState(state: unknown, options?: RuntimeEventViewOptions): RuntimeEventViewState {
+// 如果传入 chapter，会包含 stage 进度信息。
+export function readRuntimeEventViewState(
+  state: unknown,
+  options?: RuntimeEventViewOptions,
+  chapter?: any,
+): RuntimeEventViewState {
+  const allEventStageProgress = chapter ? buildStageProgressList(chapter, state) : [];
   return {
-    currentEventDigest: readRuntimeCurrentEventDigestState(state),
+    currentEventDigest: readRuntimeCurrentEventDigestState(state, chapter),
     eventDigestWindow: readRuntimeEventDigestWindowState(
       state,
       Number.isFinite(Number(options?.windowSize))
         ? Math.max(1, Number(options?.windowSize))
         : DEFAULT_RUNTIME_EVENT_VIEW_OPTIONS.windowSize,
+      chapter,
     ),
     eventDigestWindowText: readRuntimeEventDigestWindowTextState(state, options),
+    allEventStageProgress,
   };
 }
 
 // 使用默认窗口配置读取事件视图。
-export function readDefaultRuntimeEventViewState(state: unknown): RuntimeEventViewState {
-  return readRuntimeEventViewState(state, DEFAULT_RUNTIME_EVENT_VIEW_OPTIONS);
+export function readDefaultRuntimeEventViewState(state: unknown, chapter?: any): RuntimeEventViewState {
+  return readRuntimeEventViewState(state, DEFAULT_RUNTIME_EVENT_VIEW_OPTIONS, chapter);
 }
 
 // 使用默认窗口配置读取事件窗口文本。
@@ -1908,6 +2160,7 @@ export function normalizeChapterProgressState(raw: unknown): ChapterProgressStat
     chapterId: Number.isFinite(Number(base.chapterId)) ? Math.max(0, Number(base.chapterId)) : DEFAULT_CHAPTER_PROGRESS_STATE.chapterId,
     phaseId: String(base.phaseId || "").trim(),
     phaseIndex: Number.isFinite(Number(base.phaseIndex)) ? Math.max(0, Number(base.phaseIndex)) : DEFAULT_CHAPTER_PROGRESS_STATE.phaseIndex,
+    stageIndex: Number.isFinite(Number(base.stageIndex)) ? Math.max(0, Number(base.stageIndex)) : DEFAULT_CHAPTER_PROGRESS_STATE.stageIndex,
     eventIndex: Number.isFinite(Number(base.eventIndex)) ? Math.max(1, Number(base.eventIndex)) : DEFAULT_CHAPTER_PROGRESS_STATE.eventIndex,
     eventKind: ["opening", "scene", "user", "fixed", "ending"].includes(String(base.eventKind || "").trim())
       ? String(base.eventKind || "").trim() as ChapterProgressState["eventKind"]
