@@ -44,6 +44,9 @@ export interface RuntimeMessageInput {
   eventIndex?: number | null;
   stageIndex?: number | null;
   phaseId?: string | null;
+  // 角色当前事件/阶段的发言计数
+  roleNumSpeechCurrEvent?: number | null;
+  roleNumSpeechCurrStage?: number | null;
   memoryDelta?: {
     eventIndex?: number | null;
     eventKind?: string | null;
@@ -5263,10 +5266,17 @@ export async function advanceNarrativeUntilPlayerTurn(input: OrchestratorInput &
   for (let step = 0; step < maxAutoTurns; step += 1) {
     applyOrchestratorResultToState(input.state, current);
     syncChapterProgressWithRuntime(input.chapter, input.state);
+    // 获取当前事件/阶段信息，用于日志和消息标记
+    const chapterProgress = readChapterProgressState(input.state);
 
+    if (DebugLogUtil.isDebugLogEnabled()) {
+         console.log("[story:event_progress:runtime][stage][advanceNarrativeUntilPlayerTurn]", JSON.stringify({
+          eventIndex: chapterProgress.eventIndex,
+          stageIndex: chapterProgress.stageIndex || 0,
+          }
+      ));
+    }
     if (current.role && current.content) {
-      // 获取当前事件/阶段信息，写入消息标记
-      const chapterProgress = readChapterProgressState(input.state);
       const message: RuntimeMessageInput = {
         role: current.role,
         roleType: current.roleType,

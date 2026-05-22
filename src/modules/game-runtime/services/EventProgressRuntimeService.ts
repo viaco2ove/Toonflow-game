@@ -263,6 +263,9 @@ function buildEventProgressInputSnapshot(input: EvaluateEventProgressInput): Jso
           // 事件/阶段标记，帮助AI判断台词归属
           event_index: item?.eventIndex ?? null,
           stage_index: item?.stageIndex ?? null,
+          // 角色当前事件/阶段的发言计数
+          role_num_speech_curr_event: item?.roleNumSpeechCurrEvent ?? 0,
+          role_num_speech_curr_stage: item?.roleNumSpeechCurrStage ?? 0,
         }))
         .filter((item) => item.content)
     : [];

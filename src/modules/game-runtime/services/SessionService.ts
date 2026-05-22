@@ -500,6 +500,20 @@ function buildRecentMessages(rows: any[], state?: any): RuntimeMessageInput[] {
       const hasEventIndex = metaData.hasOwnProperty("eventIndex");
       const hasStageIndex = metaData.hasOwnProperty("stageIndex");
       const hasPhaseId = metaData.hasOwnProperty("phaseId");
+
+      // 角色发言计数
+      const roleData: Record<string, any> = metaData.roleData || {};
+      const roleNumSpeechCurrEvent = Number(roleData.numSpeechCurrEvent || 0);
+      const roleNumSpeechCurrStage = Number(roleData.numSpeechCurrStage || 0);
+
+      if (DebugLogUtil.isDebugLogEnabled()) {
+           console.log("[story:event_progress:runtime][buildRecentMessages]", JSON.stringify({
+              eventIndex: hasEventIndex ? metaData.eventIndex : (chapterProgress?.eventIndex ?? null),
+              stageIndex: hasStageIndex ? metaData.stageIndex : (chapterProgress?.stageIndex ?? 0),
+            }
+        ));
+      }
+
       return {
         messageId: Number(item.id || 0),
         role: String(item.role || ""),
@@ -510,6 +524,8 @@ function buildRecentMessages(rows: any[], state?: any): RuntimeMessageInput[] {
         eventIndex: hasEventIndex ? metaData.eventIndex : (chapterProgress?.eventIndex ?? null),
         stageIndex: hasStageIndex ? metaData.stageIndex : (chapterProgress?.stageIndex ?? 0),
         phaseId: hasPhaseId ? metaData.phaseId : (chapterProgress?.phaseId ?? null),
+        roleNumSpeechCurrEvent,
+        roleNumSpeechCurrStage,
       };
     });
 }
@@ -1288,13 +1304,28 @@ async function insertSessionNarrativeMessages(params: {
   let lineIndex = await countSessionMessages(params.db, params.sessionId);
   for (const item of params.messages) {
     lineIndex += 1;
+    // 构建 meta 数据，包含事件/阶段标记和角色发言计数
+    const chapterProgress = readChapterProgressState(params.state);
+    const metaBase = buildSessionRuntimeMeta(params.state, lineIndex);
+    const meta = {
+      ...metaBase,
+      // 事件/阶段标记
+      eventIndex: item.eventIndex ?? chapterProgress.eventIndex ?? null,
+      stageIndex: item.stageIndex ?? chapterProgress.stageIndex ?? 0,
+      phaseId: item.phaseId ?? chapterProgress.phaseId ?? null,
+      // 角色发言计数
+      roleData: {
+        numSpeechCurrEvent: item.roleNumSpeechCurrEvent ?? 0,
+        numSpeechCurrStage: item.roleNumSpeechCurrStage ?? 0,
+      },
+    };
     const inserted = await params.db("t_sessionMessage").insert({
       sessionId: params.sessionId,
       role: String(item.role || params.state.narrator?.name || "旁白"),
       roleType: String(item.roleType || "narrator"),
       content: String(item.content || ""),
       eventType: String(item.eventType || params.eventTypeFallback || "on_orchestrated_reply"),
-      meta: toJsonText(buildSessionRuntimeMeta(params.state, lineIndex), {}),
+      meta: toJsonText(meta, {}),
       createTime: Number(item.createTime || params.now),
     });
     const insertedId = normalizeMessageId(inserted);
