@@ -356,6 +356,7 @@ function buildDebugRuntimeContext(params: {
     messages,
     asTrimmedText(state.player?.name, rolePair.playerRole.name || "用户"),
     params.playerContent,
+    state,
   );
   return { rolePair, state, debugFreePlotActive, effectiveChapter, recentMessages };
 }

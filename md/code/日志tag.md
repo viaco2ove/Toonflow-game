@@ -42,7 +42,7 @@ if (DebugLogUtil.isDebugLogEnabled()) {
 [story:event_progress:runtime][stage][stageIndex]:AI故事-事件进度的索引日志
 [story:event_progress:runtime][stage][buildRecentMessages]:AI故事-事件进度的索引日志
 [story:event_progress:runtime][stage][advanceNarrativeUntilPlayerTurn]:AI故事-事件进度的索引日志
-
+[story:event_progress:runtime][stage][buildEventProgressInputSnapshot]:AI故事-事件进度的索引日志
 
 [story:memory:runtime]: AI故事-记忆管理agent日志,trigger_memory_agent 是是否触发了AI故事-记忆管理
 [story:memory:stats]: AI故事-忆管理agent token 统计

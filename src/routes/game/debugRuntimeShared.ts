@@ -517,21 +517,97 @@ function isSyntheticDebugTerminalEvent(eventType: string): boolean {
     || normalized === "on_debug_free_plot";
 }
 
+/**
+ * 计算新消息的发言计数。
+ * 根据 recentMessages 中该角色在当前事件/阶段的发言次数累加。
+ */
+export function buildDebugMessageSpeechCount(
+  recentMessages: RuntimeMessageInput[],
+  roleName: string,
+  state: Record<string, any>,
+): { roleNumSpeechCurrEvent: number; roleNumSpeechCurrStage: number } {
+  const chapterProgress = readChapterProgressState(state);
+  const currentEventIndex = chapterProgress?.eventIndex ?? null;
+  const currentStageIndex = chapterProgress?.stageIndex ?? 0;
+
+  let maxEventCount = 0;
+  let maxStageCount = 0;
+
+  for (const msg of recentMessages) {
+    if (String(msg.role || "") !== roleName) continue;
+    const msgEventIndex = msg.eventIndex ?? currentEventIndex;
+    const msgStageIndex = msg.stageIndex ?? currentStageIndex;
+    if (msgEventIndex === currentEventIndex) {
+      maxEventCount = Math.max(maxEventCount, msg.roleNumSpeechCurrEvent || 0);
+    }
+    if (msgEventIndex === currentEventIndex && msgStageIndex === currentStageIndex) {
+      maxStageCount = Math.max(maxStageCount, msg.roleNumSpeechCurrStage || 0);
+    }
+  }
+
+  return {
+    roleNumSpeechCurrEvent: maxEventCount + 1,
+    roleNumSpeechCurrStage: maxStageCount + 1,
+  };
+}
+
 export function buildDebugRecentMessages(
   messages: RuntimeMessageInput[],
   playerRoleName: string,
   playerContent: string,
+  state?: Record<string, any>,
 ) {
   const normalizedContent = String(playerContent || "").trim();
+  // 获取当前事件/阶段标记，用于补充历史消息
+  const chapterProgress = state ? readChapterProgressState(state) : null;
+  const currentEventIndex = chapterProgress?.eventIndex ?? null;
+  const currentStageIndex = chapterProgress?.stageIndex ?? 0;
+
+  // 统计每个角色在当前事件/阶段的发言次数
+  const speechCountByRoleInEvent: Map<string, number> = new Map();
+  const speechCountByRoleInStage: Map<string, number> = new Map();
+
   const list = messages
     .filter((item) => !isSyntheticDebugTerminalEvent(String(item?.eventType || "")))
-    .map((item) => ({
-      role: String(item.role || ""),
-      roleType: String(item.roleType || ""),
-      eventType: String(item.eventType || ""),
-      content: String(item.content || ""),
-      createTime: Number(item.createTime || 0),
-    }));
+    .map((item) => {
+      // 从消息字段直接读取标记，如果没有则使用当前 chapterProgress 的值
+      const hasEventIndex = item && Object.prototype.hasOwnProperty.call(item, "eventIndex");
+      const hasStageIndex = item && Object.prototype.hasOwnProperty.call(item, "stageIndex");
+      const hasPhaseId = item && Object.prototype.hasOwnProperty.call(item, "phaseId");
+
+      const msgEventIndex = hasEventIndex ? item.eventIndex : currentEventIndex;
+      const msgStageIndex = hasStageIndex ? item.stageIndex : currentStageIndex;
+      const roleName = String(item.role || "");
+
+      // 累加发言计数：只统计当前事件/阶段内的发言
+      const isCurrentEvent = msgEventIndex === currentEventIndex;
+      const isCurrentStage = msgStageIndex === currentStageIndex && isCurrentEvent;
+
+      const eventCount = speechCountByRoleInEvent.get(roleName) || 0;
+      const stageCount = speechCountByRoleInStage.get(roleName) || 0;
+
+      if (isCurrentEvent) {
+        speechCountByRoleInEvent.set(roleName, eventCount + 1);
+      }
+      if (isCurrentStage) {
+        speechCountByRoleInStage.set(roleName, stageCount + 1);
+      }
+
+      return {
+        role: roleName,
+        roleType: String(item.roleType || ""),
+        eventType: String(item.eventType || ""),
+        content: String(item.content || ""),
+        createTime: Number(item.createTime || 0),
+        // 补充事件进度标记
+        eventIndex: msgEventIndex,
+        stageIndex: msgStageIndex,
+        phaseId: hasPhaseId ? item.phaseId : (chapterProgress?.phaseId ?? null),
+        roleNumSpeechCurrEvent: isCurrentEvent ? eventCount + 1 : 0,
+        roleNumSpeechCurrStage: isCurrentStage ? stageCount + 1 : 0,
+      };
+    });
+
   if (!normalizedContent) {
     return list;
   }
@@ -544,14 +620,26 @@ export function buildDebugRecentMessages(
   if (hasTrailingPlayerMessage) {
     return list;
   }
+
+  // 为追加的玩家消息计算发言计数
+  const playerRole = String(playerRoleName || "用户");
+  const playerEventCount = speechCountByRoleInEvent.get(playerRole) || 0;
+  const playerStageCount = speechCountByRoleInStage.get(playerRole) || 0;
+
   return [
     ...list,
     {
-      role: String(playerRoleName || "用户"),
+      role: playerRole,
       roleType: "player",
       eventType: "on_message",
       content: normalizedContent,
       createTime: nowTs(),
+      // 补充事件进度标记（继承当前 chapterProgress）
+      eventIndex: currentEventIndex,
+      stageIndex: currentStageIndex,
+      phaseId: chapterProgress?.phaseId ?? null,
+      roleNumSpeechCurrEvent: playerEventCount + 1,
+      roleNumSpeechCurrStage: playerStageCount + 1,
     },
   ];
 }

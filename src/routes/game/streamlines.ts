@@ -7,6 +7,7 @@ import {
   normalizeRolePair,
   normalizeSessionState,
   parseJsonSafe,
+  readChapterProgressState,
 } from "@/lib/gameEngine";
 import {
   applyPlayerProfileFromMessageToState,
@@ -21,6 +22,7 @@ import {
   cacheAndBuildDebugStateSnapshot,
   asDebugMessage,
   buildDebugMessageWithRevisitData,
+  buildDebugMessageSpeechCount,
   buildDebugRecentMessages,
   debugMessageSchema,
   evaluateDebugRuntimeOutcome,
@@ -291,17 +293,29 @@ async function applyDebugIntroductionProgress(input: {
     messages,
     String(state.player?.name || rolePair.playerRole.name || "用户"),
     "",
+    state,
   );
 
   syncDebugChapterRuntime(chapter, state);
   const debugFreePlotActive = isDebugFreePlotActive(state);
+  // 获取当前事件进度，补充到 emittedMessage
+  const chapterProgress = readChapterProgressState(state);
+  const speechCount = buildDebugMessageSpeechCount(recentMessages, String(emittedMessage.role || ""), state);
+  const emittedMessageWithProgress = {
+    ...emittedMessage,
+    eventIndex: chapterProgress?.eventIndex ?? null,
+    stageIndex: chapterProgress?.stageIndex ?? 0,
+    phaseId: chapterProgress?.phaseId ?? null,
+    roleNumSpeechCurrEvent: speechCount.roleNumSpeechCurrEvent,
+    roleNumSpeechCurrStage: speechCount.roleNumSpeechCurrStage,
+  };
   const outcome = await evaluateDebugRuntimeOutcome({
     chapter,
     state,
     messageContent: String(emittedMessage.content || ""),
     eventType: String(emittedMessage.eventType || ""),
     meta: {},
-    recentMessages: [...recentMessages, emittedMessage],
+    recentMessages: [...recentMessages, emittedMessageWithProgress],
     debugFreePlotActive,
   });
 
@@ -549,6 +563,7 @@ router.post(
         messages,
         String(state.player?.name || rolePair.playerRole.name || "用户"),
         playerContent,
+        state,
       );
       const roleName = String(plan.role || "").trim();
       const roleType = String(plan.roleType || "").trim() || "narrator";
@@ -634,12 +649,19 @@ router.post(
         writeStreamLine(res, { type: "sentence", data: { text: tailSentence } });
       }
 
+      const chapterProgressForEmitter = readChapterProgressState(state);
+      const speechCount = buildDebugMessageSpeechCount(recentMessages, roleName || "旁白", state);
       const emittedMessage: RuntimeMessageInput = {
         role: roleName || "旁白",
         roleType,
         eventType,
         content,
         createTime: Date.now(),
+        eventIndex: chapterProgressForEmitter?.eventIndex ?? null,
+        stageIndex: chapterProgressForEmitter?.stageIndex ?? 0,
+        phaseId: chapterProgressForEmitter?.phaseId ?? null,
+        roleNumSpeechCurrEvent: speechCount.roleNumSpeechCurrEvent,
+        roleNumSpeechCurrStage: speechCount.roleNumSpeechCurrStage,
       };
 
       if (!sessionId) {
