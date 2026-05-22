@@ -508,6 +508,7 @@ function buildRecentMessages(rows: any[], state?: any): RuntimeMessageInput[] {
 
       if (DebugLogUtil.isDebugLogEnabled()) {
            console.log("[story:event_progress:runtime][stage][buildRecentMessages]", JSON.stringify({
+               role: String(item.role || ""),
               eventIndex: hasEventIndex ? metaData.eventIndex : (chapterProgress?.eventIndex ?? null),
               stageIndex: hasStageIndex ? metaData.stageIndex : (chapterProgress?.stageIndex ?? 0),
             }
@@ -1309,6 +1310,7 @@ async function insertSessionNarrativeMessages(params: {
     const metaBase = buildSessionRuntimeMeta(params.state, lineIndex);
     if (DebugLogUtil.isDebugLogEnabled()) {
        console.log("[story:event_progress:runtime][stage][insertSessionNarrativeMessages]", JSON.stringify({
+            role: String(item.role || ""),
             // 事件/阶段标记，帮助AI判断台词归属
             eventIndex: item.eventIndex ?? chapterProgress.eventIndex ?? null,
             stageIndex: item.stageIndex ?? chapterProgress.stageIndex ?? 0,

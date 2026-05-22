@@ -5271,6 +5271,7 @@ export async function advanceNarrativeUntilPlayerTurn(input: OrchestratorInput &
 
     if (DebugLogUtil.isDebugLogEnabled()) {
          console.log("[story:event_progress:runtime][stage][advanceNarrativeUntilPlayerTurn]", JSON.stringify({
+          role: current.role,
           eventIndex: chapterProgress.eventIndex,
           stageIndex: chapterProgress.stageIndex || 0,
           }
