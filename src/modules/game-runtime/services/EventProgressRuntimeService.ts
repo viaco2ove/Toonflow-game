@@ -258,7 +258,7 @@ function buildEventProgressInputSnapshot(input: EvaluateEventProgressInput): Jso
         .map((item) => {
           // 打印 map 处理中的每一个 item
         if (DebugLogUtil.isDebugLogEnabled()) {
-             console.log("[story:event_progress:runtime][state][buildRecentMessages]", JSON.stringify({
+             console.log("[story:event_progress:runtime][stage][buildRecentMessages]", JSON.stringify({
                   // 事件/阶段标记，帮助AI判断台词归属
                   event_index: item?.eventIndex ?? null,
                   stage_index: item?.stageIndex ?? null,
