@@ -260,6 +260,9 @@ function buildEventProgressInputSnapshot(input: EvaluateEventProgressInput): Jso
           role_type: normalizeScalarText(item?.roleType) || "",
           event_type: normalizeScalarText(item?.eventType) || "",
           content: shortText(item?.content, 160),
+          // 事件/阶段标记，帮助AI判断台词归属
+          event_index: item?.eventIndex ?? null,
+          stage_index: item?.stageIndex ?? null,
         }))
         .filter((item) => item.content)
     : [];
@@ -300,6 +303,9 @@ function buildEventProgressInputSnapshot(input: EvaluateEventProgressInput): Jso
       completed_events: Array.isArray(chapterProgress.completedEvents)
         ? chapterProgress.completedEvents.map((item) => normalizeScalarText(item)).filter(Boolean)
         : [],
+      // 用户发言计数
+      user_speak_count: Number(chapterProgress.userSpeakCount || 0),
+      user_speak_required: currentStage?.userSpeakRequired || null,
     },
     current_stage: currentStage
       ? {
@@ -307,6 +313,7 @@ function buildEventProgressInputSnapshot(input: EvaluateEventProgressInput): Jso
         label: normalizeScalarText(currentStage.label),
         kind: normalizeScalarText(currentStage.kind),
         summary: normalizeScalarText(currentStage.targetSummary),
+        user_speak_required: currentStage.userSpeakRequired || null,
       }
       : null,
     next_stage: nextStage

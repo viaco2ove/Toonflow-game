@@ -1868,9 +1868,16 @@ export function applyAiEventProgressResolution(input: {
   // 判断当前 stage 是否完成
   // 1. ended=true 表示整个事件结束，当前 stage 必然完成
   // 2. progress_summary 包含"已完成...推进至..."或"已完成...等待..."等表述
+  // 3. 如果阶段有 userSpeakRequired，检查用户发言次数是否达标
   const currentStageIndex = current.stageIndex || 0;
+  const currentStage = currentPhase?.stages?.[currentStageIndex];
+  const userSpeakCount = current.userSpeakCount || 0;
+  const userSpeakRequired = currentStage?.userSpeakRequired;
+  const userSpeakCompleted = userSpeakRequired && userSpeakCount >= userSpeakRequired;
+
   const isCurrentStageCompleted = input.resolution.ended
-    || /已完成.*推进至|已完成.*等待|已完成.*进入|场景.*完成|阶段.*完成|推进到.*阶段/i.test(progressSummary);
+    || /已完成.*推进至|已完成.*等待|已完成.*进入|场景.*完成|阶段.*完成|推进到.*阶段/i.test(progressSummary)
+    || userSpeakCompleted;
 
   // 打印 stage 状态日志
   console.log("[story:event_progress:runtime][stage]", JSON.stringify({
@@ -1880,6 +1887,9 @@ export function applyAiEventProgressResolution(input: {
     isCurrentStageCompleted,
     ended: input.resolution.ended,
     progressSummary: progressSummary.slice(0, 100),
+    userSpeakCount,
+    userSpeakRequired,
+    userSpeakCompleted,
   }));
 
   // 如果当前 phase 有 stages，且当前 stage 已完成，尝试推进
@@ -1897,6 +1907,8 @@ export function applyAiEventProgressResolution(input: {
         userNodeId: nextStage.userNodeId || "",
         userNodeStatus: enteredUserPhase ? "waiting_input" : "idle",
         eventStatus: enteredUserPhase ? "waiting_input" : input.resolution.eventStatus,
+        // 进入新阶段时重置用户发言计数
+        userSpeakCount: 0,
       });
 
       console.log("[story:event_progress:runtime][stage][stageIndex]", JSON.stringify({

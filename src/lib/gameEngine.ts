@@ -43,6 +43,8 @@ export interface ChapterProgressState {
   pendingGoal: string;
   fixedOutcomeLocked: boolean;
   lastEvaluatedMessageId: number;
+  // 当前阶段用户发言计数，用于"用户发言N次后推进"规则
+  userSpeakCount?: number;
 }
 
 export interface RuntimeCurrentEventState {
@@ -168,6 +170,8 @@ export interface ChapterRuntimeStage {
   targetSummary: string;
   userNodeId: string | null;
   body: string;
+  // 用户发言次数要求：达到指定次数后推进到下一阶段
+  userSpeakRequired?: number | null;
 }
 
 export interface ChapterRuntimePhase {
@@ -503,6 +507,7 @@ function parsePhaseDirectiveLines(input: string): {
   completionEventIds: string[];
   advanceSignals: string[];
   relatedFixedEventIds: string[];
+  userSpeakRequired: number | null;
 } {
   const lines = String(input || "").replace(/\r\n/g, "\n").split("\n");
   const cleanedLines: string[] = [];
@@ -513,6 +518,7 @@ function parsePhaseDirectiveLines(input: string): {
   const completionEventIds: string[] = [];
   const advanceSignals: string[] = [];
   const relatedFixedEventIds: string[] = [];
+  let userSpeakRequired: number | null = null;
   for (const rawLine of lines) {
     const line = String(rawLine || "").trim();
     if (!line) {
@@ -554,6 +560,13 @@ function parsePhaseDirectiveLines(input: string): {
       relatedFixedEventIds.push(...splitRuntimeDirectiveItems(String(matched[1] || "")));
       continue;
     }
+    // 解析 "用户发言N次" 规则
+    matched = line.match(/用户发言\s*(\d+)\s*次/i);
+    if (matched) {
+      userSpeakRequired = parseInt(matched[1], 10);
+      // 从 cleanedBody 中移除这行指令
+      continue;
+    }
     cleanedLines.push(rawLine);
   }
   return {
@@ -565,6 +578,7 @@ function parsePhaseDirectiveLines(input: string): {
     completionEventIds: Array.from(new Set(completionEventIds)),
     advanceSignals: normalizePhaseSignalList(advanceSignals),
     relatedFixedEventIds: Array.from(new Set(relatedFixedEventIds)),
+    userSpeakRequired,
   };
 }
 
@@ -725,6 +739,7 @@ function extractRuntimePhasesFromContent(
           ),
           userNodeId: stageUserNode?.id || null,
           body: stageDirectives.cleanedBody,
+          userSpeakRequired: stageDirectives.userSpeakRequired,
         });
       });
     }

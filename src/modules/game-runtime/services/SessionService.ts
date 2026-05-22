@@ -6,6 +6,7 @@ import {
   normalizeSessionState,
   nowTs,
   parseJsonSafe,
+  readChapterProgressState,
   readDefaultRuntimeEventViewState,
   readRuntimeCurrentEventDigestState,
   RuntimeEventDigestState,
@@ -481,17 +482,36 @@ export async function persistSessionMessageRevisitData(params: {
   });
 }
 
-function buildRecentMessages(rows: any[]): RuntimeMessageInput[] {
+function buildRecentMessages(rows: any[], state?: any): RuntimeMessageInput[] {
+  // 获取当前事件/阶段标记，用于补充历史消息
+  const chapterProgress = state ? readChapterProgressState(state) : null;
   return rows
     .reverse()
-    .map((item: any) => ({
-      messageId: Number(item.id || 0),
-      role: String(item.role || ""),
-      roleType: String(item.roleType || ""),
-      eventType: String(item.eventType || ""),
-      content: String(item.content || ""),
-      createTime: Number(item.createTime || 0),
-    }));
+    .map((item: any) => {
+      // 解析 meta，提取事件标记
+      let metaData: Record<string, any> = {};
+      if (item.meta) {
+        try {
+          metaData = JSON.parse(item.meta) || {};
+        } catch { /* ignore */ }
+      }
+      // 从 meta 中读取标记，如果没有（undefined）则使用当前 chapterProgress 的值
+      // 注意：不能简单用 ?? 操作符，因为 null ?? fallback 会返回 null
+      const hasEventIndex = metaData.hasOwnProperty("eventIndex");
+      const hasStageIndex = metaData.hasOwnProperty("stageIndex");
+      const hasPhaseId = metaData.hasOwnProperty("phaseId");
+      return {
+        messageId: Number(item.id || 0),
+        role: String(item.role || ""),
+        roleType: String(item.roleType || ""),
+        eventType: String(item.eventType || ""),
+        content: String(item.content || ""),
+        createTime: Number(item.createTime || 0),
+        eventIndex: hasEventIndex ? metaData.eventIndex : (chapterProgress?.eventIndex ?? null),
+        stageIndex: hasStageIndex ? metaData.stageIndex : (chapterProgress?.stageIndex ?? 0),
+        phaseId: hasPhaseId ? metaData.phaseId : (chapterProgress?.phaseId ?? null),
+      };
+    });
 }
 
 /**
@@ -748,7 +768,7 @@ async function loadIncrementalMessagesForMemory(db: any, sessionId: string, stat
       .where({ sessionId })
       .orderBy("id", "desc")
       .limit(20);
-  const recentMessages = buildRecentMessages(rows);
+  const recentMessages = buildRecentMessages(rows, state);
   if (!hasMemoryEventDelta(state)) {
     return recentMessages;
   }
@@ -1457,7 +1477,7 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
 
   if (roleTypeValue === "player" && eventTypeValue === "on_message" && messageContent.trim()) {
     const rawRecentMessages = await db("t_sessionMessage").where({ sessionId }).orderBy("id", "desc").limit(20);
-    const recentMessages = buildRecentMessages(rawRecentMessages);
+    const recentMessages = buildRecentMessages(rawRecentMessages, state);
     const miniGameResult = await handleMiniGameTurn({
       userId: currentUserId,
       world,
@@ -1706,7 +1726,7 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
   if (currentChapter) {
     if (roleTypeValue === "player" && eventTypeValue === "on_message" && messageContent.trim()) {
       const rawRecentMessagesForProgress = await db("t_sessionMessage").where({ sessionId }).orderBy("id", "desc").limit(20);
-      const recentMessagesForProgress = buildRecentMessages(rawRecentMessagesForProgress);
+      const recentMessagesForProgress = buildRecentMessages(rawRecentMessagesForProgress, state);
       await applySessionUserEventProgress({
         userId: currentUserId,
         chapter: currentChapter,
@@ -1764,7 +1784,7 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
           eventTypeFallback: "on_task_resolution",
         });
         const latestRecentRows = await db("t_sessionMessage").where({ sessionId }).orderBy("id", "desc").limit(20);
-        const latestRecentMessages = buildRecentMessages(latestRecentRows);
+        const latestRecentMessages = buildRecentMessages(latestRecentRows, state);
         await refreshStoryMemoryBestEffort({
           userId: currentUserId,
           world,
@@ -1893,7 +1913,7 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
   }
   if (currentChapter) {
     const recentMessagesForOutcome = roleTypeValue === "player" && eventTypeValue === "on_message"
-      ? buildRecentMessages(await db("t_sessionMessage").where({ sessionId }).orderBy("id", "desc").limit(20))
+      ? buildRecentMessages(await db("t_sessionMessage").where({ sessionId }).orderBy("id", "desc").limit(20), state)
       : [];
     const mergedOutcome = await evaluateRuntimeOutcome({
       chapter: currentChapter,
@@ -2026,7 +2046,7 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
       : null;
     if (playChapter) {
       const rawRecentMessages = await db("t_sessionMessage").where({ sessionId }).orderBy("id", "desc").limit(20);
-      const recentMessages = buildRecentMessages(rawRecentMessages);
+      const recentMessages = buildRecentMessages(rawRecentMessages, state);
       const orchestrator = await runNarrativeOrchestrator({
         userId: currentUserId,
         world,
@@ -2189,7 +2209,7 @@ export async function continueSessionNarrative(sessionIdInput: string): Promise<
   }
 
   const rawRecentMessages = await db("t_sessionMessage").where({ sessionId }).orderBy("id", "desc").limit(20);
-  const recentMessages = buildRecentMessages(rawRecentMessages);
+  const recentMessages = buildRecentMessages(rawRecentMessages, state);
   const requestTrace = {
     requestId: `continue_session_${sessionId}_${nowTs()}_${Math.random().toString(36).slice(2, 8)}`,
     route: "/game/continueSessionNarrative",
@@ -2398,7 +2418,7 @@ async function orchestrateSessionTurnInner(sessionId: string): Promise<SessionOr
     world,
   );
   const rawRecentMessages = await db("t_sessionMessage").where({ sessionId }).orderBy("id", "desc").limit(20);
-  const recentMessages = buildRecentMessages(rawRecentMessages);
+  const recentMessages = buildRecentMessages(rawRecentMessages, state);
   const requestTrace = {
     requestId: `orch_session_${sessionId}_${nowTs()}_${Math.random().toString(36).slice(2, 8)}`,
     route: "/game/orchestration",

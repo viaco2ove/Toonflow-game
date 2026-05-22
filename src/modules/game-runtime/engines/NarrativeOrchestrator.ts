@@ -40,6 +40,10 @@ export interface RuntimeMessageInput {
   eventType?: string | null;
   content?: string | null;
   createTime?: number | null;
+  // 事件/阶段标记，用于事件进度检测器判断台词归属
+  eventIndex?: number | null;
+  stageIndex?: number | null;
+  phaseId?: string | null;
   memoryDelta?: {
     eventIndex?: number | null;
     eventKind?: string | null;
@@ -177,6 +181,13 @@ type OrchestratorPromptPayload = {
   recentDialogue: RecentDialogueTurn[];
   latestPlayerMessage: string;
   traceMeta?: JsonRecord;
+  // 当前阶段信息，用于事件进度检测器判断当前阶段
+  currentStage?: {
+    index: number;
+    label: string;
+    kind: string;
+    summary: string;
+  } | null;
 };
 
 type SpeakerPromptPayload = {
@@ -211,6 +222,9 @@ type SpeakerPromptPayload = {
   recentDialogue: RecentDialogueTurn[];
   otherRoles: string[];
   traceMeta?: JsonRecord;
+  // 当前阶段索引和摘要，用于角色发言器判断当前阶段
+  currentStageIndex?: number | null;
+  currentStageSummary?: string | null;
 };
 
 type RecentDialogueTurn = {
@@ -218,6 +232,9 @@ type RecentDialogueTurn = {
   roleType: string;
   eventType: string;
   content: string;
+  // 事件/阶段标记
+  eventIndex?: number | null;
+  stageIndex?: number | null;
 };
 
 type PromptStatRow = {
@@ -2093,6 +2110,7 @@ function buildOrchestratorInputSnapshot(payload: OrchestratorPromptPayload, comp
       memory_summary: payload.currentEventMemorySummary || "",
       memory_facts: payload.currentEventMemoryFacts,
       window: eventWindow,
+      curr_stage: payload.currentStage,
     },
     turn_state: {
       can_player_speak: payload.turnState.canPlayerSpeak,
@@ -2130,6 +2148,8 @@ function buildSpeakerCurrentEventLines(payload: {
   currentEventMemorySummary: string;
   currentEventMemoryFacts: string[];
   currentEventWindow?: string;
+  currentStageIndex?: number | null;
+  currentStageSummary?: string | null;
 }): string[] {
   return [
     `index: ${payload.currentEventIndex || 1}`,
@@ -2137,6 +2157,8 @@ function buildSpeakerCurrentEventLines(payload: {
     payload.currentEventFlowType ? `flow: ${payload.currentEventFlowType}` : "",
     payload.currentEventStatus ? `status: ${payload.currentEventStatus}` : "",
     `summary: ${payload.currentEventSummary || "当前事件未命名"}`,
+    payload.currentStageIndex != null ? `currStageIndex: ${payload.currentStageIndex}` : "",
+    payload.currentStageSummary ? `currStageSummary: ${payload.currentStageSummary}` : "",
     payload.currentEventFacts.length ? `facts: ${payload.currentEventFacts.join("；")}` : "",
     payload.currentEventMemorySummary ? `memory_summary: ${payload.currentEventMemorySummary}` : "",
     payload.currentEventMemoryFacts.length ? `memory_facts: ${payload.currentEventMemoryFacts.join("；")}` : "",
@@ -2421,6 +2443,8 @@ function buildSpeakerUserPrompt(payload: {
   latestPlayerMessage: string;
   recentDialogue: RecentDialogueTurn[];
   otherRoles: string[];
+  currentStageIndex?: number | null;
+  currentStageSummary?: string | null;
 }): string {
   const worldLines = buildSpeakerWorldLines(payload);
   const chapterLines = buildSpeakerChapterLines(payload);
@@ -3128,9 +3152,12 @@ function recentDialogueItems(messages: RuntimeMessageInput[], maxCount = 12, max
         roleType,
         eventType,
         content,
+        // 事件/阶段标记
+        eventIndex: item?.eventIndex ?? null,
+        stageIndex: item?.stageIndex ?? null,
       };
     })
-    .filter((item): item is RecentDialogueTurn => Boolean(item));
+    .filter((item): item is Required<RecentDialogueTurn> => Boolean(item));
   if (maxChars <= 0) {
     return items;
   }
@@ -3524,7 +3551,20 @@ function buildOrchestratorPromptPayload(input: {
     traceMeta: normalizeTraceMeta(input.traceMeta),
   };
 
-  // 编排 prompt 只读取精简后的事件摘要与事实，避免把章节正文当成“当前事件”再次送进模型。
+  // 计算当前阶段信息，用于事件进度检测器
+  const chapterProgress = readChapterProgressState(input.state);
+  const currentStageIndex = chapterProgress?.stageIndex ?? 0;
+  const currentStage = input.currentPhase?.stages?.[currentStageIndex] ?? null;
+  payload.currentStage = currentStage
+    ? {
+        index: currentStageIndex,
+        label: currentStage.label,
+        kind: currentStage.kind,
+        summary: currentStage.targetSummary,
+      }
+    : null;
+
+  // 编排 prompt 只读取精简后的事件摘要与事实，避免把章节正文当成”当前事件”再次送进模型。
   payload.currentEventSummary = promptEventSummary;
   payload.currentEventFacts = promptEventFacts;
   return payload;
@@ -3845,8 +3885,12 @@ export async function runStorySpeakerContent(input: {
     limit: speakerFactsLimit,
   });
   // 当前事件已经完成时，角色发言器应该面向下一事件继续生成，而不是围绕已完成事件原地打转。
-  // 这里复用事件进度检测同一份“下一事件提示”，让角色发言器和事件进度检测看到一致的阶段边界。
+  // 这里复用事件进度检测同一份”下一事件提示”，让角色发言器和事件进度检测看到一致的阶段边界。
   const nextEventHint = readNextEventProgressHint(input.chapter, input.state);
+  // 获取当前阶段信息，用于角色发言器提示词
+  const chapterProgress = readChapterProgressState(input.state);
+  const chapterStageIndex = chapterProgress?.stageIndex ?? 0;
+  const currentStage = currentPhase?.stages?.[chapterStageIndex] ?? null;
   let nextEventFlowType: "chapter_ending_check" | "chapter_content" | undefined;
   if (nextEventHint) {
     nextEventFlowType = resolveNextEventFlowType(nextEventHint.kind);
@@ -3943,6 +3987,9 @@ export async function runStorySpeakerContent(input: {
       speakerMode: speakerMode.mode,
       speakerModelKey,
     },
+    // 添加当前阶段信息
+    currentStageIndex: chapterProgress?.stageIndex ?? 0,
+    currentStageSummary: currentStage?.targetSummary || null,
   };
   // 只在 prompt payload 层切换当前/下一事件上下文，不改运行态原始事件信息，避免 UI 和回溯链失真。
   const systemPrompt = buildSpeakerSystemPrompt(prompts.storySpeaker || prompts.storyOrchestrator, useFastSpeakerPrompt || compactMode);
@@ -5119,6 +5166,28 @@ async function applyNarrativeEventProgress(params: {
     return { enteredUserPhase: false };
   }
   syncChapterProgressWithRuntime(params.chapter, params.state);
+
+  // 处理用户发言计数
+  const currentProgress = readChapterProgressState(params.state);
+  const outline = normalizeChapterRuntimeOutline(params.chapter?.runtimeOutline);
+  const currentPhase = outline.phases.find((p) => p.id === currentProgress.phaseId);
+  const currentStageIndex = currentProgress.stageIndex || 0;
+  const currentStage = currentPhase?.stages?.[currentStageIndex];
+
+  // 如果是用户发言，且当前阶段有发言次数要求，更新计数
+  if (params.roleType === "player" && currentStage?.userSpeakRequired) {
+    const newCount = (currentProgress.userSpeakCount || 0) + 1;
+    console.log("[story:event_progress:runtime][userSpeakCount]", JSON.stringify({
+      phaseId: currentProgress.phaseId,
+      stageIndex: currentStageIndex,
+      stageLabel: currentStage?.label,
+      userSpeakCount: newCount,
+      userSpeakRequired: currentStage.userSpeakRequired,
+    }));
+    setChapterProgressState(params.state, {
+      userSpeakCount: newCount,
+    });
+  }
   // 先把“当前事件”交给 AI 判断，避免规则信号先把 phase 错切到下一事件。
   const resolution = await evaluateEventProgressByAi({
     userId: params.userId,
@@ -5196,12 +5265,17 @@ export async function advanceNarrativeUntilPlayerTurn(input: OrchestratorInput &
     syncChapterProgressWithRuntime(input.chapter, input.state);
 
     if (current.role && current.content) {
+      // 获取当前事件/阶段信息，写入消息标记
+      const chapterProgress = readChapterProgressState(input.state);
       const message: RuntimeMessageInput = {
         role: current.role,
         roleType: current.roleType,
         eventType: "on_orchestrated_reply",
         content: current.content,
         createTime: nowTs(),
+        eventIndex: chapterProgress.eventIndex,
+        stageIndex: chapterProgress.stageIndex || 0,
+        phaseId: chapterProgress.phaseId,
       };
       emitted.push(message);
       recentMessages.push(message);
