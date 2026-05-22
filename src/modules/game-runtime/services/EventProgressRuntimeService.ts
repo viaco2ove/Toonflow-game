@@ -255,7 +255,20 @@ function buildEventProgressInputSnapshot(input: EvaluateEventProgressInput): Jso
   const recentDialogue = Array.isArray(input.recentMessages)
     ? input.recentMessages
         .slice(-10)
-        .map((item) => ({
+        .map((item) => {
+          // 打印 map 处理中的每一个 item
+        if (DebugLogUtil.isDebugLogEnabled()) {
+             console.log("[story:event_progress:runtime][state][buildRecentMessages]", JSON.stringify({
+                  // 事件/阶段标记，帮助AI判断台词归属
+                  event_index: item?.eventIndex ?? null,
+                  stage_index: item?.stageIndex ?? null,
+                  // 角色当前事件/阶段的发言计数
+                  role_num_speech_curr_event: item?.roleNumSpeechCurrEvent ?? 0,
+                  role_num_speech_curr_stage: item?.roleNumSpeechCurrStage ?? 0,
+                }
+            ));
+          }
+          return ({
           role: normalizeScalarText(item?.role) || "未知角色",
           role_type: normalizeScalarText(item?.roleType) || "",
           event_type: normalizeScalarText(item?.eventType) || "",
@@ -266,7 +279,8 @@ function buildEventProgressInputSnapshot(input: EvaluateEventProgressInput): Jso
           // 角色当前事件/阶段的发言计数
           role_num_speech_curr_event: item?.roleNumSpeechCurrEvent ?? 0,
           role_num_speech_curr_stage: item?.roleNumSpeechCurrStage ?? 0,
-        }))
+        })
+        })
         .filter((item) => item.content)
     : [];
   const nextEvent = readNextEventProgressHint(input.chapter, input.state);

@@ -507,7 +507,7 @@ function buildRecentMessages(rows: any[], state?: any): RuntimeMessageInput[] {
       const roleNumSpeechCurrStage = Number(roleData.numSpeechCurrStage || 0);
 
       if (DebugLogUtil.isDebugLogEnabled()) {
-           console.log("[story:event_progress:runtime][buildRecentMessages]", JSON.stringify({
+           console.log("[story:event_progress:runtime][stage][buildRecentMessages]", JSON.stringify({
               eventIndex: hasEventIndex ? metaData.eventIndex : (chapterProgress?.eventIndex ?? null),
               stageIndex: hasStageIndex ? metaData.stageIndex : (chapterProgress?.stageIndex ?? 0),
             }
@@ -1307,6 +1307,17 @@ async function insertSessionNarrativeMessages(params: {
     // 构建 meta 数据，包含事件/阶段标记和角色发言计数
     const chapterProgress = readChapterProgressState(params.state);
     const metaBase = buildSessionRuntimeMeta(params.state, lineIndex);
+    if (DebugLogUtil.isDebugLogEnabled()) {
+       console.log("[story:event_progress:runtime][stage][insertSessionNarrativeMessages]", JSON.stringify({
+            // 事件/阶段标记，帮助AI判断台词归属
+            eventIndex: item.eventIndex ?? chapterProgress.eventIndex ?? null,
+            stageIndex: item.stageIndex ?? chapterProgress.stageIndex ?? 0,
+            // 角色当前事件/阶段的发言计数
+            numSpeechCurrEvent: item.roleNumSpeechCurrEvent ?? 0,
+            numSpeechCurrStage: item.roleNumSpeechCurrStage ?? 0,
+          }
+      ));
+    }
     const meta = {
       ...metaBase,
       // 事件/阶段标记
