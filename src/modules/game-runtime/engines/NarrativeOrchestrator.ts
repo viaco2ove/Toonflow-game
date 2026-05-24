@@ -2456,6 +2456,13 @@ function buildSpeakerUserPrompt(payload: {
   const nextEventLines = buildSpeakerNextEventLines(payload);
   const speakerIdentityLines = buildSpeakerIdentityLines(payload);
   const visibleRolesText = payload.otherRoles.length ? payload.otherRoles.join("、") : "无";
+
+  if (DebugLogUtil.isDebugLogEnabled()) {
+    console.log("[story:memory:runtime] buildSpeakerUserPrompt", JSON.stringify({
+      worldIntro: payload.worldIntro || "无",
+      currWorldIntro: payload.worldIntro || "无",
+    }));
+  }
   return [
     ...worldLines,
     "",
@@ -2522,6 +2529,12 @@ function buildMemoryUserPrompt(payload: {
     const cardLines = buildMemoryCardLines(payload);
     const taskLines = buildCompactMemoryTaskLines();
     const outputExampleLines = buildCompactMemoryOutputExampleLines();
+    if (DebugLogUtil.isDebugLogEnabled()) {
+      console.log("[story:memory:runtime] buildSpeakerUserPrompt", JSON.stringify({
+        worldIntro: payload.worldIntro || "无",
+        currWorldIntro: payload.worldIntro || "无",
+      }));
+    }
     return [
       "[世界]",
       `名称: ${payload.worldName || "未命名世界"}`,
@@ -2564,6 +2577,13 @@ function buildMemoryUserPrompt(payload: {
   const cardLines = buildMemoryCardLines(payload);
   const taskLines = buildFullMemoryTaskLines();
   const outputExampleLines = buildFullMemoryOutputExampleLines();
+
+  if (DebugLogUtil.isDebugLogEnabled()) {
+    console.log("[story:memory:runtime] buildSpeakerUserPrompt", JSON.stringify({
+      worldIntro: payload.worldIntro || "无",
+      currWorldIntro: payload.worldIntro || "无",
+    }));
+  }
   return [
     ...worldChapterLines,
     "",
@@ -5074,6 +5094,7 @@ export function triggerStoryMemoryRefreshInBackground(input: {
   chapter: any;
   state: JsonRecord;
   recentMessages: RuntimeMessageInput[];
+  debugRuntimeKey?: string;
   onResolved?: ((memory: MemoryManagerResult, stateSnapshot: JsonRecord) => Promise<void> | void) | null;
 }) {
   const recentMessages = (Array.isArray(input.recentMessages) ? input.recentMessages : []).map((item) => ({
@@ -5094,6 +5115,18 @@ export function triggerStoryMemoryRefreshInBackground(input: {
       recentMessages,
     });
     if (!memory) return;
+
+    // 如果是调试模式，把记忆结果写回调试运行态缓存
+    if (input.debugRuntimeKey) {
+      try {
+        // 直接在这里应用记忆到当前 state
+        // 因为编排流程已经把 state 的引用传进来了，所以直接修改即可
+        applyMemoryResultToState(input.state, memory);
+      } catch (err) {
+        console.warn(`[story:memory] failed to persist memory to debug runtime: ${input.debugRuntimeKey}`, err);
+      }
+    }
+
     await input.onResolved?.(memory, stateSnapshot);
   })();
 }

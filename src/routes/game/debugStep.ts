@@ -322,6 +322,8 @@ export default router.post(
           })
           : { enteredUserPhase: false };
         const outcome = await evaluateDebugRuntimeOutcome({
+          userId,
+          world,
           chapter,
           state,
           messageContent: String(emittedMessage?.content || ""),
@@ -489,6 +491,8 @@ export default router.post(
         userId,
       });
       const outcome = await evaluateDebugRuntimeOutcome({
+        userId,
+        world,
         chapter,
         state,
         messageContent: playerContent,
@@ -611,6 +615,8 @@ export default router.post(
         })
         : { enteredUserPhase: false };
       const narratedOutcome = await evaluateDebugRuntimeOutcome({
+        userId,
+        world,
         chapter,
         state,
         messageContent: String(emittedMessage?.content || ""),

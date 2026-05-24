@@ -6,12 +6,13 @@ import {
   readPhaseAwareRuntimeCurrentEventDigestState,
 } from "@/lib/gameEngine";
 import { applyChapterOutcomeToState, ChapterOutcomeResult, evaluateChapterOutcome } from "@/modules/game-runtime/engines/ChapterOutcomeEngine";
-import { activateChapterEndingCheckState } from "@/modules/game-runtime/engines/ChapterProgressEngine";
+import { activateChapterEndingCheckState, readNextEventProgressHint } from "@/modules/game-runtime/engines/ChapterProgressEngine";
 import { DebugLogUtil } from "@/utils/debugLogUtil";
 import { z } from "zod";
 
 export interface EvaluateRuntimeOutcomeInput {
   userId?: number;
+  world?: any;
   chapter: any;
   state: JsonRecord;
   messageContent?: string;
@@ -232,6 +233,7 @@ function shortText(input: unknown, limit = 160): string {
 type BuildChapterJudgeInput = {
   chapter: any;
   state: JsonRecord;
+  world?: any;
   messageContent?: string;
   eventType?: string;
   recentMessages?: any[];
@@ -241,6 +243,7 @@ type BuildChapterJudgeInput = {
 function buildChapterJudgeInputSnapshot({
   chapter,
   state,
+  world,
   messageContent,
   eventType,
   recentMessages,
@@ -282,16 +285,48 @@ function buildChapterJudgeInputSnapshot({
           role_type: normalizeScalarText(item?.roleType) || "",
           event_type: normalizeScalarText(item?.eventType) || "",
           content: shortText(item?.content, 160) || "",
+          // 补充事件进度标记，帮助AI判断台词归属
+          event_index: item?.eventIndex ?? null,
+          stage_index: item?.stageIndex ?? null,
+          role_num_speech_curr_event: Number(item?.roleNumSpeechCurrEvent || 0),
+          role_num_speech_curr_stage: Number(item?.roleNumSpeechCurrStage || 0),
         }))
         .filter((item) => item.content)
     : [];
 
+  // 获取故事全局背景：优先从 world.intro 读取，state 的 worldIntro/globalBackground 作为兜底
+  const worldIntro = normalizeScalarText(
+    world?.intro
+    || state?.worldIntro
+    || state?.globalBackground
+    || ""
+  );
+  // 获取章节内容
+  const chapterContent = normalizeScalarText(chapter?.content || "");
+
+  // 读取下一个事件信息
+  const nextEventHint = readNextEventProgressHint(chapter, state);
+  const nextEventInfo = nextEventHint
+    ? {
+        index: Number(nextEventHint.index || 0),
+        kind: normalizeScalarText(nextEventHint.kind) || "scene",
+        label: normalizeScalarText(nextEventHint.label) || "",
+        summary: normalizeScalarText(nextEventHint.summary) || "",
+        transition_hint: normalizeScalarText(nextEventHint.transitionHint) || "",
+      }
+    : null;
+
+  if (DebugLogUtil.isDebugLogEnabled()) {
+    console.log(`[story:memory:runtime] buildChapterJudgeInputSnapshot worldIntro=${worldIntro} nextEvent=${nextEventInfo ? JSON.stringify({ index: nextEventInfo.index, label: nextEventInfo.label }) : "null"}`);
+  }
   return {
     chapter: {
       title: normalizeScalarText(chapter?.title) || "未命名章节",
       completion_condition: (chapter as any)?.completionCondition ?? null,
       ending_rules: endingRules,
+      content: chapterContent,
     },
+    world_intro: worldIntro,
     current_event: {
       index: Number(normalizeScalarText(currentEvent.eventIndex) || "0"),
       kind: normalizeScalarText(currentEvent.eventKind) || "scene",
@@ -315,6 +350,7 @@ function buildChapterJudgeInputSnapshot({
             .filter(Boolean)
         : [],
     },
+    next_event: nextEventInfo,
     ...(runtimeStateSend
       ? {
           runtime_state: {

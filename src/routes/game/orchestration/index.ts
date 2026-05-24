@@ -11,6 +11,7 @@ import {
 } from "@/lib/gameEngine";
 import {
   allowPlayerTurn,
+  applyMemoryResultToState,
   applyNarrativeMemoryHintsToState,
   applyOrchestratorResultToState,
   applyPlayerProfileFromMessageToState,
@@ -158,6 +159,7 @@ function applyDebugNarrativePlanToState(params: {
   recentMessages: ReturnType<typeof buildDebugRecentMessages>;
   rolePair: ReturnType<typeof normalizeRolePair>;
   plan: Awaited<ReturnType<typeof runNarrativePlan>>;
+  debugRuntimeKey?: string;
 }) {
   applyOrchestratorResultToState(params.state, params.plan);
   applyNarrativeMemoryHintsToState(params.state, params.plan.memoryHints);
@@ -168,6 +170,7 @@ function applyDebugNarrativePlanToState(params: {
       chapter: params.chapter,
       state: params.state,
       recentMessages: params.recentMessages,
+      debugRuntimeKey: params.debugRuntimeKey,
     });
   }
   applyDebugPlanTurnState(params.state, params.world, params.rolePair, params.plan);
@@ -184,7 +187,9 @@ async function runAndApplyDebugNarrativePlan(params: {
   playerMessage: string;
   rolePair: ReturnType<typeof normalizeRolePair>;
   requestTrace: OrchestrationRequestTrace;
+  debugRuntimeKey?: string;
 }) {
+  const debugRuntimeKey = params.debugRuntimeKey || String(params.state?.debugRuntimeKey || "").trim();
   logOrchestrationKeyNode(params.requestTrace, "runNarrativePlan:start", {
     playerMessageLength: params.playerMessage.length,
     recentMessageCount: params.recentMessages.length,
@@ -215,6 +220,7 @@ async function runAndApplyDebugNarrativePlan(params: {
     recentMessages: params.recentMessages,
     rolePair: params.rolePair,
     plan,
+    debugRuntimeKey,
   });
 }
 
@@ -517,6 +523,7 @@ async function runConcurrentDebugJudgeAndNarrative(params: {
   });
   const outcome = await evaluateDebugRuntimeOutcome({
     userId: params.userId,
+    world: params.world,
     chapter: params.chapter,
     state: params.state,
     messageContent: params.playerContent,

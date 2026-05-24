@@ -796,6 +796,7 @@ export async function applyDebugNarrativeMessageProgress(params: {
 
 export async function evaluateDebugRuntimeOutcome(params: {
   userId?: number;
+  world?: any;
   chapter: any;
   state: Record<string, any>;
   messageContent?: string;
@@ -816,6 +817,7 @@ export async function evaluateDebugRuntimeOutcome(params: {
   }
   const resolved = await evaluateRuntimeOutcome({
     userId: params.userId,
+    world: params.world,
     chapter: params.chapter,
     state: params.state,
     messageContent: params.messageContent,

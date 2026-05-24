@@ -136,17 +136,19 @@ function isPublicHttpUrl(url?: string | null): boolean {
 /**
  * 轻量校验公网参考音频直链是否真的返回音频内容。
  * 这里的目的是在把 URL 交给阿里 clone 前，先拦掉返回 HTML 落地页/跳转页的坏链接。
+ *
+ * 注意：不使用 Range 头，因为 OSS 签名 URL 需要把所有请求头纳入签名，
+ * 而 Range 头不在签名范围内会导致 403 签名验证失败。
  */
 async function assertDirectAliyunReferenceAudioUrlUsable(url: string): Promise<void> {
   let response: axios.AxiosResponse | null = null;
   try {
+    // 不带 Range 头，避免 OSS 签名 URL 验证失败
     response = await axios.get(url, {
       responseType: "arraybuffer",
       timeout: 15000,
       maxRedirects: 5,
-      headers: {
-        Range: "bytes=0-127",
-      },
+      // 不设置 Range 头，避免签名不匹配
       validateStatus: (status) => status >= 200 && status < 400,
     });
   } catch (err) {

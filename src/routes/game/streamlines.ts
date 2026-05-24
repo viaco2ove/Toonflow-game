@@ -310,6 +310,8 @@ async function applyDebugIntroductionProgress(input: {
     roleNumSpeechCurrStage: speechCount.roleNumSpeechCurrStage,
   };
   const outcome = await evaluateDebugRuntimeOutcome({
+    userId,
+    world,
     chapter,
     state,
     messageContent: String(emittedMessage.content || ""),
@@ -690,6 +692,8 @@ router.post(
             matchedRule: null,
           }
           : await evaluateDebugRuntimeOutcome({
+            userId,
+            world,
             chapter,
             state,
             messageContent: String(emittedMessage.content || ""),
