@@ -5087,7 +5087,7 @@ export async function refreshStoryMemoryBestEffort(input: {
   }
 }
 
-// 后台触发记忆刷新，不阻塞当前回合返回。
+// 触发记忆刷新，调试模式下同步等待完成，正式会话后台运行。
 export function triggerStoryMemoryRefreshInBackground(input: {
   userId: number;
   world: any;
@@ -5096,7 +5096,7 @@ export function triggerStoryMemoryRefreshInBackground(input: {
   recentMessages: RuntimeMessageInput[];
   debugRuntimeKey?: string;
   onResolved?: ((memory: MemoryManagerResult, stateSnapshot: JsonRecord) => Promise<void> | void) | null;
-}) {
+}): Promise<void> {
   const recentMessages = (Array.isArray(input.recentMessages) ? input.recentMessages : []).map((item) => ({
     role: normalizeScalarText(item.role),
     roleType: sanitizeRoleType(item.roleType),
@@ -5106,6 +5106,27 @@ export function triggerStoryMemoryRefreshInBackground(input: {
     memoryDelta: readMemoryDeltaInput(item),
   }));
   const stateSnapshot = parseJsonSafe<JsonRecord>(JSON.stringify(input.state || {}), {});
+
+  // 调试模式：同步等待完成
+  if (input.debugRuntimeKey) {
+    return (async () => {
+      const memory = await refreshStoryMemoryBestEffort({
+        userId: input.userId,
+        world: input.world,
+        chapter: input.chapter,
+        state: stateSnapshot,
+        recentMessages,
+      });
+      if (!memory) return;
+
+      // 直接将记忆结果应用到当前 state
+      applyMemoryResultToState(input.state, memory);
+
+      await input.onResolved?.(memory, stateSnapshot);
+    })();
+  }
+
+  // 正式会话：后台运行不阻塞
   void (async () => {
     const memory = await refreshStoryMemoryBestEffort({
       userId: input.userId,
@@ -5116,19 +5137,10 @@ export function triggerStoryMemoryRefreshInBackground(input: {
     });
     if (!memory) return;
 
-    // 如果是调试模式，把记忆结果写回调试运行态缓存
-    if (input.debugRuntimeKey) {
-      try {
-        // 直接在这里应用记忆到当前 state
-        // 因为编排流程已经把 state 的引用传进来了，所以直接修改即可
-        applyMemoryResultToState(input.state, memory);
-      } catch (err) {
-        console.warn(`[story:memory] failed to persist memory to debug runtime: ${input.debugRuntimeKey}`, err);
-      }
-    }
-
     await input.onResolved?.(memory, stateSnapshot);
   })();
+
+  return Promise.resolve();
 }
 
 // 把编排结果里的状态增量应用到运行时 state。

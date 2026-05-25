@@ -151,7 +151,8 @@ function applyDebugPlanTurnState(
 }
 
 // 统一把编排结果真正落到调试运行态，确保 candidatePlan / finalPlan 最终只提交一次。
-function applyDebugNarrativePlanToState(params: {
+// 调试模式需要同步等待记忆管理完成，确保前端能拿到最新的参数卡
+async function applyDebugNarrativePlanToState(params: {
   userId: number;
   world: any;
   chapter: any;
@@ -164,7 +165,8 @@ function applyDebugNarrativePlanToState(params: {
   applyOrchestratorResultToState(params.state, params.plan);
   applyNarrativeMemoryHintsToState(params.state, params.plan.memoryHints);
   if (params.plan.triggerMemoryAgent) {
-    triggerStoryMemoryRefreshInBackground({
+    // 调试模式同步等待记忆管理完成，确保参数卡更新后再返回前端
+    await triggerStoryMemoryRefreshInBackground({
       userId: params.userId,
       world: params.world,
       chapter: params.chapter,
@@ -587,7 +589,7 @@ async function runConcurrentDebugJudgeAndNarrative(params: {
     });
     return {
       outcome,
-      plan: applyDebugNarrativePlanToState({
+      plan: await applyDebugNarrativePlanToState({
         userId: params.userId,
         world: params.world,
         chapter: params.effectiveChapter,
