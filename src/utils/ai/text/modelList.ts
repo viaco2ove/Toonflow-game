@@ -57,11 +57,15 @@ const LEGACY_VOLCENGINE_TEXT_MODEL_ALIASES: Record<string, string> = {
   "Doubao-Seed-2.0-pro": "doubao-seed-2-0-pro-260215",
   "Doubao-Seed-2.0-lite": "doubao-seed-2-0-lite-260215",
   "Doubao-Seed-2.0-mini": "doubao-seed-2-0-mini-260215",
+  "Doubao-Seed-2.0-2": "doubao-seed-2-0-lite-260428",
+  "Doubao-Seed-2.0-mini-2": "doubao-seed-2-0-mini-260428",
 };
 const VOLCENGINE_OBJECT_RESPONSE_MODELS = new Set([
   "doubao-seed-2-0-pro-260215",
   "doubao-seed-2-0-lite-260215",
   "doubao-seed-2-0-mini-260215",
+  "doubao-seed-2-0-lite-260428",
+  "doubao-seed-2-0-mini-260428",
   "doubao-seed-1-8-251228",
   "doubao-seed-1-6-251015",
   "doubao-seed-1-6-lite-251015",
