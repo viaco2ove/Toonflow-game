@@ -415,6 +415,25 @@ ai.invoke = async (input: AIInput<any>, config: AIConfig) => {
         candidateCount: jsonLikeTexts.length,
         hasResult: Boolean(res[0]),
       });
+      // 兜底：豆包 260428 等新版模型会忽略 system 里的 JSON Schema 指令，直接返回纯文本。
+      // 当 output 只有一个 string 字段时，把整段文本当作该字段的值，避免业务拿到 undefined。
+      if (!res[0]) {
+        const outputKeys = Object.keys(input.output);
+        const rawText = String(result.text || "").trim();
+        if (outputKeys.length === 1 && rawText) {
+          const onlyKey = outputKeys[0];
+          const schema = (input.output as Record<string, z.ZodTypeAny>)[onlyKey];
+          const isStringField = schema instanceof z.ZodString;
+          if (isStringField) {
+            debugLog("invoke:parsedObject:fallback", {
+              reason: "plainTextToSingleStringField",
+              field: onlyKey,
+              textPreview: trimPreview(rawText),
+            });
+            return { [onlyKey]: rawText };
+          }
+        }
+      }
       return res[0];
     }
     if (!input.plainTextOutput && options.responseFormat === "schema" && input.output) {
