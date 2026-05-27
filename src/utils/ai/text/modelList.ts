@@ -120,6 +120,20 @@ const DOUBAO_TEXT_MODELS: DefaultOwned[] = [
     tool: true,
   },
   {
+    model: "doubao-seed-2-0-lite-260428",
+    responseFormat: "object",
+    image: true,
+    think: true,
+    tool: true,
+  },
+  {
+    model: "doubao-seed-2-0-mini-260428",
+    responseFormat: "object",
+    image: true,
+    think: true,
+    tool: true,
+  },
+  {
     model: "doubao-seed-1-8-251228",
     responseFormat: "object",
     image: true,
