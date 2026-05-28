@@ -240,6 +240,8 @@ export default async (knex: Knex, forceInit: boolean = false): Promise<void> => 
         table.text("foregroundFilePath");
         table.text("backgroundPath");
         table.text("backgroundFilePath");
+        table.text("sourcePath");
+        table.text("sourceFilePath");
         table.integer("createTime");
         table.integer("updateTime");
       },

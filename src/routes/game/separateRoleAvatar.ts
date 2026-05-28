@@ -54,6 +54,8 @@ type RoleAvatarTaskRow = {
   foregroundFilePath?: string | null;
   backgroundPath?: string | null;
   backgroundFilePath?: string | null;
+  sourcePath?: string | null;
+  sourceFilePath?: string | null;
   createTime?: number | null;
   updateTime?: number | null;
 };
@@ -67,6 +69,8 @@ type RoleAvatarTaskUpdate = {
   foregroundFilePath?: string | null;
   backgroundPath?: string | null;
   backgroundFilePath?: string | null;
+  sourcePath?: string | null;
+  sourceFilePath?: string | null;
 };
 
 type SeparateRoleAvatarResult = {
@@ -1247,6 +1251,8 @@ function normalizeRoleAvatarTask(row: RoleAvatarTaskRow | undefined | null) {
     foregroundFilePath: String(row?.foregroundFilePath || ""),
     backgroundPath: String(row?.backgroundPath || ""),
     backgroundFilePath: String(row?.backgroundFilePath || ""),
+    sourcePath: String(row?.sourcePath || ""),
+    sourceFilePath: String(row?.sourceFilePath || ""),
   };
 }
 

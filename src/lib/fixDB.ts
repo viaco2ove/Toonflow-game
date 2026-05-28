@@ -366,9 +366,14 @@ export default async (knex: Knex): Promise<void> => {
     table.text("foregroundFilePath");
     table.text("backgroundPath");
     table.text("backgroundFilePath");
+    table.text("sourcePath");
+    table.text("sourceFilePath");
     table.integer("createTime");
     table.integer("updateTime");
   });
+
+  await addColumn("t_roleAvatarTask", "sourcePath", "text");
+  await addColumn("t_roleAvatarTask", "sourceFilePath", "text");
 
   //添加字段
   await addColumn("t_video", "time", "integer");

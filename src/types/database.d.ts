@@ -185,6 +185,8 @@ export interface t_roleAvatarTask {
   'message'?: string | null;
   'progress'?: number | null;
   'projectId'?: number | null;
+  'sourceFilePath'?: string | null;
+  'sourcePath'?: string | null;
   'status'?: string | null;
   'taskType'?: string | null;
   'updateTime'?: number | null;
