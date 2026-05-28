@@ -827,8 +827,21 @@ async function handleDebugOrchestrationRequest(req: express.Request, res: expres
   const sessionId = asTrimmedText(req.body.sessionId);
   if (sessionId) {
     const result = await orchestrateSessionTurn(sessionId);
+    if (DebugLogUtil.isDebugLogEnabled()) {
+      console.log("[orchestration/index.ts] orchestrateSessionTurn 返回 result:", JSON.stringify({
+        hasPlan: !!result.plan,
+        planRole: (result.plan as any)?.role,
+        planRoleType: (result.plan as any)?.roleType,
+        planMotive: (result.plan as any)?.motive,
+        planAwaitUser: (result.plan as any)?.awaitUser
+      }));
+    }
     // data 里只保留 role/roleType/motive；code/message 由标准响应信封承载。
-    return res.status(200).send(success(buildMinimalOrchestrationResponse(result.plan || null)));
+    const responseData = buildMinimalOrchestrationResponse(result.plan || null);
+    if (DebugLogUtil.isDebugLogEnabled()) {
+      console.log("[orchestration/index.ts] buildMinimalOrchestrationResponse 返回:", JSON.stringify(responseData));
+    }
+    return res.status(200).send(success(responseData));
   }
 
   const db = getGameDb();

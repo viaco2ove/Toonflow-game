@@ -12,10 +12,13 @@ import { refreshStoryMemoryBestEffort } from "@/modules/game-runtime/engines/Nar
 type JsonRecord = Record<string, any>;
 
 const POLL_INTERVAL_MS = 30_000;
+const RETRY_INTERVAL_MS = 60_000;
 const ACTIVE_STATUSES = ["active", "chapter_completed"];
 
 let workerTimer: ReturnType<typeof setInterval> | null = null;
 let workerRunning = false;
+let currentPollInterval = POLL_INTERVAL_MS;
+let lastPollSuccess = true;
 
 function asRecord(input: unknown): JsonRecord {
   if (!input || typeof input !== "object" || Array.isArray(input)) return {};
@@ -142,20 +145,45 @@ async function pollSessionMemory() {
     for (const row of rows) {
       await processSessionMemory(row);
     }
+    if (!lastPollSuccess) {
+      console.log("[session-memory-worker] poll recovered");
+    }
+    lastPollSuccess = true;
+    if (currentPollInterval !== POLL_INTERVAL_MS) {
+      currentPollInterval = POLL_INTERVAL_MS;
+      restartWorkerTimer();
+    }
   } catch (err) {
-    console.warn("[session-memory-worker] poll failed", {
-      message: (err as any)?.message || String(err),
-    });
+    if (lastPollSuccess) {
+      console.warn("[session-memory-worker] poll failed (will retry slower)", {
+        message: (err as any)?.message || String(err),
+      });
+    }
+    lastPollSuccess = false;
+    if (currentPollInterval < RETRY_INTERVAL_MS) {
+      currentPollInterval = RETRY_INTERVAL_MS;
+      restartWorkerTimer();
+    }
   } finally {
     workerRunning = false;
   }
 }
 
-export function startSessionMemoryWorker() {
-  if (workerTimer) return;
+function restartWorkerTimer() {
+  if (workerTimer) {
+    clearInterval(workerTimer);
+    workerTimer = null;
+  }
   workerTimer = setInterval(() => {
     void pollSessionMemory();
-  }, POLL_INTERVAL_MS);
+  }, currentPollInterval);
+}
+
+export function startSessionMemoryWorker() {
+  if (workerTimer) return;
+  currentPollInterval = POLL_INTERVAL_MS;
+  lastPollSuccess = true;
+  restartWorkerTimer();
   void pollSessionMemory();
 }
 
