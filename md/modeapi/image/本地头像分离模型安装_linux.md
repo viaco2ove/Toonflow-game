@@ -43,3 +43,6 @@ python /data/toonflow/tools/avatar-matting/birefnet/run_modnet.py --warmup --mod
 ``` linux
 python -c "import pathlib, urllib.request; p=pathlib.Path('/data/toonflow/tools/avatar-matting/birefnet/model-cache/modnet_photographic_portrait_matting.onnx'); p.parent.mkdir(parents=True, exist_ok=True); urllib.request.urlretrieve('https://hf-mirror.com/DavG25/modnet-pretrained-models/resolve/main/models/modnet_photographic_portrait_matting.onnx', p)"
 ```
+
+查看
+/data/toonflow/tools/avatar-matting/birefnet/model-cache/modnet_photographic_portrait_matting.onnx
