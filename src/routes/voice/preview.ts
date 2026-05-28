@@ -242,6 +242,24 @@ function deleteDirectAliyunCustomVoiceCache(cacheKey: string) {
 }
 
 /**
+ * 判断 voiceId 是否与当前目标模型兼容。
+ * 阿里云的 voiceId 是按模型绑定的，Qwen 模型创建的专属音色不能在 CosyVoice 上使用，反之亦然。
+ * 例如 qwen-tts-vd-xxx 不能用于 cosyvoice-v3-flash，longanxxx_v3 不能用于 qwen3-tts。
+ */
+function isVoiceIdCompatibleWithModel(voiceId: string, targetModel: string): boolean {
+  if (!voiceId || !targetModel) return true;
+  const model = targetModel.toLowerCase();
+  const id = voiceId.toLowerCase();
+  if (isAliyunDirectCosyVoiceModel(model)) {
+    return !id.startsWith("qwen-tts-vd-") && !id.startsWith("qwen-tts-enrollment-");
+  }
+  if (isAliyunDirectQwenVoiceCloneModel(model) || isAliyunDirectQwenVoiceDesignModel(model)) {
+    return !id.startsWith("cosyvoice-");
+  }
+  return true;
+}
+
+/**
  * 判断当前错误是否属于 CosyVoice 的 InvalidParameter。
  * 这类错误大概率表示复用的 voice_id 已失效、尚未就绪，或与当前模型不再兼容。
  */
@@ -1518,7 +1536,8 @@ export default router.post(
             const reusableCustomVoiceId = trimText(generatedMeta?.customVoiceId);
             const reusableTargetModel = normalizeAliyunDirectTtsModel(trimText(generatedMeta?.targetModel));
             const currentTargetModel = normalizeAliyunDirectTtsModel(String(config.model || "").trim());
-            const customVoice = explicitCustomVoiceId
+            const explicitVoiceIdMatchesCurrentModel = isVoiceIdCompatibleWithModel(explicitCustomVoiceId, currentTargetModel);
+            const customVoice = explicitCustomVoiceId && explicitVoiceIdMatchesCurrentModel
               ? {
                   voiceId: explicitCustomVoiceId,
                   fresh: false,
