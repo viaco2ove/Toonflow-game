@@ -174,6 +174,10 @@ export default router.post(
         sampleRate?: number | null;
       };
 
+      // prompt_voice 模式必须有 promptText
+      if (mode === "prompt_voice" && !trimText(promptText)) {
+        return res.status(400).send(error("提示词模式需要填写提示词"));
+      }
       const userId = Number((req as any)?.user?.id || 0);
       const persistedConfig = await getRuntimeStoryVoiceConfig(userId, configId);
       if (!persistedConfig) {
@@ -275,16 +279,25 @@ export default router.post(
         },
       )));
     } catch (err) {
-      const msg = (err as Error).message || "生成音色失败";
+      const axiosErr = err as any;
+      const msg = axiosErr?.message || "生成音色失败";
       const reqMode = req.body && (req.body as any).mode;
       const reqVoiceId = req.body && (req.body as any).voiceId;
       const reqRoleId = req.body && (req.body as any).roleId;
+      const reqPromptText = req.body && (req.body as any).promptText;
+      const axiosResponse = axiosErr?.response;
+      const axiosResponseData = axiosResponse?.data;
       console.error("[generateBindingVoice] failed", {
         userId: Number((req as any)?.user?.id || 0),
         mode: reqMode,
         voiceId: reqVoiceId,
         roleId: reqRoleId,
+        promptText: reqPromptText,
         error: msg,
+        httpStatus: axiosResponse?.status,
+        responseBody: typeof axiosResponseData === "string"
+          ? axiosResponseData.slice(0, 500)
+          : JSON.stringify(axiosResponseData)?.slice(0, 500),
         stack: (err as Error).stack,
       });
       return res.status(500).send(error(msg));
