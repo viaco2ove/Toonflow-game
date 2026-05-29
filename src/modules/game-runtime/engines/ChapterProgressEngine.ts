@@ -676,6 +676,10 @@ function getPhaseCandidateNextIds(outline: ChapterRuntimeOutline, phaseId: strin
 
 /**
  * 按图结构解析当前 phase 完成后应进入的下一个 phase。
+ *
+ * 修复鬼打墙问题：当 currentPhaseId 是最后一个静态 phase 且已完成时，
+ * 不要回退到 resolveCurrentOrInitialPhase（它会再次返回最后一个 phase），
+ * 而应返回 { phase: null, phaseIndex: -1 }，让调用方知道"所有静态 phase 已完成"。
  */
 function resolveNextPhaseFromGraph(
   outline: ChapterRuntimeOutline,
@@ -700,6 +704,14 @@ function resolveNextPhaseFromGraph(
       continue;
     }
     return { phase, phaseIndex };
+  }
+  // 如果 currentPhaseId 是最后一个静态 phase 的 ID，不要回退到 resolveCurrentOrInitialPhase，
+  // 否则 completedEvents 包含最后一个 phase 的完成标记，resolveCurrentOrInitialPhase 会再次返回它自己，
+  // 导致鬼打墙——事件完成后又回到同一个事件。
+  const normalizedCurrentPhaseId = String(currentPhaseId || "").trim();
+  const lastPhaseId = outline.phases.length > 0 ? String(outline.phases[outline.phases.length - 1].id || "").trim() : "";
+  if (normalizedCurrentPhaseId && normalizedCurrentPhaseId === lastPhaseId) {
+    return { phase: null, phaseIndex: -1 };
   }
   return resolveCurrentOrInitialPhase(outline, "", completedEvents);
 }
@@ -1958,10 +1970,14 @@ export function applyAiEventProgressResolution(input: {
   }
 
   // 标记当前 phase 完成
-  const completedEvents = markPhaseCompleted(
-    normalizeCompletedEvents(Array.isArray(current.completedEvents) ? current.completedEvents : []),
-    current.phaseId,
-  );
+  // 注意：自由章节进入动态事件后 phaseId 为空，此时不应尝试标记 phase 完成
+  // 否则 completedEvents 无法正确记录事件进度，导致回退到事件1
+  const completedEvents = current.phaseId
+    ? markPhaseCompleted(
+        normalizeCompletedEvents(Array.isArray(current.completedEvents) ? current.completedEvents : []),
+        current.phaseId,
+      )
+    : normalizeCompletedEvents(Array.isArray(current.completedEvents) ? current.completedEvents : []);
   const nextPhaseInfo = resolveNextPhaseFromGraph(outline, current.phaseId, completedEvents, currentPhaseIndex);
   const nextPhase = nextPhaseInfo.phase;
   if (!nextPhase) {
