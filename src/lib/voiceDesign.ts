@@ -222,8 +222,9 @@ export async function synthesizeVoiceDesignBuffer(options: {
   }
 
   const preferredName = slugifyPreferredName(options.preferredName, "story_voice");
-  const payload =
-    strategy.kind === "qwen_voice_design"
+
+  const doRequest = async (name: string) => {
+    const p = strategy.kind === "qwen_voice_design"
       ? {
           model: strategy.requestModel,
           input: {
@@ -231,7 +232,7 @@ export async function synthesizeVoiceDesignBuffer(options: {
             target_model: strategy.targetModel,
             voice_prompt: promptText,
             preview_text: previewText,
-            preferred_name: preferredName,
+            preferred_name: name,
             language: "zh",
           },
           parameters: {
@@ -246,22 +247,46 @@ export async function synthesizeVoiceDesignBuffer(options: {
             target_model: strategy.targetModel,
             voice_prompt: promptText,
             preview_text: previewText,
-            prefix: preferredName,
+            prefix: name,
           },
           parameters: {
             sample_rate: 24000,
             response_format: trimText(options.format) || "wav",
           },
         };
+    return axios.post(endpoint, p, {
+      headers: {
+        Authorization: `Bearer ${trimText(config.apiKey)}`,
+        "Content-Type": "application/json",
+      },
+      timeout: 120000,
+      responseType: "arraybuffer",
+    });
+  };
 
-  const response = await axios.post(endpoint, payload, {
-    headers: {
-      Authorization: `Bearer ${trimText(config.apiKey)}`,
-      "Content-Type": "application/json",
-    },
-    timeout: 120000,
-    responseType: "arraybuffer",
-  });
+  const invalidName = (err: unknown) => {
+    const a = err as any;
+    const body = a?.response?.data;
+    if (typeof body === "string" && body.includes("preferred_name")) return true;
+    if (typeof body === "object") {
+      const s = JSON.stringify(body);
+      return s.includes("preferred_name") || s.includes("InvalidParameter");
+    }
+    return false;
+  };
+
+  let response: any;
+  try {
+    response = await doRequest(preferredName);
+  } catch (err) {
+    if (invalidName(err)) {
+      // name 已被占用或无效，追加时间戳重新生成
+      const fallbackName = `sv${Date.now()}`.slice(-16);
+      response = await doRequest(fallbackName);
+    } else {
+      throw err;
+    }
+  }
 
   const responseBuffer = Buffer.isBuffer(response.data) ? response.data : Buffer.from(response.data);
   const contentType = trimText(String(response.headers["content-type"] || "")).toLowerCase();
