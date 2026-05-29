@@ -64,7 +64,14 @@ function normalizeVoiceDesignEndpoint(baseURL?: string | null): string {
 }
 
 function slugifyPreferredName(input?: string | null, fallback = "story_voice"): string {
-  const normalized = trimText(input)
+  const raw = trimText(input);
+  // voiceId 格式如 qwen-tts-vd-story_pro_ffbcf6-voice-20260528150309825-a836
+  // 阿里 preferred_name 只支持最多 16 字符，直接截取时间戳部分
+  const tsMatch = raw.match(/(\d{14})$/);
+  if (tsMatch) {
+    return `qwen${tsMatch[1]}`.slice(0, MAX_VOICE_DESIGN_NAME_LENGTH);
+  }
+  const normalized = raw
     .toLowerCase()
     .replace(/[^a-z0-9_-]+/g, "_")
     .replace(/_+/g, "_")
