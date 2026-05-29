@@ -271,7 +271,16 @@ export default router.post(
         },
       )));
     } catch (err) {
-      return res.status(500).send(error((err as Error).message || "生成音色失败"));
+      const msg = (err as Error).message || "生成音色失败";
+      console.error("[generateBindingVoice] failed", {
+        userId: Number((req as any)?.user?.id || 0),
+        mode,
+        voiceId,
+        roleId,
+        error: msg,
+        stack: (err as Error).stack,
+      });
+      return res.status(500).send(error(msg));
     }
   },
 );
