@@ -1,4 +1,4 @@
-// @db-hash 462ceb0370aa96c09ba1aef754b56307
+// @db-hash 774ccb5e7d8ecf6505479961f1e349af
 //该文件由脚本自动生成，请勿手动修改
 
 export interface t_aiModelMap {

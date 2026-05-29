@@ -132,7 +132,18 @@ export default router.post(
       await u.oss.writeFile(imagePath, buffer);
       const path = await u.oss.getFileUrl(imagePath);
 
-      res.status(200).send(success({ path, filePath: imagePath }));
+      // 保存原始图片（如果有的话）
+      let originalPath = "";
+      let originalFilePath = "";
+      if (imageBase64List.length > 0) {
+        const firstBase64 = imageBase64List[0];
+        const originalBuffer = extractBase64(firstBase64);
+        originalFilePath = `/${projectId}/game/${type}/${uuidv4()}_original.jpg`;
+        await u.oss.writeFile(originalFilePath, originalBuffer);
+        originalPath = await u.oss.getFileUrl(originalFilePath);
+      }
+
+      res.status(200).send(success({ path, filePath: imagePath, originalPath, originalFilePath }));
     } catch (err) {
       console.warn("[generateImage] failed", {
         userId: Number((req as any)?.user?.id || 0),
