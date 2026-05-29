@@ -266,13 +266,27 @@ export async function synthesizeVoiceDesignBuffer(options: {
 
   const invalidName = (err: unknown) => {
     const a = err as any;
-    const body = a?.response?.data;
-    if (typeof body === "string" && body.includes("preferred_name")) return true;
-    if (typeof body === "object") {
-      const s = JSON.stringify(body);
-      return s.includes("preferred_name") || s.includes("InvalidParameter");
+    const rawBody = a?.response?.data;
+    // response.data 可能是 Buffer，需要先转成字符串
+    let bodyStr = "";
+    if (Buffer.isBuffer(rawBody)) {
+      bodyStr = rawBody.toString("utf8");
+    } else if (typeof rawBody === "string") {
+      bodyStr = rawBody;
+    } else if (typeof rawBody === "object") {
+      bodyStr = JSON.stringify(rawBody);
     }
-    return false;
+    if (!bodyStr) return false;
+    // 检查是否包含 preferred_name 相关错误
+    if (bodyStr.includes("preferred_name")) return true;
+    // 解析 JSON 检查 message
+    try {
+      const parsed = JSON.parse(bodyStr);
+      const msg = parsed?.message || parsed?.error?.message || "";
+      return msg.includes("InvalidParameter") || msg.includes("invalid");
+    } catch {
+      return false;
+    }
   };
 
   let response: any;
