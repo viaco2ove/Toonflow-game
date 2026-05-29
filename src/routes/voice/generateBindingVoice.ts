@@ -148,6 +148,10 @@ export default router.post(
   }),
   async (req, res) => {
     try {
+      if (!req.body || typeof req.body !== "object") {
+        console.error("[generateBindingVoice] invalid body", { body: req.body });
+        return res.status(400).send(error("请求参数错误"));
+      }
       const {
         configId,
         roleId,
@@ -272,11 +276,14 @@ export default router.post(
       )));
     } catch (err) {
       const msg = (err as Error).message || "生成音色失败";
+      const reqMode = req.body && (req.body as any).mode;
+      const reqVoiceId = req.body && (req.body as any).voiceId;
+      const reqRoleId = req.body && (req.body as any).roleId;
       console.error("[generateBindingVoice] failed", {
         userId: Number((req as any)?.user?.id || 0),
-        mode,
-        voiceId,
-        roleId,
+        mode: reqMode,
+        voiceId: reqVoiceId,
+        roleId: reqRoleId,
         error: msg,
         stack: (err as Error).stack,
       });
