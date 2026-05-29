@@ -26,7 +26,7 @@ const router = express.Router();
  * 根据正式会话状态构造结束弹窗标题。
  *
  * 用途：
- * - 正式游玩和二次进入会话时，都统一由服务端给出“是否需要弹窗”的权威结论；
+ * - 正式游玩和二次进入会话时，都统一由服务端给出"是否需要弹窗"的权威结论；
  * - 前端只负责展示，不再自行猜测失败状态对应的提示文案。
  */
 function buildSessionEndDialog(status: string): string | null {
@@ -39,8 +39,8 @@ function buildSessionEndDialog(status: string): string | null {
  * 根据正式会话状态构造结束弹窗详情。
  *
  * 用途：
- * - 让“章节失败”在首次失败和再次进入会话时看到相同说明；
- * - 避免前端因为缺少细节，只能显示一句空泛的“当前故事已失败”。
+ * - 让"章节失败"在首次失败和再次进入会话时看到相同说明；
+ * - 避免前端因为缺少细节，只能显示一句空泛的"当前故事已失败"。
  */
 function buildSessionEndDialogDetail(status: string, chapterTitle?: string | null): string {
   const endDialog = buildSessionEndDialog(status);
@@ -101,7 +101,8 @@ export default router.post(
         // 这里必须用章节行数据回填标题，防止旧 state.chapterTitle 残留为别的章节名。
         activeState.chapterId = activeChapterId || 0;
         activeState.chapterTitle = String(chapter?.title || "").trim() || String(activeState.chapterTitle || "").trim();
-        const eventView = readDefaultRuntimeEventViewState(activeState);
+        const eventView = readDefaultRuntimeEventViewState(activeState, chapter);
+        console.log("[storyInfo] chapter phases count:", chapter?.runtimeOutline?.phases?.length, "allEventStageProgress:", JSON.stringify(eventView.allEventStageProgress || []).slice(0, 500));
         const sessionEndDialog = buildSessionEndDialog(sessionStatus);
         return res.status(200).send(success({
           worldId: Number(sessionRow.worldId || 0),
@@ -114,6 +115,7 @@ export default router.post(
           currentEventDigest: eventView.currentEventDigest,
           eventDigestWindow: eventView.eventDigestWindow,
           eventDigestWindowText: eventView.eventDigestWindowText,
+          allEventStageProgress: eventView.allEventStageProgress,
           endDialog: sessionEndDialog,
           endDialogDetail: buildSessionEndDialogDetail(sessionStatus, chapter?.title || activeState.chapterTitle),
           // 小游戏配置：前端根据此配置决定语音等待时间
@@ -159,7 +161,7 @@ export default router.post(
         rolePair,
         world,
       );
-      // 调试 storyInfo 必须优先信“待进入下一章”的运行态标记。
+      // 调试 storyInfo 必须优先信"待进入下一章"的运行态标记。
       // 当上一章刚成功、下一句确认台词已经落地，但前端仍带着旧 chapterId 拉取 storyInfo 时，
       // 如果继续只信旧请求参数，就会让标题和事件面板永远停在上一章。
       const pendingChapterId = getPendingDebugChapterId(activeState);
@@ -180,7 +182,7 @@ export default router.post(
       }
       const effectiveChapter = buildEffectiveDebugChapter(chapter, isDebugFreePlotActive(activeState));
       // 调试 storyInfo 返回前，必须先把缓存态同步回当前章节。
-      // 否则前端会读到旧章节遗留的 phase/title，出现“标题还是第1章，面板像第2章”的混合态。
+      // 否则前端会读到旧章节遗留的 phase/title，出现"标题还是第1章，面板像第2章"的混合态。
       syncDebugChapterRuntime(effectiveChapter, activeState);
       activeState.chapterId = Number(chapter.id || 0) || 0;
       activeState.chapterTitle = String(chapter.title || "").trim() || String(activeState.chapterTitle || "").trim();
@@ -188,7 +190,11 @@ export default router.post(
         userId,
         worldId,
         state: activeState,
+        chapter: effectiveChapter,
       });
+
+      // 获取 stage 进度信息（带上 chapter 才能给每个 digest 正确挂 stageProgress）
+      const stageProgressView = readDefaultRuntimeEventViewState(activeState, effectiveChapter);
 
       return res.status(200).send(success({
         worldId,
@@ -196,10 +202,12 @@ export default router.post(
         chapterTitle: String(chapter.title || activeState.chapterTitle || ""),
         state: snapshot,
         world: normalizeWorldOutput(world),
-        chapter,
-        currentEventDigest: snapshot.currentEventDigest || null,
-        eventDigestWindow: Array.isArray(snapshot.eventDigestWindow) ? snapshot.eventDigestWindow : [],
-        eventDigestWindowText: String(snapshot.eventDigestWindowText || ""),
+        chapter: effectiveChapter,
+        // 调试模式下必须用 stageProgressView 的结果，保证每个 digest 有正确的 stageProgress
+        currentEventDigest: stageProgressView.currentEventDigest || null,
+        eventDigestWindow: stageProgressView.eventDigestWindow || [],
+        eventDigestWindowText: stageProgressView.eventDigestWindowText || String(snapshot.eventDigestWindowText || ""),
+        allEventStageProgress: stageProgressView.allEventStageProgress,
       }));
     } catch (err) {
       return res.status(500).send(error(u.error(err).message));

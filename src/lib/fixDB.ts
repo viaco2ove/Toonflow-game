@@ -103,6 +103,7 @@ export default async (knex: Knex): Promise<void> => {
 
   await addColumn("t_sessionMessage", "revisitData", "text");
   await addColumn("t_config", "reasoningEffort", "text");
+  await addColumn("t_config", "remark", "text");
   if (await knex.schema.hasTable("t_config")) {
     await knex("t_config")
       .where("type", "text")
@@ -365,9 +366,14 @@ export default async (knex: Knex): Promise<void> => {
     table.text("foregroundFilePath");
     table.text("backgroundPath");
     table.text("backgroundFilePath");
+    table.text("sourcePath");
+    table.text("sourceFilePath");
     table.integer("createTime");
     table.integer("updateTime");
   });
+
+  await addColumn("t_roleAvatarTask", "sourcePath", "text");
+  await addColumn("t_roleAvatarTask", "sourceFilePath", "text");
 
   //添加字段
   await addColumn("t_video", "time", "integer");
@@ -759,12 +765,14 @@ export default async (knex: Knex): Promise<void> => {
 - 不复述章节或背景
 - 每轮只推进一小步
 - 返回结果要快速
+- 偏向于角色说话直接推动剧情而不是旁白
 
 ## 输入参数说明：
 ### 已生成台词:
   - recent_dialogue 数组 按前后顺序记录了角色说了什么台词
   - 如果最后一句是问用户事情如“还请你告知姓名、性别与年龄” 那么就应该轮到用户发言
   - 如果最后一句是用户发言，那么就应该安排其他角色发言
+  - 如果用户说了@角色名 就应该编排这个角色说话。
 
 ###\`current_event\` 表示本轮要推进的事件。
 
@@ -828,7 +836,7 @@ export default async (knex: Knex): Promise<void> => {
 3. motive 用一句短话（10~25字）说明本轮要做什么
 4. 不输出解释或多余内容
 5. 编排用户要返回"role":"用户" 而不是用户的具体名称
-6.@旁白：xxx 就是代码编排的角色是旁白的意思。@角色名 的意思。
+6.“@旁白：xxx ”。就是代表编排的角色是旁白的意思。“@角色名：xxx ”。就是代表编排的该角色说话的意思
 
 ## 事件：
 - 若 event_summary 为空 → 必须补一句 summary + 1~2条 facts
@@ -885,7 +893,7 @@ event_facts:`,
 3. 不输出最终展示台词
 4. 优先推动事件目标，而非闲聊
 5. 控制节奏：避免连续 NPC 抢回合
-6.@旁白：xxx 就是代码编排的角色是旁白的意思。@角色名 的意思。
+6.“@旁白：xxx ”。就是代表编排的角色是旁白的意思。“@角色名：xxx ”。就是代表编排的该角色说话的意思
 
 ## 事件控制：
 - event_summary：当前事件核心焦点（一句话）
@@ -934,12 +942,14 @@ event_facts:`,
 - 不复述章节或背景
 - 每轮只推进一小步
 - 返回结果要快速
+- 偏向于角色说话直接推动剧情而不是旁白
 
 ## 输入参数说明：
 ### 已生成台词:
   - recent_dialogue 数组 按前后顺序记录了角色说了什么台词
   - 如果最后一句是问用户事情如“还请你告知姓名、性别与年龄” 那么就应该轮到用户发言
   - 如果最后一句是用户发言，那么就应该安排其他角色发言
+  - 如果用户说了@角色名 就应该编排这个角色说话。
 
 ###\`current_event\` 表示本轮要推进的事件。
 
@@ -1003,7 +1013,7 @@ event_facts:`,
 3. motive 用一句短话（10~25字）说明本轮要做什么
 4. 不输出解释或多余内容
 5. 编排用户要返回"role":"用户" 而不是用户的具体名称
-6.@旁白：xxx 就是代码编排的角色是旁白的意思。@角色名 的意思。
+6.“@旁白：xxx ”。就是代表编排的角色是旁白的意思。“@角色名：xxx ”。就是代表编排的该角色说话的意思
 
 ## 事件：
 - 若 event_summary 为空 → 必须补一句 summary + 1~2条 facts
@@ -1054,18 +1064,41 @@ event_facts:`,
           "你是角色发言器。根据当前事件，当前章节说出符合设定的台词。\n" +
             "你只根据既定的 speaker、motive、最近对话和精炼上下文，生成当前这一轮真正展示给用户看的台词或旁白。\n" +
             "# 规则：\n" +
-            "## “@角色名: xxx” 代表角色要说这个台词\n"+
-            "## “@角色名 xxx” 代表角色要做这件事，台词发挥较为自由一点\n" +
+            "## 入参：\n" +
+            "### “@角色名: xxx” 代表角色要说这个台词\n"+
+            "### “@角色名 xxx” 代表角色要做这件事，台词发挥较为自由一点\n"+
+            "### summary为当前事件专属内容大纲 \n"+
+            "分号 “;” 作用 隔开多段连续旁白 / 角色台词，代表同一件事里依次要说的几句话\n"+
+            "## 输出要求：\n" +
+            "你返回的是你自己的一句台词\n" +
+            "###  不要“@角色名: xxx”  直接说自己的台词“xxxxx”就好，提到别人直接说“角色xxx” \n"+
             "你只生成【当前事件 summary】对应的这一轮展示文本\n" +
             "禁止使用【下一事件】、【transition_hint】、【当前事件完成后】中的任何内容生成本轮台词。\n" +
             "如果当前事件 summary 已经包含完整的 `@角色名：内容`，则必须只改写或直接输出该内容，不得追加下一事件台词。\n" +
             "如果当前事件是旁白场景说明，只允许描述当前场景、物品、状态，不允许主动推进到绑定、选择、战斗、对话等下一事件。\n" +
             "只有当【当前事件 summary】本身明确要求“询问用户 / 提示输入 / 等待选择”时，才可以提示用户输入。\n"+
-            "# 角色发言\n" +
-            "你不能改变说话人，不能泄漏内部编排内容。\n" +
+            "### summary为当前事件专属内容大纲 \n"+
+            "分号 “;” 作用 隔开多段连续旁白 / 角色台词，代表同一件事里依次要说的几句话。不要把几句台词合成一句说！\n"+
+            "### 万能角色台词\n" +
+            "万能NPC 必须说明自己饰演什么角色！！！ 例如\n" +
+            "\"(饰演黑术暗影君王)xxx\"\n" +
+            "\"(饰演路人)xxx\""+
+            "###不允许输出的格式\n"+
+            " “@旁白：xxx” 和“@角色名：xxxx”\n"+
+            "直接说台词，不允许前面加@角色名：\n"+
+            "# 角色发言 \n" +
+            "你不能改变说话人，不能泄漏内部编排内容。" +
+             "### 万能角色台词\n" +
+            "万能NPC 必须说明自己饰演什么角色！！！ 例如\n" +
+            "\"(饰演黑术暗影君王)xxx\"\n" +
+            "\"(饰演路人)xxx\"" +
             "# 旁白发言\n" +
             "## 如果当前发言角色是旁白，你要引导故事继续，说明场景情况，人物行为，引导角色发言等。提示用户可以做什么。 \n" +
+            "“@旁白: xxx” 代表旁白要说这个台词\n"+
+            "“@其他角色名: xxx” 代表其他角色要说这个台词\n"+
+            "例如motive 引导发展之类的，那么summary中@角色名：xxx ,你应该描述情况后，接下来@角色名 采取行动\n"+
             "## 如果存在万能角色如万能角色，某男子，某女子你应该让他们说话而不是帮他们说话。\n" +
+            "## 如果是需要引导剧情，描述一下角色的神态和场景就好，绝对不允许替角色说话\n" +
             "## 你可以根据当前对话内容，判断是否给予用户经验值\n" +
             "战胜敌人=敌人等级*50 经验值\n" +
             "钓鱼 随机经验值（小于用户等级*50）\n" +
@@ -1131,25 +1164,40 @@ event_facts:`,
 ## 特别注意
 用户指的是台词（recent_dialogue）里用户： recent_dialogue 数据里的 "role": "用户"
 用户输入："2", 不是代表输入了两次！！！
+## 入参说明
+current_event：当前事件
+next_event：该章节的下一事件，用于判断是否需要引导。一般来说没有下一事件，才需要result="guide"
 ## 输出格式
 必须只输出一个 JSON 对象，不要解释，不要代码块，不要 markdown 格式。
 
 字段固定为：
-- result: string - 只能是 "continue" / "success" / "failed"
+- result: string - 只能是 "continue" /"guide"/ "success" / "failed"
 - matched_rule: string | null - 命中的规则标识，未命中时为 null
 - reason: string - 判定原因说明
 - next_chapter_id: number | null - 下一章 ID，无则为 null
-- guide_summary: string - 当 result="continue" 时的引导摘要，说明如何满足结束条件
-- guide_facts: string[] - 当 result="continue" 时的引导事实列表（1-3条）
+- guide_summary: string - 当 result="guide" 时的引导摘要，说明如何满足结束条件
+- guide_facts: string[] - 当 result="guide" 时的引导事实列表（1-3条）
 
 ## 输出规则
-- 当 result="continue" 时，必须给出 guide_summary 和 1~3 条 guide_facts，说明下一步如何满足结束条件
+- 当 result="continue" 时，无须给出 guide_summary和 guide_facts.代表的是继续该章节的事件推进
+- 当 result="guide" 时，必须给出 guide_summary 和 1~3 条 guide_facts，说明下一步如何满足结束条件
 - 当 result="success" 或 "failed" 时，guide_summary 置空串，guide_facts 置空数组
 
 ## 输出示例
 
+result=guide:
+{"result":"guide","matched_rule":null,"reason":"用户尚未输入名称、性别、年龄，未满足结束条件","next_chapter_id":null,"guide_summary":"需要引导用户输入角色名称、性别和年龄","guide_facts":["用户尚未提供角色基本信息","需要询问用户角色名称","需要询问用户角色性别和年龄"]}
 result=continue:
-{"result":"continue","matched_rule":null,"reason":"用户尚未输入名称、性别、年龄，未满足结束条件","next_chapter_id":null,"guide_summary":"需要引导用户输入角色名称、性别和年龄","guide_facts":["用户尚未提供角色基本信息","需要询问用户角色名称","需要询问用户角色性别和年龄"]}
+{
+  "result": "continue",
+  "matched_rule": null,
+  "reason": "当前站队场景需要用户回应西游孙悟空的提问，用户尚未完成回应，事件未完成，未达到章节完成条件",
+  "next_chapter_id": null,
+  "guide_summary": "暂无",
+  "guide_facts": [
+    "暂无"
+  ]
+}
 `,
       },
       {

@@ -3,7 +3,9 @@
     "allow": [
       "Bash(npx tsc *)",
       "Bash(npm run *)",
-      "Bash(mmx --version)"
+      "Bash(mmx --version)",
+      "Bash(rm -rf D:/Users/viaco/tools/Toonflow-game/toonflow-game-app/scripts/web/*)",
+      "Bash(cp -r D:/Users/viaco/tools/Toonflow-game/Toonflow-game-web/dist/* D:/Users/viaco/tools/Toonflow-game/toonflow-game-app/scripts/web/)"
     ]
   },
   "outputStyle": "default",

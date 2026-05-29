@@ -88,6 +88,14 @@ export default router.post(
         ? "请直接回复：T8Star 文本模型连通成功"
         : `请直接回复：${manufacturer || "文本模型"}连通成功`;
 
+      // 火山/豆包系列（含 260428 这种默认开启思考的新版本）必须显式传 reasoning_effort，
+      // 否则模型可能进入思考模式，导致返回内容混入推理过程而无法解析出可读文本。
+      // 测试连通性时统一兜底为 minimal（不思考），让模型直接给出回复。
+      const VOLCENGINE_LIKE_MANUFACTURERS = new Set(["volcengine", "doubao"]);
+      const effectiveReasoningEffort =
+        reasoningEffort
+          ?? (VOLCENGINE_LIKE_MANUFACTURERS.has(manufacturerKey) ? "minimal" : undefined);
+
       const result = await withTimeout(
         u.ai.text.invoke(
           manufacturerKey === "t8star"
@@ -119,7 +127,7 @@ export default router.post(
             apiKey,
             baseURL,
             manufacturer,
-            reasoningEffort,
+            reasoningEffort: effectiveReasoningEffort,
           },
         ),
         TEST_TIMEOUT_MS,

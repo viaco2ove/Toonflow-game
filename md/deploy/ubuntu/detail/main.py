@@ -19,6 +19,9 @@ WEB_PORT = int(os.environ.get("PANEL_WEB_PORT", "80").strip() or "80")
 WEB_SOURCE_DIR = f"{APP_DIR}/scripts/web"
 WEB_PUBLISH_DIR = os.environ.get("PANEL_WEB_PUBLISH_DIR", "/var/www/toonflow").strip() or "/var/www/toonflow"
 WEB_PROJECT_DIR = os.environ.get("PANEL_WEB_PROJECT_DIR", "").strip()
+APP_LOG_DIR = (os.environ.get("PANEL_APP_DIR_LOG", "/data/toonflow/logs").strip()
+               or "/data/toonflow/logs")
+
 if not WEB_PROJECT_DIR:
     WEB_PROJECT_DIR = "/opt/toonflow/Toonflow-game-web"
 WEB_BUILD_NODE_OPTIONS = os.environ.get("PANEL_WEB_BUILD_NODE_OPTIONS",
@@ -39,6 +42,57 @@ RESTART_OR_START_APP_CMD = (
     "pm2 save 2>&1"
 )
 LAST_ACTION_LOG = "暂无操作记录"
+
+
+APP_LOG_FILE = f"{APP_LOG_DIR}/app-$(date +%Y-%m-%d).log"
+
+
+def get_app_logs(lines: int = 2000) -> str:
+    """获取后端应用日志最新N行"""
+    today_log = f"{APP_LOG_DIR}/app-{datetime.now().strftime('%Y-%m-%d')}.log"
+    if os.path.exists(today_log):
+        log_file = today_log
+    else:
+        # 尝试找最近的日志文件
+        try:
+            all_logs = sorted([f for f in os.listdir(APP_LOG_DIR) if f.startswith("app-") and f.endswith(".log")])
+            log_file = f"{APP_LOG_DIR}/{all_logs[-1]}" if all_logs else None
+        except:
+            log_file = None
+
+    if not log_file:
+        return f"日志文件不存在：{today_log}"
+
+    try:
+        with open(log_file, 'r', encoding='utf-8', errors='ignore') as f:
+            all_lines = f.readlines()
+        return ''.join(all_lines[-lines:])
+    except Exception as e:
+        return f"读取日志失败：{str(e)}"
+
+
+def clear_app_logs() -> str:
+    """清空后端应用日志（只清空今天的日志）"""
+    today_log = f"{APP_LOG_DIR}/app-{datetime.now().strftime('%Y-%m-%d')}.log"
+    if not os.path.exists(today_log):
+        return f"日志文件不存在：{today_log}"
+    try:
+        with open(today_log, 'w', encoding='utf-8') as f:
+            f.write("")
+        return "已清空今日日志"
+    except Exception as e:
+        return f"清空失败：{str(e)}"
+
+
+def get_pm2_logs(lines: int = 500) -> str:
+    """获取PM2进程日志"""
+    result = run(f"pm2 logs {shlex.quote(APP_NAME)} --nostream --lines {lines} 2>&1")
+    return result
+
+
+def clear_pm2_logs() -> str:
+    """清空PM2进程日志"""
+    return run(f"pm2 flush {shlex.quote(APP_NAME)} 2>&1")
 
 
 @dataclass
@@ -413,6 +467,8 @@ def home() -> str:
             <a class="action dark" href="/deploy/sync-web">构建Web端</a>
             <a class="action" href="/nginx/restart">重启Nginx</a>
             <a class="action dark" href="/app/restart">重启后端</a>
+            <a class="action dark" href="/app/logs">📜 查看日志</a>
+            <a class="action dark" href="/app/pm2-logs">📋 PM2日志</a>
             <br>
             <form action="/git/switch-branch" method="get" style="margin-top:10px">
               <label>切换Web分支：</label>
@@ -501,3 +557,104 @@ def git_force_sync_all():
 @app.get("/healthz", response_class=PlainTextResponse)
 def healthz():
     return "ok"
+
+
+@app.get("/app/logs", response_class=HTMLResponse)
+def view_app_logs():
+    """查看后端应用日志"""
+    lines = 2000
+    logs = get_app_logs(lines)
+    logs_escaped = html.escape(logs).replace("\n", "<br>")
+
+    return f"""
+    <html>
+    <head>
+      <meta charset="utf-8">
+      <title>后端日志 - Toonflow</title>
+      <style>
+        body {{font-family:monospace;background:#0a0a0a;color:#4ade80;margin:0;padding:20px}}
+        h1 {{color:#fff;margin-bottom:20px;display:flex;align-items:center;gap:10px}}
+        a {{color:#60a5fa;margin-right:20px;text-decoration:none}}
+        pre {{background:#111;padding:20px;border-radius:8px;max-height:80vh;overflow:auto;font-size:12px;line-height:1.4}}
+        .timestamp {{color:#fbbf24}}
+        .error {{color:#f87171}}
+        .warn {{color:#fbbf24}}
+        .btn-clear {{
+          background:#dc2626;color:#fff;border:none;padding:8px 16px;border-radius:6px;
+          cursor:pointer;font-size:14px;font-weight:600
+        }}
+        .btn-clear:hover {{background:#b91c1c}}
+        .actions {{display:flex;align-items:center;gap:10px;margin-bottom:10px}}
+      </style>
+    </head>
+    <body>
+      <h1>后端日志 (最新{lines}行)</h1>
+      <div class="actions">
+        <a href="/">返回管理页</a>
+        <a href="/app/logs?refresh=1">刷新</a>
+        <a href="/app/pm2-logs">PM2日志</a>
+        <form action="/app/logs/clear" method="post" style="display:inline">
+          <button class="btn-clear" type="submit" onclick="return confirm('确定要清空今日后端日志吗？')">🗑 清空日志</button>
+        </form>
+      </div>
+      <pre>{logs_escaped}</pre>
+    </body>
+    </html>
+    """
+
+
+@app.post("/app/logs/clear")
+def clear_app_logs_handler():
+    """清空后端应用日志"""
+    output = clear_app_logs()
+    set_last_action_log("清空后端日志", output)
+    return RedirectResponse("/app/logs")
+
+
+@app.get("/app/pm2-logs", response_class=HTMLResponse)
+def view_pm2_logs():
+    """查看PM2进程日志"""
+    lines = 500
+    logs = get_pm2_logs(lines)
+    logs_escaped = html.escape(logs).replace("\n", "<br>")
+
+    return f"""
+    <html>
+    <head>
+      <meta charset="utf-8">
+      <title>PM2日志 - Toonflow</title>
+      <style>
+        body {{font-family:monospace;background:#0a0a0a;color:#4ade80;margin:0;padding:20px}}
+        h1 {{color:#fff;margin-bottom:20px;display:flex;align-items:center;gap:10px}}
+        a {{color:#60a5fa;margin-right:20px;text-decoration:none}}
+        pre {{background:#111;padding:20px;border-radius:8px;max-height:80vh;overflow:auto;font-size:12px;line-height:1.4}}
+        .btn-clear {{
+          background:#dc2626;color:#fff;border:none;padding:8px 16px;border-radius:6px;
+          cursor:pointer;font-size:14px;font-weight:600
+        }}
+        .btn-clear:hover {{background:#b91c1c}}
+        .actions {{display:flex;align-items:center;gap:10px;margin-bottom:10px}}
+      </style>
+    </head>
+    <body>
+      <h1>PM2日志 (最新{lines}行)</h1>
+      <div class="actions">
+        <a href="/">返回管理页</a>
+        <a href="/app/logs">应用日志</a>
+        <a href="/app/pm2-logs">刷新</a>
+        <form action="/app/pm2-logs/clear" method="post" style="display:inline">
+          <button class="btn-clear" type="submit" onclick="return confirm('确定要清空PM2日志吗？')">🗑 清空日志</button>
+        </form>
+      </div>
+      <pre>{logs_escaped}</pre>
+    </body>
+    </html>
+    """
+
+
+@app.post("/app/pm2-logs/clear")
+def clear_pm2_logs_handler():
+    """清空PM2进程日志"""
+    output = clear_pm2_logs()
+    set_last_action_log("清空PM2日志", output)
+    return RedirectResponse("/app/pm2-logs")

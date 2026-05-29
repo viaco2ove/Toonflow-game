@@ -11,6 +11,7 @@ import {
 } from "@/lib/gameEngine";
 import {
   allowPlayerTurn,
+  applyMemoryResultToState,
   applyNarrativeMemoryHintsToState,
   applyOrchestratorResultToState,
   applyPlayerProfileFromMessageToState,
@@ -150,7 +151,8 @@ function applyDebugPlanTurnState(
 }
 
 // 统一把编排结果真正落到调试运行态，确保 candidatePlan / finalPlan 最终只提交一次。
-function applyDebugNarrativePlanToState(params: {
+// 调试模式需要同步等待记忆管理完成，确保前端能拿到最新的参数卡
+async function applyDebugNarrativePlanToState(params: {
   userId: number;
   world: any;
   chapter: any;
@@ -158,16 +160,19 @@ function applyDebugNarrativePlanToState(params: {
   recentMessages: ReturnType<typeof buildDebugRecentMessages>;
   rolePair: ReturnType<typeof normalizeRolePair>;
   plan: Awaited<ReturnType<typeof runNarrativePlan>>;
+  debugRuntimeKey?: string;
 }) {
   applyOrchestratorResultToState(params.state, params.plan);
   applyNarrativeMemoryHintsToState(params.state, params.plan.memoryHints);
   if (params.plan.triggerMemoryAgent) {
-    triggerStoryMemoryRefreshInBackground({
+    // 调试模式同步等待记忆管理完成，确保参数卡更新后再返回前端
+    await triggerStoryMemoryRefreshInBackground({
       userId: params.userId,
       world: params.world,
       chapter: params.chapter,
       state: params.state,
       recentMessages: params.recentMessages,
+      debugRuntimeKey: params.debugRuntimeKey,
     });
   }
   applyDebugPlanTurnState(params.state, params.world, params.rolePair, params.plan);
@@ -184,7 +189,9 @@ async function runAndApplyDebugNarrativePlan(params: {
   playerMessage: string;
   rolePair: ReturnType<typeof normalizeRolePair>;
   requestTrace: OrchestrationRequestTrace;
+  debugRuntimeKey?: string;
 }) {
+  const debugRuntimeKey = params.debugRuntimeKey || String(params.state?.debugRuntimeKey || "").trim();
   logOrchestrationKeyNode(params.requestTrace, "runNarrativePlan:start", {
     playerMessageLength: params.playerMessage.length,
     recentMessageCount: params.recentMessages.length,
@@ -215,6 +222,7 @@ async function runAndApplyDebugNarrativePlan(params: {
     recentMessages: params.recentMessages,
     rolePair: params.rolePair,
     plan,
+    debugRuntimeKey,
   });
 }
 
@@ -356,6 +364,7 @@ function buildDebugRuntimeContext(params: {
     messages,
     asTrimmedText(state.player?.name, rolePair.playerRole.name || "用户"),
     params.playerContent,
+    state,
   );
   return { rolePair, state, debugFreePlotActive, effectiveChapter, recentMessages };
 }
@@ -516,6 +525,7 @@ async function runConcurrentDebugJudgeAndNarrative(params: {
   });
   const outcome = await evaluateDebugRuntimeOutcome({
     userId: params.userId,
+    world: params.world,
     chapter: params.chapter,
     state: params.state,
     messageContent: params.playerContent,
@@ -579,7 +589,7 @@ async function runConcurrentDebugJudgeAndNarrative(params: {
     });
     return {
       outcome,
-      plan: applyDebugNarrativePlanToState({
+      plan: await applyDebugNarrativePlanToState({
         userId: params.userId,
         world: params.world,
         chapter: params.effectiveChapter,
@@ -817,8 +827,21 @@ async function handleDebugOrchestrationRequest(req: express.Request, res: expres
   const sessionId = asTrimmedText(req.body.sessionId);
   if (sessionId) {
     const result = await orchestrateSessionTurn(sessionId);
+    if (DebugLogUtil.isDebugLogEnabled()) {
+      console.log("[orchestration/index.ts] orchestrateSessionTurn 返回 result:", JSON.stringify({
+        hasPlan: !!result.plan,
+        planRole: (result.plan as any)?.role,
+        planRoleType: (result.plan as any)?.roleType,
+        planMotive: (result.plan as any)?.motive,
+        planAwaitUser: (result.plan as any)?.awaitUser
+      }));
+    }
     // data 里只保留 role/roleType/motive；code/message 由标准响应信封承载。
-    return res.status(200).send(success(buildMinimalOrchestrationResponse(result.plan || null)));
+    const responseData = buildMinimalOrchestrationResponse(result.plan || null);
+    if (DebugLogUtil.isDebugLogEnabled()) {
+      console.log("[orchestration/index.ts] buildMinimalOrchestrationResponse 返回:", JSON.stringify(responseData));
+    }
+    return res.status(200).send(success(responseData));
   }
 
   const db = getGameDb();

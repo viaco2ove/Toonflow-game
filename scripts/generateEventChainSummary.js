@@ -344,11 +344,31 @@ function generateEventChainSummaryMarkdown(logFilePath, outputMarkdownPath) {
       const payload = parseJsonFromLogLine(line);
       if (payload) {
         const responseText = readString(payload.responseText);
+        const inputSnapshot = payload.inputSnapshot || {};
+        const currentProgress = inputSnapshot.currentProgress || {};
+        const stageIndex = currentProgress.stageIndex;
+        const totalStages = currentProgress.totalStages;
+        const latestMessage = inputSnapshot.latestMessage || {};
+        const recentDialogue = inputSnapshot.recentDialogue || [];
         currentEntry.eventStage = [
           `event_status=${responseText.includes("\"event_status\": \"waiting_input\"") ? "waiting_input" : responseText.includes("\"event_status\": \"completed\"") ? "completed" : "active"}`,
           `ended=${responseText.includes("\"ended\": true") ? "true" : "false"}`,
           `progress_summary=${extractJsonTextField(responseText, "progress_summary")}`,
         ].join("，");
+        if (typeof stageIndex === "number" && typeof totalStages === "number") {
+          currentEntry.stageInfo = `stageIndex=${stageIndex}/${totalStages}`;
+        }
+        // 从 latestMessage 提取用户输入
+        if (latestMessage.roleType === "player" && latestMessage.content) {
+          currentEntry.userInputFromLatest = latestMessage.content;
+        }
+        // 从 recentDialogue 最后一条提取用户输入（备用）
+        const lastDialogue = recentDialogue[recentDialogue.length - 1];
+        if (lastDialogue && lastDialogue.roleType === "player" && lastDialogue.content) {
+          if (!currentEntry.userInputFromLatest) {
+            currentEntry.userInputFromLatest = lastDialogue.content;
+          }
+        }
       }
       continue;
     }
@@ -402,12 +422,24 @@ function generateEventChainSummaryMarkdown(logFilePath, outputMarkdownPath) {
         `  - chapterTitle: ${chapterTitle}`,
       ];
       if (entry.orchestratorResponse) linesForEntry.push(`  - 返回了，${entry.orchestratorResponse}`);
-      if (entry.userInput) linesForEntry.push(`  - 用户输入：${entry.userInput}`);
+      // 用户输入显示：优先使用 event_progress:runtime 中的 latestMessage
+      const userContent = entry.userInputFromLatest || entry.userInput;
+      if (userContent) {
+        linesForEntry.push(`  - 用户已输入`);
+      }
       if (entry.triggerMemoryAgent) linesForEntry.push(`  - 记忆管理触发：${entry.triggerMemoryAgent}`);
       if (entry.motive) linesForEntry.push(`  - 本轮动机，${entry.motive}`);
-      if (entry.speech) linesForEntry.push(`  - 台词： ${entry.speech}`);
+      // 台词行：如果有用户输入，显示"用户已输入xxx"，否则显示普通台词
+      if (userContent) {
+        linesForEntry.push(`  - 台词：用户已输入${userContent}`);
+      } else if (entry.speech) {
+        linesForEntry.push(`  - 台词： ${entry.speech}`);
+      }
       if (entry.eventStage) {
         linesForEntry.push(`  - 事件阶段：${entry.eventStage}`);
+        if (entry.stageInfo) {
+          linesForEntry.push(`  - ${entry.stageInfo}`);
+        }
         if (entry.eventProgressResolution) {
           linesForEntry.push(`  - 事件进度处理结果：${entry.eventProgressResolution}`);
         }

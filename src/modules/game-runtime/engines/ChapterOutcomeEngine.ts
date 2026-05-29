@@ -14,7 +14,7 @@ import {
 
 export interface ChapterOutcomeResult {
   hasRule: boolean;
-  result: "continue" | "success" | "failed";
+  result: "continue" | "guide" | "success" | "failed";
   nextChapterId: number | null;
   matchedBy: "runtime_outline" | "completion_condition" | "none";
   matchedRule: string | null;
@@ -203,7 +203,9 @@ export function applyChapterOutcomeToState(
   state: JsonRecord,
   outcome: ChapterOutcomeResult,
 ): void {
-  if (outcome.result === "continue") return;
+  // continue: 继续事件推进，不改变章节状态
+  // guide: 激活结束条件检查引导状态，但不结束章节
+  if (outcome.result === "continue" || outcome.result === "guide") return;
   const outline = isRecord(chapter?.runtimeOutline)
     ? chapter.runtimeOutline as ChapterRuntimeOutline
     : {

@@ -68,6 +68,9 @@ type VideoAvatarJobResult = {
   backgroundPath: string;
   backgroundFilePath: string;
   foregroundExt: string;
+  /** 原始上传视频 OSS 地址 */
+  videoPath: string;
+  videoFilePath: string;
 };
 
 type VideoAvatarJob = {
@@ -287,6 +290,8 @@ function buildVideoAvatarJobResponse(job: VideoAvatarJob): Record<string, unknow
     backgroundPath: job.result?.backgroundPath || "",
     backgroundFilePath: job.result?.backgroundFilePath || "",
     foregroundExt: job.result?.foregroundExt || "",
+    videoPath: job.result?.videoPath || "",
+    videoFilePath: job.result?.videoFilePath || "",
   };
 }
 
@@ -981,9 +986,10 @@ async function processVideoAvatarJob(job: VideoAvatarJob): Promise<void> {
       });
     }
 
-    const [animatedBuffer, bgBuffer] = await Promise.all([
+    const [animatedBuffer, bgBuffer, videoBuffer] = await Promise.all([
       fs.readFile(assetResult.animatedPath),
       fs.readFile(assetResult.backgroundPath),
+      fs.readFile(job.inputPath),
     ]);
     updateVideoAvatarJob(job, 94, "资源生成完成，正在上传");
     debugAvatarVideoRuntime("assets:loaded", {
@@ -993,18 +999,22 @@ async function processVideoAvatarJob(job: VideoAvatarJob): Promise<void> {
       animatedBytes: animatedBuffer.length,
       backgroundPath: assetResult.backgroundPath,
       backgroundBytes: bgBuffer.length,
+      videoBytes: videoBuffer.length,
     });
 
     const basePath = roleMediaBasePath(job.userId, job.normalizedProjectId);
     const foregroundFilePath = `${basePath}/${uuidv4()}.${assetResult.animatedExt || "gif"}`;
     const backgroundFilePath = `${basePath}/${uuidv4()}.png`;
+    const videoFilePath = `${basePath}/${uuidv4()}.${job.inputExt}`;
     await Promise.all([
       u.oss.writeFile(foregroundFilePath, animatedBuffer),
       u.oss.writeFile(backgroundFilePath, bgBuffer),
+      u.oss.writeFile(videoFilePath, videoBuffer),
     ]);
-    const [foregroundPath, backgroundUrl] = await Promise.all([
+    const [foregroundPath, backgroundUrl, videoUrl] = await Promise.all([
       u.oss.getFileUrl(foregroundFilePath),
       u.oss.getFileUrl(backgroundFilePath),
+      u.oss.getFileUrl(videoFilePath),
     ]);
 
     job.result = {
@@ -1013,6 +1023,8 @@ async function processVideoAvatarJob(job: VideoAvatarJob): Promise<void> {
       backgroundPath: backgroundUrl,
       backgroundFilePath,
       foregroundExt: assetResult.animatedExt || "gif",
+      videoPath: videoUrl,
+      videoFilePath,
     };
     job.status = "success";
     updateVideoAvatarJob(job, 100, "视频头像生成完成");

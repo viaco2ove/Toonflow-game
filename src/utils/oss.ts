@@ -154,13 +154,14 @@ function encodeOssObjectKey(objectKey: string): string {
  */
 function buildAliyunSignedGetUrl(config: AliyunTempOssConfig, objectKey: string): string {
   const expires = Math.floor(Date.now() / 1000) + config.signedUrlExpiresSeconds;
-  const canonicalResource = `/${config.bucket}/${objectKey}`;
+  const encodedObjectKey = encodeOssObjectKey(objectKey);
+  const canonicalResource = `/${config.bucket}/${encodedObjectKey}`;
   const stringToSign = `GET\n\n\n${expires}\n${canonicalResource}`;
   const signature = crypto
     .createHmac("sha1", config.accessKeySecret)
     .update(stringToSign)
     .digest("base64");
-  const url = new URL(`${config.uploadHost}/${encodeOssObjectKey(objectKey)}`);
+  const url = new URL(`${config.uploadHost}/${encodedObjectKey}`);
   url.searchParams.set("OSSAccessKeyId", config.accessKeyId);
   url.searchParams.set("Expires", String(expires));
   url.searchParams.set("Signature", signature);
@@ -221,10 +222,15 @@ async function uploadToAliyunTempOss(buffer: Buffer, filename: string): Promise<
   return buildAliyunSignedGetUrl(config, objectKey);
 }
 
+interface TempUrlCacheEntry {
+  url: string;
+  expiresAt: number;
+}
+
 class OSS {
   private rootDir: string;
   private initPromise: Promise<void>;
-  private tempUrlCache = new Map<string, string>();
+  private tempUrlCache = new Map<string, TempUrlCacheEntry>();
 
   constructor() {
     this.rootDir = getUploadRootDir();
@@ -257,8 +263,33 @@ class OSS {
   }
 
   /**
+   * 从临时 URL 中提取过期时间（秒级 Unix 时间戳）。
+   *
+   * 阿里云 OSS 签名 URL 包含 Expires 参数，可以直接解析；
+   * 其他临时服务（tmpfiles/file.io/transfer.sh）的链接一般不会很快过期，
+   * 按 1 小时估算。
+   */
+  private extractUrlExpiry(url: string): number {
+    try {
+      const parsed = new URL(url);
+      const expiresParam = parsed.searchParams.get("Expires");
+      if (expiresParam) {
+        const ts = Number(expiresParam);
+        if (Number.isFinite(ts) && ts > 0) return ts;
+      }
+    } catch {
+      // URL 解析失败时按 1 小时估算
+    }
+    // 非 OSS 链接，1 小时后再刷新
+    return Math.floor(Date.now() / 1000) + 3600;
+  }
+
+  /**
    * 获取可对外访问的临时URL（当配置 TEMP_OSS 时）。
    * 未配置或上传失败时回退到本地服务 URL。
+   *
+   * 缓存会根据签名 URL 的 Expires 参数自动过期（提前 60 秒失效），
+   * 避免阿里云 OSS 签名过期后重复返回 HTTP 403。
    */
   async getExternalUrl(userRelPath: string): Promise<string> {
     await this.ensureInit();
@@ -270,14 +301,23 @@ class OSS {
       return this.getFileUrl(userRelPath);
     }
 
+    // 检查缓存是否仍然有效（提前 60 秒过期，避免边界竞争）
     const cached = this.tempUrlCache.get(userRelPath);
-    if (cached) return cached;
+    if (cached && cached.expiresAt > Math.floor(Date.now() / 1000) + 60) {
+      return cached.url;
+    }
+    if (cached) {
+      this.tempUrlCache.delete(userRelPath);
+    }
 
     const buffer = await this.getFile(userRelPath);
     const filename = path.basename(userRelPath);
     const tempUrl = await this.uploadToTempOss(providers, buffer, filename);
     if (tempUrl) {
-      this.tempUrlCache.set(userRelPath, tempUrl);
+      this.tempUrlCache.set(userRelPath, {
+        url: tempUrl,
+        expiresAt: this.extractUrlExpiry(tempUrl),
+      });
       return tempUrl;
     }
     return this.getFileUrl(userRelPath);

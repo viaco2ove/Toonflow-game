@@ -1,4 +1,4 @@
-# Toonflow 游戏系统 - 当前设计文档
+# Toonflow AI 游戏系统 - 当前设计文档
 
 > 本文档描述 Toonflow AI 游戏系统的最新设计架构与实现状态。
 
@@ -8,7 +8,7 @@
 
 Toonflow 是一个 AI 短剧与多角色 AI 故事游戏平台，包含两个主要业务线：
 
-1. **AI 短剧Pipeline**：小说 → 大纲 → 剧本 → 分镜 → AI 图/视频 → 最终视频
+1. **AI 短剧 Pipeline**：小说 → 大纲 → 剧本 → 分镜 → AI 图/视频 → 最终视频
 2. **多角色 AI 故事游戏**（当前重点）：世界创建 → 章节设计 → 游戏会话 → 角色互动 → 叙事引擎驱动
 
 ### 1.1 技术栈
@@ -36,16 +36,20 @@ src/
 │   │   ├── NarrativeOrchestrator.ts    # 叙事编排引擎
 │   │   ├── ChapterProgressEngine.ts    # 章节进度状态机 (~1900行)
 │   │   ├── MiniGameController.ts       # 小游戏控制器
-│   │   ├── TriggerEngine.ts           # 条件触发器引擎
+│   │   ├── TriggerEngine.ts            # 条件触发器引擎
 │   │   ├── RuleOrchestrator.ts         # 规则编排器
-│   │   └── ChapterOutcomeEngine.ts     # 章节结局评估
+│   │   ├── ChapterOutcomeEngine.ts     # 章节结局评估
+│   │   ├── SpeakerRouteEngine.ts       # 发言人路由引擎
+│   │   └── TaskProgressEngine.ts       # 任务进度引擎
 │   ├── services/          # 服务层（带副作用，数据库访问）
 │   │   ├── SessionService.ts          # 会话核心服务
-│   │   └── ChapterRuntimeService.ts    # 章节运行时评估
+│   │   ├── ChapterRuntimeService.ts   # 章节运行时评估
+│   │   └── SnapshotService.ts          # 快照服务
 │   └── types/             # 类型定义
+│       └── runtime.ts
 │
 ├── agents/                # AI Agent 层
-│   ├── outlineScript/    # 大纲/剧本生成
+│   ├── outlineScript/     # 大纲/剧本生成
 │   ├── storyboard/       # 分镜生成
 │   └── voicePromptPolish.ts
 │
@@ -65,6 +69,7 @@ src/
 3. **文件路由自动发现**：`core.ts` 使用 fast-glob 自动从 `src/routes/**/*.ts` 发现路由
 4. **Session Lock**：防止同一会话并发编排
 5. **Revisit Cache**：消息回溯的内存层 + 数据库持久化
+6. **规则优先 + AI 补位**：规则能决定的直接产出，规则无法决定时才调用 AI
 
 ---
 
@@ -74,7 +79,7 @@ src/
 
 | 状态类型 | 用途 |
 |---------|------|
-| `ChapterProgressState` | 追踪当前 phaseId, phaseIndex, eventIndex, userNodeId, completedEvents |
+| `ChapterProgressState` | 追踪当前 phaseId, phaseIndex, eventIndex, completedEvents |
 | `RuntimeDynamicEventState` | 每个事件的状态：phaseId, flowType, runtimeFacts, memorySummary |
 | `RuntimeEventDigestState` | 事件摘要 = 动态事件 + 记忆数据 |
 | `ChapterRuntimeOutline` | 章节大纲：openingMessages, phases[], userNodes[], fixedEvents[], endingRules |
@@ -84,7 +89,7 @@ src/
 
 - **读取**：`readChapterProgressState`, `readRuntimeDynamicEventState`
 - **写入**：`setChapterProgressState`, `upsertRuntimeDynamicEventState`
-- **评估**：`evaluateCondition` - 支持自然语言 + JSON 表达式 (and/or/not/equals/contains/gt)
+- **评估**：`evaluateCondition` - 支持结构化条件 + 自然语言条件 + 逻辑组合 (and/or/not/equals/contains/gt)
 
 ---
 
@@ -129,6 +134,7 @@ streamlines → commitNarrativeTurn → voice async
 ### 4.3 MiniGameController (小游戏控制器)
 
 **支持的游戏类型**：
+
 | 类型 | 描述 |
 |------|------|
 | `battle` | 战斗系统 |
@@ -157,12 +163,12 @@ streamlines → commitNarrativeTurn → voice async
 }
 ```
 
-### 4.4 TriggerEngine (触发器引擎)
+### 4.4 RuleOrchestrator (规则编排器)
 
 **职责**：
-- 条件触发器评估
-- 运行时动作执行
-- 属性变更应用
+- 规则优先决定下一位 speaker
+- 只在规则无法确定时才调用 AI Orchestrator
+- 输出 `decisionSource: "rule" | "ai" | "fallback"`
 
 ### 4.5 ChapterOutcomeEngine (章节结局引擎)
 
@@ -247,6 +253,7 @@ t_game_chapter        # 游戏章节
 t_game_session        # 游戏会话
 t_game_message        # 会话消息
 t_game_snapshot       # 状态快照
+t_game_run_parameter  # 游玩中的角色参数
 t_project            # 项目
 t_novel              # 小说
 t_outline            # 大纲
@@ -265,6 +272,7 @@ StoryWorld 1-N GameSession
 GameSession 1-N SessionMessage
 GameSession 1-N SessionStateSnapshot
 GameSession 1-N EntityStateDelta
+GameSession 1-N GameRunParameter
 ```
 
 ---
@@ -325,9 +333,31 @@ battleStep 返回下一回合
 
 ---
 
-## 10. 实现状态
+## 10. 三级记忆系统
 
-### 10.1 已完成
+### 10.1 短期记忆
+上下文装载最近聊天记录，适合容量限制。
+
+### 10.2 中期记忆
+上下文装载重要的事件和内容。需要记忆管理 agent 挖掘聊天内容，生成记忆目录（索引）。
+
+触发条件：
+- 新关系建立/破裂
+- 用户做出明确立场选择
+- 新任务出现
+- 新关键道具出现/消失
+- 章节阶段切换
+- 章节成功/失败
+- 关键角色状态变化
+
+### 10.3 长期记忆
+上下文装载故事背景等全局控制情报。
+
+---
+
+## 11. 实现状态
+
+### 11.1 已完成
 
 | 模块 | 状态 | 说明 |
 |------|------|------|
@@ -339,7 +369,7 @@ battleStep 返回下一回合
 | API 路由 | ✅ 完成 | 43+ 端点 |
 | 状态管理 | ✅ 完成 | 纯函数状态操作 |
 
-### 10.2 进行中/待优化
+### 11.2 进行中/待优化
 
 | 模块 | 状态 | 说明 |
 |------|------|------|
@@ -348,7 +378,7 @@ battleStep 返回下一回合
 | 发言分级 (T0/T1/T2) | 🔄 待完善 | 模板直出机制 |
 | 规则编排器 | 🔄 待完善 | 规则优先替代 AI 编排 |
 
-### 10.3 验收标准
+### 11.3 验收标准
 
 1. **功能闭环**：创作 → 游玩 → 存档 全流程
 2. **性能目标**：
@@ -360,16 +390,16 @@ battleStep 返回下一回合
 
 ---
 
-## 11. 设计亮点
+## 12. 设计亮点
 
-### 11.1 规则优先 + AI 补位
+### 12.1 规则优先 + AI 补位
 
 ```
 规则能决定 → 直接产出 speaker
 规则不能决定 → 才调用 AI Orchestrator
 ```
 
-### 11.2 记忆按事件刷新
+### 12.2 记忆按事件刷新
 
 只有命中关键变化时才触发记忆更新：
 - 新关系建立
@@ -377,7 +407,7 @@ battleStep 返回下一回合
 - 任务切换
 - 章节判定
 
-### 11.3 小游戏白名单机制
+### 12.3 小游戏白名单机制
 
 小游戏结算后只允许回写白名单字段：
 - `player_state.resources`
@@ -385,16 +415,20 @@ battleStep 返回下一回合
 - `relationship_state`
 - `event_pool.done`
 
-### 11.4 双运行时模式
+### 12.4 双运行时模式
 
 - **Debug 模式**：无状态，用于调试和开发
 - **Session 模式**：有状态，支持存档、回溯
 
 ---
 
-## 12. 相关文档
+## 13. 相关文档
 
-- [AI 游戏 V3 设计](../plan/ai_game/V3/README.md)
-- [AI 游戏 V4 评审](../plan/ai_game/V4/review/review.md)
-- [小游戏详细设计](../plan/ai_game/V3/小游戏设计/小游戏详细设计与规则方案.md)
-- [Agent 3.0 编排设计](../plan/ai_game/V3/游玩业务/V3/ai故事_编排师等agent_3.0.md)
+- [编排师设计](./游玩业务/编排师.md)
+- [角色发言设计](./游玩业务/角色发言.md)
+- [章节判定设计](./游玩业务/章节判定.md)
+- [事件管理设计](./游玩业务/事件管理.md)
+- [记忆管理设计](./游玩业务/记忆管理.md)
+- [角色设计](./游玩业务/角色设计.md)
+- [自由章节设计](./游玩业务/自由章节设计.md)
+- [游玩时的语音克隆生成](./游玩业务/游玩时的语音克隆生成.md)

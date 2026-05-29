@@ -6,12 +6,13 @@ import {
   readPhaseAwareRuntimeCurrentEventDigestState,
 } from "@/lib/gameEngine";
 import { applyChapterOutcomeToState, ChapterOutcomeResult, evaluateChapterOutcome } from "@/modules/game-runtime/engines/ChapterOutcomeEngine";
-import { activateChapterEndingCheckState } from "@/modules/game-runtime/engines/ChapterProgressEngine";
+import { activateChapterEndingCheckState, readNextEventProgressHint } from "@/modules/game-runtime/engines/ChapterProgressEngine";
 import { DebugLogUtil } from "@/utils/debugLogUtil";
 import { z } from "zod";
 
 export interface EvaluateRuntimeOutcomeInput {
   userId?: number;
+  world?: any;
   chapter: any;
   state: JsonRecord;
   messageContent?: string;
@@ -20,7 +21,7 @@ export interface EvaluateRuntimeOutcomeInput {
   recentMessages?: any[];
   fallbackStatus?: string;
   fallbackChapterId?: number | null;
-  fallbackOutcome?: "continue" | "success" | "failed";
+  fallbackOutcome?: "continue" | "guide" | "success" | "failed";
   fallbackNextChapterId?: number | null;
   applyToState?: boolean;
   traceMeta?: JsonRecord;
@@ -28,7 +29,7 @@ export interface EvaluateRuntimeOutcomeInput {
 
 export interface RuntimeOutcomeResolution {
   evaluation: ChapterOutcomeResult;
-  outcome: "continue" | "success" | "failed";
+  outcome: "continue" | "guide" | "success" | "failed";
   sessionStatus: string;
   nextChapterId: number | null;
 }
@@ -40,7 +41,7 @@ type ChapterJudgeTokenUsage = {
 };
 
 const chapterJudgeOutputSchema = {
-  result: z.enum(["continue", "success", "failed"]),
+  result: z.enum(["continue", "guide", "success", "failed"]),
   matched_rule: z.string().nullable().optional(),
   reason: z.string().nullable().optional(),
   next_chapter_id: z.union([z.number().int().positive(), z.null()]).optional(),
@@ -216,10 +217,11 @@ function getPlainField(fields: Record<string, string>, ...keys: string[]): strin
   return "";
 }
 
-function normalizeOutcome(value: unknown): "continue" | "success" | "failed" {
+function normalizeOutcome(value: unknown): "continue" | "guide" | "success" | "failed" {
   const text = normalizeScalarText(value).toLowerCase();
   if (text === "success" || text === "completed" || text === "pass") return "success";
   if (text === "failed" || text === "fail" || text === "failure" || text === "lose") return "failed";
+  if (text === "guide") return "guide";
   return "continue";
 }
 
@@ -232,6 +234,7 @@ function shortText(input: unknown, limit = 160): string {
 type BuildChapterJudgeInput = {
   chapter: any;
   state: JsonRecord;
+  world?: any;
   messageContent?: string;
   eventType?: string;
   recentMessages?: any[];
@@ -241,6 +244,7 @@ type BuildChapterJudgeInput = {
 function buildChapterJudgeInputSnapshot({
   chapter,
   state,
+  world,
   messageContent,
   eventType,
   recentMessages,
@@ -282,16 +286,48 @@ function buildChapterJudgeInputSnapshot({
           role_type: normalizeScalarText(item?.roleType) || "",
           event_type: normalizeScalarText(item?.eventType) || "",
           content: shortText(item?.content, 160) || "",
+          // 补充事件进度标记，帮助AI判断台词归属
+          event_index: item?.eventIndex ?? null,
+          stage_index: item?.stageIndex ?? null,
+          role_num_speech_curr_event: Number(item?.roleNumSpeechCurrEvent || 0),
+          role_num_speech_curr_stage: Number(item?.roleNumSpeechCurrStage || 0),
         }))
         .filter((item) => item.content)
     : [];
 
+  // 获取故事全局背景：优先从 world.intro 读取，state 的 worldIntro/globalBackground 作为兜底
+  const worldIntro = normalizeScalarText(
+    world?.intro
+    || state?.worldIntro
+    || state?.globalBackground
+    || ""
+  );
+  // 获取章节内容
+  const chapterContent = normalizeScalarText(chapter?.content || "");
+
+  // 读取下一个事件信息
+  const nextEventHint = readNextEventProgressHint(chapter, state);
+  const nextEventInfo = nextEventHint
+    ? {
+        index: Number(nextEventHint.index || 0),
+        kind: normalizeScalarText(nextEventHint.kind) || "scene",
+        label: normalizeScalarText(nextEventHint.label) || "",
+        summary: normalizeScalarText(nextEventHint.summary) || "",
+        transition_hint: normalizeScalarText(nextEventHint.transitionHint) || "",
+      }
+    : null;
+
+  if (DebugLogUtil.isDebugLogEnabled()) {
+    console.log(`[story:memory:runtime] buildChapterJudgeInputSnapshot worldIntro=${worldIntro} nextEvent=${nextEventInfo ? JSON.stringify({ index: nextEventInfo.index, label: nextEventInfo.label }) : "null"}`);
+  }
   return {
     chapter: {
       title: normalizeScalarText(chapter?.title) || "未命名章节",
       completion_condition: (chapter as any)?.completionCondition ?? null,
       ending_rules: endingRules,
+      content: chapterContent,
     },
+    world_intro: worldIntro,
     current_event: {
       index: Number(normalizeScalarText(currentEvent.eventIndex) || "0"),
       kind: normalizeScalarText(currentEvent.eventKind) || "scene",
@@ -315,6 +351,7 @@ function buildChapterJudgeInputSnapshot({
             .filter(Boolean)
         : [],
     },
+    next_event: nextEventInfo,
     ...(runtimeStateSend
       ? {
           runtime_state: {
@@ -600,10 +637,11 @@ async function evaluateChapterOutcomeByAi(input: EvaluateRuntimeOutcomeInput): P
 
 export function resolveSessionStatusByOutcome(
   currentStatus: string,
-  outcome: "continue" | "success" | "failed",
+  outcome: "continue" | "guide" | "success" | "failed",
 ): string {
   if (outcome === "failed") return "failed";
   if (outcome === "success") return "chapter_completed";
+  // continue 和 guide 都保持当前状态
   return currentStatus;
 }
 
@@ -663,8 +701,10 @@ export async function evaluateRuntimeOutcome(input: EvaluateRuntimeOutcomeInput)
     messageContent: String(input.messageContent || "").trim(),
     why: evaluation.hasRule
       ? (evaluation.result === "continue"
-        ? "章节结束条件未命中"
-        : `命中${evaluation.matchedBy === "runtime_outline" ? "运行时事件规则" : "章节判定"}:${evaluation.matchedRule || "未命名规则"}`)
+        ? "章节继续推进事件，未命中结束条件"
+        : evaluation.result === "guide"
+          ? "需要引导用户完成结束条件"
+          : `命中${evaluation.matchedBy === "runtime_outline" ? "运行时事件规则" : "章节判定"}:${evaluation.matchedRule || "未命名规则"}`)
       : "当前章节没有有效结束条件，跳过AI章节判定并沿用fallbackOutcome",
     }));
     if (!evaluation.hasRule && DebugLogUtil.isDebugLogEnabled()) {
@@ -680,10 +720,11 @@ export async function evaluateRuntimeOutcome(input: EvaluateRuntimeOutcomeInput)
 
 
 
-  if (evaluation.hasRule && outcome === "continue") {
+  // guide: 需要引导用户完成结束条件（当前章节没有下一个事件，需要进入结束条件检查阶段）
+  // continue: 继续章节事件推进，不需要引导
+  if (evaluation.hasRule && outcome === "guide") {
     input.state.__pendingEndingGuide = true;
-    // 只有真正进入章节结束检查阶段时，才允许把 current_event 切到 ending。
-    // 正文事件尚未完成时仅挂起 guide 标记，避免后续编排读取到被提前改写的事件索引。
+    // guide 时激活结束条件检查状态
     if (shouldActivateEndingGuideState(input)) {
       activateChapterEndingCheckState({
         chapter: input.chapter,
@@ -694,11 +735,14 @@ export async function evaluateRuntimeOutcome(input: EvaluateRuntimeOutcomeInput)
         eventStatus: "active",
       });
     }
+  } else if (evaluation.hasRule && outcome === "continue") {
+    // continue: 继续事件推进，不激活 ending guide
+    input.state.__pendingEndingGuide = false;
   } else {
     input.state.__pendingEndingGuide = false;
   }
 
-  if (Boolean(input.applyToState) && outcome !== "continue") {
+  if (Boolean(input.applyToState) && outcome !== "continue" && outcome !== "guide") {
     applyChapterOutcomeToState(input.chapter, input.state, {
       ...evaluation,
       result: outcome,

@@ -8,6 +8,7 @@ import {
   normalizeRolePair,
   normalizeSessionState,
   nowTs,
+  readChapterProgressState,
 } from "@/lib/gameEngine";
 import {
   applyNarrativeMemoryHintsToState,
@@ -25,6 +26,7 @@ import { initializeChapterProgressForState } from "@/modules/game-runtime/engine
 import {
   asDebugMessage,
   buildDebugFreePlotMessage,
+  buildDebugMessageSpeechCount,
   buildDebugRecentMessages,
   buildDebugStateSnapshot,
   buildOpeningRuntimeMessage,
@@ -184,7 +186,7 @@ export default router.post(
         content: String(item.content || ""),
         createTime: Number(item.createTime || 0),
       }));
-      const recentMessages = buildDebugRecentMessages(messages, String(state.player?.name || rolePair.playerRole.name || "用户"), playerContent);
+      const recentMessages = buildDebugRecentMessages(messages, String(state.player?.name || rolePair.playerRole.name || "用户"), playerContent, state);
 
       if (!playerContent) {
         const pendingChapterId = getPendingDebugChapterId(state);
@@ -279,14 +281,23 @@ export default router.post(
           allowStateDelta: false,
         });
         applyOrchestratorResultToState(state, orchestrator);
+        // 获取当前事件进度
+        const chapterProgress1 = readChapterProgressState(state);
+        const rawRole = String(orchestrator.role || "旁白");
+        const speechCount1 = buildDebugMessageSpeechCount(recentMessages, rawRole, state);
         const emittedMessage = orchestrator.role && orchestrator.content
-          ? asDebugMessage({
-            role: orchestrator.role,
-            roleType: orchestrator.roleType,
+          ? {
+            role: rawRole,
+            roleType: String(orchestrator.roleType || "narrator"),
             eventType: "on_orchestrated_reply",
-            content: orchestrator.content,
+            content: String(orchestrator.content || ""),
             createTime: nowTs(),
-          })
+            eventIndex: chapterProgress1?.eventIndex ?? null,
+            stageIndex: chapterProgress1?.stageIndex ?? 0,
+            phaseId: chapterProgress1?.phaseId ?? null,
+            roleNumSpeechCurrEvent: speechCount1.roleNumSpeechCurrEvent,
+            roleNumSpeechCurrStage: speechCount1.roleNumSpeechCurrStage,
+          }
           : null;
         applyNarrativeMemoryHintsToState(state, orchestrator.memoryHints);
         if (orchestrator.triggerMemoryAgent) {
@@ -311,6 +322,8 @@ export default router.post(
           })
           : { enteredUserPhase: false };
         const outcome = await evaluateDebugRuntimeOutcome({
+          userId,
+          world,
           chapter,
           state,
           messageContent: String(emittedMessage?.content || ""),
@@ -478,6 +491,8 @@ export default router.post(
         userId,
       });
       const outcome = await evaluateDebugRuntimeOutcome({
+        userId,
+        world,
         chapter,
         state,
         messageContent: playerContent,
@@ -559,14 +574,23 @@ export default router.post(
         allowStateDelta: false,
       });
       applyOrchestratorResultToState(state, orchestrator);
+      // 获取当前事件进度
+      const chapterProgress = readChapterProgressState(state);
+      const rawRole2 = String(orchestrator.role || "旁白");
+      const speechCount2 = buildDebugMessageSpeechCount(recentMessages, rawRole2, state);
       const emittedMessage = orchestrator.role && orchestrator.content
-        ? asDebugMessage({
-          role: orchestrator.role,
-          roleType: orchestrator.roleType,
+        ? {
+          role: rawRole2,
+          roleType: String(orchestrator.roleType || "narrator"),
           eventType: "on_orchestrated_reply",
-          content: orchestrator.content,
+          content: String(orchestrator.content || ""),
           createTime: nowTs(),
-        })
+          eventIndex: chapterProgress?.eventIndex ?? null,
+          stageIndex: chapterProgress?.stageIndex ?? 0,
+          phaseId: chapterProgress?.phaseId ?? null,
+          roleNumSpeechCurrEvent: speechCount2.roleNumSpeechCurrEvent,
+          roleNumSpeechCurrStage: speechCount2.roleNumSpeechCurrStage,
+        }
         : null;
       applyNarrativeMemoryHintsToState(state, orchestrator.memoryHints);
       if (orchestrator.triggerMemoryAgent) {
@@ -591,6 +615,8 @@ export default router.post(
         })
         : { enteredUserPhase: false };
       const narratedOutcome = await evaluateDebugRuntimeOutcome({
+        userId,
+        world,
         chapter,
         state,
         messageContent: String(emittedMessage?.content || ""),

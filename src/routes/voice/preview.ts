@@ -136,26 +136,71 @@ function isPublicHttpUrl(url?: string | null): boolean {
 /**
  * 轻量校验公网参考音频直链是否真的返回音频内容。
  * 这里的目的是在把 URL 交给阿里 clone 前，先拦掉返回 HTML 落地页/跳转页的坏链接。
+ *
+ * 注意：不使用 Range 头，因为 OSS 签名 URL 需要把所有请求头纳入签名，
+ * 而 Range 头不在签名范围内会导致 403 签名验证失败。
  */
 async function assertDirectAliyunReferenceAudioUrlUsable(url: string): Promise<void> {
-  const response = await axios.get(url, {
-    responseType: "arraybuffer",
-    timeout: 15000,
-    maxRedirects: 5,
-    headers: {
-      Range: "bytes=0-127",
-    },
-    validateStatus: (status) => status >= 200 && status < 400,
-  });
+  let response: axios.AxiosResponse | null = null;
+  try {
+    // 不带 Range 头，避免 OSS 签名 URL 验证失败
+    response = await axios.get(url, {
+      responseType: "arraybuffer",
+      timeout: 15000,
+      maxRedirects: 5,
+      // 不设置 Range 头，避免签名不匹配
+      validateStatus: (status) => status >= 200 && status < 400,
+    });
+  } catch (err) {
+    const axiosErr = axios.isAxiosError(err) ? err : null;
+    const status = axiosErr?.response?.status;
+    const statusText = axiosErr?.response?.statusText;
+    const responseUrl = axiosErr?.response?.request?.res?.responseUrl || url;
+    const message = axiosErr instanceof Error ? axiosErr.message : String(err);
+    const ossHeaders = axiosErr?.response?.headers ? Object.fromEntries(
+      Object.entries(axiosErr.response.headers as Record<string, string>)
+        .filter(([k]) => /content-type|content-length|x-oss|x-dr|etag/i.test(k))
+    ) : null;
+    console.error(`[voice:preview:ref_check] failed: ${url}`, JSON.stringify({
+      httpStatus: status,
+      statusText,
+      finalUrl: responseUrl,
+      message,
+      code: axiosErr?.code,
+      errno: axiosErr?.errno,
+      headers: ossHeaders,
+    }));
+    throw new Error(`参考音频公网地址不可访问 (HTTP ${status || "?"}): ${url}`);
+  }
+
   const contentType = String(response.headers["content-type"] || "").toLowerCase();
-  const probe = Buffer.from(response.data || []).slice(0, 64);
-  const probeText = probe.toString("utf8").trim().toLowerCase();
+  const probe = Buffer.from(response.data || []).slice(0, 128);
+  const probeText = probe.toString("utf8").replace(/\0/g, ".").trim();
   const isWave = probe.slice(0, 4).toString("ascii") === "RIFF" && probe.slice(8, 12).toString("ascii") === "WAVE";
   const isMp3 = probe.slice(0, 3).toString("ascii") === "ID3"
     || (probe.length >= 2 && probe[0] === 0xff && (probe[1]! & 0xe0) === 0xe0);
   const isHtml = contentType.includes("text/html") || probeText.startsWith("<!doctype html") || probeText.startsWith("<html");
   const isAudioType = contentType.startsWith("audio/") || contentType.includes("octet-stream");
+
+  // 始终打印诊断信息（不只是 DEBUG 模式）
+  console.log("[voice:preview:ref_check]", JSON.stringify({
+    url,
+    httpStatus: response.status,
+    contentType,
+    isWave,
+    isMp3,
+    isHtml,
+    isAudioType,
+    probeLength: probe.length,
+    probePreview: probeText.slice(0, 80),
+  }));
+
   if (isHtml || (!isAudioType && !isWave && !isMp3)) {
+    console.error(`[voice:preview:ref_check] rejected: ${url}`, JSON.stringify({
+      reason: isHtml ? "html_content" : "non_audio_binary",
+      contentType,
+      probePreview: probeText.slice(0, 80),
+    }));
     throw new Error(`参考音频公网地址不是原始音频直链: ${url}`);
   }
 }
@@ -194,6 +239,24 @@ function setDirectAliyunCustomVoiceCache(cacheKey: string, voiceId: string) {
 function deleteDirectAliyunCustomVoiceCache(cacheKey: string) {
   if (!trimText(cacheKey)) return;
   DIRECT_ALIYUN_CUSTOM_VOICE_CACHE.delete(cacheKey);
+}
+
+/**
+ * 判断 voiceId 是否与当前目标模型兼容。
+ * 阿里云的 voiceId 是按模型绑定的，Qwen 模型创建的专属音色不能在 CosyVoice 上使用，反之亦然。
+ * 例如 qwen-tts-vd-xxx 不能用于 cosyvoice-v3-flash，longanxxx_v3 不能用于 qwen3-tts。
+ */
+function isVoiceIdCompatibleWithModel(voiceId: string, targetModel: string): boolean {
+  if (!voiceId || !targetModel) return true;
+  const model = targetModel.toLowerCase();
+  const id = voiceId.toLowerCase();
+  if (isAliyunDirectCosyVoiceModel(model)) {
+    return !id.startsWith("qwen-tts-vd-") && !id.startsWith("qwen-tts-enrollment-");
+  }
+  if (isAliyunDirectQwenVoiceCloneModel(model) || isAliyunDirectQwenVoiceDesignModel(model)) {
+    return !id.startsWith("cosyvoice-");
+  }
+  return true;
 }
 
 /**
@@ -520,33 +583,41 @@ async function resolveDirectAliyunReferenceAudioUrl(referenceAudioSource: string
   }
   if (!/^https?:\/\//i.test(source) && !/^data:/i.test(source)) {
     const externalUrl = await u.oss.getExternalUrl(source);
+    const isPublic = isPublicHttpUrl(externalUrl);
     if (isVoicePreviewDebugEnabled()) {
       console.log("[voice:preview:aliyun_ref_url]", JSON.stringify({
         stage: "getExternalUrl",
         source,
         externalUrl,
+        isPublic,
       }));
     }
-    if (isPublicHttpUrl(externalUrl)) {
+    if (isPublic) {
       await assertDirectAliyunReferenceAudioUrlUsable(externalUrl);
       return externalUrl;
     }
+    // 非公网 URL 时的错误信息
+    console.error(`[voice:preview:aliyun_ref_url] not public URL: ${externalUrl}`);
   }
 
   const buffer = await loadReferenceAudioBuffer(source);
   const ext = inferAudioExt(source);
   const uploadedUrl = await u.oss.uploadTemp(buffer, `aliyun-direct-ref-${sha1(source).slice(0, 12)}.${ext}`);
+  const isPublic = isPublicHttpUrl(uploadedUrl);
   if (isVoicePreviewDebugEnabled()) {
     console.log("[voice:preview:aliyun_ref_url]", JSON.stringify({
       stage: "uploadTemp",
       source,
       uploadedUrl: trimText(uploadedUrl || ""),
+      isPublic,
     }));
   }
-  if (isPublicHttpUrl(uploadedUrl)) {
+  if (isPublic) {
     await assertDirectAliyunReferenceAudioUrlUsable(trimText(uploadedUrl));
     return trimText(uploadedUrl);
   }
+  // 上传后仍然不是公网 URL 时的错误信息
+  console.error(`[voice:preview:aliyun_ref_url] uploadTemp returned non-public URL: ${uploadedUrl || "(null)"}`);
 
   throw new Error("阿里云官方声音复刻需要公网可访问的参考音频，请配置 TEMP_OSS 或使用公网音频地址");
 }
@@ -816,13 +887,54 @@ async function createDirectAliyunCustomVoice(options: {
     throw new Error("当前阿里云直连模型缺少 API Key");
   }
 
+  if (isVoicePreviewDebugEnabled()) {
+    console.log("[voice:preview:custom_voice] creating/updating custom voice", JSON.stringify({
+      mode: options.mode,
+      targetModel,
+      endpoint: endpoint.slice(0, 80),
+      apiKeyPrefix: apiKey.slice(0, 8) + "***",
+      payloadKeys: Object.keys(payload),
+      inputKeys: Object.keys(payload?.input || {}),
+      hasUrl: Boolean(payload?.input?.url),
+      hasAudioData: Boolean(payload?.input?.audio?.data),
+      preferredName,
+      sampleRate: requestedSampleRate,
+      cacheHit: Boolean(cachedVoiceId),
+    }));
+  }
+
   const response = await axios.post(endpoint, payload, {
     headers: {
       Authorization: `Bearer ${apiKey}`,
       "Content-Type": "application/json",
     },
     timeout: 120000,
+  }).catch((err) => {
+    const axiosErr = axios.isAxiosError(err) ? err : null;
+    console.error("[voice:preview:custom_voice] API call failed", JSON.stringify({
+      mode: options.mode,
+      targetModel,
+      status: axiosErr?.response?.status,
+      statusText: axiosErr?.response?.statusText,
+      code: axiosErr?.code,
+      errorCode: axiosErr?.response?.data?.code,
+      errorMessage: axiosErr?.response?.data?.message,
+      requestId: axiosErr?.response?.headers?.["x-acs-request-id"] || axiosErr?.response?.headers?.["x-request-id"],
+      endpoint: endpoint.slice(0, 80),
+      responseBody: axiosErr?.response?.data,
+    }));
+    throw err;
   });
+  // 成功时的日志（方便追踪 voice_id 返回）
+  if (isVoicePreviewDebugEnabled()) {
+    console.log("[voice:preview:custom_voice] success", JSON.stringify({
+      mode: options.mode,
+      targetModel,
+      voiceId: extractDirectAliyunCustomVoiceId(response.data),
+      responseKeys: Object.keys(response.data || {}),
+      requestId: response.headers?.["x-acs-request-id"] || response.headers?.["x-request-id"],
+    }));
+  }
   const responseData = response.data && typeof response.data === "object" ? response.data : null;
   const voiceId = extractDirectAliyunCustomVoiceId(responseData);
   if (!voiceId) {
@@ -1424,7 +1536,8 @@ export default router.post(
             const reusableCustomVoiceId = trimText(generatedMeta?.customVoiceId);
             const reusableTargetModel = normalizeAliyunDirectTtsModel(trimText(generatedMeta?.targetModel));
             const currentTargetModel = normalizeAliyunDirectTtsModel(String(config.model || "").trim());
-            const customVoice = explicitCustomVoiceId
+            const explicitVoiceIdMatchesCurrentModel = isVoiceIdCompatibleWithModel(explicitCustomVoiceId, currentTargetModel);
+            const customVoice = explicitCustomVoiceId && explicitVoiceIdMatchesCurrentModel
               ? {
                   voiceId: explicitCustomVoiceId,
                   fresh: false,
@@ -1752,6 +1865,7 @@ export default router.post(
         responseStatus = 400;
         responseMessage = responseMessage || upstreamMessage || "语音预览请求无效";
       }
+      // 打印更详细的错误信息
       console.error("[voice] preview failed", {
         ...debugContext,
         message: responseMessage,
@@ -1760,9 +1874,12 @@ export default router.post(
           ? {
               code: axiosErr.code,
               status: axiosErr.response?.status,
+              statusText: axiosErr.response?.statusText,
               method: axiosErr.config?.method,
               url: axiosErr.config?.url,
+              requestBody: axiosErr.config?.data,
               responseData: axiosErr.response?.data,
+              requestId: axiosErr.response?.headers?.["x-acs-request-id"] || axiosErr.response?.headers?.["x-request-id"],
             }
           : null,
       });

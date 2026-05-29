@@ -54,6 +54,8 @@ type RoleAvatarTaskRow = {
   foregroundFilePath?: string | null;
   backgroundPath?: string | null;
   backgroundFilePath?: string | null;
+  sourcePath?: string | null;
+  sourceFilePath?: string | null;
   createTime?: number | null;
   updateTime?: number | null;
 };
@@ -67,6 +69,8 @@ type RoleAvatarTaskUpdate = {
   foregroundFilePath?: string | null;
   backgroundPath?: string | null;
   backgroundFilePath?: string | null;
+  sourcePath?: string | null;
+  sourceFilePath?: string | null;
 };
 
 type SeparateRoleAvatarResult = {
@@ -74,6 +78,9 @@ type SeparateRoleAvatarResult = {
   foregroundFilePath: string;
   backgroundPath: string;
   backgroundFilePath: string;
+  /** 原始上传图片 OSS 地址 */
+  sourcePath: string;
+  sourceFilePath: string;
 };
 
 export type ImageAiConfig = {
@@ -345,8 +352,9 @@ export async function createApproximateBackgroundLayer(source: Buffer, foregroun
   const width = Math.max(1, Number(sourceMeta.width || 0));
   const height = Math.max(1, Number(sourceMeta.height || 0));
 
+  // 模糊适度减弱（28→12），保留更多背景细节
   const blurredBase = await sharp(sourcePng)
-    .blur(28)
+    .blur(12)
     .modulate({
       brightness: 1.01,
       saturation: 0.94,
@@ -357,7 +365,7 @@ export async function createApproximateBackgroundLayer(source: Buffer, foregroun
   const subjectMask = await sharp(foreground)
     .ensureAlpha()
     .extractChannel("alpha")
-    .blur(22)
+    .blur(10)
     .resize(width, height, {
       fit: "fill",
     })
@@ -1001,6 +1009,20 @@ function buildBackgroundPrompt(name: string): string {
   ].join("\n");
 }
 
+/** 从 data URL 或纯 base64 字符串中提取原始 Buffer */
+function extractBase64FromDataUrl(base64Data: string): Buffer {
+  const value = String(base64Data || "").trim();
+  const match = value.match(/base64,([A-Za-z0-9+/=]+)/);
+  return Buffer.from(match && match[1] ? match[1] : value, "base64");
+}
+
+/** 根据文件名推断原始图片扩展名 */
+function inferSourceImageExtension(fileName: string): string {
+  const ext = String(fileName || "").trim().split(".").pop()?.toLowerCase() || "";
+  if (ext && /^[a-z0-9]+$/.test(ext)) return ext;
+  return "png";
+}
+
 async function saveSeparatedRoleAvatarFiles(
   payload: SeparateRoleAvatarPayload & { userId: number; projectId: number | null },
   foregroundBuffer: Buffer,
@@ -1011,16 +1033,26 @@ async function saveSeparatedRoleAvatarFiles(
     : `/user/${payload.userId}/game/role`;
   const foregroundFilePath = `${baseDir}/${uuidv4()}_fg.png`;
   const backgroundFilePath = `${baseDir}/${uuidv4()}_bg.png`;
-  await u.oss.writeFile(foregroundFilePath, foregroundBuffer);
-  await u.oss.writeFile(backgroundFilePath, backgroundBuffer);
+  // 保留原始上传图片
+  const rawBuffer = extractBase64FromDataUrl(payload.base64Data);
+  const ext = inferSourceImageExtension(String(payload.fileName || ""));
+  const sourceFilePath = `${baseDir}/${uuidv4()}_src.${ext}`;
+  await Promise.all([
+    u.oss.writeFile(foregroundFilePath, foregroundBuffer),
+    u.oss.writeFile(backgroundFilePath, backgroundBuffer),
+    u.oss.writeFile(sourceFilePath, rawBuffer),
+  ]);
 
   const foregroundPath = await u.oss.getFileUrl(foregroundFilePath);
   const backgroundPath = await u.oss.getFileUrl(backgroundFilePath);
+  const sourcePath = await u.oss.getFileUrl(sourceFilePath);
   return {
     foregroundPath,
     foregroundFilePath,
     backgroundPath,
     backgroundFilePath,
+    sourcePath,
+    sourceFilePath,
   };
 }
 
@@ -1219,6 +1251,8 @@ function normalizeRoleAvatarTask(row: RoleAvatarTaskRow | undefined | null) {
     foregroundFilePath: String(row?.foregroundFilePath || ""),
     backgroundPath: String(row?.backgroundPath || ""),
     backgroundFilePath: String(row?.backgroundFilePath || ""),
+    sourcePath: String(row?.sourcePath || ""),
+    sourceFilePath: String(row?.sourceFilePath || ""),
   };
 }
 

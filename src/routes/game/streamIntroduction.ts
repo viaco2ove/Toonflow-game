@@ -6,6 +6,7 @@ import {
   normalizeChapterOutput,
   normalizeRolePair,
   normalizeSessionState,
+  readChapterProgressState,
 } from "@/lib/gameEngine";
 import {
   RuntimeMessageInput,
@@ -14,6 +15,7 @@ import {
 import {
   asDebugMessage,
   buildDebugMessageWithRevisitData,
+  buildDebugMessageSpeechCount,
   buildDebugRecentMessages,
   cacheAndBuildDebugStateSnapshot,
   debugMessageSchema,
@@ -148,17 +150,31 @@ async function applyDebugIntroductionProgress(input: {
     messages,
     String(state.player?.name || rolePair.playerRole.name || "用户"),
     "",
+    state,
   );
 
   syncDebugChapterRuntime(chapter, state);
   const debugFreePlotActive = isDebugFreePlotActive(state);
+  // 获取当前事件进度，补充到 emittedMessage
+  const chapterProgress = readChapterProgressState(state);
+  const speechCount = buildDebugMessageSpeechCount(recentMessages, String(emittedMessage.role || ""), state);
+  const emittedMessageWithProgress = {
+    ...emittedMessage,
+    eventIndex: chapterProgress?.eventIndex ?? null,
+    stageIndex: chapterProgress?.stageIndex ?? 0,
+    phaseId: chapterProgress?.phaseId ?? null,
+    roleNumSpeechCurrEvent: speechCount.roleNumSpeechCurrEvent,
+    roleNumSpeechCurrStage: speechCount.roleNumSpeechCurrStage,
+  };
   const outcome = await evaluateDebugRuntimeOutcome({
+    userId,
+    world,
     chapter,
     state,
     messageContent: String(emittedMessage.content || ""),
     eventType: String(emittedMessage.eventType || ""),
     meta: {},
-    recentMessages: [...recentMessages, emittedMessage],
+    recentMessages: [...recentMessages, emittedMessageWithProgress],
     debugFreePlotActive,
   });
 

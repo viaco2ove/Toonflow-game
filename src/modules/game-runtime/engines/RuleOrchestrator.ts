@@ -149,8 +149,19 @@ export function resolveRuleNarrativePlan(input: {
 
   if (!shouldLetAiHandleLatestUserInput && (
     input.turnState.canPlayerSpeak
-    || input.phase?.kind === "user"
     || progress.userNodeStatus === "waiting_input"
+    // 如果有 stages 且当前是第一个 stage 且是 user 类型，立即等待用户输入
+    || (
+      progress.stageIndex === 0
+      && input.phase?.stages
+      && input.phase.stages.length > 0
+      && input.phase.stages[0].kind === "user"
+    )
+    // 没有 stages 的老 phase，继续用原来的 kind 判断
+    || (
+      (!input.phase?.stages || input.phase.stages.length === 0)
+      && input.phase?.kind === "user"
+    )
   )) {
     return {
       resolved: true,

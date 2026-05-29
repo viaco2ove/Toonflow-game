@@ -23,6 +23,7 @@ const LOCAL_BIREFNET_INSTALL_VERSION = 2;
 const LOCAL_BIREFNET_REMBG_VERSION = "2.0.67";
 const LOCAL_BIREFNET_ONNXRUNTIME_VERSION = "1.22.1";
 const LOCAL_MODNET_HUGGINGFACE_DOWNLOAD_URL = "https://huggingface.co/DavG25/modnet-pretrained-models/resolve/main/models/modnet_photographic_portrait_matting.onnx";
+const LOCAL_MODNET_HUGGINGFACE_MIRROR_DOWNLOAD_URL = "https://hf-mirror.com/DavG25/modnet-pretrained-models/resolve/main/models/modnet_photographic_portrait_matting.onnx";
 const LOCAL_MODNET_ONNX_DOWNLOAD_URL = "https://drive.google.com/uc?id=1cgycTQlYXpTh26gB9FTnthE7AvruV8hd&export=download";
 const LOCAL_MODNET_ONNX_FILE_NAME = "modnet_photographic_portrait_matting.onnx";
 
@@ -200,6 +201,13 @@ async function downloadModNetModelFile(): Promise<void> {
   const targetPath = getModNetModelPath();
   const sources = [
     {
+      label: "Hugging Face 国内镜像",
+      url: LOCAL_MODNET_HUGGINGFACE_MIRROR_DOWNLOAD_URL,
+      fetch: async () => {
+        await downloadFileFromUrl(LOCAL_MODNET_HUGGINGFACE_MIRROR_DOWNLOAD_URL, targetPath);
+      },
+    },
+    {
       label: "Hugging Face",
       url: LOCAL_MODNET_HUGGINGFACE_DOWNLOAD_URL,
       fetch: async () => {
@@ -217,10 +225,14 @@ async function downloadModNetModelFile(): Promise<void> {
   const errors: string[] = [];
   for (const source of sources) {
     try {
+      console.log(`[downloadModNetModelFile] 尝试从 ${source.label} 下载...`);
       await source.fetch();
+      console.log(`[downloadModNetModelFile] 从 ${source.label} 下载成功！`);
       return;
     } catch (err) {
-      errors.push(`${source.label}: ${err instanceof Error ? err.message : String(err || "下载失败")}`);
+      const errorMsg = `${source.label}: ${err instanceof Error ? err.message : String(err || "下载失败")}`;
+      console.warn(`[downloadModNetModelFile] ${errorMsg}`);
+      errors.push(errorMsg);
     }
   }
   throw new Error(`MODNet 模型下载失败。\n${errors.join("\n")}`.trim());
