@@ -2995,28 +2995,6 @@ function resolveNextFallbackRole(roles: RuntimeStoryRole[], currentRole: Runtime
   return otherNpc || narrator || currentRole;
 }
 
-// 构造模型不可用时的兜底发言内容。
-function buildFallbackContent(role: RuntimeStoryRole, latestPlayerMessage: string, fallbackIsSkip: boolean): string {
-  const roleName = normalizeScalarText(role.name) || "旁白";
-  const roleType = sanitizeRoleType(role.roleType);
-  if (fallbackIsSkip) {
-    if (roleType === "npc") {
-      return `${roleName}见你暂时沉默，便先一步接过话头，继续推动眼前的局势。`;
-    }
-    return "你选择暂时沉默，其他角色顺势接过话头，剧情继续推进。";
-  }
-  if (!latestPlayerMessage) {
-    if (roleType === "npc") {
-      return `${roleName}率先打破僵持，开始根据眼前的异动继续行动。`;
-    }
-    return "局势仍在迅速变化，场上的角色开始根据眼前的异动继续行动。";
-  }
-  if (roleType === "npc") {
-    return `${roleName}接住了你的回应，顺着当前局势继续推进。`;
-  }
-  return "你的回应让场上的气氛发生了变化，剧情继续向前推进。";
-}
-
 function normalizeFallbackCueText(input: unknown): string {
   return String(input || "")
     .replace(/[\s，。、“”"'‘’：:；;（）()【】\[\]\-—_·•・⋯…,.!?！？]/g, "")
@@ -4152,11 +4130,7 @@ export async function runStorySpeakerContent(input: {
     if (isProviderBalanceOrQuotaError(err)) {
       throw createRuntimeModelError("speaker", "当前角色发言模型余额不足，请充值或切换模型后重试");
     }
-    return buildFallbackContent(
-      input.currentRole,
-      normalizeScalarText(input.playerMessage),
-      normalizeScalarText(input.playerMessage) === ".",
-    );
+    throw err;
   }
 }
 
@@ -4374,18 +4348,7 @@ async function doRunNarrativePlan(input: OrchestratorInput): Promise<NarrativePl
     if (pendingEndingGuide) {
       input.state.__pendingEndingGuide = false;
     }
-    return buildFallbackNarrativePlan({
-      roles,
-      turnState,
-      latestPlayerMessage: payload.latestPlayerMessage,
-      currentPhase,
-      currentEvent,
-      hasPlayerInput,
-      world: input.world,
-      fallbackReason: err,
-      pendingEndingGuide,
-      orchestratorRuntime,
-    });
+    throw err;
   } finally {
     // 不论成功、失败还是 fallback，最后都统一打 prompt 体积和耗时日志。
     console.log("[orchestrator] request_chars=", systemPrompt.length + userPrompt.length);
