@@ -216,6 +216,7 @@ const DEFAULT_PLAYER_ROLE: JsonRecord = {
   name: "用户",
   roleType: "player",
   description: "用户在故事中的主视角角色",
+  avatarImagePrompt: "",
   attributes: {},
 };
 
@@ -1553,6 +1554,7 @@ function normalizeSettingsRoles(input: unknown): JsonRecord[] {
       roleType: String(item.roleType || "npc") || "npc",
       name: String(item.name || `角色${index + 1}`),
       description: String(item.description || ""),
+      avatarImagePrompt: String(item.avatarImagePrompt || ""),
       attributes: {},
     }));
 }

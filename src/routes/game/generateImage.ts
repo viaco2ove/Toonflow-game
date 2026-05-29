@@ -135,12 +135,14 @@ export default router.post(
       // 保存原始图片（如果有的话）
       let originalPath = "";
       let originalFilePath = "";
+      console.log("[generateImage] base64List length:", imageBase64List.length, "first item length:", imageBase64List[0]?.length || 0);
       if (imageBase64List.length > 0) {
         const firstBase64 = imageBase64List[0];
         const originalBuffer = extractBase64(firstBase64);
         originalFilePath = `/${projectId}/game/${type}/${uuidv4()}_original.jpg`;
         await u.oss.writeFile(originalFilePath, originalBuffer);
         originalPath = await u.oss.getFileUrl(originalFilePath);
+        console.log("[generateImage] saved original:", originalPath);
       }
 
       res.status(200).send(success({ path, filePath: imagePath, originalPath, originalFilePath }));
