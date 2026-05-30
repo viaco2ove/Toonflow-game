@@ -1,19 +1,22 @@
 # no_modify
 # 语音模型设置通道
+minimax:vulue=minimax
+阿里百炼:vulue=aliyun_direct
+local CosyVoice(ai_voice_tts):vulue=ai_voice_tts
 ## 语音设计
 ### 阿里百炼
 - qwen3-tts-vd-2026-01-26:qwen-voice-design->qwen3-tts-vd-2026-01-26
 - cosyvoice-v3-plus:voice-enrollment->cosyvoice-v3-plus
 
-### minimax:vulue=minimax
+### minimax
 - voice_design:接口没有模型选择的参数
 
 ## 语音克隆
-### 阿里百炼:vulue=aliyun_direct
+### 阿里百炼
 - voice-enrollment：创建 cosyvoice-v3-* 专属音色
 - qwen-voice-enrollment：创建 qwen3-tts-vc-* 专属音色
 
-### local CosyVoice(ai_voice_tts):vulue=ai_voice_tts
+### local CosyVoice(ai_voice_tts)
 https://github.com/viaco2ove/ai_voice_tts.git
 - /v1/tts/clone_upload
 
