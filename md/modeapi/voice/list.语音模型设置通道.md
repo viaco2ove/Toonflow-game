@@ -32,8 +32,9 @@
 - cosyvoice-v3-plus
 - cosyvoice-v3.5-flash
 - cosyvoice-v3.5-plus
-- qwen-tts
+- qwen3-tts-flash
 - qwen-tts-latest
+- qwen3-tts
 
 ### local CosyVoice
 /v1/tts
