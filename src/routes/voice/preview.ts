@@ -297,7 +297,7 @@ export function buildProxyAudioUrl(req: express.Request, configId: number | null
 
 /**
  * 混合音色只有本地/代理语音网关才需要通过 `/voices` 推断 provider。
- * 阿里云直连没有这个预设列表接口，不能再去请求 `${baseUrl}/voices`。
+ * 阿里百炼没有这个预设列表接口，不能再去请求 `${baseUrl}/voices`。
  */
 async function resolveMixProviderForPreview(options: {
   directAliyun: boolean;
@@ -772,7 +772,7 @@ function buildDirectAliyunCustomVoiceCacheKey(options: {
 }
 
 /**
- * 创建或复用阿里云直连专属音色。
+ * 创建或复用阿里百炼专属音色。
  * 这里统一封装 prompt_voice / clone / mix 三类入口，必要时允许显式跳过缓存重建 voice_id。
  */
 async function createDirectAliyunCustomVoice(options: {
@@ -881,10 +881,10 @@ async function createDirectAliyunCustomVoice(options: {
   }
 
   if (!payload) {
-    throw new Error("当前阿里云直连模型不支持该绑定模式");
+    throw new Error("当前阿里百炼模型不支持该绑定模式");
   }
   if (!apiKey) {
-    throw new Error("当前阿里云直连模型缺少 API Key");
+    throw new Error("当前阿里百炼模型缺少 API Key");
   }
 
   if (isVoicePreviewDebugEnabled()) {
@@ -1000,7 +1000,7 @@ async function synthesizeDirectAliyunPreviewAudio(options: {
   const responseData = response.data && typeof response.data === "object" ? response.data : {};
   const sourceUrl = trimText(responseData?.output?.audio?.url);
   if (!sourceUrl) {
-    throw new Error("阿里云直连语音合成未返回可用音频地址");
+    throw new Error("阿里百炼语音合成未返回可用音频地址");
   }
   return {
     sourceUrl,
@@ -1035,7 +1035,7 @@ async function synthesizeDirectAliyunPreviewAudioWithRetry(options: {
       await sleep(DIRECT_ALIYUN_CUSTOM_VOICE_READY_RETRY_DELAYS_MS[attempt] || 1000);
     }
   }
-  throw lastError instanceof Error ? lastError : new Error("阿里云直连语音合成失败");
+  throw lastError instanceof Error ? lastError : new Error("阿里百炼语音合成失败");
 }
 
 async function synthesizeDirectAliyunReferenceBuffer(options: {
@@ -1875,7 +1875,7 @@ export default router.post(
         responseStatus = 400;
         responseMessage = "参考音频无法被阿里云解码，请使用采样率大于 16kHz 的 16bit WAV/MP3/M4A/AAC 音频，并确保音频中有清晰有效的人声";
       } else if (
-        /当前语音设计模型与所选故事语音模型不兼容|请先在设置里配置语音设计模型|当前语音模型不支持该绑定模式|克隆模式需要参考音频|提示词模式需要填写提示词|混合模式需要选择音色|语音模型配置不存在|当前阿里云直连模型不支持该绑定模式|当前阿里云直连模型缺少 API Key|参考音频需要提供公网可访问的 http|CosyVoice 不支持仅标点、编号或空白的短文本/i.test(responseMessage)
+        /当前语音设计模型与所选故事语音模型不兼容|请先在设置里配置语音设计模型|当前语音模型不支持该绑定模式|克隆模式需要参考音频|提示词模式需要填写提示词|混合模式需要选择音色|语音模型配置不存在|当前阿里百炼模型不支持该绑定模式|当前阿里百炼模型缺少 API Key|参考音频需要提供公网可访问的 http|CosyVoice 不支持仅标点、编号或空白的短文本/i.test(responseMessage)
       ) {
         responseStatus = 400;
       } else if (axiosErr?.response?.status && axiosErr.response.status >= 400 && axiosErr.response.status < 500) {

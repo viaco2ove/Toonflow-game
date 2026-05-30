@@ -37,8 +37,8 @@ export function isVoiceDesignModelConfig(input: {
   const manufacturer = trimText(input.manufacturer).toLowerCase();
   const model = trimText(input.model).toLowerCase();
 
-  // 阿里千问
-  if (manufacturer === "qwen") {
+  // 阿里百炼
+  if (manufacturer === "aliyun_direct") {
     return model === "qwen-voice-design"
       || model.startsWith("qwen3-tts-vd")
       || model === "voice-enrollment"
@@ -69,8 +69,8 @@ export function isVoiceCloneModelConfig(input: {
   const manufacturer = trimText(input.manufacturer).toLowerCase();
   const model = trimText(input.model).toLowerCase();
 
-  // 阿里千问
-  if (manufacturer === "qwen") {
+  // 阿里百炼
+  if (manufacturer === "aliyun_direct") {
     return model === "voice-enrollment" || model === "qwen-voice-enrollment";
   }
 

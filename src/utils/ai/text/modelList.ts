@@ -426,7 +426,7 @@ const modelList: Owned[] = [
   },
   // Qwen
   {
-    manufacturer: "qwen",
+    manufacturer: "aliyun_direct",
     model: "qwen-vl-max",
     responseFormat: "schema",
     image: true,
@@ -435,7 +435,7 @@ const modelList: Owned[] = [
     tool: true,
   },
   {
-    manufacturer: "qwen",
+    manufacturer: "aliyun_direct",
     model: "qwen-plus-latest",
     responseFormat: "schema",
     image: false,
@@ -444,7 +444,7 @@ const modelList: Owned[] = [
     tool: true,
   },
   {
-    manufacturer: "qwen",
+    manufacturer: "aliyun_direct",
     model: "qwen-max",
     responseFormat: "schema",
     image: false,
@@ -453,7 +453,7 @@ const modelList: Owned[] = [
     tool: true,
   },
   {
-    manufacturer: "qwen",
+    manufacturer: "aliyun_direct",
     model: "qwen2.5-72b-instruct",
     responseFormat: "schema",
     image: false,
@@ -462,7 +462,7 @@ const modelList: Owned[] = [
     tool: true,
   },
   {
-    manufacturer: "qwen",
+    manufacturer: "aliyun_direct",
     model: "qwen2.5-14b-instruct-1m",
     responseFormat: "schema",
     image: false,
@@ -471,7 +471,7 @@ const modelList: Owned[] = [
     tool: true,
   },
   {
-    manufacturer: "qwen",
+    manufacturer: "aliyun_direct",
     model: "qwen2.5-vl-72b-instruct",
     responseFormat: "schema",
     image: true,
