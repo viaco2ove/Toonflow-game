@@ -249,7 +249,7 @@ const ALIYUN_DIRECT_COSYVOICE_V3_PRESETS: GatewayVoicePreset[] = [
 ];
 
 function normalizedManufacturer(input?: string | null): string {
-  return String(input || "").trim();
+  return String(input || "").trim().toLowerCase();
 }
 
 export function normalizeVoiceBaseUrl(input: string | null | undefined): string {
@@ -299,6 +299,10 @@ export function isLocalAliyunManufacturer(input?: string | null): boolean {
 
 export function isDirectAliyunManufacturer(input?: string | null): boolean {
   return normalizedManufacturer(input) === "aliyun_direct";
+}
+
+export function isMiniMaxVoiceManufacturer(input?: string | null): boolean {
+  return normalizedManufacturer(input) === "minimax";
 }
 
 export function isAliyunVoiceManufacturer(input?: string | null): boolean {

@@ -9,9 +9,11 @@ import {
   GatewayVoicePreset,
   getRuntimeStoryVoiceConfig,
   isDirectAliyunManufacturer,
+  isMiniMaxVoiceManufacturer,
   normalizeVoiceBaseUrl,
 } from "@/lib/voiceGateway";
 import { ensureBusinessVoicePresets } from "@/lib/businessVoicePresets";
+import { MINIMAX_BUILTIN_VOICES } from "@/lib/miniMaxVoice";
 
 const router = express.Router();
 
@@ -38,7 +40,16 @@ export default router.post(
 
       const businessPresets = await ensureBusinessVoicePresets(userId);
       let presets: GatewayVoicePreset[] = [];
-      if (isDirectAliyunManufacturer(config.manufacturer)) {
+      if (isMiniMaxVoiceManufacturer(config.manufacturer)) {
+        // MiniMax 使用内置音色列表
+        presets = MINIMAX_BUILTIN_VOICES.map((v) => ({
+          voiceId: v.voiceId,
+          name: v.name,
+          provider: "minimax",
+          modes: ["text"],
+          description: `${v.language} ${v.gender} voice`,
+        }));
+      } else if (isDirectAliyunManufacturer(config.manufacturer)) {
         presets = directAliyunVoicePresets(String(config.model || "").trim());
       } else {
         try {

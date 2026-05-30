@@ -25,7 +25,7 @@ interface VideoResData extends BaseConfig {
 
 interface VoiceResData extends BaseConfig {
   baseURL: string;
-  manufacturer: "ai_voice_tts" | "aliyun" | "aliyun_direct" | "other";
+  manufacturer: "ai_voice_tts" | "aliyun" | "aliyun_direct" | "minimax" | "other";
 }
 
 type ResDataMap = {

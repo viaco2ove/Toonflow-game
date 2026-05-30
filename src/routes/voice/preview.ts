@@ -1240,6 +1240,23 @@ export async function synthesizeReferenceAudioFromMode(options: {
       sampleRate,
     });
     return { audioPath: await writeCloneReadyReference(buffer, "wav") };
+  } else if (isMiniMaxVoiceManufacturer(manufacturer)) {
+    // MiniMax TTS
+    const { synthesizeMiniMaxTtsBuffer } = await import("@/lib/miniMaxVoice");
+    const minimaxVoiceId = String(voiceId || "Chinese_Male_Qn").trim();
+    const minimaxSpeed = Number(options.config?.speed || 1.0);
+    const minimaxEmotion = String(options.config?.emotion || "happy").trim();
+    const result = await synthesizeMiniMaxTtsBuffer({
+      apiKey: String(config.apiKey || "").trim(),
+      model: String(config.model || "speech-02-hd").trim(),
+      text: textSeed,
+      voiceId: minimaxVoiceId,
+      speed: minimaxSpeed,
+      emotion: minimaxEmotion,
+      outputFormat: "hex",
+      sampleRate: sampleRate || 32000,
+    });
+    return { audioPath: await writeCloneReadyReference(result.buffer, "mp3") };
   } else {
     const payload: Record<string, any> = {
       text: textSeed,
