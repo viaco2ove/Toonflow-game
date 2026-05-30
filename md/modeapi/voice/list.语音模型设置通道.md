@@ -13,7 +13,8 @@
 - voice-enrollment：创建 cosyvoice-v3-* 专属音色
 - qwen-voice-enrollment：创建 qwen3-tts-vc-* 专属音色
 
-### local CosyVoice
+### local CosyVoice(ai_voice_tts)
+https://github.com/viaco2ove/ai_voice_tts.git
 - /v1/tts/clone_upload
 
 ### MiniMax
@@ -36,7 +37,7 @@
 - qwen-tts-latest
 - qwen3-tts
 
-### local CosyVoice
+### local CosyVoice(ai_voice_tts)
 /v1/tts
 
 ### minimax
@@ -53,5 +54,5 @@
 ### 阿里百炼
 - qwen3-asr-flash
 
-### local CosyVoice
+### local CosyVoice(ai_voice_tts)
 - fun-asr-realtime

@@ -36,13 +36,22 @@ export function isVoiceDesignModelConfig(input: {
 
   const manufacturer = trimText(input.manufacturer).toLowerCase();
   const model = trimText(input.model).toLowerCase();
-  return manufacturer === "qwen" && (
-    model === "qwen-voice-design"
-    || model.startsWith("qwen3-tts-vd")
-    || model === "voice-enrollment"
-    || model.startsWith("cosyvoice-v3")
-    || model.startsWith("cosyvoice-v3.5")
-  );
+
+  // 阿里千问
+  if (manufacturer === "qwen") {
+    return model === "qwen-voice-design"
+      || model.startsWith("qwen3-tts-vd")
+      || model === "voice-enrollment"
+      || model.startsWith("cosyvoice-v3")
+      || model.startsWith("cosyvoice-v3.5");
+  }
+
+  // MiniMax
+  if (manufacturer === "minimax") {
+    return model === "voice-design";
+  }
+
+  return false;
 }
 
 export function isVoiceCloneModelConfig(input: {
@@ -59,10 +68,23 @@ export function isVoiceCloneModelConfig(input: {
 
   const manufacturer = trimText(input.manufacturer).toLowerCase();
   const model = trimText(input.model).toLowerCase();
-  return manufacturer === "minimax" && (
-    model === "voice-clone"
-    || model.startsWith("minimax-voice-clone")
-  );
+
+  // 阿里千问
+  if (manufacturer === "qwen") {
+    return model === "voice-enrollment" || model === "qwen-voice-enrollment";
+  }
+
+  // MiniMax
+  if (manufacturer === "minimax") {
+    return model.startsWith("speech-") || model === "voice-clone";
+  }
+
+  // local CosyVoice(ai_voice_tts)
+  if (manufacturer === "ai_voice_tts") {
+    return model === "clone_upload";
+  }
+
+  return false;
 }
 
 export function toExternalModelConfigRow<T extends Record<string, any>>(row: T): T & {
