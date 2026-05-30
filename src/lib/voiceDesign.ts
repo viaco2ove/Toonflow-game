@@ -98,6 +98,12 @@ type VoiceDesignStrategy =
       requestModel: "voice-enrollment";
       targetModel: string;
       action: "create_voice";
+    }
+  | {
+      kind: "minimax_voice_design";
+      requestModel: "voice_design";
+      targetModel: string;
+      action: "create";
     };
 
 function resolveVoiceDesignStrategy(config: VoiceDesignConfig): VoiceDesignStrategy {
@@ -126,6 +132,19 @@ function resolveVoiceDesignStrategy(config: VoiceDesignConfig): VoiceDesignStrat
       requestModel: "voice-enrollment",
       targetModel: rawModel === "voice-enrollment" ? DEFAULT_VOICE_ENROLLMENT_TARGET_MODEL : rawModel,
       action: "create_voice",
+    };
+  }
+
+  if (
+    normalizedModel === "voice-design"
+    || normalizedModel === "minimax-voice-design"
+    || config.manufacturer === "minimax"
+  ) {
+    return {
+      kind: "minimax_voice_design",
+      requestModel: "voice_design",
+      targetModel: "minimax-tts",
+      action: "create",
     };
   }
 
@@ -224,6 +243,24 @@ export async function synthesizeVoiceDesignBuffer(options: {
   const preferredName = slugifyPreferredName(options.preferredName, "story_voice");
 
   const doRequest = async (name: string) => {
+    if (strategy.kind === "minimax_voice_design") {
+      // MiniMax 语音设计 API
+      const minimaxEndpoint = `${trimText(config.baseURL) || "https://api.minimaxi.com"}/v1/voice_design`;
+      const p = {
+        prompt: promptText,
+        preview_text: previewText,
+        voice_id: name,
+        aigc_watermark: false,
+      };
+      return axios.post(minimaxEndpoint, p, {
+        headers: {
+          Authorization: `Bearer ${trimText(config.apiKey)}`,
+          "Content-Type": "application/json",
+        },
+        timeout: 120000,
+        responseType: "arraybuffer",
+      });
+    }
     const p = strategy.kind === "qwen_voice_design"
       ? {
           model: strategy.requestModel,
@@ -311,6 +348,26 @@ export async function synthesizeVoiceDesignBuffer(options: {
       requestModel: strategy.requestModel,
       targetModel: strategy.targetModel,
       responseData: null,
+    };
+  }
+
+  // MiniMax 返回 JSON 格式，需要特殊处理
+  if (strategy.kind === "minimax_voice_design") {
+    const responseData = parseJsonResponse(responseBuffer);
+    const statusCode = responseData?.base_resp?.status_code;
+    if (statusCode !== 0) {
+      throw new Error(`MiniMax 语音设计错误: ${responseData?.base_resp?.status_msg || statusCode}`);
+    }
+    if (!responseData?.trial_audio) {
+      throw new Error("MiniMax 语音设计未返回有效音频");
+    }
+    const audioBuffer = Buffer.from(responseData.trial_audio, "hex");
+    return {
+      buffer: audioBuffer,
+      sourceUrl: "",
+      requestModel: strategy.requestModel,
+      targetModel: strategy.targetModel,
+      responseData,
     };
   }
 

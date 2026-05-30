@@ -1,6 +1,6 @@
 import { normalizePersistedVoiceConfig } from "@/lib/voiceGateway";
 
-export type ExternalModelConfigType = "text" | "image" | "voice" | "voice_design" | "video";
+export type ExternalModelConfigType = "text" | "image" | "voice" | "voice_design" | "voice_clone" | "video";
 export type PersistedModelConfigType = "text" | "image" | "voice" | "video";
 export type ModelReasoningEffort = "minimal" | "low" | "medium" | "high";
 
@@ -45,6 +45,26 @@ export function isVoiceDesignModelConfig(input: {
   );
 }
 
+export function isVoiceCloneModelConfig(input: {
+  type?: unknown;
+  modelType?: unknown;
+  manufacturer?: unknown;
+  model?: unknown;
+}): boolean {
+  const externalType = trimText(input.type).toLowerCase();
+  if (externalType === "voice_clone") return true;
+
+  const modelType = trimText(input.modelType).toLowerCase();
+  if (modelType === "voice_clone") return true;
+
+  const manufacturer = trimText(input.manufacturer).toLowerCase();
+  const model = trimText(input.model).toLowerCase();
+  return manufacturer === "minimax" && (
+    model === "voice-clone"
+    || model.startsWith("minimax-voice-clone")
+  );
+}
+
 export function toExternalModelConfigRow<T extends Record<string, any>>(row: T): T & {
   type: ExternalModelConfigType;
   modelType: string;
@@ -59,6 +79,18 @@ export function toExternalModelConfigRow<T extends Record<string, any>>(row: T):
       ...row,
       type: "voice_design",
       modelType: "voice_design",
+      currency: trimText(row.currency).toUpperCase() || "CNY",
+      inputPricePer1M: normalizeNonNegativeNumber(row.inputPricePer1M),
+      outputPricePer1M: normalizeNonNegativeNumber(row.outputPricePer1M),
+      cacheReadPricePer1M: normalizeNonNegativeNumber(row.cacheReadPricePer1M),
+      reasoningEffort: "",
+    };
+  }
+  if (isVoiceCloneModelConfig(row)) {
+    return {
+      ...row,
+      type: "voice_clone",
+      modelType: "voice_clone",
       currency: trimText(row.currency).toUpperCase() || "CNY",
       inputPricePer1M: normalizeNonNegativeNumber(row.inputPricePer1M),
       outputPricePer1M: normalizeNonNegativeNumber(row.outputPricePer1M),
@@ -127,6 +159,23 @@ export function normalizeExternalModelConfig(input: {
       apiKey,
       manufacturer,
       modelType: "voice_design",
+      inputPricePer1M,
+      outputPricePer1M,
+      cacheReadPricePer1M,
+      currency,
+      reasoningEffort,
+    };
+  }
+
+  if (requestedType === "voice_clone") {
+    return {
+      persistedType: "text",
+      externalType: "voice_clone",
+      model,
+      baseUrl,
+      apiKey,
+      manufacturer,
+      modelType: "voice_clone",
       inputPricePer1M,
       outputPricePer1M,
       cacheReadPricePer1M,

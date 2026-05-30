@@ -12,7 +12,7 @@ https://platform.minimaxi.com/docs/api-reference/speech-t2a-http
 语音克隆
 https://platform.minimaxi.com/docs/api-reference/voice-cloning-clone
 
-# 克隆接口
+#### 克隆接口
 - 上传文件
 https://platform.minimaxi.com/docs/api-reference/file-management-upload
   - 上传文件，不标记用途
@@ -132,6 +132,27 @@ aigc_watermark
 boolean默认值:false
 是否在合成试听音频的末尾添加音频节奏标识，默认值为 false
 
+### 音色查询何删除
+curl --request POST \
+  --url https://api.minimaxi.com/v1/get_voice \
+  --header 'Authorization: Bearer <token>' \
+  --header 'Content-Type: application/json' \
+  --data '
+{
+  "voice_type": "all"
+}
+'
+
+curl --request POST \
+  --url https://api.minimaxi.com/v1/delete_voice \
+  --header 'Authorization: Bearer <token>' \
+  --header 'Content-Type: application/json' \
+  --data '
+{
+  "voice_type": "voice_cloning",
+  "voice_id": "yanshang11123"
+}
+'
 
 ## 概述
 
