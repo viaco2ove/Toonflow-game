@@ -3,7 +3,6 @@ import u from "@/utils";
 import { z } from "zod";
 import { error, success } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
-import { isVoiceDesignModelConfig, isVoiceCloneModelConfig } from "@/lib/modelConfigType";
 const router = express.Router();
 
 const DEDICATED_AVATAR_MATTING_MANUFACTURERS = new Set(["bria", "aliyun_imageseg", "tencent_ci", "local_birefnet", "local_modnet"]);
@@ -40,8 +39,6 @@ function configMatchesSlotRule(
   const type = String(config.type || "").trim().toLowerCase();
   const modelType = String(config.modelType || "").trim().toLowerCase();
   const manufacturer = String(config.manufacturer || "").trim().toLowerCase();
-  const isVoiceDesign = isVoiceDesignModelConfig(config);
-  const isVoiceClone = isVoiceCloneModelConfig(config);
   const manufacturerMatched = !rule.manufacturer
     || (Array.isArray(rule.manufacturer) ? rule.manufacturer.includes(manufacturer) : manufacturer === rule.manufacturer);
 
@@ -53,13 +50,13 @@ function configMatchesSlotRule(
   }
 
   if (rule.type === "voice_design") {
-    return isVoiceDesign && manufacturerMatched;
+    return modelType === "voice_design" && manufacturerMatched;
   }
   if (rule.type === "voice_clone") {
-    return isVoiceClone && manufacturerMatched;
+    return modelType === "voice_clone" && manufacturerMatched;
   }
   if (rule.type === "text") {
-    return type === "text" && !isVoiceDesign && !isVoiceClone && manufacturerMatched;
+    return type === "text" && modelType !== "voice_design" && modelType !== "voice_clone" && manufacturerMatched;
   }
   if (rule.type === "image") {
     return type === "image" && manufacturerMatched;

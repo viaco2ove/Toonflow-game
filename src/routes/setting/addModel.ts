@@ -55,6 +55,13 @@ export default router.post(
       createTime: Date.now(),
       userId,
     });
+    console.log("[addModel] 新增配置", {
+      inputType: type,
+      inputModelType: modelType,
+      inputManufacturer: manufacturer,
+      persistedType: normalized.persistedType,
+      modelType_result: normalized.modelType,
+    });
     res.status(200).send(success("新增成功"));
   },
 );
