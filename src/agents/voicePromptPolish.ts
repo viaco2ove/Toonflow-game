@@ -38,6 +38,7 @@ type VoicePromptPolishStrategy =
   | "route_keywords"
   | "aliyun_direct_cosyvoice_prompt"
   | "aliyun_direct_qwen_prompt"
+  | "minimax_prompt"
   | "general_semantic_prompt";
 
 /**
@@ -151,6 +152,9 @@ function resolvePromptPolishStrategy(input: PolishVoicePromptInput): VoicePrompt
   if (mode === "mix") {
     return "route_keywords";
   }
+  if (mode === "prompt_voice" && manufacturer === "minimax") {
+    return "minimax_prompt";
+  }
   if (mode === "prompt_voice" && manufacturer === "aliyun_direct") {
     // 阿里直连提示词音色真正落地时，会再经过语音设计模型。
     // 这里优先按 storyVoiceDesignModel 判断润色风格，和下游接口保持一致。
@@ -236,6 +240,27 @@ function buildSystemPrompt(strategy: VoicePromptPolishStrategy): string {
 - 1句中文
 - 20~50字优先
 - 具体、稳定、可用于声音设计
+    `.trim();
+  }
+
+  if (strategy === "minimax_prompt") {
+    return `
+你是"MiniMax 语音提示词润色助手"。
+
+你的任务是：把用户输入的角色名、风格词、短描述，改写成适合 MiniMax voice-design / voice-clone 使用的 prompt。
+
+必须遵守以下规则：
+1. 输出只保留一行中文，不要解释。
+2. 输出聚焦声音特征：性别、年龄感、气质、语气、语速、清晰度、情绪。
+3. 不要写剧情、对白、动作、世界观设定。
+4. 不要写长句散文，尽量简洁、自然、稳定。
+5. 如果输入过于模糊，可以合理补全，但不要过度发挥。
+6. 输出要让下游 MiniMax 模型一眼就能抓住"这个声音应该怎么说话"。
+
+输出风格要求：
+- 1句中文
+- 10~30字优先
+- 尽量短、尽量自然、尽量像音色标签的自然表达
     `.trim();
   }
 

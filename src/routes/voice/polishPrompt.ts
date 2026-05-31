@@ -29,7 +29,8 @@ async function resolveVoicePromptContext(configId: number, userId: number): Prom
     };
   }
   const row = await u.db("t_config")
-    .where({ id: configId, type: "voice", userId })
+    .where({ id: configId, userId })
+    .whereIn("type", ["voice", "voice_design", "voice_clone"])
     .first();
   return {
     manufacturer: String(row?.manufacturer || "").trim(),
