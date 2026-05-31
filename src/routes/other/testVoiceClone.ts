@@ -29,7 +29,7 @@ export default router.post(
     try {
       if (trimmedManufacturer === "minimax") {
         // MiniMax 语音克隆：用内置测试音频（29秒，满足 10 秒要求）测试克隆
-        const testAudioPath = path.join(__dirname, "..", "..", "res", "voice-presets", "can_clone", "prompt_voice_test.wav");
+        const testAudioPath = path.join(process.cwd(), "res", "voice-presets", "can_clone", "prompt_voice_test.wav");
         if (!fs.existsSync(testAudioPath)) {
           throw new Error(`测试音频不存在: ${testAudioPath}`);
         }
@@ -71,7 +71,26 @@ export default router.post(
         if (statusCode !== 0) {
           throw new Error(`MiniMax 语音克隆错误: ${cloneResponse.data?.base_resp?.status_msg || statusCode}`);
         }
-        res.status(200).send(success(`MiniMax 语音克隆测试通过，voice_id: ${cloneResponse.data?.voice_id || voiceId}`));
+        const clonedVoiceId = cloneResponse.data?.voice_id || voiceId;
+        // demo_audio 是 hex 编码的音频
+        if (cloneResponse.data?.demo_audio) {
+          const demoHex = String(cloneResponse.data.demo_audio).trim();
+          if (demoHex.length > 0) {
+            try {
+              const buffer = Buffer.from(demoHex, "hex");
+              const savePath = `/temp/voice-clone-test/${userId || "guest"}/${clonedVoiceId}_demo.mp3`;
+              await u.oss.writeFile(savePath, buffer);
+              const audioUrl = await u.oss.getFileUrl(savePath);
+              res.status(200).send(success(audioUrl));
+            } catch {
+              res.status(200).send(success(`MiniMax 语音克隆测试通过，voice_id: ${clonedVoiceId}`));
+            }
+          } else {
+            res.status(200).send(success(`MiniMax 语音克隆测试通过，voice_id: ${clonedVoiceId}`));
+          }
+        } else {
+          res.status(200).send(success(`MiniMax 语音克隆测试通过，voice_id: ${clonedVoiceId}`));
+        }
       } else if (trimmedManufacturer === "aliyun_direct") {
         // 阿里百炼：验证 API Key 有效性
         const baseUrl = trimmedBaseUrl || "https://dashscope.aliyuncs.com";
