@@ -1317,6 +1317,7 @@ result=continue:
           { id: 14, configId: null, name: "AI故事-语音生成", key: "storyVoiceModel" },
           { id: 15, configId: null, name: "AI故事-语音识别", key: "storyAsrModel" },
           { id: 16, configId: null, name: "AI故事-语音设计", key: "storyVoiceDesignModel" },
+          { id: 21, configId: null, name: "AI故事-语音克隆", key: "storyVoiceCloneModel" },
           { id: 19, configId: null, name: "AI故事-事件进度检测", key: "storyEventProgressModel" },
           { id: 20, configId: null, name: "AI故事-小游戏动作解析", key: "storyMiniGameModel" },
         ]);

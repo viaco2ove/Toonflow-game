@@ -59,3 +59,4 @@ run.local.ps1
 /.wsl_mirror/
 /nul
 /logs2/
+.hide.*

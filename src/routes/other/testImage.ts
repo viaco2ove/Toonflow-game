@@ -91,17 +91,14 @@ export default router.post(
       res.status(200).send(success(image));
     } catch (err) {
       const msg = u.error(err).message;
-      debugLog("failed", {
+      console.error("[testImage] 图像模型测试失败", {
         manufacturer,
         modelName: modelName || "",
-        costMs: Date.now() - startedAt,
-        errorName: (err as any)?.name || "",
-        errorCode: (err as any)?.code || "",
-        message: msg,
+        baseURL: baseURL || "",
+        apiKey: apiKey ? `${apiKey.slice(0, 4)}***${apiKey.slice(-4)}` : "",
+        error: msg,
+        stack: (err as any)?.stack,
       });
-      if (DEBUG_MODE && (err as any)?.stack) {
-        console.error("[testImage] stack", (err as any).stack);
-      }
       res.status(500).send(error(msg));
     }
   },

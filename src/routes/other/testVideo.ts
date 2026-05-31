@@ -100,17 +100,14 @@ export default router.post(
       res.status(200).send(success(url));
     } catch (err: any) {
       const msg = u.error(err).message;
-      debugLog("failed", {
+      console.error("[testVideo] 视频模型测试失败", {
         manufacturer,
         modelName: modelName || "",
-        costMs: Date.now() - startedAt,
-        errorName: err?.name || "",
-        errorCode: err?.code || "",
-        message: msg,
+        baseURL: baseURL || "",
+        apiKey: apiKey ? `${apiKey.slice(0, 4)}***${apiKey.slice(-4)}` : "",
+        error: msg,
+        stack: err?.stack,
       });
-      if (DEBUG_MODE && err?.stack) {
-        console.error("[testVideo] stack", err.stack);
-      }
       res.status(500).send(error(msg));
     }
   },

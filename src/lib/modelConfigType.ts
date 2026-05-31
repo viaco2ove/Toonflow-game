@@ -1,4 +1,5 @@
 import { normalizePersistedVoiceConfig } from "@/lib/voiceGateway";
+import {DebugLogUtil} from "@/utils/debugLogUtil";
 
 export type ExternalModelConfigType = "text" | "image" | "voice" | "voice_design" | "voice_clone" | "video";
 export type PersistedModelConfigType = "text" | "image" | "voice" | "video";
@@ -25,66 +26,15 @@ function normalizeReasoningEffort(input: unknown): ModelReasoningEffort {
 export function isVoiceDesignModelConfig(input: {
   type?: unknown;
   modelType?: unknown;
-  manufacturer?: unknown;
-  model?: unknown;
 }): boolean {
-  const externalType = trimText(input.type).toLowerCase();
-  if (externalType === "voice_design") return true;
-
-  const modelType = trimText(input.modelType).toLowerCase();
-  if (modelType === "voice_design") return true;
-
-  const manufacturer = trimText(input.manufacturer).toLowerCase();
-  const model = trimText(input.model).toLowerCase();
-
-  // 阿里百炼
-  if (manufacturer === "aliyun_direct") {
-    return model === "qwen-voice-design"
-      || model.startsWith("qwen3-tts-vd")
-      || model === "voice-enrollment"
-      || model.startsWith("cosyvoice-v3")
-      || model.startsWith("cosyvoice-v3.5");
-  }
-
-  // MiniMax
-  if (manufacturer === "minimax") {
-    return model === "voice-design";
-  }
-
-  return false;
+  return trimText(input.modelType).toLowerCase() === "voice_design";
 }
 
 export function isVoiceCloneModelConfig(input: {
   type?: unknown;
   modelType?: unknown;
-  manufacturer?: unknown;
-  model?: unknown;
 }): boolean {
-  const externalType = trimText(input.type).toLowerCase();
-  if (externalType === "voice_clone") return true;
-
-  const modelType = trimText(input.modelType).toLowerCase();
-  if (modelType === "voice_clone") return true;
-
-  const manufacturer = trimText(input.manufacturer).toLowerCase();
-  const model = trimText(input.model).toLowerCase();
-
-  // 阿里百炼
-  if (manufacturer === "aliyun_direct") {
-    return model === "voice-enrollment" || model === "qwen-voice-enrollment";
-  }
-
-  // MiniMax
-  if (manufacturer === "minimax") {
-    return model.startsWith("speech-") || model === "voice-clone";
-  }
-
-  // local CosyVoice(ai_voice_tts)
-  if (manufacturer === "ai_voice_tts") {
-    return model === "clone_upload";
-  }
-
-  return false;
+  return trimText(input.modelType).toLowerCase() === "voice_clone";
 }
 
 export function toExternalModelConfigRow<T extends Record<string, any>>(row: T): T & {
@@ -96,7 +46,10 @@ export function toExternalModelConfigRow<T extends Record<string, any>>(row: T):
   cacheReadPricePer1M: number;
   reasoningEffort: ModelReasoningEffort | "";
 } {
-  if (isVoiceDesignModelConfig(row)) {
+  const resolvedType = trimText(row.type).toLowerCase();
+  const modelType = trimText(row.modelType).toLowerCase();
+
+  if (modelType === "voice_design") {
     return {
       ...row,
       type: "voice_design",
@@ -108,7 +61,7 @@ export function toExternalModelConfigRow<T extends Record<string, any>>(row: T):
       reasoningEffort: "",
     };
   }
-  if (isVoiceCloneModelConfig(row)) {
+  if (modelType === "voice_clone") {
     return {
       ...row,
       type: "voice_clone",
@@ -120,7 +73,6 @@ export function toExternalModelConfigRow<T extends Record<string, any>>(row: T):
       reasoningEffort: "",
     };
   }
-  const resolvedType = trimText(row.type).toLowerCase();
   const externalType = (resolvedType || "text") as ExternalModelConfigType;
   return {
     ...row,
@@ -174,7 +126,7 @@ export function normalizeExternalModelConfig(input: {
 
   if (requestedType === "voice_design") {
     return {
-      persistedType: "text",
+      persistedType: "voice_design",
       externalType: "voice_design",
       model,
       baseUrl,
@@ -191,7 +143,7 @@ export function normalizeExternalModelConfig(input: {
 
   if (requestedType === "voice_clone") {
     return {
-      persistedType: "text",
+      persistedType: "voice_clone",
       externalType: "voice_clone",
       model,
       baseUrl,

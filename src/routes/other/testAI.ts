@@ -155,21 +155,18 @@ export default router.post(
       });
       res.status(200).send(success(reply));
     } catch (err) {
-      const rawMessage = u.error(err).message;
-      const msg = normalizeTestAiErrorMessage(rawMessage);
-      debugLog("failed", {
-        manufacturer,
-        modelName,
-        costMs: Date.now() - startedAt,
-        errorName: (err as any)?.name || "",
-        errorCode: (err as any)?.code || "",
-        message: msg,
-        rawMessage,
-      });
-      if (DEBUG_MODE && (err as any)?.stack) {
-        console.error("[testAI] stack", (err as any).stack);
+      const errMsg = u.error(err).message;
+      if (DEBUG_MODE) {
+        console.error("[testAI] 文本模型测试失败", {
+          manufacturer,
+          modelName,
+          apiKey: apiKey ? `${String(apiKey).slice(0, 4)}***${String(apiKey).slice(-4)}` : "",
+          baseURL: baseURL || "",
+          error: errMsg,
+          stack: (err as any)?.stack,
+        });
       }
-      res.status(resolveTestAiStatusCode(rawMessage)).send(error(msg));
+      res.status(resolveTestAiStatusCode(errMsg)).send(error(normalizeTestAiErrorMessage(errMsg)));
     }
   },
 );

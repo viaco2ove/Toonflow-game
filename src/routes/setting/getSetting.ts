@@ -11,6 +11,6 @@ export default router.post("/", async (req, res) => {
     .whereNotIn("type", ["video"])
     .where("userId", userId)
     .select("*");
-
+  console.log("[getSetting] SQL results:", configData.map((r) => ({ id: r.id, type: r.type, modelType: r.modelType, model: r.model, manufacturer: r.manufacturer })));
   res.status(200).send(success(configData.map((item) => toExternalModelConfigRow(item))));
 });

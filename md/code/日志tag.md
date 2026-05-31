@@ -55,6 +55,8 @@ if (DebugLogUtil.isDebugLogEnabled()) {
 
 [voice-preview] 语音生成相关
 
+[DEBUG] 通用debug 日志
+ 
 ## 后端通用tag
 [debug:revisit:not_found]: 回溯失败
 [debug:revisit]: 回溯相关

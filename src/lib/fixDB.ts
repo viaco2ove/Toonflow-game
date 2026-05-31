@@ -715,6 +715,7 @@ export default async (knex: Knex): Promise<void> => {
     { name: "AI故事-AI生图", key: "storyImageModel" },
     { name: "AI故事-头像分离", key: "storyAvatarMattingModel" },
     { name: "AI故事-语音设计", key: "storyVoiceDesignModel" },
+    { name: "AI故事-语音克隆", key: "storyVoiceCloneModel" },
     { name: "AI故事-语音生成", key: "storyVoiceModel" },
     { name: "AI故事-语音识别", key: "storyAsrModel" },
   ];
@@ -730,6 +731,18 @@ export default async (knex: Knex): Promise<void> => {
     }));
   if (needInsert.length) {
     await knex("t_aiModelMap").insert(needInsert);
+  }
+
+  // 修复 voice_design / voice_clone 配置的 type 字段（之前错误地存为 "text"）
+  if (await knex.schema.hasTable("t_config")) {
+    await knex("t_config")
+      .where({ type: "text" })
+      .andWhere("modelType", "voice_design")
+      .update({ type: "voice_design" });
+    await knex("t_config")
+      .where({ type: "text" })
+      .andWhere("modelType", "voice_clone")
+      .update({ type: "voice_clone" });
   }
 
   if (await knex.schema.hasTable("t_prompts")) {

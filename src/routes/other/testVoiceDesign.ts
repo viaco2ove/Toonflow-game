@@ -38,7 +38,16 @@ export default router.post(
       const audioUrl = await u.oss.getFileUrl(savePath);
       res.status(200).send(success(audioUrl));
     } catch (err) {
-      res.status(500).send(error(u.error(err).message));
+      const errMsg = u.error(err).message;
+      console.error("[testVoiceDesign] 语音设计测试失败", {
+        manufacturer,
+        modelName,
+        apiKey: apiKey ? `${apiKey.slice(0, 4)}***${apiKey.slice(-4)}` : "",
+        baseURL,
+        error: errMsg,
+        stack: (err as any)?.stack,
+      });
+      res.status(500).send(error(errMsg));
     }
   },
 );
