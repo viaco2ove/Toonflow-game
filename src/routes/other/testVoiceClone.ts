@@ -2,6 +2,8 @@ import express from "express";
 import { z } from "zod";
 import { v4 as uuidv4 } from "uuid";
 import axios from "axios";
+import path from "node:path";
+import fs from "node:fs";
 import u from "@/utils";
 import { validateFields } from "@/middleware/middleware";
 import { success, error } from "@/lib/responseFormat";
@@ -26,36 +28,50 @@ export default router.post(
 
     try {
       if (trimmedManufacturer === "minimax") {
-        // MiniMax 语音克隆：用 TTS 接口验证 API Key 有效性
-        //（真正克隆需要 10 秒以上参考音频，测试连通性用 TTS 即可）
+        // MiniMax 语音克隆：用内置测试音频（29秒，满足 10 秒要求）测试克隆
+        const testAudioPath = path.join(__dirname, "..", "..", "res", "voice-presets", "can_clone", "prompt_voice_test.wav");
+        if (!fs.existsSync(testAudioPath)) {
+          throw new Error(`测试音频不存在: ${testAudioPath}`);
+        }
+        const audioBuffer = fs.readFileSync(testAudioPath);
         const baseUrl = trimmedBaseUrl || "https://api.minimaxi.com";
-        const response = await axios.post(
-          `${baseUrl}/v1/t2a_v2`,
+
+        // 上传参考音频到 MiniMax
+        const uploadFormData = new FormData();
+        uploadFormData.append("file", new Blob([audioBuffer], { type: "audio/wav" }), `test_${uuidv4()}.wav`);
+        uploadFormData.append("purpose", "voice_clone");
+        const uploadResponse = await axios.post(
+          `${baseUrl}/v1/files/upload`,
+          uploadFormData,
           {
-            model: trimmedModel || "speech-02-hd",
-            text: "这是语音克隆模型连通性测试。",
-            stream: false,
-            voice_setting: { voice_id: "male-qn-qingse" },
-            audio_setting: { sample_rate: 32000, bitrate: 128000, format: "mp3", channel: 1 },
-          },
-          {
-            headers: { Authorization: `Bearer ${trimmedApiKey}`, "Content-Type": "application/json" },
+            headers: { Authorization: `Bearer ${trimmedApiKey}` },
             timeout: 30000,
           },
         );
-        const statusCode = response.data?.base_resp?.status_code;
+        const fileId = uploadResponse.data?.file?.file_id;
+        if (!fileId) {
+          throw new Error(`MiniMax 文件上传失败: ${JSON.stringify(uploadResponse.data)}`);
+        }
+
+        // 调用克隆接口
+        const voiceId = `test_${uuidv4().slice(0, 8)}`;
+        const cloneResponse = await axios.post(
+          `${baseUrl}/v1/voice_clone`,
+          {
+            file_id: Number(fileId),
+            voice_id: voiceId,
+            model: trimmedModel || "speech-02-hd",
+          },
+          {
+            headers: { Authorization: `Bearer ${trimmedApiKey}`, "Content-Type": "application/json" },
+            timeout: 60000,
+          },
+        );
+        const statusCode = cloneResponse.data?.base_resp?.status_code;
         if (statusCode !== 0) {
-          throw new Error(`MiniMax 错误: ${response.data?.base_resp?.status_msg || statusCode}`);
+          throw new Error(`MiniMax 语音克隆错误: ${cloneResponse.data?.base_resp?.status_msg || statusCode}`);
         }
-        if (response.data?.data?.audio) {
-          const buffer = Buffer.from(response.data.data.audio, "hex");
-          const savePath = `/temp/voice-clone-test/${userId || "guest"}/${Date.now()}_${uuidv4()}.mp3`;
-          await u.oss.writeFile(savePath, buffer);
-          const audioUrl = await u.oss.getFileUrl(savePath);
-          res.status(200).send(success(audioUrl));
-        } else {
-          res.status(200).send(success("MiniMax 语音克隆模型 API Key 验证通过"));
-        }
+        res.status(200).send(success(`MiniMax 语音克隆测试通过，voice_id: ${cloneResponse.data?.voice_id || voiceId}`));
       } else if (trimmedManufacturer === "aliyun_direct") {
         // 阿里百炼：验证 API Key 有效性
         const baseUrl = trimmedBaseUrl || "https://dashscope.aliyuncs.com";

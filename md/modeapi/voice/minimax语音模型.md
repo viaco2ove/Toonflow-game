@@ -13,6 +13,7 @@ https://platform.minimaxi.com/docs/api-reference/speech-t2a-http
 https://platform.minimaxi.com/docs/api-reference/voice-cloning-clone
 
 #### 克隆接口
+[README.md](../../../res/voice-presets/can_clone/README.md)
 - 上传文件
 https://platform.minimaxi.com/docs/api-reference/file-management-upload
   - 上传文件，不标记用途
