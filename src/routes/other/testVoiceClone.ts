@@ -92,17 +92,38 @@ export default router.post(
           res.status(200).send(success(`MiniMax 语音克隆测试通过，voice_id: ${clonedVoiceId}`));
         }
       } else if (trimmedManufacturer === "aliyun_direct") {
-        // 阿里百炼：验证 API Key 有效性
+        // 阿里百炼：真正跑克隆接口
         const baseUrl = trimmedBaseUrl || "https://dashscope.aliyuncs.com";
-        await axios.post(
+        const testAudioPath = path.join(process.cwd(), "res", "voice-presets", "can_clone", "prompt_voice_test.wav");
+        if (!fs.existsSync(testAudioPath)) {
+          throw new Error(`测试音频不存在: ${testAudioPath}`);
+        }
+        const audioBuffer = fs.readFileSync(testAudioPath);
+        const audioBase64 = audioBuffer.toString("base64");
+        const preferredName = `test_${uuidv4().slice(0, 8)}`;
+
+        const cloneResponse = await axios.post(
           `${baseUrl}/api/v1/services/audio/tts/customization`,
-          { model: trimmedModel || "voice-enrollment" },
+          {
+            model: "qwen-voice-enrollment",
+            input: {
+              action: "create",
+              target_model: "qwen3-tts-vc-realtime-2026-01-15",
+              preferred_name: preferredName,
+              audio: { data: `data:audio/wav;base64,${audioBase64}` },
+            },
+            parameters: { sample_rate: 24000 },
+          },
           {
             headers: { Authorization: `Bearer ${trimmedApiKey}`, "Content-Type": "application/json" },
-            timeout: 30000,
+            timeout: 60000,
           },
         );
-        res.status(200).send(success("阿里百炼语音克隆模型连通性测试通过"));
+        const output = cloneResponse.data?.output;
+        if (!output?.voice) {
+          throw new Error(`阿里百炼克隆失败: ${JSON.stringify(cloneResponse.data)}`);
+        }
+        res.status(200).send(success(`阿里百炼语音克隆测试通过，voice_id: ${output.voice}`));
       } else if (trimmedManufacturer === "ai_voice_tts") {
         // 本地 CosyVoice：验证服务可达
         const baseUrl = trimmedBaseUrl || "http://127.0.0.1:8000";
