@@ -218,6 +218,8 @@ const result = await synthesizeMiniMaxVoiceDesignBuffer({
 // result.buffer - 试听音频
 ```
 
+判断为mimimax 就走角色发言选择的模型。使用这个minimax 专用的ai润色agent。
+
 ### 3. 语音克隆 Voice Cloning
 
 通过参考音频克隆音色。
