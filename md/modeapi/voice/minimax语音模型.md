@@ -220,8 +220,15 @@ const result = await synthesizeMiniMaxVoiceDesignBuffer({
 
 判断为mimimax 就走角色发言选择的模型。使用这个minimax 专用的ai润色agent。
 
-### 3. 语音克隆 Voice Cloning
+#### minimax 由设计到生成音色文件和根据文字试听要哪些步骤
+1. 语音设计（生成音色）
+"voice_id": "sv_xxx123",
+2. 语音合成（使用音色朗读文本）
+3. 生成一个可用于克隆参考的音色文件的步骤                                                                                                                                
+[README.md](../../../res/voice-presets/can_clone/README.md)
 
+### 3. 语音克隆 Voice Cloning
+[README.md](../../../res/voice-presets/can_clone/README.md)
 通过参考音频克隆音色。
 
 **Endpoint:** `POST https://api.minimaxi.com/v1/voice_clone`

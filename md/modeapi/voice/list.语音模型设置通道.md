@@ -12,6 +12,7 @@ local CosyVoice(ai_voice_tts):vulue=ai_voice_tts
 - voice_design:接口没有模型选择的参数
 
 ## 语音克隆
+[README.md](../../../res/voice-presets/can_clone/README.md)
 ### 阿里百炼
 - voice-enrollment：创建 cosyvoice-v3-* 专属音色
 - qwen-voice-enrollment：创建 qwen3-tts-vc-* 专属音色
