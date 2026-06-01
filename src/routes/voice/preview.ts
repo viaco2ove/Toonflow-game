@@ -251,6 +251,8 @@ function isVoiceIdCompatibleWithModel(voiceId: string, targetModel: string): boo
   const model = targetModel.toLowerCase();
   const id = voiceId.toLowerCase();
   if (isAliyunDirectCosyVoiceModel(model)) {
+    // MiniMax voice_id 格式（如 sv_mpttpwds）不能用于阿里 CosyVoice
+    if (id.startsWith("sv_")) return false;
     return !id.startsWith("qwen-tts-vd-") && !id.startsWith("qwen-tts-enrollment-");
   }
   if (isAliyunDirectQwenVoiceCloneModel(model) || isAliyunDirectQwenVoiceDesignModel(model)) {
@@ -703,7 +705,7 @@ function buildReferenceAudioCacheSeed(options: {
 
 /**
  * 为生成参考音频构造 sidecar 元数据路径。
- * 这份元数据主要记录阿里第一次“创建专属音色”时返回的 voice_id，后续同模型试听时可直接复用。
+ * 这份元数据主要记录阿里第一次"创建专属音色"时返回的 voice_id，后续同模型试听时可直接复用。
  */
 function buildGeneratedReferenceMetaPath(audioPath: string): string {
   const rawPath = trimText(audioPath);
@@ -729,7 +731,7 @@ async function readGeneratedReferenceMeta(audioPath: string): Promise<GeneratedR
 
 /**
  * 写入参考音频 sidecar 元数据。
- * 这里把“第一次创建专属音色”的结果和参考音频文件绑定起来，避免后续又拿这份音频去二次复刻。
+ * 这里把"第一次创建专属音色"的结果和参考音频文件绑定起来，避免后续又拿这份音频去二次复刻。
  */
 async function writeGeneratedReferenceMeta(audioPath: string, meta: GeneratedReferenceMeta): Promise<void> {
   const metaPath = buildGeneratedReferenceMetaPath(audioPath);
@@ -1084,7 +1086,7 @@ async function synthesizeDirectAliyunReferenceBuffer(options: {
 }
 
 /**
- * 按当前绑定模式生成“可复用参考音频文件”。
+ * 按当前绑定模式生成"可复用参考音频文件"。
  * text/mix/prompt_voice 最终都会落成一个 wav 文件，供后续统一走 clone 通道。
  */
 export async function synthesizeReferenceAudioFromMode(options: {
@@ -1548,19 +1550,23 @@ export default router.post(
             const generatedMeta = !/^https?:\/\//i.test(resolvedReferenceAudioSource) && !/^data:/i.test(resolvedReferenceAudioSource)
               ? await readGeneratedReferenceMeta(resolvedReferenceAudioSource)
               : null;
-            // 如果这份参考音频本身就是阿里“提示词设计/官方设计”第一次返回的结果，
+            // 如果这份参考音频本身就是阿里"提示词设计/官方设计"第一次返回的结果，
             // 并且目标模型一致，就直接复用当时返回的专属 voice_id，不再把同一份音频拿去二次复刻。
+            // 但如果是 MiniMax 等第三方厂商的 voice_design 生成的参考音频，不能跨厂商复用。
             const reusableCustomVoiceId = trimText(generatedMeta?.customVoiceId);
             const reusableTargetModel = normalizeAliyunDirectTtsModel(trimText(generatedMeta?.targetModel));
             const currentTargetModel = normalizeAliyunDirectTtsModel(String(config.model || "").trim());
             const explicitVoiceIdMatchesCurrentModel = isVoiceIdCompatibleWithModel(explicitCustomVoiceId, currentTargetModel);
-            const customVoice = explicitCustomVoiceId && explicitVoiceIdMatchesCurrentModel
+            // MiniMax 等第三方 voice_design 生成的参考音频，generatedBy === "prompt_voice"
+            // 不能复用跨厂商的 voice_id，必须基于参考音频重新创建当前厂商的 clone voice
+            const generatedByPromptVoice = trimText(generatedMeta?.generatedBy) === "prompt_voice";
+            const customVoice = explicitVoiceIdMatchesCurrentModel && !generatedByPromptVoice
               ? {
                   voiceId: explicitCustomVoiceId,
                   fresh: false,
                   responseData: null,
                 }
-              : reusableCustomVoiceId && reusableTargetModel === currentTargetModel
+              : reusableCustomVoiceId && reusableTargetModel === currentTargetModel && !generatedByPromptVoice
               ? {
                   voiceId: reusableCustomVoiceId,
                   fresh: false,
@@ -1683,6 +1689,18 @@ export default router.post(
         if (!promptText) {
           return res.status(400).send(error("提示词模式需要填写提示词"));
         }
+        // 诊断日志
+        console.log("[voice-preview:prompt_voice] 诊断日志", {
+          userId,
+          voiceDesignConfig: voiceDesignConfig
+            ? {
+                manufacturer: String(voiceDesignConfig.manufacturer || "").trim(),
+                model: String(voiceDesignConfig.model || "").trim(),
+                baseURL: String(voiceDesignConfig.baseURL || "").trim(),
+                hasApiKey: Boolean(voiceDesignConfig.apiKey),
+              }
+            : null,
+        });
         const normalizedRoleId = String(roleId || "").trim();
         const generatedReference = await synthesizeReferenceAudioFromMode({
           config,

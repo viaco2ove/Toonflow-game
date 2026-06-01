@@ -314,6 +314,23 @@ ${String(input.text || "").trim() || "无"}
     `.trim();
   }
 
+  if (strategy === "minimax_prompt") {
+    return `
+请把下面这段输入润色成适合 MiniMax voice-design / voice-clone 的 prompt。
+
+用户输入：
+${String(input.text || "").trim() || "无"}
+
+输出要求：
+- 只输出一行中文
+- 不要解释
+- 不要台词
+- 不要剧情
+- 简洁自然
+- 重点描述声音特征
+    `.trim();
+  }
+
   if (strategy === "aliyun_direct_cosyvoice_prompt") {
     return `
 请把下面这段输入润色成适合 CosyVoice 的音色描述。
@@ -366,6 +383,13 @@ ${strategy}
 }
 
 export default async function polishVoicePromptAgent(input: PolishVoicePromptInput): Promise<PolishVoicePromptResult> {
+  console.log("[voice:polish:agent] input", {
+    text: String(input.text || "").trim().slice(0, 50),
+    mode: String(input.mode || "").trim(),
+    manufacturer: String(input.manufacturer || "").trim(),
+    model: String(input.model || "").trim(),
+    voiceDesignModel: String(input.voiceDesignModel || "").trim(),
+  });
   const rawText = String(input.text || "").trim();
   const sourceText = [rawText].filter(Boolean).join("，");
   const signalGroups = detectSignalGroups(sourceText);
@@ -411,18 +435,13 @@ export default async function polishVoicePromptAgent(input: PolishVoicePromptInp
       promptAiConfig,
     );
 
-    if (isDebugLogEnabled()) {
-      console.log("[voice:polish:debug] runtime", {
-        manufacturer: String(input.manufacturer || "").trim(),
-        model: String(input.model || "").trim(),
-        voiceDesignModel: String(input.voiceDesignModel || "").trim(),
-        mode: String(input.mode || "").trim(),
-        provider: String(input.provider || "").trim(),
-        strategy,
-        polishModelManufacturer: String(promptAiConfig?.manufacturer || "").trim(),
-        polishModel: String(promptAiConfig?.model || "").trim(),
-      });
-    }
+    console.log("[voice:polish:agent] strategy", {
+      strategy,
+      manufacturer: String(input.manufacturer || "").trim(),
+      model: String(input.model || "").trim(),
+      voiceDesignModel: String(input.voiceDesignModel || "").trim(),
+      mode: String(input.mode || "").trim(),
+    });
 
     const prompt = sanitizePrompt(String(result?.prompt || ""));
     const keywords = unique(

@@ -77,6 +77,13 @@ function slugifyPreferredName(input?: string | null, fallback = "story_voice"): 
     .replace(/_+/g, "_")
     .replace(/^_+|_+$/g, "");
   const resolved = normalized || fallback;
+  // MiniMax voice_id 要求：长度 8-256，首字符为字母，末字符不能是 - 或 _
+  if (resolved.length < 8) {
+    // 补足最小长度并加时间戳后缀确保唯一性
+    const suffix = Date.now().toString(36).slice(-4);
+    const padded = `${resolved}_${suffix}`;
+    return padded.slice(0, 20);
+  }
   if (resolved.length <= MAX_VOICE_DESIGN_NAME_LENGTH) {
     return resolved;
   }
@@ -109,6 +116,11 @@ type VoiceDesignStrategy =
 function resolveVoiceDesignStrategy(config: VoiceDesignConfig): VoiceDesignStrategy {
   const rawModel = trimText(config.model);
   const normalizedModel = rawModel.toLowerCase();
+  console.log("[voiceDesign] resolveVoiceDesignStrategy", {
+    rawModel,
+    normalizedModel,
+    manufacturer: trimText(config.manufacturer),
+  });
   if (
     normalizedModel === "qwen-voice-design"
     || normalizedModel.includes("tts-vd")
@@ -229,8 +241,27 @@ export async function synthesizeVoiceDesignBuffer(options: {
     throw new Error("请先在设置里配置语音设计模型");
   }
 
+  console.log("[voiceDesign] synthesizeVoiceDesignBuffer", {
+    userId: options.userId,
+    configFromOption: Boolean(options.config),
+    config: {
+      model: trimText(config.model),
+      manufacturer: trimText(config.manufacturer),
+      baseURL: trimText(config.baseURL),
+      hasApiKey: Boolean(config.apiKey),
+    },
+    promptText: options.promptText?.slice(0, 50),
+    previewText: options.previewText?.slice(0, 50),
+  });
+
   const strategy = resolveVoiceDesignStrategy(config);
   const endpoint = normalizeVoiceDesignEndpoint(config.baseURL);
+  console.log("[voiceDesign] strategy resolved", {
+    kind: strategy.kind,
+    requestModel: strategy.requestModel,
+    targetModel: strategy.targetModel,
+    endpoint,
+  });
   const promptText = trimText(options.promptText);
   const previewText = trimText(options.previewText);
   if (!promptText) {
@@ -314,13 +345,15 @@ export async function synthesizeVoiceDesignBuffer(options: {
       bodyStr = JSON.stringify(rawBody);
     }
     if (!bodyStr) return false;
-    // 检查是否包含 preferred_name 相关错误
+    // 检查是否包含 preferred_name 相关错误（阿里云）
     if (bodyStr.includes("preferred_name")) return true;
+    // 检查是否包含 voice_id duplicate 错误（MiniMax）
+    if (rawBody && typeof rawBody === "object" && rawBody?.base_resp?.status_msg?.includes("duplicate")) return true;
     // 解析 JSON 检查 message
     try {
       const parsed = JSON.parse(bodyStr);
-      const msg = parsed?.message || parsed?.error?.message || "";
-      return msg.includes("InvalidParameter") || msg.includes("invalid");
+      const msg = parsed?.message || parsed?.error?.message || parsed?.base_resp?.status_msg || "";
+      return msg.includes("InvalidParameter") || msg.includes("invalid") || msg.includes("duplicate");
     } catch {
       return false;
     }
@@ -332,7 +365,8 @@ export async function synthesizeVoiceDesignBuffer(options: {
   } catch (err) {
     if (invalidName(err)) {
       // name 已被占用或无效，追加时间戳重新生成
-      const fallbackName = `sv${Date.now()}`.slice(-16);
+      // MiniMax voice_id 要求：长度 8-256，首字符为字母，末字符不能是 - 或 _
+      const fallbackName = `sv_${Date.now().toString(36)}`.slice(0, 20);
       response = await doRequest(fallbackName);
     } else {
       throw err;
@@ -356,14 +390,65 @@ export async function synthesizeVoiceDesignBuffer(options: {
     const responseData = parseJsonResponse(responseBuffer);
     const statusCode = responseData?.base_resp?.status_code;
     if (statusCode !== 0) {
-      throw new Error(`MiniMax 语音设计错误: ${responseData?.base_resp?.status_msg || statusCode}`);
+      // MiniMax 返回错误（如 voice_id duplicate），尝试用新 name 重试
+      const errMsg = String(responseData?.base_resp?.status_msg || "");
+      if (errMsg.includes("duplicate")) {
+        console.log("[voiceDesign] MiniMax voice_id duplicate，尝试重试", {
+          preferredName,
+          statusMsg: errMsg,
+        });
+        const fallbackName = `sv_${Date.now().toString(36)}`.slice(0, 20);
+        const retryResponse = await doRequest(fallbackName);
+        const retryBuffer = Buffer.isBuffer(retryResponse.data) ? retryResponse.data : Buffer.from(retryResponse.data);
+        const retryData = parseJsonResponse(retryBuffer);
+        const retryStatus = retryData?.base_resp?.status_code;
+        if (retryStatus !== 0) {
+          throw new Error(`MiniMax 语音设计重试失败: ${retryData?.base_resp?.status_msg || retryStatus}`);
+        }
+        if (!retryData?.trial_audio) {
+          throw new Error("MiniMax 语音设计未返回有效音频");
+        }
+        // 重试成功，继续用这个 voice_id 做 TTS 合成
+        const { synthesizeMiniMaxTtsBuffer } = await import("@/lib/miniMaxVoice");
+        const minimaxVoiceId = String(retryData?.voice_id || fallbackName).trim();
+        const ttsResult = await synthesizeMiniMaxTtsBuffer({
+          apiKey: trimText(config.apiKey),
+          model: "speech-02-hd",
+          text: options.previewText,
+          voiceId: minimaxVoiceId,
+          speed: 1.0,
+          outputFormat: "hex",
+          sampleRate: 24000,
+        });
+        return {
+          buffer: ttsResult.buffer,
+          sourceUrl: "",
+          requestModel: strategy.requestModel,
+          targetModel: strategy.targetModel,
+          responseData: retryData,
+        };
+      }
+      throw new Error(`MiniMax 语音设计错误: ${errMsg || statusCode}`);
     }
     if (!responseData?.trial_audio) {
       throw new Error("MiniMax 语音设计未返回有效音频");
     }
-    const audioBuffer = Buffer.from(responseData.trial_audio, "hex");
+
+    // MiniMax voice_design 完成创建 voice_id 后，需要用这个 voice_id 做 TTS 合成
+    // 生成一个固定文本的音频才是真正可用于克隆的参考音频
+    const { synthesizeMiniMaxTtsBuffer } = await import("@/lib/miniMaxVoice");
+    const minimaxVoiceId = String(responseData?.voice_id || preferredName).trim();
+    const ttsResult = await synthesizeMiniMaxTtsBuffer({
+      apiKey: trimText(config.apiKey),
+      model: "speech-02-hd",
+      text: options.previewText,
+      voiceId: minimaxVoiceId,
+      speed: 1.0,
+      outputFormat: "hex",
+      sampleRate: 24000,
+    });
     return {
-      buffer: audioBuffer,
+      buffer: ttsResult.buffer,
       sourceUrl: "",
       requestModel: strategy.requestModel,
       targetModel: strategy.targetModel,
