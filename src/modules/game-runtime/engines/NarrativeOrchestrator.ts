@@ -4187,6 +4187,26 @@ export async function runNarrativePlan(input: OrchestratorInput): Promise<Narrat
   }
 }
 
+
+function getNotCompletedCurrentEvent(currentEvent: ReturnType<typeof readCurrentRuntimeEventContext>): ReturnType<typeof readCurrentRuntimeEventContext> {
+  if (currentEvent.eventStatus === "completed") {
+    return {
+      ...currentEvent,
+      eventSummary: "",
+      eventFacts: [],
+      eventMemorySummary: "",
+      eventMemoryFacts: [],
+      eventStatus: "idle",
+    };
+  }
+  return currentEvent;
+}
+
+function getNotCompletedCurrentPhase(currentPhase: ChapterRuntimePhase | null): ChapterRuntimePhase | null {
+  if (!currentPhase) return null;
+  return currentPhase;
+}
+
 // 调用编排模型，决定本轮谁说话、为什么说、以及是否轮到用户。
 async function doRunNarrativePlan(input: OrchestratorInput): Promise<NarrativePlanResult> {
   // 第一段：准备编排所需的固定上下文。
@@ -4202,8 +4222,14 @@ async function doRunNarrativePlan(input: OrchestratorInput): Promise<NarrativePl
   const turnState = readRuntimeTurnState(input.state, input.world);
   const currentPhase = readCurrentChapterPhase(input.chapter, input.state);
   const currentEvent = readCurrentRuntimeEventContext(input.chapter, input.state);
+
   const roles = filterRolesForPhase(allRoles, currentPhase);
   const currentChapter = buildOrchestratorChapterMeta(input.chapter);
+  // 增加事件是否完成的判断
+  const notCompletedCurrentEvent = getNotCompletedCurrentEvent(currentEvent);
+  const notCompletedcurrentPhase = getNotCompletedCurrentPhase(currentPhase);
+
+
   // 这里开始只保留“流程控制”：
   // payload 的具体拼装细节已经全部挪到 buildOrchestratorPromptPayload 里。
   const payload = buildOrchestratorPromptPayload({
@@ -4211,8 +4237,8 @@ async function doRunNarrativePlan(input: OrchestratorInput): Promise<NarrativePl
     state: input.state,
     chapter: input.chapter,
     currentChapter,
-    currentPhase,
-    currentEvent,
+    currentPhase: notCompletedcurrentPhase,
+    currentEvent: notCompletedCurrentEvent,
     roles,
     recentMessages: input.recentMessages,
     turnState,

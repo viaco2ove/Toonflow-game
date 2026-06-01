@@ -577,6 +577,12 @@ async function applySessionUserEventProgress(params: {
     recentMessages: params.recentMessages,
     traceMeta: params.traceMeta,
   });
+  console.log("[applySessionUserEventProgress] resolution applied", {
+    ended: resolution?.ended,
+    eventStatus: resolution?.eventStatus,
+    phaseId: params.state.chapterProgress?.phaseId,
+    eventIndex: params.state.chapterProgress?.eventIndex,
+  });
   if (DebugLogUtil.isDebugLogEnabled()) {
     // [story:event_progress:stats] resolution
     DebugLogUtil.logEventProgressResolution("story:event_progress:stats", {
@@ -591,10 +597,20 @@ async function applySessionUserEventProgress(params: {
     });
   }
   if (resolution) {
-    applyAiEventProgressResolution({
+    const progressApplied = applyAiEventProgressResolution({
       chapter: params.chapter,
       state: params.state,
       resolution,
+    });
+    console.log("[applySessionUserEventProgress] after applyAiEventProgressResolution", {
+      ended: resolution.ended,
+      phaseChanged: progressApplied.phaseChanged,
+      stageAdvanced: progressApplied.stageAdvanced,
+      enteredUserPhase: progressApplied.enteredUserPhase,
+      chapterProgressEventIndex: params.state.chapterProgress?.eventIndex,
+      chapterProgressPhaseId: params.state.chapterProgress?.phaseId,
+      currentEventIndex: params.state.currentEvent?.index,
+      currentEventStatus: params.state.currentEvent?.status,
     });
     syncChapterProgressWithRuntime(params.chapter, params.state);
     return;
@@ -635,6 +651,12 @@ async function applySessionPreOrchestrationEventProgress(params: {
   }
   const progressCursor = Number(params.state?.orchestrationEventProgressMessageId || 0);
   if (progressCursor === latestMessageId) {
+    return;
+  }
+  // 如果事件已经被标记为完成（phaseId 已清空），跳过预检测避免重复评估覆盖已有结果
+  const currentPhaseId = String(params.state?.chapterProgress?.phaseId || "").trim();
+  const currentEventStatus = String(params.state?.chapterProgress?.eventStatus || "").trim().toLowerCase();
+  if (!currentPhaseId && currentEventStatus === "completed") {
     return;
   }
 

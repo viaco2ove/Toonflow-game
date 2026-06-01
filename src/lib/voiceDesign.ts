@@ -26,6 +26,20 @@ function trimText(input?: string | null): string {
   return String(input || "").trim();
 }
 
+function sha1(input: string): string {
+  return createHash("sha1").update(input).digest("hex");
+}
+
+function buildCosyVoicePrefix(seed: string, maxLength: number): string {
+  const normalized = trimText(seed).toLowerCase().replace(/[^a-z0-9]+/g, "");
+  const fallback = "voice";
+  const raw = normalized || fallback;
+  if (raw.length <= maxLength) return raw;
+  const hash = sha1(raw).slice(0, 6);
+  const headLength = Math.max(1, maxLength - hash.length);
+  return `${raw.slice(0, headLength)}${hash}`.slice(0, maxLength);
+}
+
 export function hasUsableVoiceDesignConfig(config: unknown): config is VoiceDesignConfig {
   if (!config || typeof config !== "object") return false;
   const candidate = config as VoiceDesignConfig;
@@ -315,7 +329,7 @@ export async function synthesizeVoiceDesignBuffer(options: {
             target_model: strategy.targetModel,
             voice_prompt: promptText,
             preview_text: previewText,
-            prefix: name,
+            prefix: buildCosyVoicePrefix(preferredName, 10), // CosyVoice prefix 限制 10 字符
           },
           parameters: {
             sample_rate: 24000,
