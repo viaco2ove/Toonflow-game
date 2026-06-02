@@ -101,6 +101,7 @@ CosyVoice 做克隆，必须指定模型（如 cosyvoice-v3.5-plus 等），这�
 [README.md](../../../res/voice-presets/can_clone/README.md)
 
 ## ai故事游玩和章节调试时
+重点：克隆参考音色文件非常重要。它才是换模型换供应商的最好兼容方案。
 - 会判断voice_id 是否与游玩的用户设置的模型吻合。
 不吻合的重新走克隆通道重新生成voice_id 存到用户的”故事存档/内存“里。
 - 音色过期了，会新走克隆通道重新生成voice_id
