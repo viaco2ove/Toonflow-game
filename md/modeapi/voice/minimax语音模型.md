@@ -152,6 +152,7 @@ boolean默认值:false
 是否在合成试听音频的末尾添加音频节奏标识，默认值为 false
 
 ### 音色查询何删除
+- 查询
 curl --request POST \
   --url https://api.minimaxi.com/v1/get_voice \
   --header 'Authorization: Bearer <token>' \
@@ -162,6 +163,18 @@ curl --request POST \
 }
 '
 
+voice_type
+enum<string>必填
+希望查询音色类型，支持以下取值：
+
+system: 系统音色
+voice_cloning: 快速复刻的音色，仅在成功用于语音合成后才可查询
+voice_generation: 文生音色接口生成的音色，仅在成功用于语音合成后才可查询
+all: 以上全部
+可用选项: system, voice_cloning, voice_generation, all 
+
+
+- 音色删除
 curl --request POST \
   --url https://api.minimaxi.com/v1/delete_voice \
   --header 'Authorization: Bearer <token>' \

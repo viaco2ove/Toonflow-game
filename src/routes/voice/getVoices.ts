@@ -53,7 +53,7 @@ export default router.post(
         presets = directAliyunVoicePresets(String(config.model || "").trim());
       } else {
         try {
-          presets = filterVoicePresetsByManufacturer(await fetchVoicePresets(baseUrl, headers), config.manufacturer);
+          presets = filterVoicePresetsByManufacturer(await fetchVoicePresets(baseUrl, headers, config.manufacturer), config.manufacturer);
         } catch (err) {
           console.warn(
             `[voice] fetch presets fallback to business presets only: manufacturer=${String(config.manufacturer || "").trim()} baseUrl=${baseUrl} error=${(err as Error)?.message || String(err)}`,

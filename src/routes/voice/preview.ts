@@ -313,7 +313,7 @@ async function resolveMixProviderForPreview(options: {
   }
   const mixProviders = Array.from(
     new Set(
-      filterVoicePresetsByManufacturer(await fetchVoicePresets(options.baseUrl, options.headers), options.manufacturer)
+      filterVoicePresetsByManufacturer(await fetchVoicePresets(options.baseUrl, options.headers, options.manufacturer), options.manufacturer)
         .filter((item: { voiceId: string; provider: string }) => options.mixVoiceIds.includes(item.voiceId) && item.provider)
         .map((item: { provider: string }) => item.provider),
     ),
@@ -1419,7 +1419,7 @@ export default router.post(
       const businessPresets = await ensureBusinessVoicePresets(userId);
       const providerPresetPool = directAliyun
         ? directAliyunVoicePresets(String(config.model || "").trim())
-        : filterVoicePresetsByManufacturer(await fetchVoicePresets(baseUrl, headers), manufacturer);
+        : filterVoicePresetsByManufacturer(await fetchVoicePresets(baseUrl, headers, manufacturer), manufacturer);
       const mergedPresetPool = [...businessPresets, ...providerPresetPool].filter(
         (item, index, list) => list.findIndex((row) => row.voiceId === item.voiceId) === index,
       );

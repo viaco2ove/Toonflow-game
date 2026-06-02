@@ -531,15 +531,20 @@ function cloneVoicePresets(items: GatewayVoicePreset[]): GatewayVoicePreset[] {
   }));
 }
 
-function voicePresetCacheKey(baseUrl: string, headers: Record<string, string>): string {
+function voicePresetCacheKey(baseUrl: string, headers: Record<string, string>, manufacturer?: string | null): string {
   return JSON.stringify({
     baseUrl: normalizeVoiceBaseUrl(baseUrl),
     authorization: String(headers.Authorization || "").trim(),
+    manufacturer: normalizedManufacturer(manufacturer),
   });
 }
 
-export async function fetchVoicePresets(baseUrl: string, headers: Record<string, string>) {
-  const cacheKey = voicePresetCacheKey(baseUrl, headers);
+export async function fetchVoicePresets(
+  baseUrl: string,
+  headers: Record<string, string>,
+  manufacturer?: string | null,
+) {
+  const cacheKey = voicePresetCacheKey(baseUrl, headers, manufacturer);
   const cached = voicePresetCache.get(cacheKey);
   if (cached && cached.expiresAt > Date.now()) {
     return cloneVoicePresets(cached.items);
@@ -551,9 +556,18 @@ export async function fetchVoicePresets(baseUrl: string, headers: Record<string,
   }
 
   const task = (async () => {
-    const response = await axios.get(`${baseUrl}/voices`, { headers });
-    const data = (response.data as any)?.data ?? response.data;
-    const list = Array.isArray(data) ? data : Array.isArray(data?.voices) ? data.voices : [];
+    let list: any[] = [];
+    const normalized = normalizedManufacturer(manufacturer);
+    if (normalized === "minimax") {
+      // minimax 使用 POST /v1/get_voice 查音色
+      const response = await axios.post(`${baseUrl}/v1/get_voice`, { voice_type: "all" }, { headers });
+      const data = (response.data as any)?.data ?? response.data;
+      list = Array.isArray(data) ? data : Array.isArray(data?.voice_list) ? data.voice_list : [];
+    } else {
+      const response = await axios.get(`${baseUrl}/voices`, { headers });
+      const data = (response.data as any)?.data ?? response.data;
+      list = Array.isArray(data) ? data : Array.isArray(data?.voices) ? data.voices : [];
+    }
     const items = list.map(normalizeVoicePreset).filter((item: GatewayVoicePreset | null): item is GatewayVoicePreset => !!item);
     voicePresetCache.set(cacheKey, {
       expiresAt: Date.now() + VOICE_PRESET_CACHE_TTL_MS,
