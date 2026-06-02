@@ -1546,10 +1546,13 @@ export default router.post(
         if (DebugLogUtil.isDebugLogEnabled()) { console.log("[voice-preview] clone mode", JSON.stringify({ refSource: resolvedReferenceAudioSource, directAliyun })); }
         if (resolvedReferenceAudioSource) {
           if (directAliyun) {
+            console.log("[voice-preview] aliyun clone path", { refSource: resolvedReferenceAudioSource, model: config.model });
+            const explicitCustomVoiceId = trimText(effectiveVoiceId);
             const explicitCustomVoiceId = trimText(effectiveVoiceId);
             const generatedMeta = !/^https?:\/\//i.test(resolvedReferenceAudioSource) && !/^data:/i.test(resolvedReferenceAudioSource)
               ? await readGeneratedReferenceMeta(resolvedReferenceAudioSource)
               : null;
+            console.log("[voice-preview] generatedMeta", { path: resolvedReferenceAudioSource, meta: generatedMeta });
             // 如果这份参考音频本身就是阿里"提示词设计/官方设计"第一次返回的结果，
             // 并且目标模型一致，就直接复用当时返回的专属 voice_id，不再把同一份音频拿去二次复刻。
             // 但如果是 MiniMax 等第三方厂商的 voice_design 生成的参考音频，不能跨厂商复用。
@@ -1560,24 +1563,28 @@ export default router.post(
             // MiniMax 等第三方 voice_design 生成的参考音频，generatedBy === "prompt_voice"
             // 不能复用跨厂商的 voice_id，必须基于参考音频重新创建当前厂商的 clone voice
             const generatedByPromptVoice = trimText(generatedMeta?.generatedBy) === "prompt_voice";
-            const customVoice = explicitVoiceIdMatchesCurrentModel && !generatedByPromptVoice
-              ? {
-                  voiceId: explicitCustomVoiceId,
-                  fresh: false,
-                  responseData: null,
-                }
-              : reusableCustomVoiceId && reusableTargetModel === currentTargetModel && !generatedByPromptVoice
-              ? {
-                  voiceId: reusableCustomVoiceId,
-                  fresh: false,
-                  responseData: null,
-                }
-              : await createDirectAliyunCustomVoice({
-                  config,
-                  mode,
-                  referenceAudioSource: resolvedReferenceAudioSource,
-                  sampleRate: normalizedSampleRate,
+            let customVoice: { voiceId: string; fresh: boolean; responseData: Record<string, any> | null } | null = null;
+            if (explicitVoiceIdMatchesCurrentModel && !generatedByPromptVoice) {
+              customVoice = { voiceId: explicitCustomVoiceId, fresh: false, responseData: null };
+            } else if (reusableCustomVoiceId && reusableTargetModel === currentTargetModel && !generatedByPromptVoice) {
+              customVoice = { voiceId: reusableCustomVoiceId, fresh: false, responseData: null };
+            } else {
+              customVoice = await createDirectAliyunCustomVoice({
+                config,
+                mode,
+                referenceAudioSource: resolvedReferenceAudioSource,
+                sampleRate: normalizedSampleRate,
+              });
+              // 写入元数据，方便后续复用
+              if (customVoice.voiceId) {
+                await writeGeneratedReferenceMeta(resolvedReferenceAudioSource, {
+                  customVoiceId: customVoice.voiceId,
+                  targetModel: currentTargetModel,
+                  generatedBy: "clone",
+                  createdAt: Date.now(),
                 });
+              }
+            }
             const synthesized = await synthesizeDirectAliyunPreviewAudioWithRetry({
               config,
               headers,
