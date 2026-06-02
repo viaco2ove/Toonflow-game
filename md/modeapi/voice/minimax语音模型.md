@@ -13,6 +13,22 @@ https://platform.minimaxi.com/docs/api-reference/speech-t2a-http
 https://platform.minimaxi.com/docs/api-reference/voice-cloning-clone
 
 #### 语音设计接口
+curl --location 'https://api.minimaxi.com/v1/voice_design' \
+--header 'Authorization: Bearer xxx' \
+--header 'Content-Type: application/json' \
+--data '{
+    "prompt": "讲述悬疑故事的播音员，声音低沉富有磁性，语速时快时慢，营造紧张神秘的氛围。",
+    "preview_text": "夜深了，古屋里只有他一人。窗外传来若有若无的脚步声，他屏住呼吸，慢慢地，慢慢地，走向那扇吱呀作响的门…"
+}'
+
+#### 语音合成接口
+curl --location 'https://api.minimaxi.com/v1/voice_design' \
+--header 'Authorization: Bearer xxx' \
+--header 'Content-Type: application/json' \
+--data '{
+    "prompt": "讲述悬疑故事的播音员，声音低沉富有磁性，语速时快时慢，营造紧张神秘的氛围。",
+    "preview_text": "夜深了，古屋里只有他一人。窗外传来若有若无的脚步声，他屏住呼吸，慢慢地，慢慢地，走向那扇吱呀作响的门…"
+}'
 
 #### 克隆接口
 [README.md](../../../res/voice-presets/can_clone/README.md)
@@ -272,3 +288,8 @@ VALUES ('voice', YOUR_USER_ID, 'minimax', 'speech-02-hd', 'YOUR_API_KEY', 'https
 - 语音设计: https://platform.minimaxi.com/docs/api-reference/voice-design-design
 - 语音合成: https://platform.minimaxi.com/docs/api-reference/speech-t2a-http
 - 语音克隆: https://platform.minimaxi.com/docs/api-reference/voice-cloning-clone
+- 音色获取： https://platform.minimaxi.com/docs/api-reference/voice-management-get
+- 音色删除：https://platform.minimaxi.com/docs/api-reference/voice-management-delete
+- 上传文件（标记为复刻）：https://platform.minimaxi.com/docs/api-reference/voice-cloning-uploadcloneaudio
+- 上传文件（标记为示例）：https://platform.minimaxi.com/docs/api-reference/voice-cloning-uploadprompt
+- 上传文件（不标记）：https://platform.minimaxi.com/docs/api-reference/file-management-upload
