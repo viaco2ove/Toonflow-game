@@ -1548,7 +1548,6 @@ export default router.post(
           if (directAliyun) {
             console.log("[voice-preview] aliyun clone path", { refSource: resolvedReferenceAudioSource, model: config.model });
             const explicitCustomVoiceId = trimText(effectiveVoiceId);
-            const explicitCustomVoiceId = trimText(effectiveVoiceId);
             const generatedMeta = !/^https?:\/\//i.test(resolvedReferenceAudioSource) && !/^data:/i.test(resolvedReferenceAudioSource)
               ? await readGeneratedReferenceMeta(resolvedReferenceAudioSource)
               : null;
