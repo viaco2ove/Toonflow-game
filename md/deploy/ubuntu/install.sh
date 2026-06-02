@@ -399,7 +399,7 @@ server {
         try_files \$uri \$uri/ /index.html;
     }
 
-    location ~ ^/(game|assets|voice|setting|other|user|project|prompt|index|novel|outline|script|storyboard|task|video)/ {
+    location ~ ^/(game|assets|voice|setting|other|user|project|prompt|index|novel|outline|script|storyboard|task|video|app)/ {
         proxy_pass http://127.0.0.1:$APP_PORT;
         proxy_http_version 1.1;
         proxy_set_header Upgrade \$http_upgrade;
