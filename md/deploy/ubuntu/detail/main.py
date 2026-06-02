@@ -168,7 +168,7 @@ def build_web_project_command() -> str:
         "git fetch origin --prune 2>&1 && "
         'git pull --ff-only origin "$current_branch" 2>&1 && '
         "yarn cache clean && "
-        "yarn install --frozen-lockfile 2>&1 && "
+        "yarn install --frozen-lockfile --ignore-engines 2>&1 && "
         f"export NODE_OPTIONS={safe_node_options} && "
         "yarn build 2>&1 && "
         f"rm -rf {safe_output_dir} && "
