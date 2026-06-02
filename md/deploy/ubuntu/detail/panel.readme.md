@@ -34,6 +34,7 @@ chmod +x /opt/toonflow/panel/start-panel.sh
 
 ```bash
 python3 -m venv /opt/toonflow/panel/.venv
+source .venv/bin/activate
 /opt/toonflow/panel/.venv/bin/python -m pip install --upgrade pip
 /opt/toonflow/panel/.venv/bin/python -m pip install fastapi uvicorn
 ```

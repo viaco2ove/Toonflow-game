@@ -608,7 +608,7 @@ def clear_app_logs_handler():
     """清空后端应用日志"""
     output = clear_app_logs()
     set_last_action_log("清空后端日志", output)
-    return RedirectResponse("/app/logs")
+    return RedirectResponse("/app/logs", status_code=303)
 
 
 @app.get("/app/pm2-logs", response_class=HTMLResponse)
@@ -657,4 +657,4 @@ def clear_pm2_logs_handler():
     """清空PM2进程日志"""
     output = clear_pm2_logs()
     set_last_action_log("清空PM2日志", output)
-    return RedirectResponse("/app/pm2-logs")
+    return RedirectResponse("/app/pm2-logs", status_code=303)
