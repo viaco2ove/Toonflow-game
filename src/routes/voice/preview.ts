@@ -717,7 +717,7 @@ function buildGeneratedReferenceMetaPath(audioPath: string): string {
  * 读取参考音频 sidecar 元数据。
  * sidecar 仅用于优化试听链路；读不到时直接回退旧 clone 路径，不阻塞主流程。
  */
-async function readGeneratedReferenceMeta(audioPath: string): Promise<GeneratedReferenceMeta | null> {
+export async function readGeneratedReferenceMeta(audioPath: string): Promise<GeneratedReferenceMeta | null> {
   const metaPath = buildGeneratedReferenceMetaPath(audioPath);
   if (!metaPath || !(await u.oss.fileExists(metaPath))) return null;
   try {
@@ -733,7 +733,7 @@ async function readGeneratedReferenceMeta(audioPath: string): Promise<GeneratedR
  * 写入参考音频 sidecar 元数据。
  * 这里把"第一次创建专属音色"的结果和参考音频文件绑定起来，避免后续又拿这份音频去二次复刻。
  */
-async function writeGeneratedReferenceMeta(audioPath: string, meta: GeneratedReferenceMeta): Promise<void> {
+export async function writeGeneratedReferenceMeta(audioPath: string, meta: GeneratedReferenceMeta): Promise<void> {
   const metaPath = buildGeneratedReferenceMetaPath(audioPath);
   if (!metaPath) return;
   try {
@@ -777,7 +777,7 @@ function buildDirectAliyunCustomVoiceCacheKey(options: {
  * 创建或复用阿里百炼专属音色。
  * 这里统一封装 prompt_voice / clone / mix 三类入口，必要时允许显式跳过缓存重建 voice_id。
  */
-async function createDirectAliyunCustomVoice(options: {
+export async function createDirectAliyunCustomVoice(options: {
   config: any;
   mode: DirectAliyunCustomVoiceMode;
   referenceAudioSource?: string;

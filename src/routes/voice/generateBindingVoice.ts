@@ -5,6 +5,7 @@ import { error, success } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
 import {
   getRuntimeStoryVoiceConfig,
+  isDirectAliyunManufacturer,
   normalizePersistedVoiceConfig,
   normalizeVoiceBaseUrl,
   resolveUnsupportedVoiceModeReason,
@@ -18,8 +19,11 @@ import {
 import { getStoryVoiceDesignConfig } from "@/lib/voiceDesign";
 import {
   buildProxyAudioUrl,
+  createDirectAliyunCustomVoice,
   loadReferenceAudioBuffer,
+  readGeneratedReferenceMeta,
   synthesizeReferenceAudioFromMode,
+  writeGeneratedReferenceMeta,
   type VoiceMode,
 } from "./preview";
 
@@ -235,7 +239,31 @@ export default router.post(
           referenceAudioPath: trimText(referenceAudioPath),
           referenceText: normalizedReferenceText,
         });
-        return res.status(200).send(success(buildGeneratedVoiceResult(req, generatedPath, normalizedReferenceText)));
+        // 如果是阿里直连，需要预先创建音色并写入元数据，这样 preview 时可以复用
+        let customVoiceId = "";
+        if (isDirectAliyunManufacturer(manufacturer)) {
+          try {
+            const customVoice = await createDirectAliyunCustomVoice({
+              config,
+              mode: "clone",
+              referenceAudioSource: generatedPath,
+              sampleRate: 24000,
+            });
+            customVoiceId = customVoice.voiceId;
+            await writeGeneratedReferenceMeta(generatedPath, {
+              customVoiceId,
+              targetModel: config.model,
+              generatedBy: "clone",
+              roleId: trimText(roleId) || undefined,
+              createdAt: Date.now(),
+            });
+          } catch (err) {
+            console.warn("[voice:generateBindingVoice] aliyun direct custom voice create failed:", err instanceof Error ? err.message : String(err));
+          }
+        }
+        return res.status(200).send(success(buildGeneratedVoiceResult(req, generatedPath, normalizedReferenceText, {
+          customVoiceId,
+        })));
       }
 
       if (mode === "text") {

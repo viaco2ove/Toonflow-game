@@ -13,6 +13,8 @@ local CosyVoice(ai_voice_tts):vulue=ai_voice_tts
 
 ## 语音克隆
 [README.md](../../../res/voice-presets/can_clone/README.md)
+
+
 ### 阿里百炼
 - voice-enrollment：创建 cosyvoice-v3-* 专属音色
 - qwen-voice-enrollment：创建 qwen3-tts-vc-* 专属音色
@@ -60,3 +62,14 @@ https://github.com/viaco2ove/ai_voice_tts.git
 
 ### local CosyVoice(ai_voice_tts)
 - fun-asr-realtime
+
+
+
+# 语音模型的协同工作
+## 语音设计
+当前项目的语音设计的目的是产生一个用于克隆的参考音色文件。所以随便配。
+## 语音合成与语音克隆设置的一致性
+供应商的一致性：语音合成与语音克隆必须使用相同的供应商
+模型通道的一致性：语音合成与语音克隆必须使用匹配的模型
+CosyVoice 做克隆，必须指定模型（如 cosyvoice-v3.5-plus 等），这个音色只认这个模型，其他模型（包括 Qwen‑TTS）完全不认
+
