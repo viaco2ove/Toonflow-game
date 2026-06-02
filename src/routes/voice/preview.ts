@@ -1563,17 +1563,19 @@ export default router.post(
             // MiniMax 等第三方 voice_design 生成的参考音频，generatedBy === "prompt_voice"
             // 不能复用跨厂商的 voice_id，必须基于参考音频重新创建当前厂商的 clone voice
             const generatedByPromptVoice = trimText(generatedMeta?.generatedBy) === "prompt_voice";
-            let customVoice: { voiceId: string; fresh: boolean; responseData: Record<string, any> | null } | null = null;
-            if (explicitVoiceIdMatchesCurrentModel && !generatedByPromptVoice) {
+            let customVoice: { voiceId: string; fresh: boolean; responseData: Record<string, any> | null };
+            if (explicitVoiceIdMatchesCurrentModel && !generatedByPromptVoice && explicitCustomVoiceId) {
               customVoice = { voiceId: explicitCustomVoiceId, fresh: false, responseData: null };
             } else if (reusableCustomVoiceId && reusableTargetModel === currentTargetModel && !generatedByPromptVoice) {
               customVoice = { voiceId: reusableCustomVoiceId, fresh: false, responseData: null };
             } else {
+              // 绕过缓存，确保拿到有效的 voiceId
               customVoice = await createDirectAliyunCustomVoice({
                 config,
                 mode,
                 referenceAudioSource: resolvedReferenceAudioSource,
                 sampleRate: normalizedSampleRate,
+                bypassCache: true,
               });
               // 写入元数据，方便后续复用
               if (customVoice.voiceId) {
@@ -1584,6 +1586,10 @@ export default router.post(
                   createdAt: Date.now(),
                 });
               }
+            }
+            // 最终防御：确保 voiceId 有效
+            if (!trimText(customVoice.voiceId)) {
+              throw new Error("阿里云克隆音色创建失败：未返回有效的音色ID");
             }
             const synthesized = await synthesizeDirectAliyunPreviewAudioWithRetry({
               config,
