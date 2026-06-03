@@ -5,9 +5,9 @@ const MINIMAX_VOICE_DESIGN_URL = `${MINIMAX_TTS_BASE_URL}/v1/voice_design`;
 const MINIMAX_VOICE_CLONE_URL = `${MINIMAX_TTS_BASE_URL}/v1/voice_clone`;
 const MINIMAX_TTS_URL = `${MINIMAX_TTS_BASE_URL}/v1/t2a_v2`;
 
-const MINIMAX_VOICE_ID_DEF = `male-qn-qingse`;
-const MINIMAX_VOICE_ID_MALE = `male-qn-qingse`;
-const MINIMAX_VOICE_ID_FEMALE = `female-shaonv`;
+export const MINIMAX_VOICE_ID_DEF = `male-qn-qingse`;
+export const MINIMAX_VOICE_ID_MALE = `male-qn-qingse`;
+export const MINIMAX_VOICE_ID_FEMALE = `female-shaonv`;
 
 export interface MiniMaxTtsOptions {
   apiKey: string;
