@@ -1528,8 +1528,8 @@ router.post(
           // 业务预设的 voiceId 不是 minimax 的系统音色，需要 fallback
           const { synthesizeMiniMaxTtsBuffer, MINIMAX_BUILTIN_VOICES } = await import("@/lib/miniMaxVoice");
           const minimaxVoiceId = businessPreset.fallbackGender === "female"
-            ? "Chinese_Female_Qn"
-            : "Chinese_Male_Qn";
+            ? "female-shaonv"
+            : "male-qn-qingse";
           const buffer = await synthesizeMiniMaxTtsBuffer({
             apiKey: String(config.apiKey || "").trim(),
             model: String(config.model || "speech-02-hd").trim(),
