@@ -3,6 +3,7 @@ import { z } from "zod";
 import { success, error } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
 import { listAliyunModelPresets, AliyunVoicePresetItem } from "@/lib/voiceGateway";
+import { getBusinessVoicePresets } from "@/lib/businessVoicePresets";
 
 const router = express.Router();
 
@@ -74,14 +75,23 @@ export default router.post(
         language?: string | null;
       };
       const all = listAliyunModelPresets(model);
-      let rows: AliyunPresetRow[] = all.map((item) => ({
+      // 业务预设克隆音色（所有厂商通用）
+      const businessRows: AliyunPresetRow[] = getBusinessVoicePresets().map((preset) => ({
+        voice: preset.voiceId,
+        name: preset.name,
+        scene: "预设克隆",
+        gender: preset.fallbackGender === "female" ? "female" : "male",
+        age: "adult",
+        language: "zh",
+      }));
+      let rows: AliyunPresetRow[] = [...businessRows, ...all.map((item) => ({
         voice: String(item.voice || item.voice_id || "").trim(),
         name: String(item.name || "").trim(),
         scene: normalizeScene(item.scene),
         gender: inferGender(item.scene, item.name),
         age: inferAge(item.scene),
         language: inferLanguage(item.scene, item.name),
-      })).filter((item) => item.voice);
+      }))].filter((item) => item.voice);
 
       // 过滤
       if (search) {

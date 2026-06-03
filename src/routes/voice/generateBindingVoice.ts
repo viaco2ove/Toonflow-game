@@ -231,13 +231,21 @@ export default router.post(
       }
 
       if (mode === "clone") {
+        // 如果选的是业务预设（standard男声/女声等），用预设的 referencePath，忽略前端传入的
+        const businessPreset = findBusinessVoicePreset(normalizedVoiceId);
+        const effectiveRefPath = businessPreset
+          ? businessPreset.referencePath
+          : trimText(referenceAudioPath);
+        const effectiveRefText = businessPreset
+          ? businessPreset.referenceText
+          : normalizedReferenceText;
         const generatedPath = await generateCloneReferenceAudio({
           manufacturer,
           configId: Number(config.id || 0),
           voiceId: normalizedVoiceId,
           roleId: trimText(roleId),
-          referenceAudioPath: trimText(referenceAudioPath),
-          referenceText: normalizedReferenceText,
+          referenceAudioPath: effectiveRefPath,
+          referenceText: effectiveRefText,
         });
         // 如果是阿里直连，需要预先创建音色并写入元数据，这样 preview 时可以复用
         let customVoiceId = "";

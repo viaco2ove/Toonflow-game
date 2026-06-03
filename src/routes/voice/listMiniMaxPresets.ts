@@ -4,6 +4,7 @@ import axios from "axios";
 import { success, error } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
 import { getRuntimeStoryVoiceConfig, normalizeVoiceBaseUrl } from "@/lib/voiceGateway";
+import { getBusinessVoicePresets } from "@/lib/businessVoicePresets";
 
 const router = express.Router();
 
@@ -71,16 +72,23 @@ export default router.post(
 
       const response = await axios.post(`${baseUrl}/v1/get_voice`, { voice_type: "all" }, { headers });
       const data = (response.data as any)?.data ?? response.data;
-      const rawList: any[] = Array.isArray(data) ? data : Array.isArray(data?.voice_list) ? data.voice_list : [];
+      // minimax 真实返回结构：{ system_voice: [], voice_cloning: [], voice_generation: [] }
+      const systemVoices: any[] = Array.isArray(data?.system_voice) ? data.system_voice : [];
+      const clonedVoices: any[] = Array.isArray(data?.voice_cloning) ? data.voice_cloning : [];
+      const generatedVoices: any[] = Array.isArray(data?.voice_generation) ? data.voice_generation : [];
+      const combinedList = [
+        ...systemVoices.map((item) => ({ item, voiceType: "system" })),
+        ...clonedVoices.map((item) => ({ item, voiceType: "voice_cloning" })),
+        ...generatedVoices.map((item) => ({ item, voiceType: "voice_generation" })),
+      ];
 
-      let rows: MiniMaxVoiceRow[] = rawList.map((item) => {
-        const name = String(item?.voice_name || item?.name || item?.voice_id || "").trim();
+      let rows: MiniMaxVoiceRow[] = combinedList.map(({ item, voiceType }: { item: any; voiceType: string }) => {
+        const name = String(item?.voice_name || item?.voice_id || "").trim();
         const voiceId = String(item?.voice_id || "").trim();
-        const vt = String(item?.voice_type || "system").trim().toLowerCase();
         return {
           voice: voiceId,
           name: name || voiceId,
-          voiceType: vt,
+          voiceType,
           language: inferLanguage(name),
           gender: inferGender(name),
         };
@@ -107,6 +115,21 @@ export default router.post(
         const l = String(language).trim();
         if (l && l !== "all") rows = rows.filter((item) => item.language === l);
       }
+
+      // 合并业务预设（标准男声/女声/温柔女声/活泼女声/沉稳男声/讲述者）
+      const businessRows: MiniMaxVoiceRow[] = getBusinessVoicePresets().map((preset) => {
+        const name = String(preset.name || preset.voiceId || "").trim();
+        return {
+          voice: String(preset.voiceId || "").trim(),
+          name,
+          voiceType: "business_preset",
+          language: "zh",
+          gender: preset.fallbackGender === "female" ? "female" : "male",
+        };
+      }).filter((item) => item.voice);
+      rows = [...businessRows, ...rows].filter(
+        (item, index, list) => list.findIndex((row) => row.voice === item.voice) === index,
+      );
 
       const total = rows.length;
       const ps = Math.min(100, Math.max(1, Number(pageSize) || 10));

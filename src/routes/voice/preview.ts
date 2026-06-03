@@ -556,6 +556,80 @@ async function synthesizeWithLocalClone(
   };
 }
 
+async function synthesizeWithMiniMaxClone(
+  req: express.Request,
+  config: any,
+  userId: number,
+  text: string,
+  referenceAudioPath: string,
+  referenceText: string,
+  format: string,
+  speed: number | null,
+  voiceId?: string,
+): Promise<{ sourceUrl: string; data: Record<string, any> }> {
+  const { cloneMiniMaxVoice } = await import("@/lib/miniMaxVoice");
+  const baseUrl = normalizeVoiceBaseUrl(config.baseUrl);
+  const apiKey = String(config.apiKey || "").trim();
+  const model = String(config.model || "speech-02-hd").trim();
+
+  // 1. 上传参考音频到 minimax
+  // 如果是 business_preset（如 story_std_male），用预设的 referencePath
+  const { findBusinessVoicePreset } = await import("@/lib/businessVoicePresets");
+  const bizPreset = findBusinessVoicePreset(trimText(voiceId));
+  const actualRefPath = bizPreset?.referencePath || referenceAudioPath;
+  const audioBuffer = await loadReferenceAudioBuffer(actualRefPath);
+  const fileExt = inferAudioExt(actualRefPath) || "wav";
+  const formData = new FormData();
+  formData.append("file", audioBuffer, `clone_${Date.now()}.${fileExt}`);
+  formData.append("purpose", "voice_clone");
+
+  const uploadResponse = await axios.post(`${baseUrl}/v1/files/upload`, formData, {
+    headers: { Authorization: `Bearer ${apiKey}` },
+    maxContentLength: Infinity,
+    maxBodyLength: Infinity,
+    timeout: 60000,
+  });
+  const fileId = Number(uploadResponse.data?.file?.file_id);
+  if (!fileId) {
+    throw new Error("minimax 克隆：上传参考音频失败");
+  }
+
+  // 2. 调 voice_clone 创建克隆音色
+  const preferredName = `clone_${Date.now().toString(36)}_${(userId || 0).toString(36)}`;
+  const cloneResult = await cloneMiniMaxVoice({
+    apiKey,
+    fileId,
+    voiceId: preferredName,
+    clonePrompt: { promptAudio: 0, promptText: referenceText },
+    text: BUSINESS_VOICE_PRESET_SEED_TEXT,
+    model,
+    needNoiseReduction: true,
+    needVolumeNormalization: true,
+  });
+
+  // 3. 用克隆出来的 voiceId 调 TTS 合成试听文本
+  const { synthesizeMiniMaxTtsBuffer, MINIMAX_VOICE_ID_MALE } = await import("@/lib/miniMaxVoice");
+  const ttsBuffer = await synthesizeMiniMaxTtsBuffer({
+    apiKey,
+    model,
+    voiceId: cloneResult.voiceId || preferredName,
+    text: String(text || "").trim(),
+    speed: speed || 1.0,
+  });
+
+  const outFormat = String(format || "mp3").trim().toLowerCase() || "mp3";
+  const sourceUrl = await persistPreviewAudioBuffer(userId, ttsBuffer.buffer, outFormat);
+  return {
+    sourceUrl,
+    data: {
+      localGenerated: true,
+      mode: "minimax_clone",
+      voice: cloneResult.voiceId,
+      model,
+    },
+  };
+}
+
 async function persistDerivedReferenceAudio(
   savePath: string,
   sourceUrl: string,
@@ -1638,15 +1712,27 @@ router.post(
               },
             }));
           }
-          const cloned = await synthesizeWithLocalClone(
-            req,
-            userId,
-            text,
-            resolvedReferenceAudioSource,
-            String(referenceText || "").trim(),
-            payload.format,
-            speed,
-          );
+          const cloned = isMiniMaxVoiceManufacturer(manufacturer)
+            ? await synthesizeWithMiniMaxClone(
+                req,
+                config,
+                userId,
+                text,
+                resolvedReferenceAudioSource,
+                String(referenceText || "").trim(),
+                payload.format,
+                speed,
+                effectiveVoiceId,
+              )
+            : await synthesizeWithLocalClone(
+                req,
+                userId,
+                text,
+                resolvedReferenceAudioSource,
+                String(referenceText || "").trim(),
+                payload.format,
+                speed,
+              );
           return res.status(200).send(success({ audioUrl: cloned.audioUrl, data: cloned.data }));
         }
         return res.status(400).send(error("克隆模式需要参考音频"));
