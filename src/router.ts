@@ -1,4 +1,4 @@
-// @routes-hash ed33dc033f97874d8cf6a16f830a2e36
+// @routes-hash 88e974168164c5b96094e679b0edfc5c
 import { Express } from "express";
 
 import route1 from "./routes/assets/addAssets";
@@ -148,10 +148,12 @@ import route144 from "./routes/video/uploadAudio";
 import route145 from "./routes/voice/audioProxy";
 import route146 from "./routes/voice/generateBindingVoice";
 import route147 from "./routes/voice/getVoices";
-import route148 from "./routes/voice/polishPrompt";
-import route149 from "./routes/voice/preview";
-import route150 from "./routes/voice/transcribe";
-import route151 from "./routes/voice/uploadAudio";
+import route148 from "./routes/voice/listAliyunPresets";
+import route149 from "./routes/voice/listMiniMaxPresets";
+import route150 from "./routes/voice/polishPrompt";
+import route151 from "./routes/voice/preview";
+import route152 from "./routes/voice/transcribe";
+import route153 from "./routes/voice/uploadAudio";
 
 export default async (app: Express) => {
   app.use("/assets/addAssets", route1);
@@ -301,8 +303,10 @@ export default async (app: Express) => {
   app.use("/voice/audioProxy", route145);
   app.use("/voice/generateBindingVoice", route146);
   app.use("/voice/getVoices", route147);
-  app.use("/voice/polishPrompt", route148);
-  app.use("/voice/preview", route149);
-  app.use("/voice/transcribe", route150);
-  app.use("/voice/uploadAudio", route151);
+  app.use("/voice/listAliyunPresets", route148);
+  app.use("/voice/listMiniMaxPresets", route149);
+  app.use("/voice/polishPrompt", route150);
+  app.use("/voice/preview", route151);
+  app.use("/voice/transcribe", route152);
+  app.use("/voice/uploadAudio", route153);
 }

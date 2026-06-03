@@ -30,6 +30,37 @@ curl --location 'https://api.minimaxi.com/v1/voice_design' \
     "preview_text": "夜深了，古屋里只有他一人。窗外传来若有若无的脚步声，他屏住呼吸，慢慢地，慢慢地，走向那扇吱呀作响的门…"
 }'
 
+curl --location 'https://api.minimaxi.com/v1/t2a_v2' \
+--header 'Authorization: Bearer <token>' \
+--header 'Content-Type: application/json' \
+--data '
+{
+  "model": "speech-2.8-hd",
+  "text": "今天是不是很开心呀(laughs)，当然了！",
+  "stream": false,
+  "voice_setting": {
+    "voice_id": "male-qn-qingse",
+    "speed": 1,
+    "vol": 1,
+    "pitch": 0,
+    "emotion": "happy"
+  },
+  "audio_setting": {
+    "sample_rate": 32000,
+    "bitrate": 128000,
+    "format": "mp3",
+    "channel": 1
+  },
+  "pronunciation_dict": {
+    "tone": [
+      "处理/(chu3)(li3)",
+      "危险/dangerous"
+    ]
+  },
+  "subtitle_enable": false
+}
+'
+
 #### 克隆接口
 [README.md](../../../res/voice-presets/can_clone/README.md)
 - 上传文件

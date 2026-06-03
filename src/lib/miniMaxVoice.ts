@@ -112,7 +112,7 @@ export async function synthesizeMiniMaxTtsBuffer(options: MiniMaxTtsOptions): Pr
     text,
     stream,
     voice_setting: {
-      voice_id: voiceId || "male-qn-qingse-test",
+      voice_id: voiceId || "male-qn-qingse",
       speed,
       vol,
       pitch,

@@ -16,6 +16,7 @@ import {
   isAliyunDirectQwenVoiceCloneModel,
   isAliyunDirectQwenVoiceDesignModel,
   isDirectAliyunManufacturer,
+  isMiniMaxVoiceManufacturer,
   normalizeAliyunDirectTtsModel,
   normalizePersistedVoiceConfig,
   normalizeVoiceBaseUrl,
@@ -1292,7 +1293,7 @@ export async function synthesizeReferenceAudioFromMode(options: {
 }
 
 // 语音预览
-export default router.post(
+router.post(
   "/",
   validateFields({
     configId: z.number().optional().nullable(),
@@ -1522,8 +1523,34 @@ export default router.post(
               compatibilityPreset: businessPreset.voiceId,
             },
           }));
+        } else if (isMiniMaxVoiceManufacturer(manufacturer)) {
+          // MiniMax 厂商走自己的 TTS 接口
+          // 业务预设的 voiceId 不是 minimax 的系统音色，需要 fallback
+          const { synthesizeMiniMaxTtsBuffer, MINIMAX_BUILTIN_VOICES } = await import("@/lib/miniMaxVoice");
+          const minimaxVoiceId = businessPreset.fallbackGender === "female"
+            ? "Chinese_Female_Qn"
+            : "Chinese_Male_Qn";
+          const buffer = await synthesizeMiniMaxTtsBuffer({
+            apiKey: String(config.apiKey || "").trim(),
+            model: String(config.model || "speech-02-hd").trim(),
+            voiceId: minimaxVoiceId,
+            text: String(text || "").trim(),
+            speed,
+          });
+          const format = String(payload.format || "mp3").trim().toLowerCase() || "mp3";
+          const sourceUrl = await persistPreviewAudioBuffer(userId, buffer, format);
+          const audioUrl = buildProxyAudioUrl(req, config?.id, sourceUrl);
+          return res.status(200).send(success({
+            audioUrl,
+            data: {
+              localGenerated: true,
+              model: String(config.model || "speech-02-hd").trim(),
+              voice: businessPreset.voiceId,
+              compatibilityPreset: businessPreset.voiceId,
+            },
+          }));
         } else {
-          // 非 direct Aliyun 厂商走本地克隆网关
+          // 其他非 direct Aliyun 厂商走本地克隆网关
           const effectiveRefPath = resolvedReferenceAudioSource || businessPreset.referencePath;
           const effectiveRefText = String(referenceText || "").trim() || businessPreset.referenceText;
           const cloned = await synthesizeWithLocalClone(
@@ -1866,6 +1893,22 @@ export default router.post(
           data = response.data || {};
           sourceUrl = String(data?.output?.audio?.url || "").trim();
         }
+      } else if (isMiniMaxVoiceManufacturer(manufacturer)) {
+        const { synthesizeMiniMaxTtsBuffer } = await import("@/lib/miniMaxVoice");
+        const minimaxVoiceId = effectiveVoiceId || "male-qn-qingse";
+        const minimaxBuffer = await synthesizeMiniMaxTtsBuffer({
+          apiKey: String(config.apiKey || "").trim(),
+          model: String(config.model || "speech-02-hd").trim(),
+          voiceId: minimaxVoiceId,
+          text: String(text || "").trim(),
+          speed,
+        });
+        sourceUrl = await persistPreviewAudioBuffer(userId, minimaxBuffer.buffer, String(payload.format || "mp3"));
+        data = {
+          localGenerated: true,
+          model: String(config.model || "speech-02-hd").trim(),
+          voice: minimaxVoiceId,
+        };
       } else {
         const response = await axios.post(`${baseUrl}/v1/tts`, payload, { headers });
         data = response.data || {};
@@ -1934,3 +1977,58 @@ export default router.post(
     }
   },
 );
+
+// 语音模型测试接口（只接受 configId，用安全的测试文本）
+router.post(
+  "/preview_test",
+  validateFields({
+    configId: z.number(),
+  }),
+  async (req, res) => {
+    try {
+      const userId = Number((req as any)?.user?.id || 0);
+      const { configId } = req.body;
+      const config = await getRuntimeStoryVoiceConfig(userId, configId);
+      if (!config) {
+        return res.status(400).send(error("语音模型配置不存在"));
+      }
+
+      // 直接调当前 router 的 / 路由，用安全的测试参数
+      const previewResponse = await new Promise<any>((resolve, reject) => {
+        const http = require("http");
+        const testReq = http.request({
+          hostname: "127.0.0.1",
+          port: process.env.PORT || 60002,
+          path: "/voice/preview",
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: req.headers.authorization || "",
+          },
+          timeout: 30000,
+        }, (testRes: any) => {
+          let data = "";
+          testRes.on("data", (chunk: Buffer) => { data += chunk; });
+          testRes.on("end", () => {
+            try { resolve(JSON.parse(data)); }
+            catch { reject(new Error("测试返回数据解析失败")); }
+          });
+        });
+        testReq.on("error", reject);
+        testReq.write(JSON.stringify({
+          configId,
+          mode: "text",
+          text: "这是语音模型测试。",
+          voiceId: "",
+        }));
+        testReq.end();
+      });
+      return res.status(200).send(previewResponse);
+    } catch (err) {
+      const msg = (err as any)?.response?.data?.message || (err as any)?.message || "语音测试失败";
+      return res.status(500).send(error(msg));
+    }
+  },
+);
+
+export default router;

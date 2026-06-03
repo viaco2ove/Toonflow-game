@@ -1,4 +1,6 @@
 import axios from "axios";
+import fs from "node:fs";
+import path from "node:path";
 import u from "@/utils";
 
 export interface GatewayVoicePreset {
@@ -17,6 +19,77 @@ const TEXT_ONLY_VOICE_MODES: GatewayVoiceMode[] = ["text"];
 const VOICE_PRESET_CACHE_TTL_MS = 2 * 60 * 1000;
 const voicePresetCache = new Map<string, { expiresAt: number; items: GatewayVoicePreset[] }>();
 const voicePresetInflight = new Map<string, Promise<GatewayVoicePreset[]>>();
+
+// 阿里云预设音色 JSON 文件路径（缓存了全量系统音色）
+const ALIYUN_VOICE_PRESETS_JSON = path.join(
+  process.cwd(),
+  "res/voice-presets/aliyun_voice_list_system/aliyun_voice_presets.json",
+);
+
+export interface AliyunVoicePresetItem {
+  name: string;
+  voice: string;
+  scene?: string;
+  gender?: string;
+  age?: string;
+  language?: string;
+  ssml?: boolean;
+  instruct?: boolean;
+  timestamp?: boolean;
+  // cosyvoice-v3.5 的 voice_id 字段
+  voice_id?: string;
+}
+
+export interface AliyunVoicePresetModelSection {
+  description: string;
+  benchmark_voices?: AliyunVoicePresetItem[];
+  domestic_voices?: AliyunVoicePresetItem[];
+  international_voices?: AliyunVoicePresetItem[];
+}
+
+export interface AliyunVoicePresetJson {
+  source: string;
+  generated_at: string;
+  cosyvoice: {
+    description: string;
+    models: Record<string, AliyunVoicePresetModelSection>;
+  };
+  qwen_tts?: {
+    description: string;
+    voices?: AliyunVoicePresetItem[];
+  };
+}
+
+// 加载并解析阿里云预设音色 JSON
+let cachedAliyunJson: AliyunVoicePresetJson | null = null;
+export function loadAliyunVoicePresetsJson(): AliyunVoicePresetJson | null {
+  if (cachedAliyunJson) return cachedAliyunJson;
+  try {
+    if (!fs.existsSync(ALIYUN_VOICE_PRESETS_JSON)) {
+      console.warn(`[voice] aliyun presets json not found: ${ALIYUN_VOICE_PRESETS_JSON}`);
+      return null;
+    }
+    const raw = fs.readFileSync(ALIYUN_VOICE_PRESETS_JSON, "utf8");
+    cachedAliyunJson = JSON.parse(raw) as AliyunVoicePresetJson;
+    return cachedAliyunJson;
+  } catch (err) {
+    console.error(`[voice] failed to load aliyun presets json:`, err);
+    return null;
+  }
+}
+
+// 列出指定模型下所有阿里云系统音色
+export function listAliyunModelPresets(model: string): AliyunVoicePresetItem[] {
+  const data = loadAliyunVoicePresetsJson();
+  if (!data) return [];
+  const section = data.cosyvoice?.models?.[model];
+  if (!section) return [];
+  return [
+    ...(section.benchmark_voices || []),
+    ...(section.domestic_voices || []),
+    ...(section.international_voices || []),
+  ];
+}
 
 const ALIYUN_DIRECT_QWEN_TTS_PRESETS: GatewayVoicePreset[] = [
   {
