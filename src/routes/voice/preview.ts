@@ -1526,10 +1526,10 @@ router.post(
         } else if (isMiniMaxVoiceManufacturer(manufacturer)) {
           // MiniMax 厂商走自己的 TTS 接口
           // 业务预设的 voiceId 不是 minimax 的系统音色，需要 fallback
-          const { synthesizeMiniMaxTtsBuffer, MINIMAX_BUILTIN_VOICES } = await import("@/lib/miniMaxVoice");
+          const { synthesizeMiniMaxTtsBuffer, MINIMAX_VOICE_ID_MALE, MINIMAX_VOICE_ID_FEMALE } = await import("@/lib/miniMaxVoice");
           const minimaxVoiceId = businessPreset.fallbackGender === "female"
-            ? "female-shaonv"
-            : "male-qn-qingse";
+            ? MINIMAX_VOICE_ID_FEMALE
+            : MINIMAX_VOICE_ID_MALE;
           const buffer = await synthesizeMiniMaxTtsBuffer({
             apiKey: String(config.apiKey || "").trim(),
             model: String(config.model || "speech-02-hd").trim(),
@@ -1894,8 +1894,8 @@ router.post(
           sourceUrl = String(data?.output?.audio?.url || "").trim();
         }
       } else if (isMiniMaxVoiceManufacturer(manufacturer)) {
-        const { synthesizeMiniMaxTtsBuffer } = await import("@/lib/miniMaxVoice");
-        const minimaxVoiceId = effectiveVoiceId || "male-qn-qingse";
+        const { synthesizeMiniMaxTtsBuffer, MINIMAX_VOICE_ID_MALE, MINIMAX_VOICE_ID_FEMALE,MINIMAX_VOICE_ID_DEF } = await import("@/lib/miniMaxVoice");
+        const minimaxVoiceId = effectiveVoiceId || MINIMAX_VOICE_ID_DEF;
         const minimaxBuffer = await synthesizeMiniMaxTtsBuffer({
           apiKey: String(config.apiKey || "").trim(),
           model: String(config.model || "speech-02-hd").trim(),
