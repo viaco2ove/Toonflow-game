@@ -217,7 +217,13 @@ async function synthesizeViaServe(options: {
   });
 
   if (response.statusCode < 200 || response.statusCode >= 300) {
-    throw new Error(`serve 请求失败: ${response.statusCode} ${response.body}`.slice(0, 300));
+    const body = String(response.body || "");
+    const logPath = path.join(getMossTtsRootDir(), "serve-stdout.log");
+    let logTail = "";
+    try { logTail = (await fsp.readFile(logPath, "utf8")).split("\n").slice(-15).join("\n"); } catch { /* ignore */ }
+    await fileLog(`[serve] ${response.statusCode} 错误，响应体: ${body.slice(0, 600)}`);
+    if (logTail) await fileLog(`[serve] 最近日志:\n${logTail}`);
+    throw new Error(`serve ${response.statusCode}: ${body.slice(0, 500)}\n--- serve-log ---\n${logTail.slice(0, 500)}`);
   }
   const json = JSON.parse(response.body) as any;
   if (json.error) {
