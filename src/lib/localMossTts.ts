@@ -611,10 +611,24 @@ export async function installMossTts(
         dlog("[install] venv 已存在，跳过创建");
         onProgress?.("虚拟环境已存在，跳过创建");
       } else {
-        await fileLog("[install] 创建 venv...");
-        dlog("[install] 创建 venv...");
-        onProgress?.("创建 Python 虚拟环境...");
-        await runCommand(pythonLauncher.command, ["-m", "venv", venvDir], { timeoutMs: 120000 });
+        // 优先用 conda 创建环境（pynini 需要 conda 安装）
+        let condaAvailable = false;
+        try {
+          await runCommand("conda", ["--version"], { timeoutMs: 10000 });
+          condaAvailable = true;
+        } catch { /* conda 不可用 */ }
+
+        if (condaAvailable) {
+          await fileLog("[install] 使用 conda create --prefix 创建环境...");
+          dlog("[install] 使用 conda create 创建环境...");
+          onProgress?.("使用 conda 创建 Python 3.10 环境...");
+          await runCommand("conda", ["create", "--prefix", venvDir, "python=3.10", "-y", "-c", "defaults"], { timeoutMs: 300000 });
+        } else {
+          await fileLog("[install] conda 不可用，使用 python -m venv 创建环境...");
+          dlog("[install] 使用 python -m venv 创建环境...");
+          onProgress?.("创建 Python 虚拟环境...");
+          await runCommand(pythonLauncher.command, ["-m", "venv", venvDir], { timeoutMs: 120000 });
+        }
         await fileLog("[install] venv 创建完成");
         dlog("[install] venv 创建完成");
       }
@@ -632,7 +646,42 @@ export async function installMossTts(
         dlog("[install] pip 升级失败（可选）");
       }
 
-      // 从 GitHub 克隆仓库（PyPI 上没有 moss-tts-nano 包）
+      // 安装文本正规化依赖：pynini → WeTextProcessing → importlib-resources → python-dateutil
+      // （顺序必须在 clone 之前，install.md 要求：先装这些，再装 requirements_clean.txt，最后 pip install -e .）
+      checkAbort();
+      onProgress?.("安装文本正规化依赖 (pynini + WeTextProcessing)...");
+
+      // 1. conda 安装 pynini（conda 环境优先，--prefix 指向 venv）
+      const venvCondaPrefix = getMossTtsVenvDir();
+      try {
+        await runCommand("conda", ["install", "-c", "conda-forge", "pynini=2.1.6", "-y", "--prefix", venvCondaPrefix], { timeoutMs: 300000 });
+        await fileLog("[install] conda pynini 安装成功");
+      } catch (condaErr) {
+        await fileLog("[install] conda pynini 失败，尝试 pip wheel:", condaErr instanceof Error ? condaErr.message : String(condaErr));
+        try {
+          const pyTag = process.platform === "win32" ? "cp310-cp310-win_amd64" : "cp310-cp310-manylinux_2_17_x86_64";
+          await runCommand(pythonBin, ["-m", "pip", "install", `https://mirrors.tuna.tsinghua.edu.cn/pypi/web/wheel/pynini/pynini-2.1.6-${pyTag}.whl`, "--no-build-isolation"], { timeoutMs: 180000 });
+          await fileLog("[install] pip pynini wheel 安装成功");
+        } catch (pipErr) {
+          await fileLog("[install] pynini 安装全部失败:", pipErr instanceof Error ? pipErr.message : String(pipErr));
+          dlog("[install] pynini 不可用，文本正规化将失败");
+        }
+      }
+
+      // 2. WeTextProcessing（--no-deps，pynini 已单独装）
+      try {
+        await runCommand(pythonBin, ["-m", "pip", "install", "WeTextProcessing", "--no-deps"], { timeoutMs: 180000 });
+        await fileLog("[install] WeTextProcessing 安装成功");
+      } catch (wtpErr) {
+        await fileLog("[install] WeTextProcessing 安装失败:", wtpErr instanceof Error ? wtpErr.message : String(wtpErr));
+      }
+
+      // 3. WeTextProcessing 遗漏的依赖
+      try {
+        await runCommand(pythonBin, ["-m", "pip", "install", "importlib-resources", "python-dateutil"], { timeoutMs: 120000 });
+      } catch { /* 非关键 */ }
+
+      // 从 GitHub 克隆 MOSS-TTS-Nano 仓库
       const gitDir = path.join(rootDir, "MOSS-TTS-Nano");
       const hasRepo = await fileExists(path.join(gitDir, "pyproject.toml"))
         || await fileExists(path.join(gitDir, "setup.py"))
@@ -651,11 +700,27 @@ export async function installMossTts(
         onProgress?.("仓库已存在，跳过克隆");
       }
 
+      // 清洗 requirements.txt：剔除 WeTextProcessing / pynini / tn（已单独装）
       checkAbort();
-      await fileLog("[install] pip install -e ...");
-      dlog("[install] pip install -e ...");
-      onProgress?.("安装 Python 依赖...");
-      await runCommand(pythonBin, ["-m", "pip", "install", "-e", gitDir], { timeoutMs: 600000 });
+      const requirementsPath = path.join(gitDir, "requirements.txt");
+      const requirementsCleanPath = path.join(gitDir, "requirements_clean.txt");
+      if (await fileExists(requirementsPath)) {
+        const raw = await fsp.readFile(requirementsPath, "utf8");
+        const cleaned = raw.split("\n")
+          .filter(line => !/WeTextProcessing|pynini|^tn\b/i.test(line.trim()))
+          .join("\n");
+        await fsp.writeFile(requirementsCleanPath, cleaned, "utf8");
+        await fileLog("[install] requirements_clean.txt 已生成");
+        onProgress?.("安装 Python 依赖（清洗后）...");
+        await runCommand(pythonBin, ["-m", "pip", "install", "-r", requirementsCleanPath], { timeoutMs: 600000 });
+        await fileLog("[install] requirements_clean.txt 安装完成");
+      }
+
+      // pip install -e .（项目本体，--no-deps 不重复装依赖）
+      checkAbort();
+      await fileLog("[install] pip install -e . --no-deps");
+      onProgress?.("安装项目本体...");
+      await runCommand(pythonBin, ["-m", "pip", "install", "-e", gitDir, "--no-deps"], { timeoutMs: 600000 });
       await fileLog("[install] pip install -e 完成");
       dlog("[install] pip install -e 完成");
 
