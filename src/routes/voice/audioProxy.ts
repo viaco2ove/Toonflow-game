@@ -47,6 +47,7 @@ router.get("/", async (req, res) => {
     const userId = Number((req as any)?.user?.id || 0);
     const configId = Number(req.query.configId || 0) || null;
     const source = String(req.query.source || "").trim();
+    console.error("[audioProxy] 请求:", { userId, configId, source });
     if (!source) {
       return res.status(400).send(error("缺少音频地址"));
     }
@@ -54,10 +55,12 @@ router.get("/", async (req, res) => {
     if (isLocalOssAudioSource(source)) {
       try {
         const buffer = await u.oss.getFile(source);
+        console.error("[audioProxy] 本地 OSS 命中, bytes=", buffer.length);
         res.setHeader("Content-Type", inferAudioContentType(source));
         res.setHeader("Cache-Control", "no-store");
         return res.status(200).send(buffer);
       } catch (err) {
+        console.error("[audioProxy] 本地 OSS 失败:", u.error(err).message, "stack=", (err as any)?.stack);
         const maybeSeedName = String(source || "").trim().split("/").pop() || "";
         if (/^\/system\/voice-presets\/[^/]+\.wav$/i.test(source) && maybeSeedName) {
           await ensureBundledVoicePresetSeed(maybeSeedName);
@@ -94,6 +97,7 @@ router.get("/", async (req, res) => {
     res.setHeader("Cache-Control", "no-store");
     return res.status(200).send(Buffer.from(response.data));
   } catch (err) {
+    console.error("[audioProxy] 异常:", u.error(err).message, "stack=", (err as any)?.stack);
     return res.status(500).send(error(u.error(err).message));
   }
 });

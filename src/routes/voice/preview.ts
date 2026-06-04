@@ -1537,9 +1537,12 @@ router.post(
 
       let resolvedProvider = "";
       const businessPresets = await ensureBusinessVoicePresets(userId);
-      const providerPresetPool = directAliyun
-        ? directAliyunVoicePresets(String(config.model || "").trim())
-        : filterVoicePresetsByManufacturer(await fetchVoicePresets(baseUrl, headers, manufacturer), manufacturer);
+      const isMossLocal = manufacturer === "moss_tts_nano";
+      const providerPresetPool = isMossLocal
+        ? []
+        : directAliyun
+          ? directAliyunVoicePresets(String(config.model || "").trim())
+          : filterVoicePresetsByManufacturer(await fetchVoicePresets(baseUrl, headers, manufacturer), manufacturer);
       const mergedPresetPool = [...businessPresets, ...providerPresetPool].filter(
         (item, index, list) => list.findIndex((row) => row.voiceId === item.voiceId) === index,
       );

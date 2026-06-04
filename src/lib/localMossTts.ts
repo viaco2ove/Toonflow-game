@@ -606,14 +606,25 @@ export async function synthesizeMossTts(options: {
   const cliName = process.platform === "win32" ? "moss-tts-nano.exe" : "moss-tts-nano";
   const onnxModelDir = path.join(getMossTtsRootDir(), "MOSS-TTS-Nano-100M-ONNX");
 
-  dlog(`[synthesize] cli=${cliName} text=${String(options.text || "").trim().slice(0, 20)}... output=${options.outputPath} prompt=${options.promptSpeech || "(无)"} model=${onnxModelDir}`);
+  dlog(`[synthesize] cli=${cliName} text=... output=${options.outputPath} model=${onnxModelDir}`);
+
+  // CLI 必须用绝对路径（Windows 会把 "/user/..." 解读成 "D:\user\..."，写错位置）
+  const { default: oss } = await import("@/utils/oss");
+  const { getUploadRootDir } = await import("@/lib/runtimePaths");
+  const relOutputPath = String(options.outputPath || "").replace(/^[/\\]+/, "");
+  const absOutputPath = path.join(getUploadRootDir(), relOutputPath);
+  await fsp.mkdir(path.dirname(absOutputPath), { recursive: true });
+  await fsp.writeFile(absOutputPath, Buffer.alloc(0));
+  await fsp.unlink(absOutputPath);
+
+  dlog(`[synthesize] absOutputPath=${absOutputPath}`);
 
   const args: string[] = [
     "generate",
     "--backend", "onnx",
     "--onnx-model-dir", onnxModelDir,
     "--text", String(options.text || "").trim(),
-    "--output", String(options.outputPath || "").trim(),
+    "--output", absOutputPath,
   ];
   if (options.promptSpeech) {
     args.push("--mode", "voice_clone");
@@ -621,15 +632,15 @@ export async function synthesizeMossTts(options: {
     dlog(`[synthesize] clone 模式: prompt=${options.promptSpeech}`);
   }
 
-  await ensureDir(path.dirname(String(options.outputPath || "")));
   dlog(`[synthesize] 执行: ${cliName} ${args.join(" ")}`);
   const { stdout, stderr } = await runCommand(cliName, args, { env: venvPath, timeoutMs: 120000 });
   dlog(`[synthesize] stdout=${stdout.slice(0, 200)} stderr=${stderr.slice(0, 200)}`);
-
-  if (!await fileExists(String(options.outputPath || ""))) {
+  const exists = await oss.fileExists(relOutputPath);
+  dlog(`[synthesize] oss.fileExists=${exists}`);
+  if (!exists) {
     throw new Error(`MOSS-TTS-Nano 合成失败: ${stderr || stdout}`.slice(0, 500));
   }
 
-  dlog(`[synthesize] 完成: ${options.outputPath}`);
-  return { audioPath: String(options.outputPath) };
+  dlog(`[synthesize] 完成: ${relOutputPath}`);
+  return { audioPath: relOutputPath };
 }
