@@ -617,12 +617,37 @@ export async function installMossTts(
           await runCommand("conda", ["--version"], { timeoutMs: 10000 });
           condaAvailable = true;
         } catch { /* conda 不可用 */ }
-
+        dlog("[install] conda:", condaAvailable);
         if (condaAvailable) {
-          await fileLog("[install] 使用 conda create --prefix 创建环境...");
-          dlog("[install] 使用 conda create 创建环境...");
-          onProgress?.("使用 conda 创建 Python 3.10 环境...");
-          await runCommand("conda", ["create", "--prefix", venvDir, "python=3.10", "-y", "-c", "defaults"], { timeoutMs: 300000 });
+          // 1. 同意 main 通道条款
+            await fileLog("[install] 同意 Anaconda main 通道服务条款...");
+            dlog("[install] 接受 main 通道 ToS...");
+            onProgress?.("正在配置 Conda 环境权限 (1/2)...");
+            await runCommand(
+              "conda",
+              ["tos", "accept", "--override-channels", "--channel", "https://repo.anaconda.com/pkgs/main"],
+              { timeoutMs: 30000 }
+            );
+
+            // 2. 同意 r 通道条款
+            await fileLog("[install] 同意 Anaconda r 通道服务条款...");
+            dlog("[install] 接受 r 通道 ToS...");
+            onProgress?.("正在配置 Conda 环境权限 (2/2)...");
+            await runCommand(
+              "conda",
+              ["tos", "accept", "--override-channels", "--channel", "https://repo.anaconda.com/pkgs/r"],
+              { timeoutMs: 30000 }
+            );
+
+            // 3. 开始创建环境 (依然推荐加上 -c conda-forge 以防默认通道缺失 pynini)
+            await fileLog("[install] 使用 conda create --prefix 创建环境...");
+            dlog("[install] 使用 conda create 创建环境...");
+            onProgress?.("使用 conda 创建 Python 3.10 环境...");
+            await runCommand(
+              "conda",
+              ["create", "--prefix", venvDir, "python=3.10", "-y", "-c", "conda-forge"],
+              { timeoutMs: 300000 }
+            );
         } else {
           await fileLog("[install] conda 不可用，使用 python -m venv 创建环境...");
           dlog("[install] 使用 python -m venv 创建环境...");

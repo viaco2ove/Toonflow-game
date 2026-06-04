@@ -17,6 +17,8 @@ windows
 ``` bash
 cd $tool_path\moss-tts-nano
 # wget https://mirrors.tuna.tsinghua.edu.cn/anaconda/miniconda/Miniconda3-latest-Linux-x86_64.sh -O miniconda.sh
+conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main
+conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r
 conda create --prefix ./venv python=3.10 -y -c defaults
 conda activate ./venv
 conda install -c conda-forge pynini=2.1.6 -y
@@ -40,7 +42,9 @@ cd $tool_path/moss-tts-nano
 # bash miniconda.sh -b
 
 # 2. 创建并激活局部 Conda 环境
-conda create --prefix ./venv python=3.10 -y -c defaults
+conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main
+conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r
+conda create --prefix ./venv python=3.10 -y --override-channels -c conda-forge
 conda activate ./venv
 
 # 3. 安装底层依赖和文本正规化模块

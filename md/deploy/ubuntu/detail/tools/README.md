@@ -5,3 +5,4 @@ export DATA_DIR="/data/toonflow"
 git clone --depth 1  https://github.com/OpenMOSS/MOSS-TTS-Nano.git /data/toonflow/tools/moss-tts-nano/MOSS-TTS-Nano
 
 rm -rf /data/toonflow/tools/moss-tts-nano/venv
+cd /data/toonflow/tools/moss-tts-nano
