@@ -86,8 +86,10 @@ export async function startMossTtsServe(): Promise<ServeProcess> {
     ? path.join(venvDir, "Scripts")
     : path.join(venvDir, "bin");
   const venvPath = { PATH: `${venvBinDir}${path.delimiter}${process.env.PATH || ""}` };
-  // Conda 环境：python.exe 在 venv 根目录（不是 Scripts/）
-  const pythonBin = path.join(venvDir, "python.exe");
+  // Conda 环境：Windows 在 venv/python.exe，Linux 在 venv/bin/python3
+  const pythonBin = process.platform === "win32"
+    ? path.join(venvDir, "python.exe")
+    : path.join(venvDir, "bin", "python3");
   const gitRepoDir = path.join(getMossTtsRootDir(), "MOSS-TTS-Nano");
   const onnxModelDir = path.join(getMossTtsRootDir(), "MOSS-TTS-Nano-100M-ONNX");
   console.error("[moss-tts] [serve] venvDir:", venvDir);
@@ -299,8 +301,10 @@ function getMossTtsStateFilePath(): string {
 }
 
 function getMossTtsPythonPath(): string {
-  // Conda 环境：python.exe 在 venv 根目录（不是 Scripts/）
-  return path.join(getMossTtsVenvDir(), "python.exe");
+  // Conda 环境：Windows 在 venv/python.exe，Linux 在 venv/bin/python3
+  return process.platform === "win32"
+    ? path.join(getMossTtsVenvDir(), "python.exe")
+    : path.join(getMossTtsVenvDir(), "bin", "python3");
 }
 
 async function readInstallState(): Promise<InstallStateFile | null> {
