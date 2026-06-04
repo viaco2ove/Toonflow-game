@@ -497,24 +497,25 @@ export async function installMossTts(
       }
 
       // 用实际合成验证安装（--help 不加载模型，必须跑合成测试）
+      // 安装后预热：跑一次合成把 ONNX 模型加载进 OS 缓存，后续合成启动更快
       checkAbort();
-      onProgress?.("验证安装...");
+      onProgress?.("预热模型（首次较慢，后续加速）...");
       const venvBinDir = process.platform === "win32"
         ? path.join(venvDir, "Scripts")
         : path.join(venvDir, "bin");
       const venvPath = { PATH: `${venvBinDir}${path.delimiter}${process.env.PATH || ""}` };
       const cliName = process.platform === "win32" ? "moss-tts-nano.exe" : "moss-tts-nano";
-      await fileLog(`[install] 验证合成: ${cliName} model=${onnxModelDir}`);
-      dlog(`[install] 验证合成: ${cliName} model=${onnxModelDir}`);
-      const testOut = path.join(rootDir, "test_output.wav");
+      await fileLog(`[install] 预热合成: ${cliName} model=${onnxModelDir}`);
+      dlog(`[install] 预热合成: ${cliName} model=${onnxModelDir}`);
+      const warmupOut = path.join(rootDir, "warmup_output.wav");
       await runCommand(cliName, [
         "generate", "--backend", "onnx",
         "--onnx-model-dir", onnxModelDir,
-        "--text", "测试",
-        "--output", testOut,
+        "--text", "预热",
+        "--output", warmupOut,
       ], { env: venvPath, timeoutMs: 120000 });
-      await fileLog("[install] 合成测试成功");
-      dlog("[install] 合成测试成功");
+      await fileLog("[install] 预热完成");
+      dlog("[install] 预热完成");
 
       await writeInstallState({
         status: "installed",
@@ -628,8 +629,11 @@ export async function synthesizeMossTts(options: {
   ];
   if (options.promptSpeech) {
     args.push("--mode", "voice_clone");
-    args.push("--prompt-speech", String(options.promptSpeech || "").trim());
-    dlog(`[synthesize] clone 模式: prompt=${options.promptSpeech}`);
+    // promptSpeech 可能是 OSS 相对路径（如 /system/voice-presets/...），转成绝对路径
+    const relPrompt = String(options.promptSpeech || "").replace(/^[/\\]+/, "");
+    const absPrompt = path.join(getUploadRootDir(), relPrompt);
+    args.push("--prompt-speech", absPrompt);
+    dlog(`[synthesize] clone 模式: prompt=${absPrompt}`);
   }
 
   dlog(`[synthesize] 执行: ${cliName} ${args.join(" ")}`);

@@ -1652,7 +1652,7 @@ router.post(
           const minimaxVoiceId = businessPreset.fallbackGender === "female"
             ? MINIMAX_VOICE_ID_FEMALE
             : MINIMAX_VOICE_ID_MALE;
-          const buffer = await synthesizeMiniMaxTtsBuffer({
+          const result = await synthesizeMiniMaxTtsBuffer({
             apiKey: String(config.apiKey || "").trim(),
             model: String(config.model || "speech-02-hd").trim(),
             voiceId: minimaxVoiceId,
@@ -1660,7 +1660,7 @@ router.post(
             speed,
           });
           const format = String(payload.format || "mp3").trim().toLowerCase() || "mp3";
-          const sourceUrl = await persistPreviewAudioBuffer(userId, buffer, format);
+          const sourceUrl = await persistPreviewAudioBuffer(userId, result.buffer, format);
           const audioUrl = buildProxyAudioUrl(req, config?.id, sourceUrl);
           return res.status(200).send(success({
             audioUrl,
