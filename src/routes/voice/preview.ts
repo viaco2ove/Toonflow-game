@@ -1682,12 +1682,14 @@ router.post(
             promptSpeech: resolvedReferenceAudioSource || businessPreset.referencePath,
             speed: speed || 1.0,
           });
-          data = {
-            localGenerated: true,
-            model: "moss-tts-nano-100m",
-            voice: effectiveVoiceId || "default",
-          };
-          sourceUrl = buildProxyAudioUrl(req, config?.id, cloneSavePath);
+          return res.status(200).send(success({
+            audioUrl: buildProxyAudioUrl(req, config?.id, cloneSavePath),
+            data: {
+              localGenerated: true,
+              model: "moss-tts-nano-100m",
+              voice: effectiveVoiceId || "default",
+            },
+          }));
         } else {
           // 其他非 direct Aliyun 厂商走本地克隆网关（CosyVoice）
           const effectiveRefPath = resolvedReferenceAudioSource || businessPreset.referencePath;

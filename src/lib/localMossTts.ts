@@ -5,7 +5,164 @@ import { spawn } from "node:child_process";
 import { getLocalToolRootDir } from "@/lib/runtimePaths";
 import { DebugLogUtil } from "@/utils/debugLogUtil";
 
-// 文件日志——始终写入，绕过 DebugLogUtil 和 console 路由
+// ============================================================================
+// MOSS-TTS-Nano Serve 常驻进程管理
+// ============================================================================
+
+const SERVE_PORT = 18084; // 避开默认 18083
+const SERVE_STARTUP_TIMEOUT_MS = 120000; // 模型加载最多等 2 分钟
+const SERVE_HEALTH_CHECK_INTERVAL_MS = 1000;
+const SERVE_STARTUP_POLL_MS = 500;
+const SERVE_MAX_STARTUP_MS = 60000;
+
+interface ServeProcess {
+  port: number;
+  baseUrl: string;
+  process: ReturnType<typeof spawn>;
+}
+
+let serveProcess: ServeProcess | null = null;
+let serveHealthCheck: ReturnType<typeof setTimeout> | null = null;
+
+async function waitForServeHealth(baseUrl: string, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const controller = new AbortController();
+      const id = setTimeout(() => controller.abort(), 5000);
+      await fetch(`${baseUrl}/health`, { signal: controller.signal as any }).catch(() => null);
+      clearTimeout(id);
+      const resp = await fetch(`${baseUrl}/health`, { signal: AbortSignal.timeout(5000) } as any);
+      if (resp.ok) {
+        dlog(`[serve] 健康检查通过: ${baseUrl}`);
+        return true;
+      }
+    } catch { /* ignore */ }
+    await new Promise(r => setTimeout(r, SERVE_HEALTH_CHECK_INTERVAL_MS));
+  }
+  return false;
+}
+
+async function startMossTtsServe(): Promise<ServeProcess> {
+  if (serveProcess) return serveProcess;
+  await fileLog("[serve] 启动常驻服务...");
+  dlog("[serve] 启动常驻服务...");
+
+  const venvDir = getMossTtsVenvDir();
+  const venvBinDir = process.platform === "win32"
+    ? path.join(venvDir, "Scripts")
+    : path.join(venvDir, "bin");
+  const venvPath = { PATH: `${venvBinDir}${path.delimiter}${process.env.PATH || ""}` };
+  const pythonBin = process.platform === "win32"
+    ? path.join(venvDir, "Scripts", "python.exe")
+    : path.join(venvDir, "bin", "python");
+  const gitRepoDir = path.join(getMossTtsRootDir(), "MOSS-TTS-Nano");
+  const onnxModelDir = path.join(getMossTtsRootDir(), "MOSS-TTS-Nano-100M-ONNX");
+  const baseUrl = `http://127.0.0.1:${SERVE_PORT}`;
+  const logPath = path.join(getMossTtsRootDir(), "serve-stdout.log");
+  const logStream = await fsp.open(logPath, "a");
+
+  const child = spawn(pythonBin, [
+    "-m", "moss_tts_nano.cli", "serve",
+    "--backend", "onnx",
+    "--onnx-model-dir", onnxModelDir,
+    "--host", "127.0.0.1",
+    "--port", String(SERVE_PORT),
+    "--execution-provider", "cpu",
+  ], {
+    cwd: gitRepoDir,
+    env: { ...process.env, PYTHONUTF8: "1", PYTHONIOENCODING: "utf-8" },
+    stdio: ["ignore", "pipe", "pipe"],
+    windowsHide: true,
+  });
+
+  child.stdout?.on("data", (c: Buffer) => {
+    logStream.write(c).catch(() => {});
+    process.stderr.write(`[moss-serve-stdout] ${c}`); // 临时 stderr 看启动日志
+  });
+  child.stderr?.on("data", (c: Buffer) => {
+    logStream.write(c).catch(() => {});
+  });
+  child.on("error", (err) => {
+    fileLog("[serve] 启动失败:", String(err?.message || err));
+    serveProcess = null;
+  });
+
+  const healthy = await waitForServeHealth(baseUrl, SERVE_MAX_STARTUP_MS);
+  if (!healthy) {
+    child.kill();
+    logStream.close();
+    throw new Error(`MOSS-TTS-Nano serve 启动超时（${SERVE_MAX_STARTUP_MS}ms 内无法健康检查通过）`);
+  }
+
+  serveProcess = { port: SERVE_PORT, baseUrl, process: child };
+  logStream.close();
+  await fileLog("[serve] 启动成功:", baseUrl);
+  dlog("[serve] 启动成功:", baseUrl);
+  return serveProcess;
+}
+
+async function stopMossTtsServe(): Promise<void> {
+  if (!serveProcess) return;
+  dlog("[serve] 停止服务...");
+  await fileLog("[serve] 停止服务...");
+  const child = serveProcess.process;
+  serveProcess = null;
+  if (process.platform === "win32") {
+    spawn("taskkill", ["/pid", String(child.pid), "/f", "/t"], { windowsHide: true });
+  } else {
+    child.kill("SIGTERM");
+  }
+}
+
+async function synthesizeViaServe(options: {
+  text: string;
+  outputPath: string;
+  promptSpeech?: string;
+  speed?: number;
+  format?: string;
+}): Promise<{ audioPath: string }> {
+  const serve = await startMossTtsServe();
+  const { default: FormData } = await import("node:form-data");
+  const form = new FormData();
+  form.append("text", String(options.text || "").trim());
+  form.append("speed", String(options.speed ?? 1.0));
+  if (options.promptSpeech) {
+    const absPrompt = path.join(getUploadRootDir(), String(options.promptSpeech || "").replace(/^[/\\]+/, ""));
+    const ext = inferAudioExt(absPrompt) || "wav";
+    const buffer = await fsp.readFile(absPrompt);
+    form.append("prompt_audio", buffer, { filename: `ref.${ext}`, contentType: "audio/wav" });
+    form.append("mode", "voice_clone");
+  }
+  const resp = await fetch(`${serve.baseUrl}/api/generate`, {
+    method: "POST",
+    body: form as any,
+    signal: AbortSignal.timeout(120000) as any,
+  });
+  if (!resp.ok) {
+    const text = await resp.text();
+    throw new Error(`serve 请求失败: ${resp.status} ${text}`.slice(0, 300));
+  }
+  const json = await resp.json() as any;
+  if (json.error) {
+    throw new Error(`serve 推理错误: ${String(json.error).slice(0, 300)}`);
+  }
+  const b64: string = String(json.audio_base64 || "");
+  if (!b64) throw new Error("serve 未返回音频数据");
+  const buffer = Buffer.from(b64, "base64");
+  // 写入 OSS 目录
+  const { getUploadRootDir } = await import("@/lib/runtimePaths");
+  const relPath = String(options.outputPath || "").replace(/^[/\\]+/, "");
+  const absPath = path.join(getUploadRootDir(), relPath);
+  await fsp.mkdir(path.dirname(absPath), { recursive: true });
+  await fsp.writeFile(absPath, buffer);
+  dlog(`[serve] 完成: ${absPath} bytes=${buffer.length}`);
+  return { audioPath: relPath };
+}
+
+// ============================================================================
+// CLI 模式（备用）
+// ============================================================================
 function dlog(...args: any[]) {
   if (DebugLogUtil.isDebugLogEnabled()) {
     console.log("[moss-tts]", ...args);
@@ -416,7 +573,7 @@ export async function installMossTts(
         await fileLog("[install] 从 GitHub 克隆仓库...");
         dlog("[install] 从 GitHub 克隆仓库...");
         onProgress?.("从 GitHub 克隆 MOSS-TTS-Nano 仓库...");
-        await runCommand("git", ["clone", "--depth", "1", "https://github.com/OpenMOSS/MOSS-TTS-Nano.git", gitDir], { timeoutMs: 120000 });
+        await runCommand("git", ["clone", "--depth","1", "--force", "https://github.com/OpenMOSS/MOSS-TTS-Nano.git", gitDir], { timeoutMs: 120000 });
         await fileLog("[install] Git clone 完成");
         dlog("[install] Git clone 完成");
       } else {
@@ -566,6 +723,25 @@ export async function installMossTts(
  * 使用 MOSS-TTS-Nano 合成语音（未安装时自动触发安装）。
  */
 export async function synthesizeMossTts(options: {
+  text: string;
+  outputPath: string;
+  promptSpeech?: string;
+  speed?: number;
+  language?: string;
+}): Promise<{ audioPath: string }> {
+  // serve 模式：模型常驻内存，推理只需 3-8 秒（无 Python 进程冷启动）
+  try {
+    return await synthesizeViaServe(options);
+  } catch (err) {
+    dlog("[synthesize] serve 模式失败，回退到 CLI:", (err as Error)?.message || err);
+    await fileLog("[synthesize] serve 模式失败，回退到 CLI:", (err as Error)?.message);
+    // 回退到旧的 CLI 模式（每次要冷启动 ~15s）
+  }
+  // CLI 模式（旧逻辑保留）
+  return synthesizeViaCLI(options);
+}
+
+async function synthesizeViaCLI(options: {
   text: string;
   outputPath: string;
   promptSpeech?: string;
