@@ -61,7 +61,7 @@ ja_1(Sakura)、ja_2(Yui)、ja_3(Aoi)、ja_4(Hina)、ja_5(Mei)
 `$tool_path = "{tool_path}"
 cd /d "%tool_path%\moss-tts-nano\venv\Scripts"`
 
-` .moss-tts-nano.exe generate \
+`./moss-tts-nano.exe generate \
 --backend onnx \
 --mode continuation \
 --prompt-audio-path assets/audio/zh_1.wav \
