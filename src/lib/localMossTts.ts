@@ -55,12 +55,29 @@ async function ensureDir(p: string): Promise<void> {
 }
 
 export async function startMossTtsServe(): Promise<ServeProcess> {
-  // 先检查是否已安装，没装直接报错，不等超时
+  if (serveProcess) return serveProcess;
+  const baseUrl = `http://127.0.0.1:${SERVE_PORT}`;
+
+  // 先检测 serve 是否已经在跑
+  try {
+    const resp = await fetch(`${baseUrl}/v1/tts`, { method: "HEAD", signal: AbortSignal.timeout(3000) as any });
+    if (resp.ok || resp.status === 404 || resp.status === 422) {
+      // 任何有响应的状态码都说明 serve 在跑（422=参数不对，404=路由存在但缺参数）
+      dlog("[serve] 检测到已有进程运行在:", baseUrl, "status:", resp.status);
+      serveProcess = { port: SERVE_PORT, baseUrl, process: null as any };
+      return serveProcess;
+    }
+  } catch (e) {
+    dlog("[serve] 端口检测失败，继续尝试启动:", e instanceof Error ? e.message : String(e));
+  }
+
+  // 检查安装状态
   const status = await getMossTtsInstallStatus();
+  console.error("[moss-tts] [serve] installStatus:", JSON.stringify(status));
   if (status.status !== "installed") {
     throw new Error(`MOSS-TTS-Nano 尚未安装（状态: ${status.status}），无法启动 serve`);
   }
-  if (serveProcess) return serveProcess;
+
   await fileLog("[serve] 启动常驻服务...");
   dlog("[serve] 启动常驻服务...");
 
@@ -69,17 +86,25 @@ export async function startMossTtsServe(): Promise<ServeProcess> {
     ? path.join(venvDir, "Scripts")
     : path.join(venvDir, "bin");
   const venvPath = { PATH: `${venvBinDir}${path.delimiter}${process.env.PATH || ""}` };
-  const pythonBin = process.platform === "win32"
-    ? path.join(venvDir, "Scripts", "python.exe")
-    : path.join(venvDir, "bin", "python");
+  // Conda 环境：python.exe 在 venv 根目录（不是 Scripts/）
+  const pythonBin = path.join(venvDir, "python.exe");
   const gitRepoDir = path.join(getMossTtsRootDir(), "MOSS-TTS-Nano");
   const onnxModelDir = path.join(getMossTtsRootDir(), "MOSS-TTS-Nano-100M-ONNX");
-  const baseUrl = `http://127.0.0.1:${SERVE_PORT}`;
+  console.error("[moss-tts] [serve] venvDir:", venvDir);
+  console.error("[moss-tts] [serve] pythonBin:", pythonBin);
+  console.error("[moss-tts] [serve] onnxModelDir:", onnxModelDir);
+  console.error("[moss-tts] [serve] gitRepoDir:", gitRepoDir);
   const logPath = path.join(getMossTtsRootDir(), "serve-stdout.log");
   const logStream = await fsp.open(logPath, "a");
+  console.error("[moss-tts] [serve] logPath:", logPath);
 
-  const child = spawn(pythonBin, [
-    "-m", "moss_tts_nano.cli", "serve",
+  const cliName = process.platform === "win32"
+    ? path.join(venvBinDir, "moss-tts-nano.exe")
+    : path.join(venvBinDir, "moss-tts-nano");
+  console.error("[moss-tts] [serve] cliName:", cliName);
+
+  const child = spawn(cliName, [
+    "serve",
     "--backend", "onnx",
     "--onnx-model-dir", onnxModelDir,
     "--host", "127.0.0.1",
@@ -251,9 +276,8 @@ function getMossTtsStateFilePath(): string {
 }
 
 function getMossTtsPythonPath(): string {
-  return process.platform === "win32"
-    ? path.join(getMossTtsVenvDir(), "Scripts", "python.exe")
-    : path.join(getMossTtsVenvDir(), "bin", "python");
+  // Conda 环境：python.exe 在 venv 根目录（不是 Scripts/）
+  return path.join(getMossTtsVenvDir(), "python.exe");
 }
 
 async function readInstallState(): Promise<InstallStateFile | null> {

@@ -78,7 +78,7 @@ export default async function startServe(randomPort: Boolean = false) {
   if (isMossTtsServeEnabled()) {
     startMossTtsServe()
       .then(() => {
-        dlog("[MOSS-TTS-Nano] 常驻服务已启动");
+        console.log("[MOSS-TTS-Nano] 常驻服务已启动");
       })
       .catch((err) => {
         console.error("[MOSS-TTS-Nano] serve 启动失败，将回退到 CLI 模式:", err);
