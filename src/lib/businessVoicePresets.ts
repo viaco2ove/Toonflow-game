@@ -66,7 +66,7 @@ const BUSINESS_VOICE_PRESETS: BusinessVoicePreset[] = [
     provider: BUSINESS_VOICE_PROVIDER,
     modes: ["text"],
     description: "业务标准音色，活泼女声，走克隆兼容链路",
-    referencePath: "/system/voice-presets/story_lively_female_long_long.wav",
+    referencePath: "/system/voice-presets/story_lively_female_long.wav",
     referenceText: BUSINESS_VOICE_PRESET_SEED_TEXT,
     promptText: "活泼女声，明亮有朝气，语速中等偏快，表达灵动，带轻快笑意。",
     baseVoiceId: "default_female",
