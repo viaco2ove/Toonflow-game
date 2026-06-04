@@ -10,10 +10,11 @@ import { DebugLogUtil } from "@/utils/debugLogUtil";
 // ============================================================================
 
 const SERVE_PORT = 18084; // 避开默认 18083
-const SERVE_STARTUP_TIMEOUT_MS = 120000; // 模型加载最多等 2 分钟
-const SERVE_HEALTH_CHECK_INTERVAL_MS = 1000;
-const SERVE_STARTUP_POLL_MS = 500;
-const SERVE_MAX_STARTUP_MS = 60000;
+const SERVE_MAX_STARTUP_MS = 60000; // 模型加载最多等 60 秒
+
+export function isMossTtsServeEnabled(): boolean {
+  return String(process.env.MOSS_TTS_SERVE || "").trim().toLowerCase() === "true";
+}
 
 interface ServeProcess {
   port: number;
@@ -22,7 +23,6 @@ interface ServeProcess {
 }
 
 let serveProcess: ServeProcess | null = null;
-let serveHealthCheck: ReturnType<typeof setTimeout> | null = null;
 
 async function waitForServeHealth(baseUrl: string, timeoutMs: number): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
@@ -43,7 +43,7 @@ async function waitForServeHealth(baseUrl: string, timeoutMs: number): Promise<b
   return false;
 }
 
-async function startMossTtsServe(): Promise<ServeProcess> {
+export async function startMossTtsServe(): Promise<ServeProcess> {
   if (serveProcess) return serveProcess;
   await fileLog("[serve] 启动常驻服务...");
   dlog("[serve] 启动常驻服务...");
@@ -729,15 +729,11 @@ export async function synthesizeMossTts(options: {
   speed?: number;
   language?: string;
 }): Promise<{ audioPath: string }> {
-  // serve 模式：模型常驻内存，推理只需 3-8 秒（无 Python 进程冷启动）
-  try {
-    return await synthesizeViaServe(options);
-  } catch (err) {
-    dlog("[synthesize] serve 模式失败，回退到 CLI:", (err as Error)?.message || err);
-    await fileLog("[synthesize] serve 模式失败，回退到 CLI:", (err as Error)?.message);
-    // 回退到旧的 CLI 模式（每次要冷启动 ~15s）
+  if (isMossTtsServeEnabled()) {
+    // serve 模式：模型常驻内存，推理只需 3-8 秒
+    return synthesizeViaServe(options);
   }
-  // CLI 模式（旧逻辑保留）
+  // CLI 模式（每次冷启动 ~15 秒）
   return synthesizeViaCLI(options);
 }
 
