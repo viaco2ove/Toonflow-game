@@ -594,13 +594,15 @@ async function synthesizeWithMiniMaxClone(
     throw new Error("minimax 克隆：上传参考音频失败");
   }
 
-  // 2. 调 voice_clone 创建克隆音色
-  const preferredName = `clone_${Date.now().toString(36)}_${(userId || 0).toString(36)}`;
+  // 2. 调 voice_clone 创建克隆音色（file_id 已含参考音频，clone_prompt 留空）
+  // voice_id 必须以英文字母开头（不能以数字开头）
+  const timestamp = String(Date.now()).slice(-10);
+  const preferredName = `cv_${timestamp}_u${userId || 0}`;
   const cloneResult = await cloneMiniMaxVoice({
     apiKey,
     fileId,
     voiceId: preferredName,
-    clonePrompt: { promptAudio: 0, promptText: referenceText },
+    clonePrompt: undefined,
     text: BUSINESS_VOICE_PRESET_SEED_TEXT,
     model,
     needNoiseReduction: true,

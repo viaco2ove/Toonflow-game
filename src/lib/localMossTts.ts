@@ -173,31 +173,51 @@ async function synthesizeViaServe(options: {
   format?: string;
 }): Promise<{ audioPath: string }> {
   const serve = await startMossTtsServe();
-  const { Readable } = await import("node:stream");
   const { default: FormData } = await import("form-data");
+  const { request } = await import("node:http");
+  const { getUploadRootDir } = await import("@/lib/runtimePaths");
 
   const form = new FormData();
   form.append("text", String(options.text || "").trim());
-  // 音色克隆：上传参考音频文件
   if (options.promptSpeech) {
+    // 声音克隆模式：上传参考音频，无需 demo_id
     const absPrompt = path.join(getUploadRootDir(), String(options.promptSpeech || "").replace(/^[/\\]+/, ""));
-    form.append("prompt_audio", fsp.readFile(absPrompt), {
-      filename: "ref.wav",
-      contentType: "audio/wav",
-    });
+    const buffer = await fsp.readFile(absPrompt);
+    form.append("prompt_audio", buffer, { filename: "ref.wav", contentType: "audio/wav" });
     form.append("voice_clone_max_text_tokens", "75");
+  } else {
+    // 纯文字合成模式：必须提供 demo_id 指定音色
+    form.append("demo_id", "demo-1");
   }
 
-  const resp = await fetch(`${serve.baseUrl}/api/generate`, {
-    method: "POST",
-    body: form as any,
-    signal: AbortSignal.timeout(120000) as any,
+  // 强制把 form 序列化成 buffer，手动通过 http.request 发送（避免 fetch + form-data 兼容问题）
+  const bodyBuffer = form.getBuffer();
+  const contentType = form.getHeaders()["content-type"] as string;
+  const urlObj = new URL(`${serve.baseUrl}/api/generate`);
+  const response = await new Promise<{ statusCode: number; body: string }>((resolve, reject) => {
+    const req = request({
+      hostname: urlObj.hostname,
+      port: urlObj.port,
+      path: urlObj.pathname,
+      method: "POST",
+      headers: {
+        "Content-Type": contentType,
+        "Content-Length": bodyBuffer.length,
+      },
+    }, (res) => {
+      let data = "";
+      res.on("data", (c) => data += c);
+      res.on("end", () => resolve({ statusCode: res.statusCode || 0, body: data }));
+    });
+    req.on("error", reject);
+    req.write(bodyBuffer);
+    req.end();
   });
-  if (!resp.ok) {
-    const text = await resp.text();
-    throw new Error(`serve 请求失败: ${resp.status} ${text}`.slice(0, 300));
+
+  if (response.statusCode < 200 || response.statusCode >= 300) {
+    throw new Error(`serve 请求失败: ${response.statusCode} ${response.body}`.slice(0, 300));
   }
-  const json = await resp.json() as any;
+  const json = JSON.parse(response.body) as any;
   if (json.error) {
     throw new Error(`serve 推理错误: ${String(json.error).slice(0, 300)}`);
   }
@@ -205,7 +225,6 @@ async function synthesizeViaServe(options: {
   if (!b64) throw new Error("serve 未返回音频数据");
   const buffer = Buffer.from(b64, "base64");
   // 写入 OSS 目录
-  const { getUploadRootDir } = await import("@/lib/runtimePaths");
   const relPath = String(options.outputPath || "").replace(/^[/\\]+/, "");
   const absPath = path.join(getUploadRootDir(), relPath);
   await fsp.mkdir(path.dirname(absPath), { recursive: true });

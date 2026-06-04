@@ -1,0 +1,2 @@
+cd /d "D:\Users\viaco\tools\Toonflow-game\toonflow-game-app"
+node --require ./src/env --require ./src/logger --require ./src/err --experimental-vm-modules node_modules/.bin/nodemon --watch src --ext ts --exec "node --loader ts-node/esm src/app.ts" 2>&1
