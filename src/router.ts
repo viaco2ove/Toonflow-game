@@ -1,4 +1,4 @@
-// @routes-hash 88e974168164c5b96094e679b0edfc5c
+// @routes-hash 705947770a43e9f3cd99ce72fae2477e
 import { Express } from "express";
 
 import route1 from "./routes/assets/addAssets";
@@ -150,10 +150,11 @@ import route146 from "./routes/voice/generateBindingVoice";
 import route147 from "./routes/voice/getVoices";
 import route148 from "./routes/voice/listAliyunPresets";
 import route149 from "./routes/voice/listMiniMaxPresets";
-import route150 from "./routes/voice/polishPrompt";
-import route151 from "./routes/voice/preview";
-import route152 from "./routes/voice/transcribe";
-import route153 from "./routes/voice/uploadAudio";
+import route150 from "./routes/voice/mossTtsInstall";
+import route151 from "./routes/voice/polishPrompt";
+import route152 from "./routes/voice/preview";
+import route153 from "./routes/voice/transcribe";
+import route154 from "./routes/voice/uploadAudio";
 
 export default async (app: Express) => {
   app.use("/assets/addAssets", route1);
@@ -305,8 +306,9 @@ export default async (app: Express) => {
   app.use("/voice/getVoices", route147);
   app.use("/voice/listAliyunPresets", route148);
   app.use("/voice/listMiniMaxPresets", route149);
-  app.use("/voice/polishPrompt", route150);
-  app.use("/voice/preview", route151);
-  app.use("/voice/transcribe", route152);
-  app.use("/voice/uploadAudio", route153);
+  app.use("/voice/mossTtsInstall", route150);
+  app.use("/voice/polishPrompt", route151);
+  app.use("/voice/preview", route152);
+  app.use("/voice/transcribe", route153);
+  app.use("/voice/uploadAudio", route154);
 }

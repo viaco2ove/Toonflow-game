@@ -14,6 +14,8 @@ interface AliyunPresetRow {
   gender: string;
   age: string;
   language: string;
+  model: string;
+  family: string;
 }
 
 function normalizeScene(input?: string | null): string {
@@ -83,14 +85,18 @@ export default router.post(
         gender: preset.fallbackGender === "female" ? "female" : "male",
         age: "adult",
         language: "zh",
+        model: "all",
+        family: "business_preset",
       }));
       let rows: AliyunPresetRow[] = [...businessRows, ...all.map((item) => ({
         voice: String(item.voice || item.voice_id || "").trim(),
         name: String(item.name || "").trim(),
         scene: normalizeScene(item.scene),
-        gender: inferGender(item.scene, item.name),
+        gender: item.gender || inferGender(item.scene, item.name),
         age: inferAge(item.scene),
-        language: inferLanguage(item.scene, item.name),
+        language: Array.isArray(item.language) ? item.language.join(",") : inferLanguage(item.scene, item.name),
+        model: item.model || "",
+        family: item.family || "cosyvoice",
       }))].filter((item) => item.voice);
 
       // 过滤
@@ -143,13 +149,30 @@ router.post(
   "/listAliyunModels",
   async (_req, res) => {
     try {
-      // 静态已知模型列表
-      const models = [
-        { value: "cosyvoice-v3-flash", label: "CosyVoice v3 Flash" },
-        { value: "cosyvoice-v3-plus", label: "CosyVoice v3 Plus" },
-        { value: "cosyvoice-v3.5-flash", label: "CosyVoice v3.5 Flash" },
-        { value: "cosyvoice-v3.5-plus", label: "CosyVoice v3.5 Plus" },
+      const { loadAliyunVoicePresetsJson } = await import("@/lib/voiceGateway");
+      const data = loadAliyunVoicePresetsJson();
+      const models: Array<{ value: string; label: string; family: string }> = [
+        { value: "all", label: "全部模型", family: "all" },
       ];
+      // CosyVoice 模型
+      const cosyModels = data?.cosyvoice?.models || {};
+      for (const key of Object.keys(cosyModels)) {
+        models.push({ value: key, label: key, family: "cosyvoice" });
+      }
+      // Qwen TTS 模型
+      const qwen = data?.qwen_tts;
+      if (qwen?.non_realtime_models) {
+        for (const key of Object.keys(qwen.non_realtime_models)) {
+          models.push({ value: key, label: key, family: "qwen_tts" });
+        }
+      }
+      if (qwen?.realtime_models) {
+        for (const key of Object.keys(qwen.realtime_models)) {
+          if (!models.some((m) => m.value === key)) {
+            models.push({ value: key, label: key, family: "qwen_tts" });
+          }
+        }
+      }
       return res.status(200).send(success({ items: models }));
     } catch (err) {
       return res.status(500).send(error((err as Error)?.message || "获取阿里云模型列表失败"));

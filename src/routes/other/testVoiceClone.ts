@@ -129,6 +129,15 @@ export default router.post(
         const baseUrl = trimmedBaseUrl || "http://127.0.0.1:8000";
         await axios.get(`${baseUrl}/health`, { timeout: 10000 });
         res.status(200).send(success("本地 CosyVoice 服务连通性测试通过"));
+      } else if (trimmedManufacturer === "moss_tts_nano") {
+        // MOSS-TTS-Nano 本地模型 - 触发自动安装并测试合成
+        const { synthesizeMossTts } = await import("@/lib/localMossTts");
+        const testPath = `/temp/moss-tts-test/${uuidv4()}.wav`;
+        await synthesizeMossTts({
+          text: "MOSS-TTS-Nano 测试文本，语音合成功能正常。",
+          outputPath: testPath,
+        });
+        res.status(200).send(success("MOSS-TTS-Nano 本地模型测试通过（已自动安装）"));
       } else {
         res.status(400).send(error(`不支持的语音克隆厂商: ${manufacturer}`));
       }

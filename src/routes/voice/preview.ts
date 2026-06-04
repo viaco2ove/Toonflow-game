@@ -630,6 +630,35 @@ async function synthesizeWithMiniMaxClone(
   };
 }
 
+async function synthesizeWithMossTtsClone(
+  req: express.Request,
+  userId: number,
+  text: string,
+  referenceAudioPath: string,
+  referenceText: string,
+  format: string,
+  speed: number | null,
+): Promise<{ audioUrl: string; data: Record<string, any> }> {
+  const { synthesizeMossTts } = await import("@/lib/localMossTts");
+  const outFormat = String(format || "wav").trim().toLowerCase() || "wav";
+  const savePath = `/user/${userId}/game/voice-preview/${uuidv4()}.${outFormat}`;
+  await synthesizeMossTts({
+    text: String(text || "").trim(),
+    outputPath: savePath,
+    promptSpeech: referenceAudioPath,
+    speed: speed || 1.0,
+  });
+  const audioUrl = buildProxyAudioUrl(req, null, savePath);
+  return {
+    audioUrl,
+    data: {
+      localGenerated: true,
+      mode: "moss_tts_nano_clone",
+      model: "moss-tts-nano-100m",
+    },
+  };
+}
+
 async function persistDerivedReferenceAudio(
   savePath: string,
   sourceUrl: string,
@@ -1334,6 +1363,22 @@ export async function synthesizeReferenceAudioFromMode(options: {
       sampleRate: sampleRate || 32000,
     });
     return { audioPath: await writeCloneReadyReference(result.buffer, "mp3") };
+  } else if (manufacturer === "moss_tts_nano") {
+    // MOSS-TTS-Nano 本地推理（text / clone 模式）
+    const { synthesizeMossTts, getMossTtsInstallStatus } = await import("@/lib/localMossTts");
+    const status = await getMossTtsInstallStatus();
+    if (status.status !== "installed") {
+      throw new Error(`MOSS-TTS-Nano 未安装: ${status.message}`);
+    }
+    // 对于 text 模式：用 voiceId 作为 base voice 生成
+    // 对于 clone 模式：需要在外部先通过 referenceAudioPath 指定参考音频
+    // 这里只负责把 textSeed 转成 wav 存档（实际合成在 preview 处理函数里调用 synthesizeMossTts）
+    // synthesizeReferenceAudioFromMode 仅生成 seed wav 存档，供 clone 通道复用
+    const seedAudioPath = await synthesizeMossTts({
+      text: textSeed,
+      outputPath: cachePath,
+    });
+    return { audioPath: seedAudioPath.audioPath };
   } else {
     const payload: Record<string, any> = {
       text: textSeed,
@@ -1724,6 +1769,8 @@ router.post(
                 speed,
                 effectiveVoiceId,
               )
+            : manufacturer === "moss_tts_nano"
+            ? await synthesizeWithMossTtsClone(req, userId, text, resolvedReferenceAudioSource, String(referenceText || "").trim(), payload.format, speed)
             : await synthesizeWithLocalClone(
                 req,
                 userId,
@@ -1994,6 +2041,20 @@ router.post(
           localGenerated: true,
           model: String(config.model || "speech-02-hd").trim(),
           voice: minimaxVoiceId,
+        };
+      } else if (manufacturer === "moss_tts_nano") {
+        // MOSS-TTS-Nano 本地合成（text 模式预览）
+        const { synthesizeMossTts } = await import("@/lib/localMossTts");
+        const outFormat = String(payload.format || "wav").trim().toLowerCase() || "wav";
+        sourceUrl = `/user/${userId}/game/voice-preview/${uuidv4()}.${outFormat}`;
+        await synthesizeMossTts({
+          text: String(text || "").trim(),
+          outputPath: sourceUrl,
+        });
+        data = {
+          localGenerated: true,
+          model: "moss-tts-nano-100m",
+          voice: effectiveVoiceId || "default",
         };
       } else {
         const response = await axios.post(`${baseUrl}/v1/tts`, payload, { headers });

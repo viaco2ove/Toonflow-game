@@ -23,7 +23,7 @@ const voicePresetInflight = new Map<string, Promise<GatewayVoicePreset[]>>();
 // 阿里云预设音色 JSON 文件路径（缓存了全量系统音色）
 const ALIYUN_VOICE_PRESETS_JSON = path.join(
   process.cwd(),
-  "res/voice-presets/aliyun_voice_list_system/aliyun_voice_presets.json",
+  "res/voice-presets/voice_list_system/aliyun_voice_presets.json",
 );
 
 export interface AliyunVoicePresetItem {
@@ -32,12 +32,15 @@ export interface AliyunVoicePresetItem {
   scene?: string;
   gender?: string;
   age?: string;
-  language?: string;
+  language?: string | string[];
   ssml?: boolean;
   instruct?: boolean;
   timestamp?: boolean;
-  // cosyvoice-v3.5 的 voice_id 字段
   voice_id?: string;
+  model?: string;       // 所属模型，如 cosyvoice-v3-flash / qwen-tts 等
+  family?: string;      // 产品族：cosyvoice / qwen_tts
+  description?: string; // Qwen 音色描述
+  languages?: string[]; // Qwen 音色多语言列表
 }
 
 export interface AliyunVoicePresetModelSection {
@@ -45,6 +48,7 @@ export interface AliyunVoicePresetModelSection {
   benchmark_voices?: AliyunVoicePresetItem[];
   domestic_voices?: AliyunVoicePresetItem[];
   international_voices?: AliyunVoicePresetItem[];
+  overseas_voices?: { voices?: AliyunVoicePresetItem[] };
 }
 
 export interface AliyunVoicePresetJson {
@@ -56,7 +60,15 @@ export interface AliyunVoicePresetJson {
   };
   qwen_tts?: {
     description: string;
-    voices?: AliyunVoicePresetItem[];
+    realtime_models?: Record<string, string[]>;
+    non_realtime_models?: Record<string, string[]>;
+    realtime_voices?: Array<{
+      voice: string;
+      name: string;
+      gender: string;
+      description?: string;
+      languages?: string[];
+    }>;
   };
 }
 
@@ -78,17 +90,69 @@ export function loadAliyunVoicePresetsJson(): AliyunVoicePresetJson | null {
   }
 }
 
-// 列出指定模型下所有阿里云系统音色
+// 列出指定模型下所有阿里云系统音色（支持 "all" 返回全部）
 export function listAliyunModelPresets(model: string): AliyunVoicePresetItem[] {
   const data = loadAliyunVoicePresetsJson();
   if (!data) return [];
-  const section = data.cosyvoice?.models?.[model];
-  if (!section) return [];
-  return [
-    ...(section.benchmark_voices || []),
-    ...(section.domestic_voices || []),
-    ...(section.international_voices || []),
-  ];
+  const wantAll = !model || model === "all";
+  const results: AliyunVoicePresetItem[] = [];
+
+  // ── CosyVoice 音色 ──
+  const cosyModels = data.cosyvoice?.models || {};
+  for (const [modelKey, section] of Object.entries(cosyModels)) {
+    if (!wantAll && modelKey !== model) continue;
+    const voices = [
+      ...(section.benchmark_voices || []),
+      ...(section.domestic_voices || []),
+      ...(section.international_voices || []),
+      ...((section.overseas_voices?.voices) || []),
+    ];
+    for (const v of voices) {
+      results.push({
+        name: v.name,
+        voice: v.voice_id || v.voice,
+        scene: v.scene || "",
+        gender: v.gender || "",
+        age: v.age || "",
+        language: v.language || "",
+        ssml: v.ssml,
+        instruct: v.instruct,
+        timestamp: v.timestamp,
+        voice_id: v.voice_id,
+        model: modelKey,
+        family: "cosyvoice",
+      });
+    }
+  }
+
+  // ── Qwen TTS 音色 ──
+  const qwen = data.qwen_tts;
+  if (qwen?.realtime_voices) {
+    const wantQwen = wantAll
+      || (model.startsWith("qwen"));
+    if (wantQwen) {
+      // 取第一个非 realtime 模型名作为 model 标识
+      const qwenModelKeys = Object.keys(qwen.non_realtime_models || qwen.realtime_models || {});
+      const qwenModelLabel = qwenModelKeys[0] || "qwen-tts";
+      for (const v of qwen.realtime_voices) {
+        const genderNorm = /男/.test(v.gender) ? "male" : /女/.test(v.gender) ? "female" : "";
+        results.push({
+          name: v.name || v.voice,
+          voice: v.voice,
+          scene: v.description || "",
+          gender: genderNorm,
+          age: "",
+          language: (v.languages || []).join(","),
+          model: qwenModelLabel,
+          family: "qwen_tts",
+          description: v.description,
+          languages: v.languages,
+        });
+      }
+    }
+  }
+
+  return results;
 }
 
 const ALIYUN_DIRECT_QWEN_TTS_PRESETS: GatewayVoicePreset[] = [
@@ -363,7 +427,7 @@ export async function getRuntimeStoryVoiceConfig(userId: number, requestedConfig
 
 export function isLocalVoiceManufacturer(input?: string | null): boolean {
   const normalized = normalizedManufacturer(input);
-  return normalized === "ai_voice_tts" || normalized === "aliyun";
+  return normalized === "ai_voice_tts" || normalized === "aliyun" || normalized === "moss_tts_nano";
 }
 
 export function isLocalAliyunManufacturer(input?: string | null): boolean {
@@ -507,6 +571,9 @@ export function resolveVoiceModelModes(input: {
       return ["prompt_voice"];
     }
     return ["text"];
+  }
+  if (manufacturer === "moss_tts_nano") {
+    return ["text", "clone"];
   }
   return [...DEFAULT_TTS_VOICE_MODES];
 }

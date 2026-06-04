@@ -1,0 +1,575 @@
+import fsp from "node:fs/promises";
+import { constants as fsConstants } from "node:fs";
+import path from "node:path";
+import { spawn } from "node:child_process";
+import { getLocalToolRootDir } from "@/lib/runtimePaths";
+import { DebugLogUtil } from "@/utils/debugLogUtil";
+
+// 文件日志——始终写入，绕过 DebugLogUtil 和 console 路由
+function dlog(...args: any[]) {
+  if (DebugLogUtil.isDebugLogEnabled()) {
+    console.log("[moss-tts]", ...args);
+  }
+}
+
+async function fileLog(...args: unknown[]): Promise<void> {
+  try {
+    dlog("[fileLog]", ...args);
+    const logPath = path.join(getMossTtsRootDir(), "install-debug.log");
+    const logDir = path.dirname(logPath);
+    await fsp.mkdir(logDir, { recursive: true });
+    const line = `[${new Date().toISOString()}] ` + args.map(a => typeof a === "object" ? JSON.stringify(a) : String(a)).join(" ") + "\n";
+    await fsp.appendFile(logPath, line, "utf8");
+  } catch { /* noop */ }
+}
+
+export const LOCAL_MOSS_TTS_MANUFACTURER = "moss_tts_nano";
+export const LOCAL_MOSS_TTS_DEFAULT_MODEL = "moss-tts-nano-100m";
+
+type LocalMossTtsStatusKind = "not_installed" | "installing" | "installed" | "failed";
+
+type InstallStateFile = {
+  status: Exclude<LocalMossTtsStatusKind, "not_installed">;
+  message: string;
+  updatedAt: number;
+  installedAt?: number;
+  version?: number;
+  pythonLauncher?: string;
+  lastError?: string;
+};
+
+type RunCommandOptions = {
+  cwd?: string;
+  env?: NodeJS.ProcessEnv;
+  timeoutMs?: number;
+};
+
+export type LocalMossTtsStatus = {
+  manufacturer: typeof LOCAL_MOSS_TTS_MANUFACTURER;
+  model: string;
+  status: LocalMossTtsStatusKind;
+  installed: boolean;
+  canInstall: boolean;
+  message: string;
+};
+
+let activeInstallPromise: Promise<LocalMossTtsStatus> | null = null;
+let installAbortFlag = false;
+
+function getMossTtsRootDir(): string {
+  return path.join(getLocalToolRootDir(), "moss-tts-nano");
+}
+
+function getMossTtsVenvDir(): string {
+  return path.join(getMossTtsRootDir(), "venv");
+}
+
+function getMossTtsStateFilePath(): string {
+  return path.join(getMossTtsRootDir(), "install-state.json");
+}
+
+function getMossTtsPythonPath(): string {
+  return process.platform === "win32"
+    ? path.join(getMossTtsVenvDir(), "Scripts", "python.exe")
+    : path.join(getMossTtsVenvDir(), "bin", "python");
+}
+
+async function fileExists(targetPath: string): Promise<boolean> {
+  try {
+    await fsp.access(targetPath, fsConstants.F_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function ensureDir(dirPath: string): Promise<void> {
+  await fsp.mkdir(dirPath, { recursive: true });
+}
+
+async function readInstallState(): Promise<InstallStateFile | null> {
+  try {
+   if (DebugLogUtil.isDebugLogEnabled()) {
+      console.log("[moss-tts] install status by file:",getMossTtsStateFilePath());
+      console.log("[moss-tts] reset status need delete this file and install again:",getMossTtsStateFilePath());
+    }
+    const raw = await fsp.readFile(getMossTtsStateFilePath(), "utf8");
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return null;
+    const status = String(parsed.status || "").trim();
+    if (status !== "installing" && status !== "installed" && status !== "failed") {
+      return null;
+    }
+    return {
+      status,
+      message: String(parsed.message || "").trim(),
+      updatedAt: Number(parsed.updatedAt || 0) || Date.now(),
+      installedAt: Number(parsed.installedAt || 0) || undefined,
+      version: Number(parsed.version || 0) || undefined,
+      pythonLauncher: String(parsed.pythonLauncher || "").trim() || undefined,
+      lastError: String(parsed.lastError || "").trim() || undefined,
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function writeInstallState(state: InstallStateFile): Promise<void> {
+  try {
+    await ensureDir(getMossTtsRootDir());
+    await fsp.writeFile(getMossTtsStateFilePath(), JSON.stringify(state, null, 2), "utf8");
+    await fileLog("[writeInstallState] 写入成功:", JSON.stringify(state));
+  } catch (err) {
+    await fileLog("[writeInstallState] 写入失败:", err instanceof Error ? err.message : String(err));
+    throw err;
+  }
+}
+
+function formatCommandError(command: string, args: string[], stdout: string, stderr: string, exitCode?: number | null): string {
+  const stderrTail = stderr.trim().split(/\r?\n/).slice(-12).join("\n").trim();
+  const stdoutTail = stdout.trim().split(/\r?\n/).slice(-12).join("\n").trim();
+  const detail = [
+    exitCode === null || exitCode === undefined ? "" : `退出码: ${exitCode}`,
+    stderrTail ? `stderr:\n${stderrTail}` : "",
+    stdoutTail ? `stdout:\n${stdoutTail}` : "",
+  ].filter(Boolean).join("\n").trim();
+  const commandText = `命令执行失败: ${command} ${args.join(" ")}`.trim();
+  return detail ? `${commandText}\n${detail}` : commandText;
+}
+
+async function runCommand(command: string, args: string[], options: RunCommandOptions = {}): Promise<{ stdout: string; stderr: string }> {
+  return await new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      cwd: options.cwd,
+      env: {
+        ...process.env,
+        PYTHONUTF8: "1",
+        ...options.env,
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
+    });
+
+    let stdout = "";
+    let stderr = "";
+    let timeout: NodeJS.Timeout | null = null;
+    let settled = false;
+
+    const finishReject = (message: string) => {
+      if (settled) return;
+      settled = true;
+      if (timeout) clearTimeout(timeout);
+      reject(new Error(message));
+    };
+
+    if (options.timeoutMs && options.timeoutMs > 0) {
+      timeout = setTimeout(() => {
+        if (process.platform === "win32") {
+          spawn("taskkill", ["/pid", String(child.pid), "/f", "/t"], { windowsHide: true });
+        } else {
+          child.kill("SIGKILL");
+        }
+        finishReject(`命令执行超时: ${command} ${args.join(" ")}`.trim());
+      }, options.timeoutMs);
+    }
+
+    child.stdout.on("data", (chunk) => { stdout += String(chunk || ""); });
+    child.stderr.on("data", (chunk) => { stderr += String(chunk || ""); });
+    child.on("error", (err) => {
+      const code = (err as NodeJS.ErrnoException)?.code;
+      if (code === "ENOENT") {
+        finishReject(`命令不存在: ${command}`);
+        return;
+      }
+      finishReject(String(err?.message || err || `命令启动失败: ${command}`));
+    });
+    child.on("close", (code) => {
+      if (settled) return;
+      settled = true;
+      if (timeout) clearTimeout(timeout);
+      dlog(`[runCommand] 完成: ${command} ${args.join(" ")} 退出码=${code}`);
+      if (code === 0) {
+        resolve({ stdout, stderr });
+        return;
+      }
+      reject(new Error(formatCommandError(command, args, stdout, stderr, code)));
+    });
+  });
+}
+
+async function resolveSystemPythonLauncher(): Promise<{ command: string; baseArgs: string[]; label: string } | null> {
+  await fileLog("[Python 探测] 开始搜索 Python...");
+  dlog("[Python 探测] 开始搜索 Python...");
+  const winCandidates = [
+    { command: "python", baseArgs: [], label: "python" },
+    { command: "py", baseArgs: ["-3"], label: "py -3" },
+    { command: "python3", baseArgs: [], label: "python3" },
+  ];
+  const nixCandidates = [
+    { command: "python3", baseArgs: [], label: "python3" },
+    { command: "python", baseArgs: [], label: "python" },
+  ];
+  const candidates = process.platform === "win32" ? winCandidates : nixCandidates;
+  for (const candidate of candidates) {
+    try {
+      await fileLog(`[Python 探测] ${candidate.label}...`);
+      dlog(`[Python 探测] ${candidate.label}...`);
+      const { stdout } = await runCommand(candidate.command, [...candidate.baseArgs, "--version"], { timeoutMs: 10000 });
+      dlog(`[Python 探测] ${candidate.label} -> ${stdout.trim()}`);
+      if (/python 3\.\d+/i.test(stdout)) {
+        dlog(`[Python 选中] ${candidate.label}`);
+        return candidate;
+      }
+    } catch (e) {
+      dlog(`[Python 探测] ${candidate.label} 失败:`, e instanceof Error ? e.message : String(e));
+    }
+  }
+  return null;
+}
+
+/**
+ * 检测当前 MOSS-TTS-Nano 安装状态。
+ */
+export async function getMossTtsInstallStatus(): Promise<LocalMossTtsStatus> {
+  const state = await readInstallState();
+  if (state?.status === "installing") {
+    return {
+      manufacturer: LOCAL_MOSS_TTS_MANUFACTURER,
+      model: LOCAL_MOSS_TTS_DEFAULT_MODEL,
+      status: "installing",
+      installed: false,
+      canInstall: true,
+      message: state.message || "正在安装中...",
+    };
+  }
+  if (state?.status === "installed") {
+    const pythonPath = getMossTtsPythonPath();
+    const venvExists = await fileExists(pythonPath);
+    if (!venvExists) {
+      return {
+        manufacturer: LOCAL_MOSS_TTS_MANUFACTURER,
+        model: LOCAL_MOSS_TTS_DEFAULT_MODEL,
+        status: "not_installed",
+        installed: false,
+        canInstall: true,
+        message: "MOSS-TTS-Nano 未安装（venv 目录丢失）",
+      };
+    }
+    return {
+      manufacturer: LOCAL_MOSS_TTS_MANUFACTURER,
+      model: LOCAL_MOSS_TTS_DEFAULT_MODEL,
+      status: "installed",
+      installed: true,
+      canInstall: true,
+      message: `已安装（${state.message || ""}）`,
+    };
+  }
+  if (state?.status === "failed") {
+    return {
+      manufacturer: LOCAL_MOSS_TTS_MANUFACTURER,
+      model: LOCAL_MOSS_TTS_DEFAULT_MODEL,
+      status: "failed",
+      installed: false,
+      canInstall: true,
+      message: `安装失败: ${state.lastError || state.message || "未知错误"}`,
+    };
+  }
+  return {
+    manufacturer: LOCAL_MOSS_TTS_MANUFACTURER,
+    model: LOCAL_MOSS_TTS_DEFAULT_MODEL,
+    status: "not_installed",
+    installed: false,
+    canInstall: true,
+    message: "MOSS-TTS-Nano 未安装，点击安装",
+  };
+}
+
+export async function cancelInstall(): Promise<void> {
+  installAbortFlag = true;
+  // 立刻把状态文件改掉，这样 /status 不会再返回 "installing"
+  try {
+    await writeInstallState({
+      status: "failed",
+      message: "安装已中止",
+      updatedAt: Date.now(),
+    });
+  } catch { /* noop */ }
+  await fileLog("[cancelInstall] 中止标志已设置，状态已重置为 failed");
+  dlog("[cancelInstall] 中止标志已设置，状态已重置为 failed");
+}
+
+/**
+ * 清除安装状态文件（恢复到未安装）。
+ */
+export async function resetInstallState(): Promise<void> {
+  try {
+    await fileLog("[resetInstallState] 删除状态文件:", getMossTtsStateFilePath());
+    dlog("[resetInstallState] 删除状态文件:", getMossTtsStateFilePath());
+    await fsp.unlink(getMossTtsStateFilePath());
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException)?.code;
+    if (code !== "ENOENT") {
+      await fileLog("[resetInstallState] 删除失败:", err instanceof Error ? err.message : String(err));
+      dlog("[resetInstallState] 删除失败:", err instanceof Error ? err.message : String(err));
+    }
+  }
+  installAbortFlag = false;
+  activeInstallPromise = null;
+  await fileLog("[resetInstallState] 完成");
+  dlog("[resetInstallState] 完成");
+}
+
+function checkAbort(): void {
+  if (installAbortFlag) {
+    throw new Error("INSTALL_ABORTED");
+  }
+}
+
+/**
+ * 安装 MOSS-TTS-Nano（venv + git clone + pip install -e）。
+ * 首次调用时自动下载模型权重。
+ */
+export async function installMossTts(
+  onProgress?: (msg: string) => void,
+): Promise<LocalMossTtsStatus> {
+  await fileLog("[install] installMossTts 开始, abortFlag=", installAbortFlag);
+  dlog("[install] installMossTts 开始, abortFlag=", installAbortFlag);
+  if (activeInstallPromise) {
+    await fileLog("[install] 已有安装进程，返回现有 promise");
+    dlog("[install] 已有安装进程，返回现有 promise");
+    return activeInstallPromise;
+  }
+
+  activeInstallPromise = (async () => {
+    try {
+      checkAbort();
+      await fileLog("[install] IIFE 开始");
+      dlog("[install] 开始安装...");
+      await writeInstallState({
+        status: "installing",
+        message: "正在准备安装环境...",
+        updatedAt: Date.now(),
+      });
+
+      checkAbort();
+      const pythonLauncher = await resolveSystemPythonLauncher();
+      if (!pythonLauncher) {
+        await fileLog("[install] 未找到 Python 3 环境");
+        throw new Error("未找到 Python 3 环境，请先安装 Python 3");
+      }
+
+      const rootDir = getMossTtsRootDir();
+      const venvDir = getMossTtsVenvDir();
+      await fileLog(`[install] rootDir=${rootDir} venvDir=${venvDir}`);
+      dlog(`[install] rootDir=${rootDir} venvDir=${venvDir}`);
+      await ensureDir(rootDir);
+
+      checkAbort();
+      if (await fileExists(venvDir)) {
+        await fileLog("[install] venv 已存在，跳过创建");
+        dlog("[install] venv 已存在，跳过创建");
+        onProgress?.("虚拟环境已存在，跳过创建");
+      } else {
+        await fileLog("[install] 创建 venv...");
+        dlog("[install] 创建 venv...");
+        onProgress?.("创建 Python 虚拟环境...");
+        await runCommand(pythonLauncher.command, ["-m", "venv", venvDir], { timeoutMs: 120000 });
+        await fileLog("[install] venv 创建完成");
+        dlog("[install] venv 创建完成");
+      }
+
+      checkAbort();
+      const pythonBin = getMossTtsPythonPath();
+      await fileLog(`[install] pythonBin=${pythonBin}`);
+      dlog(`[install] pythonBin=${pythonBin}`);
+
+      onProgress?.("升级 pip...");
+      try {
+        await runCommand(pythonBin, ["-m", "pip", "install", "--upgrade", "pip"], { timeoutMs: 120000 });
+      } catch {
+        await fileLog("[install] pip 升级失败（可选）");
+        dlog("[install] pip 升级失败（可选）");
+      }
+
+      // 从 GitHub 克隆仓库（PyPI 上没有 moss-tts-nano 包）
+      const gitDir = path.join(rootDir, "MOSS-TTS-Nano");
+      const hasRepo = await fileExists(path.join(gitDir, "pyproject.toml"))
+        || await fileExists(path.join(gitDir, "setup.py"))
+        || await fileExists(path.join(gitDir, "setup.cfg"));
+      if (!hasRepo) {
+        checkAbort();
+        await fileLog("[install] 从 GitHub 克隆仓库...");
+        dlog("[install] 从 GitHub 克隆仓库...");
+        onProgress?.("从 GitHub 克隆 MOSS-TTS-Nano 仓库...");
+        await runCommand("git", ["clone", "--depth", "1", "https://github.com/OpenMOSS/MOSS-TTS-Nano.git", gitDir], { timeoutMs: 120000 });
+        await fileLog("[install] Git clone 完成");
+        dlog("[install] Git clone 完成");
+      } else {
+        await fileLog("[install] 仓库已存在，跳过 clone");
+        dlog("[install] 仓库已存在，跳过 clone");
+        onProgress?.("仓库已存在，跳过克隆");
+      }
+
+      checkAbort();
+      await fileLog("[install] pip install -e ...");
+      dlog("[install] pip install -e ...");
+      onProgress?.("安装 Python 依赖...");
+      await runCommand(pythonBin, ["-m", "pip", "install", "-e", gitDir], { timeoutMs: 600000 });
+      await fileLog("[install] pip install -e 完成");
+      dlog("[install] pip install -e 完成");
+
+      checkAbort();
+      onProgress?.("安装核心依赖 onnxruntime soundfile...");
+      await runCommand(pythonBin, ["-m", "pip", "install", "onnxruntime", "soundfile"], { timeoutMs: 300000 });
+      await fileLog("[install] 核心依赖安装完成");
+      dlog("[install] 核心依赖安装完成");
+
+      // 验证 CLI 命令可用
+      checkAbort();
+      onProgress?.("验证安装...");
+      const venvBinDir = process.platform === "win32"
+        ? path.join(venvDir, "Scripts")
+        : path.join(venvDir, "bin");
+      const venvPath = { PATH: `${venvBinDir}${path.delimiter}${process.env.PATH || ""}` };
+      const cliName = process.platform === "win32" ? "moss-tts-nano.exe" : "moss-tts-nano";
+      await fileLog(`[install] 验证 CLI: ${cliName} (PATH=${venvBinDir})`);
+      dlog(`[install] 验证 CLI: ${cliName} (PATH=${venvBinDir})`);
+      try {
+        await runCommand(cliName, ["--help"], { env: venvPath, timeoutMs: 30000 });
+        await fileLog("[install] CLI 验证成功");
+        dlog("[install] CLI 验证成功");
+      } catch (e) {
+        // --help 可能返回非 0，改为直接试合成
+        await fileLog("[install] --help 失败，尝试实际合成测试...");
+        dlog("[install] --help 失败，尝试实际合成测试...");
+        try {
+          const testOut = path.join(rootDir, "test_output.wav");
+          await runCommand(cliName, [
+            "generate", "--backend", "onnx",
+            "--text", "测试",
+            "--output", testOut,
+          ], { env: venvPath, timeoutMs: 60000 });
+          await fileLog("[install] 合成测试成功");
+          dlog("[install] 合成测试成功");
+        } catch (e2) {
+          await fileLog("[install] 合成测试失败:", e2 instanceof Error ? e2.message : String(e2));
+          dlog("[install] 合成测试失败:", e2 instanceof Error ? e2.message : String(e2));
+          throw new Error(`MOSS-TTS-Nano 安装后验证失败: ${e instanceof Error ? e.message : String(e)}`);
+        }
+      }
+
+      await writeInstallState({
+        status: "installed",
+        message: `已安装（${pythonLauncher.label}）`,
+        updatedAt: Date.now(),
+        installedAt: Date.now(),
+        pythonLauncher: pythonLauncher.label,
+      });
+      dlog("[install] 安装完成！");
+
+      return await getMossTtsInstallStatus();
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      await fileLog("[install] 安装失败:", errMsg);
+      dlog("[install] 安装失败:", errMsg);
+
+      // 被中止：清除状态文件，保持 not_installed
+      if (errMsg === "INSTALL_ABORTED") {
+        await fileLog("[install] 安装被中止，恢复 not_installed 状态");
+        dlog("[install] 安装被中止，恢复 not_installed 状态");
+        try {
+          await fsp.unlink(getMossTtsStateFilePath());
+        } catch { /* noop */ }
+        installAbortFlag = false;
+      } else {
+        // 真正的失败：写入 failed 状态
+        try {
+          await writeInstallState({
+            status: "failed",
+            message: "安装失败",
+            updatedAt: Date.now(),
+            lastError: errMsg,
+          });
+        } catch {
+          await fileLog("[install] writeInstallState(failed) 也失败");
+        }
+      }
+      return await getMossTtsInstallStatus();
+    } finally {
+      activeInstallPromise = null;
+    }
+  })();
+
+  return activeInstallPromise;
+}
+
+/**
+ * 使用 MOSS-TTS-Nano 合成语音（未安装时自动触发安装）。
+ */
+export async function synthesizeMossTts(options: {
+  text: string;
+  outputPath: string;
+  promptSpeech?: string;
+  speed?: number;
+  language?: string;
+}): Promise<{ audioPath: string }> {
+  const status = await getMossTtsInstallStatus();
+  dlog(`[synthesize] status=${status.status}`);
+
+  if (status.status === "not_installed" || status.status === "failed") {
+    dlog("[synthesize] 未安装，触发自动安装...");
+    await installMossTts();
+    const newStatus = await getMossTtsInstallStatus();
+    if (newStatus.status !== "installed") {
+      throw new Error(`MOSS-TTS-Nano 自动安装失败: ${newStatus.message}`);
+    }
+  } else if (status.status === "installing") {
+    dlog("[synthesize] 正在安装中，等待...");
+    const start = Date.now();
+    while (Date.now() - start < 600000) {
+      await new Promise((r) => setTimeout(r, 5000));
+      const s = await getMossTtsInstallStatus();
+      if (s.status === "installed") break;
+      if (s.status === "failed") {
+        throw new Error(`MOSS-TTS-Nano 安装失败: ${s.message}`);
+      }
+    }
+    const finalStatus = await getMossTtsInstallStatus();
+    if (finalStatus.status !== "installed") {
+      throw new Error("MOSS-TTS-Nano 安装超时");
+    }
+  }
+
+  const venvDir = getMossTtsVenvDir();
+  const venvBinDir = process.platform === "win32"
+    ? path.join(venvDir, "Scripts")
+    : path.join(venvDir, "bin");
+  const venvPath = { PATH: `${venvBinDir}${path.delimiter}${process.env.PATH || ""}` };
+  const cliName = process.platform === "win32" ? "moss-tts-nano.exe" : "moss-tts-nano";
+
+  dlog(`[synthesize] cli=${cliName} text=${String(options.text || "").trim().slice(0, 20)}... output=${options.outputPath} prompt=${options.promptSpeech || "(无)"}`);
+
+  const args: string[] = [
+    "generate",
+    "--backend", "onnx",
+    "--text", String(options.text || "").trim(),
+    "--output", String(options.outputPath || "").trim(),
+  ];
+  if (options.promptSpeech) {
+    args.push("--mode", "voice_clone");
+    args.push("--prompt-audio-path", String(options.promptSpeech || "").trim());
+    dlog(`[synthesize] clone 模式: prompt-audio=${options.promptSpeech}`);
+  }
+
+  await ensureDir(path.dirname(String(options.outputPath || "")));
+  dlog(`[synthesize] 执行: ${cliName} ${args.join(" ")}`);
+  const { stdout, stderr } = await runCommand(cliName, args, { env: venvPath, timeoutMs: 120000 });
+  dlog(`[synthesize] stdout=${stdout.slice(0, 200)} stderr=${stderr.slice(0, 200)}`);
+
+  if (!await fileExists(String(options.outputPath || ""))) {
+    throw new Error(`MOSS-TTS-Nano 合成失败: ${stderr || stdout}`.slice(0, 500));
+  }
+
+  dlog(`[synthesize] 完成: ${options.outputPath}`);
+  return { audioPath: String(options.outputPath) };
+}
