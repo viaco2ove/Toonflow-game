@@ -173,17 +173,19 @@ async function synthesizeViaServe(options: {
   format?: string;
 }): Promise<{ audioPath: string }> {
   const serve = await startMossTtsServe();
-  const { default: FormData } = await import("node:form-data");
+
+  // 直接用原生 FormData（Node 18+ 内置），兼容 multipart
   const form = new FormData();
   form.append("text", String(options.text || "").trim());
-  form.append("speed", String(options.speed ?? 1.0));
+
   if (options.promptSpeech) {
     const absPrompt = path.join(getUploadRootDir(), String(options.promptSpeech || "").replace(/^[/\\]+/, ""));
-    const ext = inferAudioExt(absPrompt) || "wav";
     const buffer = await fsp.readFile(absPrompt);
-    form.append("prompt_audio", buffer, { filename: `ref.${ext}`, contentType: "audio/wav" });
-    form.append("mode", "voice_clone");
+    const blob = new Blob([buffer], { type: "audio/wav" });
+    form.append("prompt_audio", blob, "ref.wav");
+    form.append("voice_clone_max_text_tokens", "75");
   }
+
   const resp = await fetch(`${serve.baseUrl}/api/generate`, {
     method: "POST",
     body: form as any,

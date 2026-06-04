@@ -125,7 +125,7 @@ conda activate ./venv
 moss-tts-nano serve --backend onnx --execution-provider cpu --cpu-threads 4 --host 127.0.0.1 --port 18084
 ```
 6.serve 测试
-curl.exe -X POST "http://127.0.0.1:18084/v1/tts" `
-  -H "Content-Type: application/json" `
-  -d "{\""text\"": \""大功告成！今天气温35度，系统电量100%%，纯血版部署完美通关！\"", \""reference_audio\"": \""assets/audio/zh_1.wav\""}" `
-  -o victory.wav
+文档
+http://127.0.0.1:18084/docs
+网页
+http://127.0.0.1:18084/
