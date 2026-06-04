@@ -1671,8 +1671,25 @@ router.post(
               compatibilityPreset: businessPreset.voiceId,
             },
           }));
+        } else if (manufacturer === "moss_tts_nano") {
+          // MOSS-TTS-Nano 本地克隆模式
+          const { synthesizeMossTts } = await import("@/lib/localMossTts");
+          const outFormat = String(payload.format || "wav").trim().toLowerCase() || "wav";
+          const cloneSavePath = `/user/${userId}/game/voice-preview/${uuidv4()}.${outFormat}`;
+          await synthesizeMossTts({
+            text: String(text || "").trim(),
+            outputPath: cloneSavePath,
+            promptSpeech: resolvedReferenceAudioSource || businessPreset.referencePath,
+            speed: speed || 1.0,
+          });
+          data = {
+            localGenerated: true,
+            model: "moss-tts-nano-100m",
+            voice: effectiveVoiceId || "default",
+          };
+          sourceUrl = buildProxyAudioUrl(req, config?.id, cloneSavePath);
         } else {
-          // 其他非 direct Aliyun 厂商走本地克隆网关
+          // 其他非 direct Aliyun 厂商走本地克隆网关（CosyVoice）
           const effectiveRefPath = resolvedReferenceAudioSource || businessPreset.referencePath;
           const effectiveRefText = String(referenceText || "").trim() || businessPreset.referenceText;
           const cloned = await synthesizeWithLocalClone(
