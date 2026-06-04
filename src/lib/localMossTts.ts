@@ -38,7 +38,7 @@ async function waitForServeHealth(baseUrl: string, timeoutMs: number): Promise<b
         return true;
       }
     } catch { /* ignore */ }
-    await new Promise(r => setTimeout(r, SERVE_HEALTH_CHECK_INTERVAL_MS));
+    await new Promise(r => setTimeout(r, 1000));
   }
   return false;
 }

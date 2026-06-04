@@ -16,6 +16,7 @@ import { enforceResourceIsolation } from "@/middleware/resourceIsolation";
 import { startSessionMemoryWorker, stopSessionMemoryWorker } from "@/modules/game-runtime/services/SessionMemoryWorker";
 import { syncBundledVoicePresetSeeds } from "@/lib/voicePresetSeeds";
 import { dbBootstrapReady } from "@/utils/db";
+import { startMossTtsServe, isMossTtsServeEnabled, stopMossTtsServe } from "@/lib/localMossTts";
 
 function ensureNoProxyForLocalhost() {
   const localHosts = ["127.0.0.1", "localhost", "::1"];
@@ -72,6 +73,17 @@ export default async function startServe(randomPort: Boolean = false) {
   // 调试回溯需要跨热更新/重启保留临时文件，这里不再启动即清空。
 
   startSessionMemoryWorker();
+
+  // MOSS-TTS-Nano 常驻 serve 模式（如果环境变量开启）
+  if (isMossTtsServeEnabled()) {
+    startMossTtsServe()
+      .then(() => {
+        dlog("[MOSS-TTS-Nano] 常驻服务已启动");
+      })
+      .catch((err) => {
+        console.error("[MOSS-TTS-Nano] serve 启动失败，将回退到 CLI 模式:", err);
+      });
+  }
 
   app.use(express.static(rootDir));
 
@@ -163,6 +175,7 @@ export function closeServe(): Promise<void> {
 
 // 进程退出不再删除调试回溯文件，避免热更新/重启后回溯点全部丢失。
 function onProcessExit() {
+  try { stopMossTtsServe(); } catch { /* ignore */ }
   try { stopSessionMemoryWorker(); } catch { /* ignore */ }
 }
 process.on("exit", onProcessExit);
