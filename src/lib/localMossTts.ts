@@ -152,7 +152,7 @@ export async function startMossTtsServe(): Promise<ServeProcess> {
   return serveProcess;
 }
 
-async function stopMossTtsServe(): Promise<void> {
+export async function stopMossTtsServe(): Promise<void> {
   if (!serveProcess) return;
   dlog("[serve] 停止服务...");
   await fileLog("[serve] 停止服务...");
