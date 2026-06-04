@@ -9,8 +9,11 @@ import { DebugLogUtil } from "@/utils/debugLogUtil";
 // MOSS-TTS-Nano Serve 常驻进程管理
 // ============================================================================
 
-const SERVE_PORT = 18084; // 避开默认 18083
-const SERVE_MAX_STARTUP_MS = 60000; // 模型加载最多等 60 秒
+// const SERVE_PORT = 18084; // 避开默认 18083
+ const SERVE_MAX_STARTUP_MS = 60000; // 模型加载最多等 60 秒
+
+const SERVE_PORT  = Number.parseInt((process.env.MOSS_TTS_SERVE_PORT || "").trim(), 10) || 18084;
+const MOSS_TTS_SERVE_CPU = Number.parseInt((process.env.MOSS_TTS_SERVE_CPU || "").trim(), 10) || 2;
 
 export function isMossTtsServeEnabled(): boolean {
   return String(process.env.MOSS_TTS_SERVE || "").trim().toLowerCase() === "true";
@@ -112,6 +115,7 @@ export async function startMossTtsServe(): Promise<ServeProcess> {
     "--host", "127.0.0.1",
     "--port", String(SERVE_PORT),
     "--execution-provider", "cpu",
+    "--cpu-threads", String(MOSS_TTS_SERVE_CPU),
   ], {
     cwd: gitRepoDir,
     env: { ...process.env, PYTHONUTF8: "1", PYTHONIOENCODING: "utf-8" },
