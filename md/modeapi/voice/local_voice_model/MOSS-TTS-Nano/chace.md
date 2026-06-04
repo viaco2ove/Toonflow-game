@@ -1,13 +1,15 @@
 方案 A：单次 CLI 调用（临时内存缓存，最简单，你现在用）
 同 PS 窗口连续执行 2 条，第二条自动走缓存、不用重解析音频：
 powershell
-moss-tts-nano generate --prompt-audio-path assets/audio/zh_1.wav --text "第一段" --output o1.wav
-moss-tts-nano generate --prompt-audio-path assets/audio/zh_1.wav --text "第二段" --output o2.wav
+./moss-tts-nano.exe generate --prompt-audio-path assets/audio/zh_1.wav --text "第一段" --output o1.wav
+./moss-tts-nano.exe generate --prompt-audio-path assets/audio/zh_1.wav --text "第二段" --output o2.wav
 关掉 PS 再新开，缓存清空，重新解析 wav。
 方案 B：常驻 serve 服务（全局内存缓存，最优做游戏批量生成）
 启动服务预加载音色，全程只解码 1 次 wav，所有接口请求永久读缓存：
 powershell
-moss-tts-nano serve --preload-voice assets/audio
+`./moss-tts-nano.exe serve` 最简单命令
+`./moss-tts-nano.exe serve -h` 看参数
+`./moss-tts-nano.exe serve --backend onnx --execution-provider cpu --cpu-threads 4 --host 127.0.0.1 --port 18084`
 启动完调用接口只用传音色文件名zh_1.wav，不用传完整路径，自动取缓存 refcode。
 方案 C：永久离线缓存（保存 ref 编码到文件，重启也不用读 wav）
 不用 CLI，用项目 python 脚本把 wav 预编译成二进制缓存文件：
@@ -59,9 +61,9 @@ ja_1(Sakura)、ja_2(Yui)、ja_3(Aoi)、ja_4(Hina)、ja_5(Mei)
 单次生成
 
 `$tool_path = "{tool_path}"
-cd /d "%tool_path%\moss-tts-nano\venv\Scripts"`
+cd /d "%tool_path%\./moss-tts-nano.exe\venv\Scripts"`
 
-`./moss-tts-nano.exe generate \
+`././moss-tts-nano.exe.exe generate \
 --backend onnx \
 --mode continuation \
 --prompt-audio-path assets/audio/zh_1.wav \

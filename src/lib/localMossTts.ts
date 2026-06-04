@@ -43,7 +43,23 @@ async function waitForServeHealth(baseUrl: string, timeoutMs: number): Promise<b
   return false;
 }
 
+async function fileExists(p: string): Promise<boolean> {
+  try { await fsp.access(p, fsConstants.F_OK); return true; } catch { return false; }
+}
+
+async function ensureDir(p: string): Promise<void> {
+  try { await fsp.mkdir(p, { recursive: true }); } catch (err) {
+    const code = (err as NodeJS.ErrnoException)?.code;
+    if (code !== "EEXIST") throw err;
+  }
+}
+
 export async function startMossTtsServe(): Promise<ServeProcess> {
+  // 先检查是否已安装，没装直接报错，不等超时
+  const status = await getMossTtsInstallStatus();
+  if (status.status !== "installed") {
+    throw new Error(`MOSS-TTS-Nano 尚未安装（状态: ${status.status}），无法启动 serve`);
+  }
   if (serveProcess) return serveProcess;
   await fileLog("[serve] 启动常驻服务...");
   dlog("[serve] 启动常驻服务...");
@@ -90,9 +106,18 @@ export async function startMossTtsServe(): Promise<ServeProcess> {
 
   const healthy = await waitForServeHealth(baseUrl, SERVE_MAX_STARTUP_MS);
   if (!healthy) {
-    child.kill();
-    logStream.close();
-    throw new Error(`MOSS-TTS-Nano serve 启动超时（${SERVE_MAX_STARTUP_MS}ms 内无法健康检查通过）`);
+    // 超时时先把日志 flush 出来
+    await logStream.flush();
+    await logStream.close();
+    const logContent = await fsp.readFile(logPath, "utf8").catch(() => "");
+    const tail = logContent.slice(-3000);
+    dlog("[serve] 启动日志（末尾3KB）:\n", tail);
+    if (process.platform === "win32") {
+      spawn("taskkill", ["/pid", String(child.pid), "/f", "/t"], { windowsHide: true });
+    } else {
+      child.kill("SIGTERM");
+    }
+    throw new Error(`MOSS-TTS-Nano serve 启动超时（${SERVE_MAX_STARTUP_MS}ms 内无法健康检查通过）\n日志:\n${tail}`);
   }
 
   serveProcess = { port: SERVE_PORT, baseUrl, process: child };
@@ -229,19 +254,6 @@ function getMossTtsPythonPath(): string {
   return process.platform === "win32"
     ? path.join(getMossTtsVenvDir(), "Scripts", "python.exe")
     : path.join(getMossTtsVenvDir(), "bin", "python");
-}
-
-async function fileExists(targetPath: string): Promise<boolean> {
-  try {
-    await fsp.access(targetPath, fsConstants.F_OK);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-async function ensureDir(dirPath: string): Promise<void> {
-  await fsp.mkdir(dirPath, { recursive: true });
 }
 
 async function readInstallState(): Promise<InstallStateFile | null> {
@@ -573,7 +585,7 @@ export async function installMossTts(
         await fileLog("[install] 从 GitHub 克隆仓库...");
         dlog("[install] 从 GitHub 克隆仓库...");
         onProgress?.("从 GitHub 克隆 MOSS-TTS-Nano 仓库...");
-        await runCommand("git", ["clone", "--depth","1", "--force", "https://github.com/OpenMOSS/MOSS-TTS-Nano.git", gitDir], { timeoutMs: 120000 });
+        await runCommand("git", ["clone", "--depth","1", "https://github.com/OpenMOSS/MOSS-TTS-Nano.git", gitDir], { timeoutMs: 120000 });
         await fileLog("[install] Git clone 完成");
         dlog("[install] Git clone 完成");
       } else {
