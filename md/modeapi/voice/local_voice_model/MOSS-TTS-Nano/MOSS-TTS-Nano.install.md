@@ -324,4 +324,56 @@ curl -X POST http://127.0.0.1:18084/api/generate \
 | `do_sample` | string | "1" | 是否采样(1=是) |
 | `seed` | string | "0" | 随机种子(0=随机) |
 
+# Schemas
+## Body_generate_api_generate_post
+textstring
+demo_idExpand allstring
+prompt_audioExpand all(string | null)
+max_new_framesExpand allinteger
+voice_clone_max_text_tokensExpand allinteger
+tts_max_batch_sizeExpand allinteger
+codec_max_batch_sizeExpand allinteger
+enable_text_normalizationExpand allstring
+enable_normalize_tts_textExpand allstring
+cpu_threadsExpand allinteger
+attn_implementationExpand allstring
+do_sampleExpand allstring
+text_temperatureExpand allnumber
+text_top_pExpand allnumber
+text_top_kExpand allinteger
+audio_temperatureExpand allnumber
+audio_top_pExpand allnumber
+audio_top_kExpand allinteger
+audio_repetition_penaltyExpand allnumber
+seedExpand allstring
+## Body_generate_stream_start_api_generate_stream_start_post
+textstring
+demo_idExpand allstring
+prompt_audioExpand all(string | null)
+max_new_framesExpand allinteger
+voice_clone_max_text_tokensExpand allinteger
+tts_max_batch_sizeExpand allinteger
+codec_max_batch_sizeExpand allinteger
+enable_text_normalizationExpand allstring
+enable_normalize_tts_textExpand allstring
+cpu_threadsExpand allinteger
+attn_implementationExpand allstring
+do_sampleExpand allstring
+text_temperatureExpand allnumber
+text_top_pExpand allnumber
+text_top_kExpand allinteger
+audio_temperatureExpand allnumber
+audio_top_pExpand allnumber
+audio_top_kExpand allinteger
+audio_repetition_penaltyExpand allnumber
+seedExpand allstring
+## HTTPValidationError
+detailExpand allarray<object>
+## ValidationError
+locExpand allarray<(string | integer)>
+msgstring
+typestring
+inputany
+ctxobject
+
 ---
