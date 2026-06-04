@@ -40,10 +40,14 @@ router.post("/install", async (req, res) => {
     if (DebugLogUtil.isDebugLogEnabled()) {
       console.log("[moss-tts] install status", JSON.stringify(status));
     }
-    if (status.status === "installed") {
+    const reinstall = String(req.body?.reinstall || "").trim() === "true"
+      || String(req.query?.reinstall || "").trim() === "true"
+      || req.body?.reinstall === true
+      || req.query?.reinstall === true;
+    if (status.status === "installed" && !reinstall) {
       return res.status(200).send(success({ ...status, message: "已安装，无需重复安装" }));
     }
-    if (status.status === "installing") {
+    if (status.status === "installing" && !reinstall) {
       return res.status(200).send(success({ ...status, message: "正在安装中..." }));
     }
     // 启动异步安装

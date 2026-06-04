@@ -334,6 +334,21 @@ export async function installMossTts(
 ): Promise<LocalMossTtsStatus> {
   await fileLog("[install] installMossTts 开始, abortFlag=", installAbortFlag);
   dlog("[install] installMossTts 开始, abortFlag=", installAbortFlag);
+
+  // 重装场景：清掉旧状态文件，确保走完整安装流程
+  if (!activeInstallPromise) {
+    try {
+      await fsp.unlink(getMossTtsStateFilePath());
+      await fileLog("[install] 已清除旧状态文件，从头安装");
+      dlog("[install] 已清除旧状态文件，从头安装");
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException)?.code;
+      if (code && code !== "ENOENT") {
+        await fileLog("[install] 清除旧状态文件失败:", err instanceof Error ? err.message : String(err));
+      }
+    }
+  }
+
   if (activeInstallPromise) {
     await fileLog("[install] 已有安装进程，返回现有 promise");
     dlog("[install] 已有安装进程，返回现有 promise");
@@ -420,11 +435,68 @@ export async function installMossTts(
 
       checkAbort();
       onProgress?.("安装核心依赖 onnxruntime soundfile...");
-      await runCommand(pythonBin, ["-m", "pip", "install", "onnxruntime", "soundfile"], { timeoutMs: 300000 });
+      await runCommand(pythonBin, ["-m", "pip", "install", "onnxruntime", "soundfile", "modelscope"], { timeoutMs: 300000 });
       await fileLog("[install] 核心依赖安装完成");
       dlog("[install] 核心依赖安装完成");
 
-      // 验证 CLI 命令可用
+      // 从 ModelScope 国内镜像下载 ONNX 模型（HuggingFace 国内访问受限，必须用镜像）
+      const onnxModelDir = path.join(rootDir, "MOSS-TTS-Nano-100M-ONNX");
+      const codecModelDir = path.join(rootDir, "MOSS-Audio-Tokenizer-Nano-ONNX");
+      const manifestPath = path.join(onnxModelDir, "browser_poc_manifest.json");
+      const codecManifestPath = path.join(codecModelDir, "codec_browser_onnx_meta.json");
+
+      if (!(await fileExists(manifestPath)) || !(await fileExists(codecManifestPath))) {
+        checkAbort();
+        await fileLog("[install] 从 ModelScope 下载 ONNX 模型（~700MB）...");
+        dlog("[install] 从 ModelScope 下载 ONNX 模型（~700MB）...");
+        onProgress?.("下载模型文件（约 700MB，需等待）...");
+        await ensureDir(onnxModelDir);
+        await ensureDir(codecModelDir);
+        if (!(await fileExists(manifestPath))) {
+          await runCommand(pythonBin, [
+            "-c",
+            `from modelscope.hub.snapshot_download import snapshot_download; snapshot_download('OpenMOSS/MOSS-TTS-Nano-100M-ONNX', cache_dir=r"""${onnxModelDir}""", revision='master')`,
+          ], { timeoutMs: 600000 });
+          // modelscope 嵌套在 cache_dir/OpenMOSS/MOSS-TTS-Nano-100M-ONNX/，平铺到 onnxModelDir
+          const nestedDir = path.join(onnxModelDir, "OpenMOSS", "MOSS-TTS-Nano-100M-ONNX");
+          if (await fileExists(path.join(nestedDir, "browser_poc_manifest.json"))) {
+            await fileLog("[install] 平铺 TTS 模型文件...");
+            dlog("[install] 平铺 TTS 模型文件...");
+            const files = await fsp.readdir(nestedDir);
+            for (const file of files) {
+              const src = path.join(nestedDir, file);
+              const dst = path.join(onnxModelDir, file);
+              try { await fsp.access(dst, fsConstants.F_OK); } catch { await fsp.copyFile(src, dst); }
+            }
+          }
+        }
+        if (!(await fileExists(codecManifestPath))) {
+          await fileLog("[install] 下载 codec 模型...");
+          dlog("[install] 下载 codec 模型...");
+          await runCommand(pythonBin, [
+            "-c",
+            `from modelscope.hub.snapshot_download import snapshot_download; snapshot_download('OpenMOSS/MOSS-Audio-Tokenizer-Nano-ONNX', cache_dir=r"""${codecModelDir}""", revision='master')`,
+          ], { timeoutMs: 600000 });
+          const nestedCodec = path.join(codecModelDir, "OpenMOSS", "MOSS-Audio-Tokenizer-Nano-ONNX");
+          if (await fileExists(path.join(nestedCodec, "codec_browser_onnx_meta.json"))) {
+            await fileLog("[install] 平铺 codec 模型文件...");
+            dlog("[install] 平铺 codec 模型文件...");
+            const files = await fsp.readdir(nestedCodec);
+            for (const file of files) {
+              const src = path.join(nestedCodec, file);
+              const dst = path.join(codecModelDir, file);
+              try { await fsp.access(dst, fsConstants.F_OK); } catch { await fsp.copyFile(src, dst); }
+            }
+          }
+        }
+        await fileLog("[install] 所有模型下载完成");
+        dlog("[install] 所有模型下载完成");
+      } else {
+        await fileLog("[install] 模型已存在，跳过下载");
+        dlog("[install] 模型已存在，跳过下载");
+      }
+
+      // 用实际合成验证安装（--help 不加载模型，必须跑合成测试）
       checkAbort();
       onProgress?.("验证安装...");
       const venvBinDir = process.platform === "win32"
@@ -432,31 +504,17 @@ export async function installMossTts(
         : path.join(venvDir, "bin");
       const venvPath = { PATH: `${venvBinDir}${path.delimiter}${process.env.PATH || ""}` };
       const cliName = process.platform === "win32" ? "moss-tts-nano.exe" : "moss-tts-nano";
-      await fileLog(`[install] 验证 CLI: ${cliName} (PATH=${venvBinDir})`);
-      dlog(`[install] 验证 CLI: ${cliName} (PATH=${venvBinDir})`);
-      try {
-        await runCommand(cliName, ["--help"], { env: venvPath, timeoutMs: 30000 });
-        await fileLog("[install] CLI 验证成功");
-        dlog("[install] CLI 验证成功");
-      } catch (e) {
-        // --help 可能返回非 0，改为直接试合成
-        await fileLog("[install] --help 失败，尝试实际合成测试...");
-        dlog("[install] --help 失败，尝试实际合成测试...");
-        try {
-          const testOut = path.join(rootDir, "test_output.wav");
-          await runCommand(cliName, [
-            "generate", "--backend", "onnx",
-            "--text", "测试",
-            "--output", testOut,
-          ], { env: venvPath, timeoutMs: 60000 });
-          await fileLog("[install] 合成测试成功");
-          dlog("[install] 合成测试成功");
-        } catch (e2) {
-          await fileLog("[install] 合成测试失败:", e2 instanceof Error ? e2.message : String(e2));
-          dlog("[install] 合成测试失败:", e2 instanceof Error ? e2.message : String(e2));
-          throw new Error(`MOSS-TTS-Nano 安装后验证失败: ${e instanceof Error ? e.message : String(e)}`);
-        }
-      }
+      await fileLog(`[install] 验证合成: ${cliName} model=${onnxModelDir}`);
+      dlog(`[install] 验证合成: ${cliName} model=${onnxModelDir}`);
+      const testOut = path.join(rootDir, "test_output.wav");
+      await runCommand(cliName, [
+        "generate", "--backend", "onnx",
+        "--onnx-model-dir", onnxModelDir,
+        "--text", "测试",
+        "--output", testOut,
+      ], { env: venvPath, timeoutMs: 120000 });
+      await fileLog("[install] 合成测试成功");
+      dlog("[install] 合成测试成功");
 
       await writeInstallState({
         status: "installed",
@@ -546,19 +604,21 @@ export async function synthesizeMossTts(options: {
     : path.join(venvDir, "bin");
   const venvPath = { PATH: `${venvBinDir}${path.delimiter}${process.env.PATH || ""}` };
   const cliName = process.platform === "win32" ? "moss-tts-nano.exe" : "moss-tts-nano";
+  const onnxModelDir = path.join(getMossTtsRootDir(), "MOSS-TTS-Nano-100M-ONNX");
 
-  dlog(`[synthesize] cli=${cliName} text=${String(options.text || "").trim().slice(0, 20)}... output=${options.outputPath} prompt=${options.promptSpeech || "(无)"}`);
+  dlog(`[synthesize] cli=${cliName} text=${String(options.text || "").trim().slice(0, 20)}... output=${options.outputPath} prompt=${options.promptSpeech || "(无)"} model=${onnxModelDir}`);
 
   const args: string[] = [
     "generate",
     "--backend", "onnx",
+    "--onnx-model-dir", onnxModelDir,
     "--text", String(options.text || "").trim(),
     "--output", String(options.outputPath || "").trim(),
   ];
   if (options.promptSpeech) {
     args.push("--mode", "voice_clone");
-    args.push("--prompt-audio-path", String(options.promptSpeech || "").trim());
-    dlog(`[synthesize] clone 模式: prompt-audio=${options.promptSpeech}`);
+    args.push("--prompt-speech", String(options.promptSpeech || "").trim());
+    dlog(`[synthesize] clone 模式: prompt=${options.promptSpeech}`);
   }
 
   await ensureDir(path.dirname(String(options.outputPath || "")));
