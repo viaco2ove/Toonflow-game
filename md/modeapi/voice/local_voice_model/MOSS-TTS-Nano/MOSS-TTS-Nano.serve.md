@@ -1,3 +1,5 @@
+export HF_ENDPOINT=https://hf-mirror.com && ./moss-tts-nano serve --backend onnx --execution-provider cpu --cpu-threads 1 --host 127.0.0.1 --port 18084
+
 6.serve 测试
 文档
 http://127.0.0.1:18084/docs

@@ -901,7 +901,7 @@ export async function synthesizeMossTts(options: {
   promptSpeech?: string;
   speed?: number;
   language?: string;
-}): Promise<{ audioPath: string } {
+}): Promise<{ audioPath: string }> {
   //优先 serve 模式，崩溃后永久回退到 CLI
   if (isMossTtsServeEnabled() && !servePermanentlyDead) {
     try {
