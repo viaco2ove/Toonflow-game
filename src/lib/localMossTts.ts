@@ -71,10 +71,9 @@ export async function startMossTtsServe(): Promise<ServeProcess> {
 
   // 先检测 serve 是否已经在跑
   try {
-    const resp = await fetch(`${baseUrl}/v1/tts`, { method: "HEAD", signal: AbortSignal.timeout(3000) as any });
-    if (resp.ok || resp.status === 404 || resp.status === 422) {
-      // 任何有响应的状态码都说明 serve 在跑（422=参数不对，404=路由存在但缺参数）
-      dlog("[serve] 检测到已有进程运行在:", baseUrl, "status:", resp.status);
+    const resp = await fetch(`${baseUrl}/health`, { signal: AbortSignal.timeout(3000) as any });
+    if (resp.ok) {
+      dlog("[serve] 检测到已有进程运行在:", baseUrl);
       serveProcess = { port: SERVE_PORT, baseUrl, process: null as any };
       return serveProcess;
     }
