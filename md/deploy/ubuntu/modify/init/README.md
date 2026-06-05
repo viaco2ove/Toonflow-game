@@ -1,12 +1,11 @@
-# 资源路径
-export INSTALL_ROOT="/opt/toonflow"
-export DATA_DIR="/data/toonflow"
-/data/toonflow/tools
-
+# 初始服务器环境
+## 资源文件
+[README.md](../tools/README.md)
 ## 安装 MOSS-TTS-Nano
-git clone --depth 1  https://github.com/OpenMOSS/MOSS-TTS-Nano.git /data/toonflow/tools/moss-tts-nano/MOSS-TTS-Nano
-
-
+`git clone --depth 1  https://github.com/OpenMOSS/MOSS-TTS-Nano.git /data/toonflow/tools/moss-tts-nano/MOSS-TTS-Nano
+`
+`wget https://mirrors.tuna.tsinghua.edu.cn/anaconda/miniconda/Miniconda3-latest-Linux-x86_64.sh -O miniconda.sh
+`
 linux
 ```
 # 1. 进入工具目录 (注意路径分隔符改为斜杠)
@@ -49,3 +48,11 @@ sudo fallocate -l 8G /swapfile
 sudo chmod 600 /swapfile
 sudo mkswap /swapfile
 sudo swapon /swapfile
+
+
+## 本地头像分离
+[本地头像分离模型安装_linux.md](../../../../modeapi/image/本地头像分离模型安装_linux.md)
+
+
+### nodejs 22 安装 与加速
+[nodejs.md](nodejs.md)
