@@ -13,7 +13,7 @@ import { DebugLogUtil } from "@/utils/debugLogUtil";
  const SERVE_MAX_STARTUP_MS = 60000; // 模型加载最多等 60 秒
 
 const SERVE_PORT  = Number.parseInt((process.env.MOSS_TTS_SERVE_PORT || "").trim(), 10) || 18084;
-const MOSS_TTS_SERVE_CPU = Number.parseInt((process.env.MOSS_TTS_SERVE_CPU || "").trim(), 10) || 2;
+const MOSS_TTS_SERVE_CPU = Number.parseInt((process.env.MOSS_TTS_SERVE_CPU || "").trim(), 10) || 1;
 
 export function isMossTtsServeEnabled(): boolean {
   return String(process.env.MOSS_TTS_SERVE || "").trim().toLowerCase() === "true";
@@ -649,7 +649,7 @@ export async function installMossTts(
             onProgress?.("使用 conda 创建 Python 3.10 环境...");
             await runCommand(
               "conda",
-              ["create", "--prefix", venvDir, "python=3.10", "-y", "-c", "conda-forge"],
+              ["create", "--prefix", venvDir, "python=3.10", "-y", "-c", "defaults"],
               { timeoutMs: 300000 }
             );
         } else {

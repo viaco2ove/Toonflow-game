@@ -44,7 +44,7 @@ cd $tool_path/moss-tts-nano
 # 2. 创建并激活局部 Conda 环境
 conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main
 conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r
-conda create --prefix ./venv python=3.10 -y --override-channels -c conda-forge
+conda create --prefix ./venv python=3.10 -y -c defaults
 conda activate ./venv
 
 # 3. 安装底层依赖和文本正规化模块

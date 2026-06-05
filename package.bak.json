@@ -65,6 +65,8 @@
     "license": "bun run scripts/license.ts",
     "voice:regen:presets": "tsx scripts/regenerateStoryVoicePresets.ts"
   },
+  "postinstall": "npm rebuild sqlite3 better-sqlite3",
+  "prebuild": "npm rebuild sqlite3 better-sqlite3",
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.35",
     "@ai-sdk/deepseek": "^2.0.17",
