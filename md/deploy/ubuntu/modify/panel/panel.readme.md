@@ -1,5 +1,5 @@
 # toonflow-panel.service 安装
-直接看 [README.md](../README.md)
+直接看 [README.md](../../README.md)
 
 # 手动安装如下：
 `toonflow-panel` 建议使用 `systemd` 托管，不再使用 `pm2` 托管管理页。

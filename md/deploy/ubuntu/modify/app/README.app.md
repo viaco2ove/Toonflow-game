@@ -6,6 +6,8 @@
 pm2 logs toonflow-game
 ```
 
+
+
 ## 2. 只看最近 100 行 + 实时追踪（不刷屏）
 ```bash
 pm2 logs toonflow-game --lines 100
@@ -61,3 +63,17 @@ pm2 monit
 4. **重启服务**：`pm2 restart toonflow-game`
 
 现在直接输入第一条命令就能看到后端日志了！
+
+
+## 维护
+
+### 清理库
+/opt/toonflow/toonflow-game-app
+rm -rf /opt/toonflow/toonflow-game-app/node_modules
+
+### nodejs 22 安装 与加速
+[nodejs.md](nodejs.md)
+
+
+### 更新库
+yarn install

@@ -2,6 +2,9 @@
 配置和维护详情:
 [README.md](detail/README.md)
 
+## ubuntu 环境设置
+[README.md](modify/init/README.md)
+
 下面内容只涉及安装
 ## 1. 传目录到服务器
 [main.py](detail/main.py)

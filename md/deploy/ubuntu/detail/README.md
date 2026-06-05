@@ -74,7 +74,7 @@ pm2 logs toonflow-panel
 
 # nginx 配置
 /etc/nginx/sites-available/toonflow-game
-[nginx.conf](toonflow-game)
+[nginx.conf](../modify/toonflow-game)
 修改命令                                                                                                                                                                          
                                                                                                                                                                                   
 sudo nano /etc/nginx/sites-available/toonflow-game                                                                                                                                
@@ -138,4 +138,4 @@ pm2 stop toonflow-game
 ```bash
 pm2 logs toonflow-game
 ```
-[panel.readme.md](panel.readme.bak1.md)
+[panel.readme.md](../modify/panel/panel.readme.bak1.md)

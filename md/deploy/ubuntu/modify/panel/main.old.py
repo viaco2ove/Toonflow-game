@@ -11,7 +11,7 @@ import subprocess
 
 app = FastAPI()
 
-APP_NAME = os.environ.get("PANEL_APP_NAME", "toonflow-game").strip() or "toonflow-game"
+APP_NAME = os.environ.get("PANEL_APP_NAME", "../toonflow-game").strip() or "toonflow-game"
 APP_DIR = os.environ.get("PANEL_APP_DIR",
                          "/opt/toonflow/toonflow-game-app").strip() or "/opt/toonflow/toonflow-game-app"
 APP_PORT = int(os.environ.get("PANEL_APP_PORT", "60002").strip() or "60002")
