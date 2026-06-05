@@ -125,7 +125,12 @@ export async function startMossTtsServe(): Promise<ServeProcess> {
     "--cpu-threads", String(MOSS_TTS_SERVE_CPU),
   ], {
     cwd: gitRepoDir,
-    env: { ...process.env, PYTHONUTF8: "1", PYTHONIOENCODING: "utf-8" },
+    env: {
+      ...process.env,
+      PYTHONUTF8: "1",
+      PYTHONIOENCODING: "utf-8",
+      HF_ENDPOINT: "https://hf-mirror.com",
+    },
     stdio: ["ignore", "pipe", "pipe"],
     windowsHide: true,
   });
@@ -986,7 +991,10 @@ async function synthesizeViaCLI(options: {
   }
 
   dlog(`[synthesize] 执行: ${cliName} ${args.join(" ")}`);
-  const { stdout, stderr } = await runCommand(cliName, args, { env: venvPath, timeoutMs: 120000 });
+  const { stdout, stderr } = await runCommand(cliName, args, {
+    env: { ...venvPath, HF_ENDPOINT: "https://hf-mirror.com" },
+    timeoutMs: 120000,
+  });
   dlog(`[synthesize] stdout=${stdout.slice(0, 200)} stderr=${stderr.slice(0, 200)}`);
   const exists = await oss.fileExists(relOutputPath);
   dlog(`[synthesize] oss.fileExists=${exists}`);

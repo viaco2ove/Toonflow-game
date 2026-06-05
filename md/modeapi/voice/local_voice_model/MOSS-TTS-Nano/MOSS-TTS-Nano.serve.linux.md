@@ -1,3 +1,4 @@
+# no_modify
 ## linux
 (`base) root@VM-0-5-ubuntu:/data/toonflow/tools/moss-tts-nano/venv/bin# ./moss-tts-nano serve --backend onnx --execution-provider cpu --cpu-threads 1 --host 127.0.0.1 --port 18084`
 报错：
@@ -23,4 +24,5 @@ MOSS-TTS-Nano 启动时，发现你本地的 models 文件夹里没有那两个 
 
 
 `export HF_ENDPOINT=https://hf-mirror.com && ./moss-tts-nano serve --backend onnx --execution-provider cpu --cpu-threads 1 --host 127.0.0.1 --port 18084`
-下载模型
+下载模型...
+运行成功！
