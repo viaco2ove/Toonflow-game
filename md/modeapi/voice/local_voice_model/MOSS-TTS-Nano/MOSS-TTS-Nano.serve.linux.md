@@ -22,5 +22,5 @@ MOSS-TTS-Nano 启动时，发现你本地的 models 文件夹里没有那两个 
 然后报错！
 
 
-`export HF_ENDPOINT=https://hf-mirror.com && ./moss-tts-nano serve --backend onnx --execution-provider cpu --cpu-threads 4 --host 127.0.0.1 --port 18084`
+`export HF_ENDPOINT=https://hf-mirror.com && ./moss-tts-nano serve --backend onnx --execution-provider cpu --cpu-threads 1 --host 127.0.0.1 --port 18084`
 下载模型
