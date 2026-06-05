@@ -74,14 +74,14 @@ export default async function startServe(randomPort: Boolean = false) {
 
   startSessionMemoryWorker();
 
-  // MOSS-TTS-Nano 常驻 serve 模式（如果环境变量开启）
+  // MOSS-TTS-Nano：程序启动时尝试一次启动 serve，启动失败则回退到 CLI，后续不再重试
   if (isMossTtsServeEnabled()) {
     startMossTtsServe()
       .then(() => {
         console.log("[MOSS-TTS-Nano] 常驻服务已启动");
       })
       .catch((err) => {
-        console.error("[MOSS-TTS-Nano] serve 启动失败，将回退到 CLI 模式:", err);
+        console.log("[MOSS-TTS-Nano] serve 启动失败，后续将使用 CLI 模式:", err instanceof Error ? err.message : String(err));
       });
   }
 

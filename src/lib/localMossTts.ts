@@ -26,6 +26,13 @@ interface ServeProcess {
 }
 
 let serveProcess: ServeProcess | null = null;
+let servePermanentlyDead = false; // serve 崩溃后永久回退到 CLI，不再重试
+
+function markServeDead() {
+  servePermanentlyDead = true;
+  serveProcess = null;
+  fileLog("[serve] 已标记为永久死亡，后续将使用 CLI 模式");
+}
 
 async function waitForServeHealth(baseUrl: string, timeoutMs: number): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
@@ -58,6 +65,7 @@ async function ensureDir(p: string): Promise<void> {
 }
 
 export async function startMossTtsServe(): Promise<ServeProcess> {
+  if (servePermanentlyDead) throw new Error("serve 已标记为永久死亡");
   if (serveProcess) return serveProcess;
   const baseUrl = `http://127.0.0.1:${SERVE_PORT}`;
 
@@ -76,7 +84,8 @@ export async function startMossTtsServe(): Promise<ServeProcess> {
 
   // 检查安装状态
   const status = await getMossTtsInstallStatus();
-  console.error("[moss-tts] [serve] installStatus:", JSON.stringify(status));
+  await fileLog("[serve] installStatus:", JSON.stringify(status));
+  dlog("[serve] installStatus:", JSON.stringify(status));
   if (status.status !== "installed") {
     throw new Error(`MOSS-TTS-Nano 尚未安装（状态: ${status.status}），无法启动 serve`);
   }
@@ -95,18 +104,16 @@ export async function startMossTtsServe(): Promise<ServeProcess> {
     : path.join(venvDir, "bin", "python3");
   const gitRepoDir = path.join(getMossTtsRootDir(), "MOSS-TTS-Nano");
   const onnxModelDir = path.join(getMossTtsRootDir(), "MOSS-TTS-Nano-100M-ONNX");
-  console.error("[moss-tts] [serve] venvDir:", venvDir);
-  console.error("[moss-tts] [serve] pythonBin:", pythonBin);
-  console.error("[moss-tts] [serve] onnxModelDir:", onnxModelDir);
-  console.error("[moss-tts] [serve] gitRepoDir:", gitRepoDir);
   const logPath = path.join(getMossTtsRootDir(), "serve-stdout.log");
   const logStream = await fsp.open(logPath, "a");
-  console.error("[moss-tts] [serve] logPath:", logPath);
+  await fileLog("[serve] venvDir:", venvDir, "pythonBin:", pythonBin, "onnxModelDir:", onnxModelDir, "gitRepoDir:", gitRepoDir, "logPath:", logPath);
+  dlog("[serve] venvDir:", venvDir, "pythonBin:", pythonBin);
 
   const cliName = process.platform === "win32"
     ? path.join(venvBinDir, "moss-tts-nano.exe")
     : path.join(venvBinDir, "moss-tts-nano");
-  console.error("[moss-tts] [serve] cliName:", cliName);
+  await fileLog("[serve] cliName:", cliName);
+  dlog("[serve] cliName:", cliName);
 
   const child = spawn(cliName, [
     "serve",
@@ -125,14 +132,17 @@ export async function startMossTtsServe(): Promise<ServeProcess> {
 
   child.stdout?.on("data", (c: Buffer) => {
     logStream.write(c).catch(() => {});
-    process.stderr.write(`[moss-serve-stdout] ${c}`); // 临时 stderr 看启动日志
   });
   child.stderr?.on("data", (c: Buffer) => {
     logStream.write(c).catch(() => {});
   });
   child.on("error", (err) => {
     fileLog("[serve] 启动失败:", String(err?.message || err));
-    serveProcess = null;
+    markServeDead();
+  });
+  child.on("exit", (code) => {
+    fileLog("[serve] 进程退出，code:", code);
+    if (code !== 0 && code !== null) markServeDead();
   });
 
   const healthy = await waitForServeHealth(baseUrl, SERVE_MAX_STARTUP_MS);
@@ -891,12 +901,16 @@ export async function synthesizeMossTts(options: {
   promptSpeech?: string;
   speed?: number;
   language?: string;
-}): Promise<{ audioPath: string }> {
-  if (isMossTtsServeEnabled()) {
-    // serve 模式：模型常驻内存，推理只需 3-8 秒
-    return synthesizeViaServe(options);
+}): Promise<{ audioPath: string } {
+  //优先 serve 模式，崩溃后永久回退到 CLI
+  if (isMossTtsServeEnabled() && !servePermanentlyDead) {
+    try {
+      return await synthesizeViaServe(options);
+    } catch (serveErr) {
+      await fileLog("[synthesize] serve 模式失败，回退 CLI:", serveErr instanceof Error ? serveErr.message : String(serveErr));
+      markServeDead();
+    }
   }
-  // CLI 模式（每次冷启动 ~15 秒）
   return synthesizeViaCLI(options);
 }
 

@@ -44,7 +44,13 @@ rm -rf /data/toonflow/tools/moss-tts-nano/venv
 cd /data/toonflow/tools/moss-tts-nano
 
 ## 创建交换文件，增加虚拟内存
-sudo fallocate -l 2G /swapfile
+编辑 vi /etc/fstab，删掉 / 注释 /swapfile 那一行
+重启
+swapoff /swapfile
+rm -f /swapfile
+
+
+sudo fallocate -l 8G /swapfile
 sudo chmod 600 /swapfile
 sudo mkswap /swapfile
 sudo swapon /swapfile
