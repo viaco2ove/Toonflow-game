@@ -1,4 +1,4 @@
-# 硅基流动 语音接口
+# 硅基流动(siliconflow) 语音接口
 ==文档==
 https://api-docs.siliconflow.cn/docs/api/audio-speech-post
 
@@ -55,3 +55,4 @@ curl -X POST "https://api.siliconflow.cn/v1/uploads/audio/voice" \
 {
   "uri": "speech:your-voice-name:xxx:xxx"
 }
+
