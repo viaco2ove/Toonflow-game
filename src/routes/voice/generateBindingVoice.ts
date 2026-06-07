@@ -26,6 +26,7 @@ import {
   writeGeneratedReferenceMeta,
   type VoiceMode,
 } from "./preview";
+import {DebugLogUtil} from "@/utils/debugLogUtil";
 
 const router = express.Router();
 
@@ -282,7 +283,33 @@ export default router.post(
           voiceId: normalizedVoiceId,
           roleId: trimText(roleId),
         });
+        if (DebugLogUtil.isDebugLogEnabled()) {
+          console.log("[Voice][uploadSiliconFlowVoice][businessPresetPath]", JSON.stringify({"businessPresetPath": businessPresetPath}));
+        }
         if (businessPresetPath) {
+          // SiliconFlow 克隆：business preset 已有参考音频，需要上传到 SiliconFlow 获取 URI
+          if (manufacturer === "siliconflow") {
+            const { uploadSiliconFlowVoice } = await import("@/lib/siliconflowVoice");
+            const refBuffer = await loadReferenceAudioBuffer(businessPresetPath);
+            const refExt = businessPresetPath.split(".").pop() || "wav";
+            const customName = `clone_${Date.now().toString(36)}_${(userId || 0).toString(36)}`;
+            const uri = await uploadSiliconFlowVoice({
+              apiKey: trimText(config.apiKey),
+              model: String(config.model || "").trim(),
+              audioBuffer: refBuffer,
+              filename: `clone.${refExt}`,
+              customName,
+            });
+            await writeGeneratedReferenceMeta(businessPresetPath, {
+              customVoiceId: uri,
+              targetModel: config.model,
+              generatedBy: "siliconflow_clone",
+              createdAt: Date.now(),
+            });
+            return res.status(200).send(success(buildGeneratedVoiceResult(req, businessPresetPath, BUSINESS_VOICE_PRESET_SEED_TEXT, {
+              customVoiceId: uri,
+            })));
+          }
           return res.status(200).send(success(buildGeneratedVoiceResult(req, businessPresetPath, BUSINESS_VOICE_PRESET_SEED_TEXT)));
         }
       }

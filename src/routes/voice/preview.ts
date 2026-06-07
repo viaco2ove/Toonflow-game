@@ -680,10 +680,10 @@ async function synthesizeWithSiliconFlowClone(
   const result = await synthesizeSiliconFlowCloneBuffer({
     apiKey,
     model,
+    uploadModel: "IndexTeam/IndexTTS-2",
     text: String(text || "").trim(),
     referenceAudioBuffer: audioBuffer,
     referenceAudioFilename: `clone_${Date.now()}.${fileExt}`,
-    referenceText: String(referenceText || "").trim(),
     responseFormat: String(format || "mp3").trim().toLowerCase() || "mp3",
   });
 
@@ -1732,10 +1732,10 @@ router.post(
           const sfCloneResult = await synthesizeSiliconFlowCloneBuffer({
             apiKey,
             model,
+            uploadModel: "IndexTeam/IndexTTS-2",
             text: String(text || "").trim(),
             referenceAudioBuffer: refBuffer,
             referenceAudioFilename: `clone_${Date.now()}.${refExt}`,
-            referenceText: businessPreset.referenceText,
             responseFormat: String(payload.format || "mp3").trim().toLowerCase() || "mp3",
           });
           const sfFormat = String(payload.format || "mp3").trim().toLowerCase() || "mp3";
@@ -2159,20 +2159,46 @@ router.post(
           voice: effectiveVoiceId || "default",
         };
       } else if (manufacturer === "siliconflow") {
-        const { synthesizeSiliconFlowTtsBuffer, SILICONFLOW_DEFAULT_VOICE } = await import("@/lib/siliconflowVoice");
-        const sfResult = await synthesizeSiliconFlowTtsBuffer({
-          apiKey: String(config.apiKey || "").trim(),
-          model: String(config.model || "FunAudioLLM/CosyVoice2-0.5B").trim(),
-          text: String(text || "").trim(),
-          voice: effectiveVoiceId || SILICONFLOW_DEFAULT_VOICE,
-          responseFormat: String(payload.format || "mp3").trim().toLowerCase() || "mp3",
-        });
-        sourceUrl = await persistPreviewAudioBuffer(userId, sfResult.buffer, String(payload.format || "mp3"));
-        data = {
-          localGenerated: true,
-          model: String(config.model || "FunAudioLLM/CosyVoice2-0.5B").trim(),
-          voice: effectiveVoiceId || SILICONFLOW_DEFAULT_VOICE,
-        };
+        // 区分 SiliconFlow 内置音色 vs business preset（克隆参考预设）
+        const sfBp = findBusinessVoicePreset(effectiveVoiceId);
+        if (sfBp) {
+          // business preset → 用预设的参考音频走克隆合成
+          const { synthesizeSiliconFlowCloneBuffer } = await import("@/lib/siliconflowVoice");
+          const refPath = resolvedReferenceAudioSource || sfBp.referencePath;
+          const refBuffer = await loadReferenceAudioBuffer(refPath);
+          const sfCloneResult = await synthesizeSiliconFlowCloneBuffer({
+            apiKey: String(config.apiKey || "").trim(),
+            model: String(config.model || "").trim(),
+            uploadModel: "IndexTeam/IndexTTS-2",
+            text: String(text || "").trim(),
+            referenceAudioBuffer: refBuffer,
+            referenceAudioFilename: `clone_${Date.now()}.wav`,
+            responseFormat: String(payload.format || "mp3").trim().toLowerCase() || "mp3",
+          });
+          sourceUrl = await persistPreviewAudioBuffer(userId, sfCloneResult.buffer, String(payload.format || "mp3"));
+          data = {
+            localGenerated: true,
+            model: String(config.model || "").trim(),
+            voice: effectiveVoiceId,
+            mode: "siliconflow_clone",
+          };
+        } else {
+          // SiliconFlow 内置/克隆音色 → 直接 TTS 合成
+          const { synthesizeSiliconFlowTtsBuffer } = await import("@/lib/siliconflowVoice");
+          const sfResult = await synthesizeSiliconFlowTtsBuffer({
+            apiKey: String(config.apiKey || "").trim(),
+            model: String(config.model || "").trim(),
+            text: String(text || "").trim(),
+            voice: effectiveVoiceId || "",
+            responseFormat: String(payload.format || "mp3").trim().toLowerCase() || "mp3",
+          });
+          sourceUrl = await persistPreviewAudioBuffer(userId, sfResult.buffer, String(payload.format || "mp3"));
+          data = {
+            localGenerated: true,
+            model: String(config.model || "").trim(),
+            voice: effectiveVoiceId,
+          };
+        }
       } else {
         const response = await axios.post(`${baseUrl}/v1/tts`, payload, { headers });
         data = response.data || {};

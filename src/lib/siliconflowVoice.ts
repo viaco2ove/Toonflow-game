@@ -1,7 +1,8 @@
 import axios from "axios";
+import {DebugLogUtil} from "@/utils/debugLogUtil";
 
 // ============================================================================
-// SiliconFlow 语音 API
+// SiliconFlow（硅基流动） 语音 API
 // https://api-docs.siliconflow.cn/docs/api/audio-speech-post
 // ============================================================================
 
@@ -82,7 +83,7 @@ export async function synthesizeSiliconFlowTtsBuffer(
 ): Promise<SiliconFlowTtsResult> {
   const {
     apiKey,
-    model = "FunAudioLLM/CosyVoice2-0.5B",
+    model = "",
     text,
     voice = SILICONFLOW_DEFAULT_VOICE,
     responseFormat = "mp3",
@@ -90,26 +91,45 @@ export async function synthesizeSiliconFlowTtsBuffer(
 
   if (!apiKey) throw new Error("SiliconFlow API Key 不能为空");
   if (!text?.trim()) throw new Error("合成文本不能为空");
+  if (!model?.trim()) throw new Error("SiliconFlow 模型未配置，请在语音模型设置中填写模型名称");
 
-  const response = await axios.post(
-    SILICONFLOW_TTS_URL,
-    {
+  const requestBody = {
+    model,
+    input: text.trim(),
+    voice,
+    response_format: responseFormat,
+    stream: false,
+  };
+  console.log("[SiliconFlowTTS] curl -X POST '" + SILICONFLOW_TTS_URL + "' -H 'Authorization: Bearer " + apiKey.slice(0,4) + "***' -H 'Content-Type: application/json' -d '" + JSON.stringify(requestBody) + "'");
+
+  let response;
+  try {
+    response = await axios.post(
+      SILICONFLOW_TTS_URL,
+      requestBody,
+      {
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+        },
+        responseType: "arraybuffer",
+        timeout: 60000,
+      },
+    );
+  } catch (err: any) {
+    const errBody = err?.response?.data ? Buffer.from(err.response.data).toString("utf8") : "";
+    console.error("[SiliconFlowTTS] 失败:", err?.response?.status, errBody.slice(0, 300));
+    throw new Error(`SiliconFlow TTS 失败 (${err?.response?.status}): ${errBody.slice(0, 200)}`);
+  }
+  if (DebugLogUtil.isDebugLogEnabled()) {
+    console.log("[Voice][synthesizeSiliconFlowTtsBuffer]", JSON.stringify({
       model,
       input: text.trim(),
       voice,
       response_format: responseFormat,
       stream: false,
-    },
-    {
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
-      responseType: "arraybuffer",
-      timeout: 60000,
-    },
-  );
-
+    }));
+  }
   const buffer = Buffer.from(response.data);
   if (!buffer.length) {
     throw new Error("SiliconFlow TTS 未返回音频数据");
@@ -121,13 +141,16 @@ export async function synthesizeSiliconFlowTtsBuffer(
 /**
  * 上传参考音频到 SiliconFlow（用于声音克隆）
  * POST /v1/uploads/audio/voice → 返回 uri
+ * text 必须而且要准确！因此不能写死。需要先进行语音转文字！
+ * 否则到了语音生成阶段，SiliconFlow 的效果是非常错了的
+ * text 为空直接不需要下一步了。直接报错吧。不然合成语音阶段也是报500 未知错误！
  */
 export async function uploadSiliconFlowVoice(
   options: SiliconFlowUploadVoiceOptions,
 ): Promise<string> {
   const {
     apiKey,
-    model = "IndexTeam/IndexTTS-2",
+    model = "",
     audioBuffer,
     filename = "reference.wav",
     customName,
@@ -137,6 +160,7 @@ export async function uploadSiliconFlowVoice(
   if (!apiKey) throw new Error("SiliconFlow API Key 不能为空");
   if (!audioBuffer?.length) throw new Error("参考音频不能为空");
   if (!customName) throw new Error("音色名称不能为空");
+  if (!model?.trim()) throw new Error("SiliconFlow 克隆模型未配置，请在语音克隆设置中填写模型名称");
 
   const FormData = (await import("form-data")).default;
   const form = new FormData();
@@ -145,17 +169,33 @@ export async function uploadSiliconFlowVoice(
   form.append("customName", customName);
   if (text) form.append("text", text);
 
-  const response = await axios.post(SILICONFLOW_UPLOAD_VOICE_URL, form, {
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      ...form.getHeaders(),
-    },
-    timeout: 60000,
-  });
+  if (DebugLogUtil.isDebugLogEnabled()) {
+    console.log("[Voice][uploadSiliconFlowVoice]", JSON.stringify({"model": model,"customName":customName,"text":text}));
+    console.log("[Voice][uploadSiliconFlowVoice][CRUL]", "curl -X POST '" + SILICONFLOW_UPLOAD_VOICE_URL + "' -H 'Authorization: Bearer " + apiKey.slice(0,4) + "***' -H 'Content-Type: multipart/form-data' --form 'file=@" + filename + "' --form 'model=" + model + "' --form 'customName=" + customName + "' --form 'text=" + text + "'");
+  }
+
+  let response;
+  try {
+    response = await axios.post(SILICONFLOW_UPLOAD_VOICE_URL, form, {
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        ...form.getHeaders(),
+      },
+      timeout: 60000,
+    });
+  } catch (err: any) {
+    const errBody = err?.response?.data ? (typeof err.response.data === "string" ? err.response.data : JSON.stringify(err.response.data)) : "";
+    console.error("[SiliconFlowUpload] 失败:", err?.response?.status, errBody.slice(0, 300));
+    throw new Error(`SiliconFlow 上传失败 (${err?.response?.status}): ${errBody.slice(0, 200)}`);
+  }
+
+  if (DebugLogUtil.isDebugLogEnabled()) {
+    console.log("[Voice][uploadSiliconFlowVoice]", JSON.stringify({ status: response.status, response: response.data }));
+  }
 
   const uri = response.data?.uri;
   if (!uri) {
-    throw new Error("SiliconFlow 上传参考音频未返回 uri");
+    throw new Error("SiliconFlow 上传参考音频未返回 uri，响应: " + JSON.stringify(response.data).slice(0, 200));
   }
 
   return uri;
@@ -184,33 +224,36 @@ export async function fetchSiliconFlowVoiceList(
 export async function synthesizeSiliconFlowCloneBuffer(options: {
   apiKey: string;
   model?: string;
+  uploadModel?: string;
   text: string;
   referenceAudioBuffer: Buffer;
   referenceAudioFilename?: string;
-  referenceText?: string;
   voiceName?: string;
   responseFormat?: string;
 }): Promise<SiliconFlowTtsResult> {
   const {
     apiKey,
-    model = "FunAudioLLM/CosyVoice2-0.5B",
+    model = "",
+    uploadModel = "",
     text,
     referenceAudioBuffer,
     referenceAudioFilename = "reference.wav",
-    referenceText = "",
     voiceName,
     responseFormat = "mp3",
   } = options;
 
+  if (!model?.trim()) throw new Error("SiliconFlow TTS 模型未配置");
+  const finalUploadModel = uploadModel.trim() || model;
+
   // 1. 上传参考音频获取 uri
+  // 注意：上传时不传 text，避免 SiliconFlow 用上传时的文本替代合成文本
   const customName = voiceName || `clone_${Date.now().toString(36)}`;
   const uri = await uploadSiliconFlowVoice({
     apiKey,
-    model: "IndexTeam/IndexTTS-2",
+    model: finalUploadModel,
     audioBuffer: referenceAudioBuffer,
     filename: referenceAudioFilename,
     customName,
-    text: referenceText,
   });
 
   // 2. 用 uri 合成
