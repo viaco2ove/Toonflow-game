@@ -142,7 +142,7 @@ export async function synthesizeSiliconFlowTtsBuffer(
  * 上传参考音频到 SiliconFlow（用于声音克隆）
  * POST /v1/uploads/audio/voice → 返回 uri
  * text 必须而且要准确！因此不能写死。需要先进行语音转文字！
- * 否则到了语音生成阶段，SiliconFlow 的效果是非常错了的
+ * 否则到了语音生成阶段，SiliconFlow 的效果是非常混乱的
  * text 为空直接不需要下一步了。直接报错吧。不然合成语音阶段也是报500 未知错误！
  */
 export async function uploadSiliconFlowVoice(
