@@ -1,0 +1,66 @@
+
+> toonflow-app@1.0.7 local
+> chcp 65001 > nul && cross-env NODE_ENV=local PREFER_PROCESS_ENV=1 tsx src/app.ts
+
+[env] local
+[env] file D:\Users\viaco\tools\Toonflow-game\toonflow-game-app\env\.env.local
+Database path: D:\Users\viaco\tools\Toonflow-game\toonflow-app-run-db\db.sqlite
+Upload dir: D:\Users\viaco\tools\Toonflow-game\toonflow-app-run-db\uploads
+[moss-tts] [serve] 端口检测失败，继续尝试启动: fetch failed
+[moss-tts] install status by file: D:\Users\viaco\tools\Toonflow-game\toonflow-game-app\Toonflow-game\tools\moss-tts-nano\install-state.json
+[moss-tts] reset status need delete this file and install again: D:\Users\viaco\tools\Toonflow-game\toonflow-game-app\Toonflow-game\tools\moss-tts-nano\install-state.json
+[server] started at http://localhost:60002
+[moss-tts] [fileLog] [serve] installStatus: {"manufacturer":"moss_tts_nano","model":"moss-tts-nano-100m","status":"installed","installed":true,"canInstall":true,"message":"已安装（已安装（python））"}
+[moss-tts] [serve] installStatus: {"manufacturer":"moss_tts_nano","model":"moss-tts-nano-100m","status":"installed","installed":true,"canInstall":true,"message":"已安装（已安装（python））"}
+[moss-tts] [fileLog] [serve] 启动常驻服务...
+[moss-tts] [serve] 启动常驻服务...
+[moss-tts] [fileLog] [serve] venvDir: D:\Users\viaco\tools\Toonflow-game\toonflow-game-app\Toonflow-game\tools\moss-tts-nano\venv pythonBin: D:\Users\viaco\tools\Toonflow-game\toonflow-game-app\Toonflow-game\tools\moss-tts-nano\venv\python.exe onnxModelDir: D:\Users\viaco\tools\Toonflow-game\toonflow-game-app\Toonflow-game\tools\moss-tts-nano\MOSS-TTS-Nano-100M-ONNX gitRepoDir: D:\Users\viaco\tools\Toonflow-game\toonflow-game-app\Toonflow-game\tools\moss-tts-nano\MOSS-TTS-Nano logPath: D:\Users\viaco\tools\Toonflow-game\toonflow-game-app\Toonflow-game\tools\moss-tts-nano\serve-stdout.log
+[moss-tts] [serve] venvDir: D:\Users\viaco\tools\Toonflow-game\toonflow-game-app\Toonflow-game\tools\moss-tts-nano\venv pythonBin: D:\Users\viaco\tools\Toonflow-game\toonflow-game-app\Toonflow-game\tools\moss-tts-nano\venv\python.exe
+[moss-tts] [fileLog] [serve] cliName: D:\Users\viaco\tools\Toonflow-game\toonflow-game-app\Toonflow-game\tools\moss-tts-nano\venv\Scripts\moss-tts-nano.exe
+[moss-tts] [serve] cliName: D:\Users\viaco\tools\Toonflow-game\toonflow-game-app\Toonflow-game\tools\moss-tts-nano\venv\Scripts\moss-tts-nano.exe
+[moss-tts] [serve] 健康检查通过: http://127.0.0.1:18084
+[moss-tts] [fileLog] [serve] 启动成功: http://127.0.0.1:18084
+[moss-tts] [serve] 启动成功: http://127.0.0.1:18084
+[MOSS-TTS-Nano] 常驻服务已启动
+[0mOPTIONS /voice/generateBindingVoice [32m204[0m 1.243 ms - 0[0m
+[Voice][uploadSiliconFlowVoice] {"model":"FunAudioLLM/CosyVoice2-0.5B","customName":"clone_mq44efbk_1","text":""}
+[0mPOST /voice/generateBindingVoice [32m200[0m 619.078 ms - 908[0m
+[0mOPTIONS /voice/preview [32m204[0m 0.411 ms - 0[0m
+[voice-preview] {"mode":"clone","voiceId":"speech:clone_mq44efbk_1:pyr3bb9d75:gtwbkgyebohvfkibfsfa","refPath":"/system/voice-presets/generated/player/clone_f54bdb837861fde4.wav","directAliyun":false,"configId":74,"model":"FunAudioLLM/CosyVoice2-0.5B"}
+[voice-preview] clone mode {"refSource":"/system/voice-presets/generated/player/clone_f54bdb837861fde4.wav","directAliyun":false}
+[Voice][uploadSiliconFlowVoice] {"model":"IndexTeam/IndexTTS-2","customName":"clone_mq44efrr","text":""}
+[SiliconFlowTTS] curl -X POST 'https://api.siliconflow.cn/v1/audio/speech' -H 'Authorization: Bearer sk-f***' -H 'Content-Type: application/json' -d '{"model":"FunAudioLLM/CosyVoice2-0.5B","input":"恭喜，已成功复刻或生成了属于角色的声音！","voice":"speech:clone_mq44efrr:pyr3bb9d75:ctscbehrylhvhfopdhts","response_format":"wav","stream":false}'
+[SiliconFlowTTS] 失败: 500 {"code":50507,"message":"Request failed: Unknown error.","data":null}
+[voice] preview failed {
+  route: '/voice/preview',
+  request: {
+    configId: 74,
+    mode: 'clone',
+    voiceId: 'speech:clone_mq44efbk_1:pyr3bb9d75:gtwbkgyebohvfkibfsfa',
+    textLength: 20,
+    hasReferenceText: true,
+    hasReferenceAudioBase64: false,
+    hasReferenceAudioPath: true,
+    promptTextLength: 0,
+    mixVoiceCount: 0,
+    roleId: 'player'
+  },
+  userId: 1,
+  config: {
+    id: 74,
+    manufacturer: 'siliconflow',
+    model: 'FunAudioLLM/CosyVoice2-0.5B',
+    modelType: 'tts',
+    baseUrl: 'https://api.siliconflow.cn'
+  },
+  requestedConfigId: 74,
+  resolvedConfigId: 74,
+  message: 'SiliconFlow TTS 失败 (500): {"code":50507,"message":"Request failed: Unknown error.","data":null}',
+  stack: 'Error: SiliconFlow TTS 失败 (500): {"code":50507,"message":"Request failed: Unknown error.","data":null}\n' +
+    '    at synthesizeSiliconFlowTtsBuffer (D:\\Users\\viaco\\tools\\Toonflow-game\\toonflow-game-app\\src\\lib\\siliconflowVoice.ts:122:11)\n' +
+    '    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)\n' +
+    '    at async synthesizeWithSiliconFlowClone (D:\\Users\\viaco\\tools\\Toonflow-game\\toonflow-game-app\\src\\routes\\voice\\preview.ts:680:18)\n' +
+    '    at async <anonymous> (D:\\Users\\viaco\\tools\\Toonflow-game\\toonflow-game-app\\src\\routes\\voice\\preview.ts:1873:15)',
+  upstream: null
+}
+[0mPOST /voice/preview [31m500[0m 1266.632 ms - 144[0m
