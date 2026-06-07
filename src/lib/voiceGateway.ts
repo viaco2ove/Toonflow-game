@@ -442,6 +442,10 @@ export function isMiniMaxVoiceManufacturer(input?: string | null): boolean {
   return normalizedManufacturer(input) === "minimax";
 }
 
+export function isSiliconFlowVoiceManufacturer(input?: string | null): boolean {
+  return normalizedManufacturer(input) === "siliconflow";
+}
+
 export function isAliyunVoiceManufacturer(input?: string | null): boolean {
   return isLocalAliyunManufacturer(input) || isDirectAliyunManufacturer(input);
 }
@@ -573,6 +577,9 @@ export function resolveVoiceModelModes(input: {
     return ["text"];
   }
   if (manufacturer === "moss_tts_nano") {
+    return ["text", "clone"];
+  }
+  if (manufacturer === "siliconflow") {
     return ["text", "clone"];
   }
   return [...DEFAULT_TTS_VOICE_MODES];

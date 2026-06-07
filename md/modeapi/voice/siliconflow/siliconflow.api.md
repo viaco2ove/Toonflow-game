@@ -43,7 +43,7 @@ curl --request GET \
   ]
 }
 
-## 上传参考音频
+### 上传参考音频
 curl -X POST "https://api.siliconflow.cn/v1/uploads/audio/voice" \
   -H "Authorization: Bearer YOUR_API_KEY" \
   -F "file=@test.mp3" \
@@ -56,3 +56,14 @@ curl -X POST "https://api.siliconflow.cn/v1/uploads/audio/voice" \
   "uri": "speech:your-voice-name:xxx:xxx"
 }
 
+### 创建语音转文本请求
+curl --request POST \
+  --url https://api.siliconflow.cn/v1/audio/transcriptions \
+  -H "Authorization: Bearer <YOUR_API_KEY>" \
+  -F "file=@path/to/your/audio.mp3" \
+  -F "model=FunAudioLLM/SenseVoiceSmall"
+
+返回
+{
+  "text": "string"
+}

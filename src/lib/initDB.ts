@@ -2255,6 +2255,7 @@ result=continue:
         await knex("t_voiceModel").insert([
           { manufacturer: "ai_voice_tts", model: "ai_voice_tts", mode: JSON.stringify(["text", "clone", "mix", "prompt_voice"]) },
           { manufacturer: "moss_tts_nano", model: "moss-tts-nano-100m", mode: JSON.stringify(["text", "clone"]) },
+          { manufacturer: "siliconflow", model: "FunAudioLLM/CosyVoice2-0.5B", mode: JSON.stringify(["text", "clone"]) },
         ]);
       },
     },

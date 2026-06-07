@@ -138,6 +138,18 @@ export default router.post(
           outputPath: testPath,
         });
         res.status(200).send(success("MOSS-TTS-Nano 本地模型测试通过（已自动安装）"));
+      } else if (trimmedManufacturer === "siliconflow") {
+        // SiliconFlow TTS 测试
+        const { synthesizeSiliconFlowTtsBuffer } = await import("@/lib/siliconflowVoice");
+        const result = await synthesizeSiliconFlowTtsBuffer({
+          apiKey: trimmedApiKey,
+          model: trimmedModel || "FunAudioLLM/CosyVoice2-0.5B",
+          text: "硅基流动语音合成测试，功能正常。",
+        });
+        if (!result.buffer?.length) {
+          throw new Error("SiliconFlow TTS 未返回音频数据");
+        }
+        res.status(200).send(success("SiliconFlow 语音合成测试通过"));
       } else {
         res.status(400).send(error(`不支持的语音克隆厂商: ${manufacturer}`));
       }
