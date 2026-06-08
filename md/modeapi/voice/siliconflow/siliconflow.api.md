@@ -43,7 +43,7 @@ mp3: 支持(32000, 44100), 默认44100
 注意：输入内容不要加空格，参考音频要小于30s
 #### 情绪语言控制：
 curl --location 'https://api.siliconflow.cn/v1/audio/speech' \
---header 'Authorization: Bearer sk-fhogwylucakaprngalfwnflaalezyszmxporefpiutmanccd' \
+--header 'Authorization: Bearer xxxx' \
 --header 'Content-Type: application/json' \
 --data '{
 	"model": "FunAudioLLM/CosyVoice2-0.5B",
@@ -53,7 +53,7 @@ curl --location 'https://api.siliconflow.cn/v1/audio/speech' \
 	"stream": false
 }'
 curl --location 'https://api.siliconflow.cn/v1/audio/speech' \
---header 'Authorization: Bearer sk-fhogwylucakaprngalfwnflaalezyszmxporefpiutmanccd' \
+--header 'Authorization: Bearer xxxx' \
 --header 'Content-Type: application/json' \
 --data '{
 	"model": "FunAudioLLM/CosyVoice2-0.5B",
