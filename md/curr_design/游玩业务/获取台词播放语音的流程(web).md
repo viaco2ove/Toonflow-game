@@ -188,3 +188,29 @@ playMessageAudio() (ScenePlay.vue:3138-3193)：如果 AI TTS 播放失败，会�
 每个 NPC 的语音都能完整播完，不会被下一个打断。预取机制仍然生效，所以编排步骤几乎零等待，整体节奏感知上不会变慢。
 
 ## 静音模式的按字数进行等待
+关键代码
+ScenePlay.vue
+if (!autoVoice.value) {
+  store.setRuntimeMessageStatus(currentMessage.id, nextStatusAfterVoice);
+  await sleep(estimateRevealDelayMs(messageDisplayContent(currentMessage)));
+  return;
+}
+静音模式（autoVoice = false）时，不播语音，直接把状态设为 waiting_next / waiting_player，然后 按字数估算一个等待时间。
+
+估算公式
+ScenePlay.vue
+function estimateRevealDelayMs(text: string): number {
+  const normalized = sanitizeSpeechText(text);
+  const estimated = normalized.length * 90 + 1200;  // 每字90ms + 1.2秒基础
+  return Math.max(1400, Math.min(4800, estimated)); // 1.4秒 ~ 4.8秒
+}
+
+文字长度	估算时间	说明
+5 字	5×90+1200 = 1650ms	取 max → 1.65s
+10 字	10×90+1200 = 2100ms	2.1s
+20 字	20×90+1200 = 3000ms	3.0s
+40 字	40×90+1200 = 4800ms	4.8s（上限）
+80 字	80×90+1200 = 8400ms	截断 → 4.8s（上限）
+
+开场白特殊处理
+useToonflowStore.ts:173-181：开场白有单独的估算，静音时固定 2 秒：
