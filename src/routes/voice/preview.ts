@@ -673,7 +673,7 @@ async function synthesizeWithSiliconFlowClone(
 ): Promise<{ audioUrl: string; data: Record<string, any> }> {
   const { synthesizeSiliconFlowCloneBuffer } = await import("@/lib/siliconflowVoice");
   const apiKey = String(config.apiKey || "").trim();
-  const model = String(config.model || "FunAudioLLM/CosyVoice2-0.5B").trim();
+  const model = String(config.model || "").trim();
   const audioBuffer = await loadReferenceAudioBuffer(referenceAudioPath);
   const fileExt = inferAudioExt(referenceAudioPath) || "wav";
 
@@ -1725,7 +1725,7 @@ router.post(
         } else if (manufacturer === "siliconflow") {
           const { synthesizeSiliconFlowCloneBuffer, SILICONFLOW_DEFAULT_VOICE } = await import("@/lib/siliconflowVoice");
           const apiKey = String(config.apiKey || "").trim();
-          const model = String(config.model || "FunAudioLLM/CosyVoice2-0.5B").trim();
+          const model = String(config.model || "").trim();
           const refPath = resolvedReferenceAudioSource || businessPreset.referencePath;
           const refBuffer = await loadReferenceAudioBuffer(refPath);
           const refExt = inferAudioExt(refPath) || "wav";

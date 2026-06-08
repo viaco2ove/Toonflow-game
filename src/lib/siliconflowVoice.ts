@@ -174,8 +174,12 @@ export async function transcribeSiliconFlowAudio(
       timeout: 30000,
     });
   } catch (err: any) {
-    const errBody = err?.response?.data ? JSON.stringify(err.response.data) : "";
-    throw new Error(`SiliconFlow ASR 失败 (${err?.response?.status}): ${errBody.slice(0, 200)}`);
+    const status = err?.response?.status ?? err?.status ?? "unknown";
+    const errBody = err?.response?.data
+      ? (typeof err.response.data === "string" ? err.response.data : JSON.stringify(err.response.data))
+      : String(err?.message || err);
+    console.error("[SiliconFlowASR] 失败:", status, errBody.slice(0, 300));
+    throw new Error(`SiliconFlow ASR 失败 (${status}): ${errBody.slice(0, 200)}`);
   }
 
   const text = String(response.data?.text || "").trim();

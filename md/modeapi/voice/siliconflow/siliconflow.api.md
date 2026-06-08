@@ -1,8 +1,9 @@
 # 硅基流动(siliconflow) 语音接口
 ==文档==
 https://api-docs.siliconflow.cn/docs/api/audio-speech-post
-
+https://api-docs.siliconflow.cn/docs/userguide/capabilities/text-to-speech
 ## 模型
+https://cloud.siliconflow.cn/me/models?types=speech
 - FunAudioLLM/CosyVoice2-0.5B
 价格： ¥0.050000/ 千字符（UTF-8）
 效果：还行
