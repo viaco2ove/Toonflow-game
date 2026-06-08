@@ -11,6 +11,7 @@ const SILICONFLOW_TTS_URL = `${SILICONFLOW_BASE_URL}/v1/audio/speech`;
 const SILICONFLOW_UPLOAD_VOICE_URL = `${SILICONFLOW_BASE_URL}/v1/uploads/audio/voice`;
 const SILICONFLOW_VOICE_LIST_URL = `${SILICONFLOW_BASE_URL}/v1/audio/voice/list`;
 const SILICONFLOW_ASR_URL = `${SILICONFLOW_BASE_URL}/v1/audio/transcriptions`;
+// 用于克隆语音时的text 识别。
 const SILICONFLOW_ASR_MODEL = "FunAudioLLM/SenseVoiceSmall";
 
 // ============================================================================
