@@ -25,7 +25,43 @@ curl --location 'https://api.siliconflow.cn/v1/audio/speech' \
   "stream": true
 }'
 
-返回二进制数据流
+#### 返回二进制数据流
+
+#### 参数：
+端点：/audio/speech，具体使用可参考https://api-docs.siliconflow.cn/docs/api/audio-speech-post
+主要请求参数：
+model：用于语音合成的模型，支持的https://cloud.siliconflow.cn/models?types=speech。
+input：待转换为音频的文本内容。
+voice：参考音色，支持系统预置音色、用户预置音色、用户动态音色。
+speed：可以控制音频速度，float类型，默认值是1.0，可选范围是[0.25,4.0]；
+gain：音频增益，单位dB，可以控制音频声音大小，float类型，默认值是0.0，可选范围是[-10,10]；
+response_format：控制输出格式，支持 mp3、opus、wav 和 pcm 格式。在选择不同的输出格式时，输出的采样率也会有所不同。
+sample_rate：可以控制输出采样率，对于不同的视频输出类型，默认值和可取值范围均不同，具体如下：
+opus: 目前只支持48000hz
+wav, pcm: 支持 (8000, 16000, 24000, 32000, 44100), 默认44100
+mp3: 支持(32000, 44100), 默认44100
+注意：输入内容不要加空格，参考音频要小于30s
+#### 情绪语言控制：
+curl --location 'https://api.siliconflow.cn/v1/audio/speech' \
+--header 'Authorization: Bearer sk-fhogwylucakaprngalfwnflaalezyszmxporefpiutmanccd' \
+--header 'Content-Type: application/json' \
+--data '{
+	"model": "FunAudioLLM/CosyVoice2-0.5B",
+	"input": "你能用粤语说吗？<|endofprompt|>今天真是太开心了，马上要放假了！I'\''m so happy, Spring Festival is coming!",
+	"voice": "speech:clone_mq450a3u_1:pyr3bb9d75:frkblqhylzextbhnwhqb",
+	"response_format": "mp3",
+	"stream": false
+}'
+curl --location 'https://api.siliconflow.cn/v1/audio/speech' \
+--header 'Authorization: Bearer sk-fhogwylucakaprngalfwnflaalezyszmxporefpiutmanccd' \
+--header 'Content-Type: application/json' \
+--data '{
+	"model": "FunAudioLLM/CosyVoice2-0.5B",
+	"input": "你能用很悲伤很愤怒的情绪怒吼着说吗？<|endofprompt|>今天真是太开心了，马上要放假了！I'\''m so happy, Spring Festival is coming!",
+	"voice": "speech:clone_mq450a3u_1:pyr3bb9d75:frkblqhylzextbhnwhqb",
+	"response_format": "mp3",
+	"stream": false
+}' 
 
 ### 获取参考音频列表
 curl --request GET \
