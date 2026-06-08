@@ -680,7 +680,7 @@ async function synthesizeWithSiliconFlowClone(
   const result = await synthesizeSiliconFlowCloneBuffer({
     apiKey,
     model,
-    uploadModel: "IndexTeam/IndexTTS-2",
+    uploadModel: "nlp/MOSS-TTSD-v0.5",
     text: String(text || "").trim(),
     referenceAudioBuffer: audioBuffer,
     referenceAudioFilename: `clone_${Date.now()}.${fileExt}`,
@@ -1732,7 +1732,7 @@ router.post(
           const sfCloneResult = await synthesizeSiliconFlowCloneBuffer({
             apiKey,
             model,
-            uploadModel: "IndexTeam/IndexTTS-2",
+            uploadModel: "nlp/MOSS-TTSD-v0.5",
             text: String(text || "").trim(),
             referenceAudioBuffer: refBuffer,
             referenceAudioFilename: `clone_${Date.now()}.${refExt}`,
@@ -2169,7 +2169,7 @@ router.post(
           const sfCloneResult = await synthesizeSiliconFlowCloneBuffer({
             apiKey: String(config.apiKey || "").trim(),
             model: String(config.model || "").trim(),
-            uploadModel: "IndexTeam/IndexTTS-2",
+            uploadModel: "nlp/MOSS-TTSD-v0.5",
             text: String(text || "").trim(),
             referenceAudioBuffer: refBuffer,
             referenceAudioFilename: `clone_${Date.now()}.wav`,

@@ -47,9 +47,13 @@ curl --request GET \
 curl -X POST "https://api.siliconflow.cn/v1/uploads/audio/voice" \
   -H "Authorization: Bearer YOUR_API_KEY" \
   -F "file=@test.mp3" \
-  -F "model=IndexTeam/IndexTTS-2" \
+  -F "model=FunAudioLLM/CosyVoice2-0.5B" \
   -F "customName=your-voice-name" \
-  -F "text=慢工出细活，再给我两分钟，你马上就能见识到超梦分析的厉害了"        
+  -F "text=慢工出细活，再给我两分钟，你马上就能见识到超梦分析的厉害了"  
+
+参数：
+text:必须通过语音识别生成。不能乱写！不能为空！
+model:nlp/MOSS-TTSD-v0.5, FunAudioLLM/CosyVoice2-0.5B
 
 返回：
 {
@@ -62,7 +66,9 @@ curl --request POST \
   -H "Authorization: Bearer <YOUR_API_KEY>" \
   -F "file=@path/to/your/audio.mp3" \
   -F "model=FunAudioLLM/SenseVoiceSmall"
-
+支持模型：
+FunAudioLLM/SenseVoiceSmall
+TeleAI/TeleSpeechASR
 返回
 {
   "text": "string"

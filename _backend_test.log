@@ -28,7 +28,7 @@ Upload dir: D:\Users\viaco\tools\Toonflow-game\toonflow-app-run-db\uploads
 [0mOPTIONS /voice/preview [32m204[0m 0.411 ms - 0[0m
 [voice-preview] {"mode":"clone","voiceId":"speech:clone_mq44efbk_1:pyr3bb9d75:gtwbkgyebohvfkibfsfa","refPath":"/system/voice-presets/generated/player/clone_f54bdb837861fde4.wav","directAliyun":false,"configId":74,"model":"FunAudioLLM/CosyVoice2-0.5B"}
 [voice-preview] clone mode {"refSource":"/system/voice-presets/generated/player/clone_f54bdb837861fde4.wav","directAliyun":false}
-[Voice][uploadSiliconFlowVoice] {"model":"IndexTeam/IndexTTS-2","customName":"clone_mq44efrr","text":""}
+[Voice][uploadSiliconFlowVoice] {"model":"nlp/MOSS-TTSD-v0.5","customName":"clone_mq44efrr","text":""}
 [SiliconFlowTTS] curl -X POST 'https://api.siliconflow.cn/v1/audio/speech' -H 'Authorization: Bearer sk-f***' -H 'Content-Type: application/json' -d '{"model":"FunAudioLLM/CosyVoice2-0.5B","input":"恭喜，已成功复刻或生成了属于角色的声音！","voice":"speech:clone_mq44efrr:pyr3bb9d75:ctscbehrylhvhfopdhts","response_format":"wav","stream":false}'
 [SiliconFlowTTS] 失败: 500 {"code":50507,"message":"Request failed: Unknown error.","data":null}
 [voice] preview failed {
