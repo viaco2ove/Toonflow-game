@@ -10,6 +10,8 @@ const SILICONFLOW_BASE_URL = "https://api.siliconflow.cn";
 const SILICONFLOW_TTS_URL = `${SILICONFLOW_BASE_URL}/v1/audio/speech`;
 const SILICONFLOW_UPLOAD_VOICE_URL = `${SILICONFLOW_BASE_URL}/v1/uploads/audio/voice`;
 const SILICONFLOW_VOICE_LIST_URL = `${SILICONFLOW_BASE_URL}/v1/audio/voice/list`;
+const SILICONFLOW_ASR_URL = `${SILICONFLOW_BASE_URL}/v1/audio/transcriptions`;
+const SILICONFLOW_ASR_MODEL = "FunAudioLLM/SenseVoiceSmall";
 
 // ============================================================================
 // 内置音色
@@ -145,6 +147,49 @@ export async function synthesizeSiliconFlowTtsBuffer(
  * 否则到了语音生成阶段，SiliconFlow 的效果是非常混乱的
  * text 为空直接不需要下一步了。直接报错吧。不然合成语音阶段也是报500 未知错误！
  */
+/**
+ * ASR 语音转文字（SiliconFlow SenseVoiceSmall）
+ * POST /v1/audio/transcriptions → 返回转写文本
+ */
+export async function transcribeSiliconFlowAudio(
+  apiKey: string,
+  audioBuffer: Buffer,
+  filename = "audio.wav",
+): Promise<string> {
+  if (!apiKey) throw new Error("SiliconFlow API Key 不能为空");
+  if (!audioBuffer?.length) throw new Error("音频数据不能为空");
+
+  const FormData = (await import("form-data")).default;
+  const form = new FormData();
+  form.append("file", audioBuffer, { filename, contentType: "audio/wav" });
+  form.append("model", SILICONFLOW_ASR_MODEL);
+
+  let response;
+  try {
+    response = await axios.post(SILICONFLOW_ASR_URL, form, {
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        ...form.getHeaders(),
+      },
+      timeout: 30000,
+    });
+  } catch (err: any) {
+    const errBody = err?.response?.data ? JSON.stringify(err.response.data) : "";
+    throw new Error(`SiliconFlow ASR 失败 (${err?.response?.status}): ${errBody.slice(0, 200)}`);
+  }
+
+  const text = String(response.data?.text || "").trim();
+  if (!text) {
+    throw new Error("SiliconFlow ASR 未返回有效文本，参考音频可能无法识别");
+  }
+  return text;
+}
+
+/**
+ * 上传参考音频到 SiliconFlow（用于声音克隆）
+ * POST /v1/uploads/audio/voice → 返回 uri
+ * text 由 ASR 自动转写，不需要手动填写
+ */
 export async function uploadSiliconFlowVoice(
   options: SiliconFlowUploadVoiceOptions,
 ): Promise<string> {
@@ -154,13 +199,22 @@ export async function uploadSiliconFlowVoice(
     audioBuffer,
     filename = "reference.wav",
     customName,
-    text = "",
+    text: providedText = "",
   } = options;
 
   if (!apiKey) throw new Error("SiliconFlow API Key 不能为空");
   if (!audioBuffer?.length) throw new Error("参考音频不能为空");
   if (!customName) throw new Error("音色名称不能为空");
   if (!model?.trim()) throw new Error("SiliconFlow 克隆模型未配置，请在语音克隆设置中填写模型名称");
+
+  // text 必须准确对应参考音频内容，由 ASR 自动转写
+  let text = providedText;
+  if (!text?.trim()) {
+    text = await transcribeSiliconFlowAudio(apiKey, audioBuffer, filename);
+  }
+  if (!text?.trim()) {
+    throw new Error("SiliconFlow 上传参考音频时无法转写文本，参考音频可能无法识别");
+  }
 
   const FormData = (await import("form-data")).default;
   const form = new FormData();
