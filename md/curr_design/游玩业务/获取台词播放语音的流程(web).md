@@ -1,3 +1,4 @@
+# no_modify
 # 现在的获取台词播放语音的流程是怎样的
 ## 第一轮
 整体链路：编排 → 台词生成 → 绑定音色 → TTS 合成 → 代理播放
@@ -167,7 +168,7 @@ playMessageAudio() (ScenePlay.vue:3138-3193)：如果 AI TTS 播放失败，会�
 
 一句话总结：播放完靠的是浏览器原生的 Audio.onended 事件，配合基于文本长度的超时兜底（8~45 秒），多段台词逐段串行等待，onended/onerror/超时三路竞争，第一个触发的生效。
 
-### 编排执行流程
+### 编排语音执行流程
 
 ```
 编排NPC-A → 台词A生成完 →  prefetch 预编排 NPC-B (后台)  → Watch: 语音A 开始播放
@@ -361,3 +362,21 @@ const configId = role.voiceConfigId ?? (store.state.debugMode && !currentWorld.v
 之前分析的缓存问题只存在于同一个 ScenePlay 组件生命周期内热切换模型的场景，而这个场景几乎不可能发生（用户在游玩中无法直接改模型设置，必须先退出到设置页）。
 
 不需要额外处理。
+
+
+## 台词「逐字打字机效果」？
+### 流式接口：
+/game/streamlines
+/game/streamlines/introduction
+## 效果
+有累积，无渐显。 具体表现：
+✅ 实时接收：前端用 ReadableStream 读取，能边收边累积 delta 数据
+有问题的地方：
+❌ 直接覆盖：渲染时直接用累积值覆盖 content，没有逐字追加
+❌ 无打字机动画：代码中没有 typewriter / typing effect / requestAnimationFrame 逐字渲染
+❌ 无光标闪烁：没有打字机光标 CSS 效果
+
+
+## 台词生产中效果有吗？ 语音生成中播放中呢
+。-》. -》。
+尾部圆点指示器	✅ 有（金黄色脉冲点 + loading 时圆点数切换）
