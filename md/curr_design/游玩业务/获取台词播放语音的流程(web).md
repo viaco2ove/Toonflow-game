@@ -170,22 +170,35 @@ playMessageAudio() (ScenePlay.vue:3138-3193)：如果 AI TTS 播放失败，会�
 ### 编排执行流程
 
 ```
-编排NPC-A → 台词A生成完 → break退出for循环
+编排NPC-A → 台词A生成完 →  prefetch 预编排 NPC-B (后台)  → Watch: 语音A 开始播放
+
+                          break退出for循环  → 等待 continueSessionNarrative
                                     ↓
-                          ScenePlay播放语音A → 播完
+                          ScenePlay播放语音A(流式多段) → 播完(多段串行)
                                     ↓
                           status = "waiting_next" → Watch检测到
                                     ↓
                           auto_advancing → continueSessionNarrative()
                                     ↓
-                          复用预取结果 → 编排NPC-B → 台词B生成完 → break
+                          resolveSessionOrchestration 复用预取的编排结果 →  台词B生成完 → break
                                     ↓
-                          ScenePlay播放语音B → 播完
+                          ScenePlay播放语音B(流式多段) → 播完(多段串行)
                                     ↓
                           ...循环直到轮到用户发言
 ```
 
 每个 NPC 的语音都能完整播完，不会被下一个打断。预取机制仍然生效，所以编排步骤几乎零等待，整体节奏感知上不会变慢。
+
+## 连续几个角色台词会打断前面哪一个的？
+编排NPC-A → 台词A生成完 → break退出for循环。 这种单循环。理论上可以解决打断。
+关键！每次 playMessageAudio 都会走到 playMessageAudioWithBinding，而后者第一行就是 stopRuntimeVoicePlayback()。
+编排NPC-B 我看是发声在 台词A生成完 时的吧。  台词B生成开始理论上是发生在(播放语音A → 播完) 后面的吧。
+打断原因猜测：1.语音播放完毕的识别错误，2.下一轮编排触发了stop
+分析结果：问题 是播放完A 台词语音才获取 B 台词文本这个原则没有实现！ai 可能会想到用锁串行语音播放自身，但是这只会更容易触发更严重的问题。台词A  没有播放完。 台词B 还直接不播放了.
+可以说真正的锁是：播放完A 台词语音才获取 B 台词文本。 而不是多个语音播放的串行锁，这不用看都是死锁。
+这个时候的直觉是：流获取的多段语音播放识别不对。没有播放完就去获取台词B 的文本了。
+其中一种可能是只判断了 流的返回而不判断语音是否播放完毕！
+Watch：设 voicing → 播放 → 设 waiting_next
 
 ## 静音模式的按字数进行等待
 关键代码
@@ -213,4 +226,129 @@ function estimateRevealDelayMs(text: string): number {
 80 字	80×90+1200 = 8400ms	截断 → 4.8s（上限）
 
 开场白特殊处理
-useToonflowStore.ts:173-181：开场白有单独的估算，静音时固定 2 秒：
+useToonflowStore.ts:173-181：开场白有单独的估算，静音时固定 2 秒
+
+
+## 在游玩一个故事时(中途)。我换了语音合成模型和语音克隆模型。会怎样？
+切换语音合成模型/克隆模型后会发生什么？
+
+取决于**三个层级**的缓存是否命中，以及 `configId` 是否变化。
+
+---
+
+### 三个模型的 configId
+
+前端有三个独立的模型配置（`VoiceBindingDialog.vue:106-117`）：
+
+| 配置项 | settings key | 用途 |
+|--------|-------------|------|
+| `storyVoiceModel` | TTS 合成模型 | 决定用哪个厂商做语音合成 |
+| `storyVoiceDesignModel` | 语音设计模型 | prompt_voice 模式生成音色 |
+| `storyVoiceCloneModel` | 语音克隆模型 | clone 模式上传参考音频 |
+
+角色卡上的 `voiceConfigId` 是绑定的 TTS 合成模型 ID。
+
+---
+
+### 四级缓存体系
+
+```
+① runtimeVoiceCloneBindingCache  — 前端 Map，缓存角色→clone绑定结果
+② runtimeVoicePreviewCache       — 前端 Map，缓存 (binding+text)→audioUrl
+③ 后端 buildReferenceAudioCacheSeed — OSS 文件缓存，含 configId+model
+④ runtimeVoiceBlobCache          — 前端 Map，缓存 audioUrl→Blob
+```
+
+### 缓存键构成
+
+`runtimeVoiceBindingKey`（`ScenePlay.vue:2850-2861`）：
+```
+configId | roleId | mode | presetId | referenceAudioPath | referenceText | promptText | mixVoices
+```
+
+`runtimeVoicePreviewKey`：
+```
+bindingKey | text
+```
+
+后端参考音频缓存键（`preview.ts:831-834`）：
+```
+manufacturer | configId | targetModel | mode | voiceId/textSeed/promptText
+```
+
+---
+
+### 切换场景分析
+
+#### 场景 1：换了 TTS 合成模型（storyVoiceModel → 新 configId）
+
+| 缓存层 | 是否命中 | 原因 |
+|--------|---------|------|
+| ① CloneBinding | ❌ miss | `configId` 变了，缓存键不同 |
+| ② Preview | ❌ miss | 依赖 ① 的绑定结果，bindingKey 不同 |
+| ③ 后端 OSS | ❌ miss | `configId` + `targetModel` 都变 |
+| ④ Blob | ❌ miss | audioUrl 不同 |
+
+**结果**：✅ 正确——所有缓存全部 miss，用新模型重新走完整流程。
+
+#### 场景 2：同一 configId 下改了模型名称（如 aliyun_direct 换了 model 字段，但没换 configId）
+
+| 缓存层 | 是否命中 | 原因 |
+|--------|---------|------|
+| ① CloneBinding | ⚠️ 可能命中 | `configId` 没变，其他字段没变 → **命中旧缓存** |
+| ② Preview | ⚠️ 依赖 ① | 如果 ① 命中，bindingKey 不变 → **命中旧 audioUrl** |
+| ③ 后端 OSS | ❌ miss | `targetModel` 变了（已做防护，`preview.ts:819`） |
+| ④ Blob | ⚠️ | 如果 ② 命中旧 URL，旧 Blob 还在 |
+
+**结果**：⚠️ **前端缓存可能返回旧绑定结果**——`runtimeVoiceCloneBindingCache` 里存的是旧的 `referenceAudioPath`，但后端 TTS 合成时确实会走新模型（因为 `getRuntimeStoryVoiceConfig` 从数据库实时读配置）。所以**参考音频是旧的，但 TTS 合成用的是新模型**——音色可能不一致。
+
+#### 场景 3：换了语音克隆模型（storyVoiceCloneModel）
+
+| 缓存层 | 是否命中 | 原因 |
+|--------|---------|------|
+| ① CloneBinding | ⚠️ 可能命中 | clone 模型的 `configId` 可能不变（取决于是否创建了新配置） |
+| ② Preview | ⚠️ 依赖 ① | 同上 |
+
+**结果**：⚠️ 和场景 2 类似。克隆模型换的是"上传参考音频到哪个厂商"的通道，`generateBindingVoice` 接口会根据新的 `persistedConfig` 决定走哪个厂商上传。但如果前端缓存命中了旧的绑定结果（包含旧的 `referenceAudioPath`），那个参考音频可能是旧厂商上传的。
+
+#### 场景 4：角色没有单独设 voiceConfigId（大部分角色的默认情况）
+
+`ScenePlay.vue:2786`：
+```ts
+const configId = role.voiceConfigId ?? (store.state.debugMode && !currentWorld.value ? runtimeStoryVoiceConfigId() : null);
+```
+
+非 debug 模式下，如果角色没设 `voiceConfigId`，configId 就是 `null`。这时缓存键里 configId 为空，**无论怎么换模型，只要角色没单独绑定，缓存键都不变**——但后端 `getRuntimeStoryVoiceConfig` 会读 settings 里的最新 `storyVoiceModel` configId，所以 TTS 合成走的是新模型。
+
+---
+
+### 核心问题
+
+**`runtimeVoiceCloneBindingCache` 从来不清除**（除了切 session 时随组件销毁），并且缓存键里的 `configId` 可能是 `null`（角色未单独绑定模型时），这导致：
+
+1. **换 TTS 模型后，如果角色没有 `voiceConfigId`，前端缓存键不变**，旧的 `referenceAudioPath` 被复用
+2. 后端虽然用新模型做 TTS 合成，但参考音频可能还是旧模型生成的
+3. **`runtimeVoiceCloneBindingCache` 没有响应模型切换的清除机制**
+
+### 实际影响
+
+| 操作 | 影响 | 用户感知 |
+|------|------|---------|
+| 切换到完全不同的 configId | 无影响，缓存自然 miss | 正常 |
+| 同一 configId 改 model | 参考音频可能是旧的 | 音色可能不匹配 |
+| 换克隆模型 | clone 上传通道变了，但旧缓存仍命中 | 可能用了旧厂商的参考音频 |
+| 角色未绑定 configId | 缓存键不含模型信息 | 换模型后旧缓存仍命中 |
+
+退出 → 换模型 → 重新进入：缓存不受影响
+因为 ScenePlay 是 v-if 切换的：
+
+退出故事 → activeTab 切到 "settings" → ScenePlay v-if=false → 组件销毁
+换模型 → 在设置页操作
+重新进入 → activeTab 切到 "play" → ScenePlay v-if=true → 组件全新创建
+组件销毁时，const runtimeVoiceCloneBindingCache = new Map(...) 这些变量全部被 GC，重新进入时是全新的空 Map。
+
+所以你说的场景——"游玩了一会退出，换了模型，重新进入"——不会有缓存残留问题。每次进入游玩页面，所有缓存从零开始，ensureRuntimeCloneBinding 会根据新的模型配置重新调用 generateBindingVoice。
+
+之前分析的缓存问题只存在于同一个 ScenePlay 组件生命周期内热切换模型的场景，而这个场景几乎不可能发生（用户在游玩中无法直接改模型设置，必须先退出到设置页）。
+
+不需要额外处理。
