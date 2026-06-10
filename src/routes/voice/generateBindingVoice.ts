@@ -184,8 +184,19 @@ export default router.post(
         return res.status(400).send(error("提示词模式需要填写提示词"));
       }
       const userId = Number((req as any)?.user?.id || 0);
+      console.log("[generateBindingVoice] 收到请求", {
+        configId,
+        mode,
+        roleId,
+        voiceId,
+        hasReferenceAudioPath: !!trimText(referenceAudioPath),
+        hasReferenceText: !!trimText(referenceText),
+        hasPromptText: !!trimText(promptText),
+        mixVoiceCount: Array.isArray(mixVoices) ? mixVoices.length : 0,
+      });
       const persistedConfig = await getRuntimeStoryVoiceConfig(userId, configId);
       if (!persistedConfig) {
+        console.error("[generateBindingVoice] 找不到 TTS 模型配置", { configId, userId });
         return res.status(400).send(error("语音模型配置不存在"));
       }
 
@@ -197,13 +208,28 @@ export default router.post(
       });
       const config = { ...persistedConfig, ...normalizedConfig };
       const manufacturer = trimText(config.manufacturer);
+      // prompt_voice 模式：直接使用 语音设计模型（voiceDesignConfig）的 manufacturer/modelType/model
+      // 来判断兼容性，不应该用当前 TTS 模型，否则 MiniMax voice-design 等模型会被误判不支持。
+      const voiceDesignConfigEarly = mode === "prompt_voice" ? await getStoryVoiceDesignConfig(userId) : null;
       const unsupportedReason = resolveUnsupportedVoiceModeReason({
-        manufacturer,
-        modelType: config.modelType,
-        model: config.model,
+        manufacturer: mode === "prompt_voice"
+          ? trimText(voiceDesignConfigEarly?.manufacturer)
+          : manufacturer,
+        modelType: mode === "prompt_voice"
+          ? trimText(voiceDesignConfigEarly?.modelType)
+          : trimText(config.modelType),
+        model: mode === "prompt_voice"
+          ? trimText(voiceDesignConfigEarly?.model)
+          : trimText(config.model),
         mode,
       });
       if (unsupportedReason) {
+        console.error("[generateBindingVoice] 模式不支持", {
+          unsupportedReason,
+          manufacturer: mode === "prompt_voice" ? voiceDesignConfigEarly?.manufacturer : manufacturer,
+          modelType: mode === "prompt_voice" ? voiceDesignConfigEarly?.modelType : trimText(config.modelType),
+          model: mode === "prompt_voice" ? voiceDesignConfigEarly?.model : trimText(config.model),
+        });
         return res.status(400).send(error(unsupportedReason));
       }
 
@@ -216,7 +242,7 @@ export default router.post(
       const normalizedReferenceText = trimText(referenceText);
       const normalizedPromptText = trimText(promptText);
       const normalizedMixVoices = normalizeMixVoices(mixVoices);
-      const voiceDesignConfig = mode === "prompt_voice" ? await getStoryVoiceDesignConfig(userId) : null;
+      const voiceDesignConfig = voiceDesignConfigEarly;
 
       if (mode === "prompt_voice" && !voiceDesignConfig) {
         return res.status(400).send(error("请先在设置里配置语音设计模型"));
