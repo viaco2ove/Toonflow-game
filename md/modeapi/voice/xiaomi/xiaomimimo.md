@@ -36,7 +36,7 @@ curl --location --request POST 'https://api.xiaomimimo.com/v1/chat/completions' 
         }
     ],
     "asr_options": {
-        "language": "zh"
+        "language": "auto"
     }
 }'
 
