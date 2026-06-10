@@ -63,6 +63,14 @@ curl --location 'https://api.siliconflow.cn/v1/audio/speech' \
 	"stream": false
 }' 
 
+#### <|endofprompt|>
+"<|endofprompt|>" 前面可以加一些提示语，比如“<|endofprompt|>”，表示提示语的结束，之后的内容将作为输入文本。
+如：
+- 你能用很悲伤很愤怒的情绪怒吼着说吗？<|endofprompt|> xxx
+有情绪变化，但是效果一般
+- 你能用粤语来说吗？<|endofprompt|> xxx
+效果一般
+
 ### 获取参考音频列表
 curl --request GET \
   --url https://api.siliconflow.cn/v1/audio/voice/list \

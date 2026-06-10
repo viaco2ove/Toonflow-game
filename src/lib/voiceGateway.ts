@@ -446,6 +446,10 @@ export function isSiliconFlowVoiceManufacturer(input?: string | null): boolean {
   return normalizedManufacturer(input) === "siliconflow";
 }
 
+export function isXiaomiMimoVoiceManufacturer(input?: string | null): boolean {
+  return normalizedManufacturer(input) === "xiaomimimo";
+}
+
 export function isAliyunVoiceManufacturer(input?: string | null): boolean {
   return isLocalAliyunManufacturer(input) || isDirectAliyunManufacturer(input);
 }
@@ -581,6 +585,12 @@ export function resolveVoiceModelModes(input: {
   }
   if (manufacturer === "siliconflow") {
     return ["text", "clone"];
+  }
+  if (manufacturer === "xiaomimimo") {
+    const model = String(input.model || "").trim().toLowerCase();
+    if (model === "mimo-v2.5-tts-voicedesign") return ["prompt_voice"];
+    if (model === "mimo-v2.5-tts-voiceclone") return ["clone"];
+    return ["text"];
   }
   return [...DEFAULT_TTS_VOICE_MODES];
 }
