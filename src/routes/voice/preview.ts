@@ -33,7 +33,7 @@ import {
   inferVoiceGenderHint,
 } from "@/lib/businessVoicePresets";
 import { ensureBundledVoicePresetSeed } from "@/lib/voicePresetSeeds";
-import { getStoryVoiceDesignConfig, synthesizeVoiceDesignBuffer, type VoiceDesignConfig } from "@/lib/voiceDesign";
+import { getStoryVoiceCloneConfig, getStoryVoiceDesignConfig, synthesizeVoiceDesignBuffer, type VoiceDesignConfig } from "@/lib/voiceDesign";
 import FormData from "form-data";
 import { synthesizeAliyunDirectCosyVoiceBuffer } from "@/lib/aliyunCosyVoice";
 import { mixPcmWavBuffers } from "@/lib/wavMix";
@@ -1419,14 +1419,15 @@ export async function synthesizeReferenceAudioFromMode(options: {
       outputPath: cachePath,
     });
     return { audioPath: seedAudioPath.audioPath };
-  } else if (manufacturer === "siliconflow") {
-    const { synthesizeSiliconFlowTtsBuffer } = await import("@/lib/siliconflowVoice");
-    const result = await synthesizeSiliconFlowTtsBuffer({
+  } else if (manufacturer === "xiaomimimo") {
+    const { synthesizeXiaomiMimoTtsBuffer } = await import("@/lib/xiaomiMimoVoice");
+    const result = await synthesizeXiaomiMimoTtsBuffer({
       apiKey: String(config.apiKey || "").trim(),
-      model: String(config.model || "FunAudioLLM/CosyVoice2-0.5B").trim(),
+      baseUrl: String(config.baseUrl || "").trim(),
+      model: String(config.model || "mimo-v2.5-tts").trim(),
       text: textSeed,
-      voice: String(voiceId || "").trim() || undefined,
-      responseFormat: "wav",
+      voice: String(voiceId || "").trim() || "mimo_default",
+      format: "wav",
     });
     return { audioPath: await writeCloneReadyReference(result.buffer, "wav") };
   } else {
@@ -1546,20 +1547,59 @@ router.post(
       debugContext.requestedConfigId = configId ?? null;
       debugContext.resolvedConfigId = Number(config.id || 0);
 
-      const baseUrl = normalizeVoiceBaseUrl(config.baseUrl);
-      const manufacturer = String(config.manufacturer || "").trim();
+      let baseUrl = normalizeVoiceBaseUrl(config.baseUrl);
+      let manufacturer = String(config.manufacturer || "").trim();
       const voiceDesignConfig = mode === "prompt_voice" ? await getStoryVoiceDesignConfig(userId) : null;
+      const voiceCloneConfig = mode === "clone" ? await getStoryVoiceCloneConfig(userId) : null;
+      // 不同模式应该用对应的模型槽位来判断兼容性：
+      // - prompt_voice → 用 语音设计模型 (voiceDesignConfig)
+      // - clone → 用 语音克隆模型 (voiceCloneConfig)
+      // - text / mix → 用 语音合成 TTS (config)
+      const compatibilityConfig = mode === "prompt_voice"
+        ? voiceDesignConfig
+        : mode === "clone"
+          ? voiceCloneConfig
+          : null;
       const unsupportedModeReason = resolveUnsupportedVoiceModeReason({
-        manufacturer,
-        modelType: config.modelType,
-        model: config.model,
+        manufacturer: compatibilityConfig
+          ? String(compatibilityConfig.manufacturer || "").trim()
+          : manufacturer,
+        modelType: compatibilityConfig
+          ? String((compatibilityConfig as any)?.modelType || "").trim()
+          : config.modelType,
+        model: compatibilityConfig
+          ? String(compatibilityConfig.model || "").trim()
+          : config.model,
         mode,
       });
       if (unsupportedModeReason) {
+        console.error("[preview] 模式不支持", {
+          unsupportedModeReason,
+          mode,
+          manufacturer: compatibilityConfig
+            ? compatibilityConfig.manufacturer
+            : manufacturer,
+          model: compatibilityConfig
+            ? compatibilityConfig.model
+            : config.model,
+        });
         return res.status(400).send(error(unsupportedModeReason));
       }
       if (mode === "prompt_voice" && !voiceDesignConfig) {
         return res.status(400).send(error("请先在设置里配置语音设计模型"));
+      }
+      if (mode === "clone" && !voiceCloneConfig) {
+        return res.status(400).send(error("请先在设置里配置语音克隆模型"));
+      }
+      // clone 模式下，用 语音克隆模型的 config 覆盖当前 TTS config，确保下游合成使用正确的模型/密钥
+      if (mode === "clone" && voiceCloneConfig) {
+        config.model = voiceCloneConfig.model;
+        config.apiKey = voiceCloneConfig.apiKey;
+        config.baseUrl = voiceCloneConfig.baseURL;
+        config.manufacturer = voiceCloneConfig.manufacturer;
+        // 重新计算 baseUrl/manufacturer 等派生变量
+        baseUrl = normalizeVoiceBaseUrl(config.baseUrl);
+        manufacturer = String(config.manufacturer || "").trim();
       }
       const suppliers = voiceSupplierFromManufacturer(manufacturer);
       const directAliyun = isDirectAliyunManufacturer(manufacturer);
@@ -1589,11 +1629,21 @@ router.post(
       const businessPresets = await ensureBusinessVoicePresets(userId);
       const isMossLocal = manufacturer === "moss_tts_nano";
       const isSiliconFlow = manufacturer === "siliconflow";
-      const providerPresetPool = isMossLocal || isSiliconFlow
-        ? []
-        : directAliyun
-          ? directAliyunVoicePresets(String(config.model || "").trim())
-          : filterVoicePresetsByManufacturer(await fetchVoicePresets(baseUrl, headers, manufacturer), manufacturer);
+      const isXiaomiMimo = manufacturer === "xiaomimimo";
+      let providerPresetPool: any[] = [];
+      if (isMossLocal || isSiliconFlow || isXiaomiMimo) {
+        // 这些厂商没有 /voices 系统音色接口（或只支持业务预设/克隆），直接跳过远程拉取
+        providerPresetPool = [];
+      } else if (directAliyun) {
+        providerPresetPool = directAliyunVoicePresets(String(config.model || "").trim());
+      } else {
+        try {
+          providerPresetPool = filterVoicePresetsByManufacturer(await fetchVoicePresets(baseUrl, headers, manufacturer), manufacturer);
+        } catch (err) {
+          console.warn(`[preview] fetch voice presets failed, fallback to business presets only: manufacturer=${manufacturer} baseUrl=${baseUrl} error=${(err as Error)?.message || String(err)}`);
+          providerPresetPool = [];
+        }
+      }
       const mergedPresetPool = [...businessPresets, ...providerPresetPool].filter(
         (item, index, list) => list.findIndex((row) => row.voiceId === item.voiceId) === index,
       );
@@ -1768,20 +1818,44 @@ router.post(
               voice: effectiveVoiceId || "default",
             },
           }));
+        } else if (manufacturer === "xiaomimimo") {
+          // xiaomimimo 克隆模式
+          const { synthesizeXiaomiMimoVoiceCloneBuffer } = await import("@/lib/xiaomiMimoVoice");
+          const outFormat = String(payload.format || "mp3").trim().toLowerCase() || "mp3";
+          const refPath = resolvedReferenceAudioSource || businessPreset.referencePath;
+          const refBuffer = await loadReferenceAudioBuffer(refPath);
+          const result = await synthesizeXiaomiMimoVoiceCloneBuffer({
+            apiKey: String(config.apiKey || "").trim(),
+            baseUrl: String(config.baseUrl || "").trim(),
+            model: String(config.model || "mimo-v2.5-tts-voiceclone").trim(),
+            text: String(text || "").trim(),
+            referenceAudioBuffer: refBuffer,
+            referenceAudioMime: "audio/mpeg",
+            format: outFormat,
+          });
+          const sourceUrl = await persistPreviewAudioBuffer(userId, result.buffer, outFormat);
+          console.log("[voice-preview] xiaomimimo clone path", {
+            sourceUrl,
+            bufferBytes: result.buffer?.length || 0,
+            model: String(config.model || "mimo-v2.5-tts-voiceclone").trim(),
+            configId: config?.id,
+            configManufacturer: String(config.manufacturer || "").trim(),
+            configBaseUrl: String(config.baseUrl || "").trim(),
+            textLength: String(text || "").length,
+            refPath: refPath,
+          });
+          return res.status(200).send(success({
+            audioUrl: buildProxyAudioUrl(req, config?.id, sourceUrl),
+            data: {
+              localGenerated: true,
+              model: String(config.model || "mimo-v2.5-tts-voiceclone").trim(),
+              voice: effectiveVoiceId || "mimo_default",
+              compatibilityPreset: businessPreset.voiceId,
+            },
+          }));
         } else {
-          // 其他非 direct Aliyun 厂商走本地克隆网关（CosyVoice）
-          const effectiveRefPath = resolvedReferenceAudioSource || businessPreset.referencePath;
-          const effectiveRefText = String(referenceText || "").trim() || businessPreset.referenceText;
-          const cloned = await synthesizeWithLocalClone(
-            req,
-            userId,
-            text,
-            effectiveRefPath,
-            effectiveRefText,
-            payload.format,
-            speed,
-          );
-          return res.status(200).send(success({ audioUrl: cloned.audioUrl, data: { ...cloned.data, compatibilityPreset: businessPreset.voiceId } }));
+          // 没有匹配的克隆通道，不再兜底走 local CosyVoice (127.0.0.1:8000)。
+          return res.status(400).send(error(`当前 TTS 厂商 "${manufacturer || "unknown"}" 不支持克隆通道。请在设置里配置"语音克隆模型"槽位。`));
         }
       }
 
@@ -1857,31 +1931,51 @@ router.post(
               },
             }));
           }
-          const cloned = isMiniMaxVoiceManufacturer(manufacturer)
-            ? await synthesizeWithMiniMaxClone(
-                req,
-                config,
-                userId,
-                text,
-                resolvedReferenceAudioSource,
-                String(referenceText || "").trim(),
-                payload.format,
-                speed,
-                effectiveVoiceId,
-              )
-            : manufacturer === "siliconflow"
-            ? await synthesizeWithSiliconFlowClone(req, config, userId, text, resolvedReferenceAudioSource, String(referenceText || "").trim(), payload.format, speed)
-            : manufacturer === "moss_tts_nano"
-            ? await synthesizeWithMossTtsClone(req, userId, text, resolvedReferenceAudioSource, String(referenceText || "").trim(), payload.format, speed)
-            : await synthesizeWithLocalClone(
-                req,
-                userId,
-                text,
-                resolvedReferenceAudioSource,
-                String(referenceText || "").trim(),
-                payload.format,
-                speed,
-              );
+          let cloned;
+          if (isMiniMaxVoiceManufacturer(manufacturer)) {
+            cloned = await synthesizeWithMiniMaxClone(
+              req,
+              config,
+              userId,
+              text,
+              resolvedReferenceAudioSource,
+              String(referenceText || "").trim(),
+              payload.format,
+              speed,
+              effectiveVoiceId,
+            );
+          } else if (manufacturer === "siliconflow") {
+            cloned = await synthesizeWithSiliconFlowClone(req, config, userId, text, resolvedReferenceAudioSource, String(referenceText || "").trim(), payload.format, speed);
+          } else if (manufacturer === "moss_tts_nano") {
+            cloned = await synthesizeWithMossTtsClone(req, userId, text, resolvedReferenceAudioSource, String(referenceText || "").trim(), payload.format, speed);
+          } else if (manufacturer === "xiaomimimo") {
+            const { synthesizeXiaomiMimoVoiceCloneBuffer } = await import("@/lib/xiaomiMimoVoice");
+            const outFormat = String(payload.format || "mp3").trim().toLowerCase() || "mp3";
+            const refBuffer = await loadReferenceAudioBuffer(resolvedReferenceAudioSource);
+            const result = await synthesizeXiaomiMimoVoiceCloneBuffer({
+              apiKey: String(config.apiKey || "").trim(),
+              baseUrl: String(config.baseUrl || "").trim(),
+              model: String(config.model || "mimo-v2.5-tts-voiceclone").trim(),
+              text: String(text || "").trim(),
+              referenceAudioBuffer: refBuffer,
+              referenceAudioMime: "audio/mpeg",
+              format: outFormat,
+            });
+            const sourceUrl = await persistPreviewAudioBuffer(userId, result.buffer, outFormat);
+            cloned = {
+              audioUrl: buildProxyAudioUrl(req, config?.id, sourceUrl),
+              data: {
+                localGenerated: true,
+                model: String(config.model || "mimo-v2.5-tts-voiceclone").trim(),
+                voice: effectiveVoiceId || "mimo_default",
+                mode: "xiaomimimo_clone",
+              },
+            };
+          } else {
+            // 没有匹配的克隆通道，不再兜底走 local CosyVoice (127.0.0.1:8000)。
+            // 直接报错，让用户在设置里配置正确的"语音克隆模型"。
+            return res.status(400).send(error(`当前 TTS 厂商 "${manufacturer || "unknown"}" 不支持克隆通道。请在设置里配置"语音克隆模型"槽位，或换用支持 clone 的 TTS 模型（如 xiaomimimo / minimax / siliconflow / aliyun_direct / moss_tts_nano）。`));
+          }
           return res.status(200).send(success({ audioUrl: cloned.audioUrl, data: cloned.data }));
         }
         return res.status(400).send(error("克隆模式需要参考音频"));
@@ -2158,6 +2252,33 @@ router.post(
           model: "moss-tts-nano-100m",
           voice: effectiveVoiceId || "default",
         };
+      } else if (manufacturer === "xiaomimimo") {
+        const { synthesizeXiaomiMimoTtsBuffer, synthesizeXiaomiMimoVoiceCloneBuffer } = await import("@/lib/xiaomiMimoVoice");
+        const outFormat = String(payload.format || "mp3").trim().toLowerCase() || "mp3";
+        if (mode === "clone") {
+          const refBuffer = await loadReferenceAudioBuffer(resolvedReferenceAudioSource);
+          const result = await synthesizeXiaomiMimoVoiceCloneBuffer({
+            apiKey: String(config.apiKey || "").trim(),
+            baseUrl: String(config.baseUrl || "").trim(),
+            model: String(config.model || "mimo-v2.5-tts-voiceclone").trim(),
+            text: String(text || "").trim(),
+            referenceAudioBuffer: refBuffer,
+            referenceAudioMime: "audio/mpeg",
+            format: outFormat,
+          });
+          sourceUrl = await persistPreviewAudioBuffer(userId, result.buffer, outFormat);
+        } else {
+          const result = await synthesizeXiaomiMimoTtsBuffer({
+            apiKey: String(config.apiKey || "").trim(),
+            baseUrl: String(config.baseUrl || "").trim(),
+            model: String(config.model || "mimo-v2.5-tts").trim(),
+            text: String(text || "").trim(),
+            voice: effectiveVoiceId || "mimo_default",
+            format: outFormat,
+          });
+          sourceUrl = await persistPreviewAudioBuffer(userId, result.buffer, outFormat);
+        }
+        data = { localGenerated: true, model: String(config.model || "").trim(), voice: effectiveVoiceId || "mimo_default", mode: "xiaomimimo" };
       } else if (manufacturer === "siliconflow") {
         // 区分 SiliconFlow 内置音色 vs business preset（克隆参考预设）
         const sfBp = findBusinessVoicePreset(effectiveVoiceId);

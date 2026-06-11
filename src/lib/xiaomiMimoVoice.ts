@@ -1,4 +1,5 @@
 import axios from "axios";
+import { createHash } from "node:crypto";
 
 function trimText(input: unknown): string {
   return String(input || "").trim();
@@ -122,25 +123,59 @@ export async function synthesizeXiaomiMimoVoiceCloneBuffer(options: {
   const text = trimText(options.text);
   if (!text) throw new Error("xiaomimimo TTS 文本不能为空");
   if (!options.referenceAudioBuffer?.length) throw new Error("xiaomimimo 克隆需要参考音频");
+  const format = trimText(options.format) || "wav";
+
+  // 缓存键：以参考音频 hash + 模型 + 文本 + 格式 唯一标识一次合成
+  // xiaomimimo voiceclone API 是无状态的，每次合成都要带完整参考音频，单次 17+ 秒且容易触发 429。
+  // 同一段台词 + 同一参考音频在 5 分钟内复用上次合成结果，避免重复 API 调用。
+  const refHash = createHash("sha1").update(options.referenceAudioBuffer).digest("hex").slice(0, 16);
+  const cacheKey = `${model}|${refHash}|${format}|${text}`;
+  const cached = XIAOMI_CLONE_CACHE.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) {
+    console.log("[xiaomimimo clone] cache hit", { model, refHash, textLength: text.length, bufferBytes: cached.buffer.length });
+    return { buffer: cached.buffer, model };
+  }
+
+  // inflight 去重：同一缓存键的并发请求复用同一个 Promise，避免前端 retry 时多次打 API
+  const inflight = XIAOMI_CLONE_INFLIGHT.get(cacheKey);
+  if (inflight) {
+    console.log("[xiaomimimo clone] inflight hit, await existing request", { model, refHash, textLength: text.length });
+    return inflight;
+  }
+
   const voiceData = `data:${normalizeMime(options.referenceAudioMime)};base64,${options.referenceAudioBuffer.toString("base64")}`;
-  const data = await postChatCompletions({
-    apiKey: options.apiKey,
-    baseUrl: options.baseUrl,
-    payload: {
-      model,
-      messages: [
-        { role: "user", content: "" },
-        { role: "assistant", content: text },
-      ],
-      audio: {
-        format: trimText(options.format) || "wav",
-        voice: voiceData,
+  const task = (async () => {
+    const data = await postChatCompletions({
+      apiKey: options.apiKey,
+      baseUrl: options.baseUrl,
+      payload: {
+        model,
+        messages: [
+          { role: "user", content: "" },
+          { role: "assistant", content: text },
+        ],
+        audio: {
+          format,
+          voice: voiceData,
+        },
       },
-    },
-  });
-  const { buffer } = extractAudioBuffer(data);
-  return { buffer, model };
+    });
+    const { buffer } = extractAudioBuffer(data);
+    XIAOMI_CLONE_CACHE.set(cacheKey, { buffer, expiresAt: Date.now() + XIAOMI_CLONE_CACHE_TTL_MS });
+    return { buffer, model };
+  })();
+  XIAOMI_CLONE_INFLIGHT.set(cacheKey, task);
+  try {
+    return await task;
+  } finally {
+    XIAOMI_CLONE_INFLIGHT.delete(cacheKey);
+  }
 }
+
+// xiaomimimo voiceclone 合成结果缓存（5 分钟）+ 并发去重
+const XIAOMI_CLONE_CACHE_TTL_MS = 5 * 60 * 1000;
+const XIAOMI_CLONE_CACHE = new Map<string, { buffer: Buffer; expiresAt: number }>();
+const XIAOMI_CLONE_INFLIGHT = new Map<string, Promise<{ buffer: Buffer; model: string }>>();
 
 export async function transcribeXiaomiMimoAudio(options: {
   apiKey: string;

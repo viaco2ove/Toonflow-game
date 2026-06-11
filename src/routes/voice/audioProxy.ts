@@ -43,30 +43,53 @@ function inferAudioContentType(source: string): string {
 }
 
 router.get("/", async (req, res) => {
+  const requestStart = Date.now();
+  const debugMeta: Record<string, unknown> = {
+    route: "/voice/audioProxy",
+    requestId: `aproxy_${requestStart}_${Math.random().toString(36).slice(2, 8)}`,
+  };
   try {
     const userId = Number((req as any)?.user?.id || 0);
     const configId = Number(req.query.configId || 0) || null;
     const source = String(req.query.source || "").trim();
-    console.error("[audioProxy] 请求:", { userId, configId, source });
+    debugMeta.userId = userId;
+    debugMeta.configId = configId;
+    debugMeta.source = source;
+    debugMeta.isLocalOss = isLocalOssAudioSource(source);
+    debugMeta.hasToken = Boolean(req.query.token);
+    console.log("[audioProxy] request start", debugMeta);
     if (!source) {
+      console.log("[audioProxy] missing source, return 400", debugMeta);
       return res.status(400).send(error("缺少音频地址"));
     }
 
     if (isLocalOssAudioSource(source)) {
       try {
         const buffer = await u.oss.getFile(source);
-        console.error("[audioProxy] 本地 OSS 命中, bytes=", buffer.length);
+        console.log("[audioProxy] oss hit", {
+          ...debugMeta,
+          bytes: buffer.length,
+          contentType: inferAudioContentType(source),
+          elapsedMs: Date.now() - requestStart,
+        });
         res.setHeader("Content-Type", inferAudioContentType(source));
         res.setHeader("Cache-Control", "no-store");
+        res.setHeader("X-AudioProxy-Debug", String(debugMeta.requestId));
         return res.status(200).send(buffer);
       } catch (err) {
-        console.error("[audioProxy] 本地 OSS 失败:", u.error(err).message, "stack=", (err as any)?.stack);
+        console.error("[audioProxy] oss read failed:", u.error(err).message, debugMeta);
         const maybeSeedName = String(source || "").trim().split("/").pop() || "";
         if (/^\/system\/voice-presets\/[^/]+\.wav$/i.test(source) && maybeSeedName) {
           await ensureBundledVoicePresetSeed(maybeSeedName);
           const buffer = await u.oss.getFile(source);
+          console.log("[audioProxy] oss seed hit", {
+            ...debugMeta,
+            bytes: buffer.length,
+            elapsedMs: Date.now() - requestStart,
+          });
           res.setHeader("Content-Type", inferAudioContentType(source));
           res.setHeader("Cache-Control", "no-store");
+          res.setHeader("X-AudioProxy-Debug", String(debugMeta.requestId));
           return res.status(200).send(buffer);
         }
         throw err;
@@ -75,13 +98,18 @@ router.get("/", async (req, res) => {
 
     const config = await getVoiceConfig(userId, configId);
     if (!config) {
+      console.log("[audioProxy] config not found", debugMeta);
       return res.status(400).send(error("语音模型配置不存在"));
     }
+    debugMeta.configManufacturer = String(config.manufacturer || "");
+    debugMeta.configModel = String(config.model || "");
 
     const targetUrl = resolveSourceUrl(source, normalizeBaseUrl(config.baseUrl));
     if (!targetUrl) {
+      console.log("[audioProxy] invalid target url", debugMeta);
       return res.status(400).send(error("音频地址无效"));
     }
+    debugMeta.targetUrl = targetUrl;
 
     const response = await axios.get<ArrayBuffer>(targetUrl, {
       responseType: "arraybuffer",
@@ -93,11 +121,24 @@ router.get("/", async (req, res) => {
     });
 
     const contentType = String(response.headers["content-type"] || "audio/wav");
+    const outBuf = Buffer.from(response.data);
+    console.log("[audioProxy] upstream success", {
+      ...debugMeta,
+      upstreamContentType: response.headers["content-type"],
+      upstreamBytes: outBuf.length,
+      elapsedMs: Date.now() - requestStart,
+    });
     res.setHeader("Content-Type", contentType);
     res.setHeader("Cache-Control", "no-store");
-    return res.status(200).send(Buffer.from(response.data));
+    res.setHeader("X-AudioProxy-Debug", String(debugMeta.requestId));
+    return res.status(200).send(outBuf);
   } catch (err) {
-    console.error("[audioProxy] 异常:", u.error(err).message, "stack=", (err as any)?.stack);
+    console.error("[audioProxy] failed", {
+      ...debugMeta,
+      error: u.error(err).message,
+      stack: (err as any)?.stack,
+      elapsedMs: Date.now() - requestStart,
+    });
     return res.status(500).send(error(u.error(err).message));
   }
 });

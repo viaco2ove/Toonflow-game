@@ -16,7 +16,7 @@ import {
   ensureBusinessVoicePresets,
   findBusinessVoicePreset,
 } from "@/lib/businessVoicePresets";
-import { getStoryVoiceDesignConfig } from "@/lib/voiceDesign";
+import { getStoryVoiceCloneConfig, getStoryVoiceDesignConfig } from "@/lib/voiceDesign";
 import {
   buildProxyAudioUrl,
   createDirectAliyunCustomVoice,
@@ -208,29 +208,47 @@ export default router.post(
       });
       const config = { ...persistedConfig, ...normalizedConfig };
       const manufacturer = trimText(config.manufacturer);
-      // prompt_voice 模式：直接使用 语音设计模型（voiceDesignConfig）的 manufacturer/modelType/model
-      // 来判断兼容性，不应该用当前 TTS 模型，否则 MiniMax voice-design 等模型会被误判不支持。
+      // 不同模式应该用对应的模型槽位来判断兼容性：
+      // - prompt_voice → 用 语音设计模型
+      // - clone → 用 语音克隆模型
+      // - text / mix → 用 语音合成 TTS (config)
       const voiceDesignConfigEarly = mode === "prompt_voice" ? await getStoryVoiceDesignConfig(userId) : null;
+      const voiceCloneConfigEarly = mode === "clone" ? await getStoryVoiceCloneConfig(userId) : null;
+      const compatibilityConfig = mode === "prompt_voice"
+        ? voiceDesignConfigEarly
+        : mode === "clone"
+          ? voiceCloneConfigEarly
+          : null;
       const unsupportedReason = resolveUnsupportedVoiceModeReason({
-        manufacturer: mode === "prompt_voice"
-          ? trimText(voiceDesignConfigEarly?.manufacturer)
+        manufacturer: compatibilityConfig
+          ? trimText(compatibilityConfig.manufacturer)
           : manufacturer,
-        modelType: mode === "prompt_voice"
-          ? trimText(voiceDesignConfigEarly?.modelType)
+        modelType: compatibilityConfig
+          ? trimText((compatibilityConfig as any)?.modelType)
           : trimText(config.modelType),
-        model: mode === "prompt_voice"
-          ? trimText(voiceDesignConfigEarly?.model)
+        model: compatibilityConfig
+          ? trimText(compatibilityConfig.model)
           : trimText(config.model),
         mode,
       });
       if (unsupportedReason) {
         console.error("[generateBindingVoice] 模式不支持", {
           unsupportedReason,
-          manufacturer: mode === "prompt_voice" ? voiceDesignConfigEarly?.manufacturer : manufacturer,
-          modelType: mode === "prompt_voice" ? voiceDesignConfigEarly?.modelType : trimText(config.modelType),
-          model: mode === "prompt_voice" ? voiceDesignConfigEarly?.model : trimText(config.model),
+          manufacturer: compatibilityConfig ? compatibilityConfig.manufacturer : manufacturer,
+          modelType: compatibilityConfig ? (compatibilityConfig as any)?.modelType : trimText(config.modelType),
+          model: compatibilityConfig ? compatibilityConfig.model : trimText(config.model),
         });
         return res.status(400).send(error(unsupportedReason));
+      }
+      if (mode === "clone" && !voiceCloneConfigEarly) {
+        return res.status(400).send(error("请先在设置里配置语音克隆模型"));
+      }
+      // clone 模式下，用 语音克隆模型的 config 覆盖当前 TTS config，确保下游合成使用正确的模型/密钥
+      if (mode === "clone" && voiceCloneConfigEarly) {
+        config.model = voiceCloneConfigEarly.model;
+        config.apiKey = voiceCloneConfigEarly.apiKey;
+        config.baseUrl = voiceCloneConfigEarly.baseURL;
+        config.manufacturer = voiceCloneConfigEarly.manufacturer;
       }
 
       const headers: Record<string, string> = {};
@@ -243,6 +261,7 @@ export default router.post(
       const normalizedPromptText = trimText(promptText);
       const normalizedMixVoices = normalizeMixVoices(mixVoices);
       const voiceDesignConfig = voiceDesignConfigEarly;
+      const voiceCloneConfig = voiceCloneConfigEarly;
 
       if (mode === "prompt_voice" && !voiceDesignConfig) {
         return res.status(400).send(error("请先在设置里配置语音设计模型"));

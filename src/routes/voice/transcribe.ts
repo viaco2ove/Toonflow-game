@@ -416,6 +416,19 @@ export default router.post(
         return res.status(400).send(error("录音内容为空"));
       }
 
+      if (String(manufacturer || "").trim().toLowerCase() === "xiaomimimo") {
+        const { transcribeXiaomiMimoAudio } = await import("@/lib/xiaomiMimoVoice");
+        const text = await transcribeXiaomiMimoAudio({
+          apiKey: String(config.apiKey || "").trim(),
+          baseUrl: String(config.baseUrl || "").trim(),
+          model: modelName || "mimo-v2.5-asr",
+          audioBuffer: audio.buffer,
+          mime: audio.mime,
+          language: lang,
+        });
+        return res.send(success({ text, provider: "xiaomimimo", model: modelName || "mimo-v2.5-asr" }));
+      }
+
       const compatibleBaseUrl = normalizeAliyunCompatibleBaseUrl(config.baseUrl);
       const endpointCandidates = directAliyun
         ? [

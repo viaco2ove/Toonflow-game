@@ -563,10 +563,17 @@ export function resolveVoiceModelModes(input: {
 }): GatewayVoiceMode[] {
   const manufacturer = normalizedManufacturer(input.manufacturer);
   const modelType = String(input.modelType || "").trim().toLowerCase();
-  if (modelType && modelType !== "tts") {
-    return [];
+  // 语音设计 / 克隆模型可能 modelType 不是 tts，但仍要根据 manufacturer+model 判断支持模式。
+  if (manufacturer === "xiaomimimo") {
+    const model = String(input.model || "").trim().toLowerCase();
+    if (model === "mimo-v2.5-tts-voicedesign") return ["prompt_voice"];
+    if (model === "mimo-v2.5-tts-voiceclone") return ["clone"];
+    return ["text"];
   }
   if (manufacturer === "aliyun_direct") {
+    if (modelType && modelType !== "tts") {
+      // 阿里 voice_design / voice_clone 通过 model 名判断模式，不能提前返回空
+    }
     if (isAliyunDirectCosyVoiceModel(input.model)) {
       return directAliyunVoicePresets(input.model).length
         ? ["text", "clone", "mix", "prompt_voice"]
@@ -580,17 +587,14 @@ export function resolveVoiceModelModes(input: {
     }
     return ["text"];
   }
+  if (modelType && modelType !== "tts") {
+    return [];
+  }
   if (manufacturer === "moss_tts_nano") {
     return ["text", "clone"];
   }
   if (manufacturer === "siliconflow") {
     return ["text", "clone"];
-  }
-  if (manufacturer === "xiaomimimo") {
-    const model = String(input.model || "").trim().toLowerCase();
-    if (model === "mimo-v2.5-tts-voicedesign") return ["prompt_voice"];
-    if (model === "mimo-v2.5-tts-voiceclone") return ["clone"];
-    return ["text"];
   }
   return [...DEFAULT_TTS_VOICE_MODES];
 }

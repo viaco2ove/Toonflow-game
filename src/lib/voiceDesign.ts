@@ -59,6 +59,19 @@ export async function getStoryVoiceDesignConfig(userId: number): Promise<VoiceDe
   };
 }
 
+export async function getStoryVoiceCloneConfig(userId: number): Promise<VoiceDesignConfig | null> {
+  const config = await u.getPromptAi("storyVoiceCloneModel", userId);
+  if (!config || typeof config !== "object") return null;
+  const c = config as VoiceDesignConfig;
+  if (!trimText(c.apiKey) || !trimText(c.model)) return null;
+  return {
+    model: trimText(c.model),
+    apiKey: trimText(c.apiKey),
+    baseURL: trimText(c.baseURL),
+    manufacturer: trimText(c.manufacturer),
+  };
+}
+
 function normalizeVoiceDesignEndpoint(baseURL?: string | null): string {
   const base = trimText(baseURL);
   if (!base) return DEFAULT_DASHSCOPE_AIGC_ENDPOINT;
@@ -125,6 +138,12 @@ type VoiceDesignStrategy =
       requestModel: "voice_design";
       targetModel: string;
       action: "create";
+    }
+  | {
+      kind: "xiaomimimo_voice_design";
+      requestModel: string;
+      targetModel: string;
+      action: "create";
     };
 
 function resolveVoiceDesignStrategy(config: VoiceDesignConfig): VoiceDesignStrategy {
@@ -174,6 +193,18 @@ function resolveVoiceDesignStrategy(config: VoiceDesignConfig): VoiceDesignStrat
     };
   }
 
+  if (
+    normalizedModel === "mimo-v2.5-tts-voicedesign"
+    || config.manufacturer === "xiaomimimo"
+  ) {
+    return {
+      kind: "xiaomimimo_voice_design",
+      requestModel: rawModel || "mimo-v2.5-tts-voicedesign",
+      targetModel: rawModel || "mimo-v2.5-tts-voicedesign",
+      action: "create",
+    };
+  }
+
   throw new Error(`当前语音设计模型不受支持: ${rawModel || "未配置模型名"}`);
 }
 
@@ -213,6 +244,8 @@ function extractAudioSource(data: Record<string, any> | null): { url?: string; b
     data?.audio?.data,
     data?.audio?.base64,
     data?.audio_data,
+    data?.choices?.[0]?.message?.audio?.data,
+    data?.choices?.[0]?.message?.audio?.base64,
   ];
   const base64 = base64Candidates.map((item) => trimText(item)).find(Boolean);
   if (base64) return { base64 };
@@ -300,6 +333,28 @@ export async function synthesizeVoiceDesignBuffer(options: {
       return axios.post(minimaxEndpoint, p, {
         headers: {
           Authorization: `Bearer ${trimText(config.apiKey)}`,
+          "Content-Type": "application/json",
+        },
+        timeout: 120000,
+        responseType: "arraybuffer",
+      });
+    }
+    if (strategy.kind === "xiaomimimo_voice_design") {
+      const endpoint = `${trimText(config.baseURL).replace(/\/+$/, "") || "https://api.xiaomimimo.com"}/v1/chat/completions`;
+      const p = {
+        model: strategy.requestModel,
+        messages: [
+          { role: "user", content: promptText },
+          { role: "assistant", content: previewText },
+        ],
+        audio: {
+          format: trimText(options.format) || "wav",
+          optimize_text_preview: true,
+        },
+      };
+      return axios.post(endpoint, p, {
+        headers: {
+          "api-key": trimText(config.apiKey),
           "Content-Type": "application/json",
         },
         timeout: 120000,
