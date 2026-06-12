@@ -1,0 +1,91 @@
+flowchart TD
+    %% 入口节点
+    START([用户发送消息]) --> PRE[消息预处理<br/>ScenePlay.vue]
+    
+    %% 预处理
+    PRE --> CMD{命令解析<br/>isMiniGameCommand}
+    CMD -->|是| CMD_PROC[解析命令类型<br/>#开任务 #退出 等]
+    CMD -->|否| OPT{选项解析<br/>isOptionPrefix}
+    OPT -->|是| OPT_PROC[解析选项编号]
+    OPT -->|否| NORMAL[普通消息清理]
+    
+    CMD_PROC --> CTX[上下文注入]
+    OPT_PROC --> CTX
+    NORMAL --> CTX
+    
+    %% 意图分析
+    CTX --> INTENT[意图分析 Agent<br/>intentAnalyzer/index.ts]
+    
+    INTENT --> RULE{规则预检<br/>快速路径}
+    RULE -->|退出命令| EXIT_PRE[exit_task<br/>confidence: 1.0]
+    RULE -->|创建命令| CREATE_PRE[create_task<br/>confidence: 1.0]
+    RULE -->|选项选择| ACTION_PRE[game_action<br/>confidence: 0.9]
+    RULE -->|其他| AI_ANAL[AI 分类<br/>慢速路径]
+    
+    AI_ANAL --> AI_RESULT[返回意图类型<br/>+ 置信度 + 推理]
+    
+    EXIT_PRE --> DISPATCH[分流调度<br/>MiniGameController]
+    CREATE_PRE --> DISPATCH
+    ACTION_PRE --> DISPATCH
+    AI_RESULT --> DISPATCH
+    
+    %% 分流
+    DISPATCH --> SWITCH{意图类型}
+    
+    SWITCH -->|create_task| CREATE_FLOW[创建任务流程<br/>FreeChapterTaskService]
+    SWITCH -->|exit_task| EXIT_FLOW[退出任务流程<br/>MiniGameController]
+    SWITCH -->|query_progress| QUERY_FLOW[查询进度流程<br/>TaskProgressEngine]
+    SWITCH -->|game_action| ACTION_FLOW[执行游戏动作<br/>SessionService]
+    SWITCH -->|normal_dialog| DIALOG_FLOW[普通剧情流程<br/>Storyboard Agent]
+    
+    %% 各流程
+    CREATE_FLOW --> TASK_GEN[AI 生成任务蓝图]
+    TASK_GEN --> TASK_VALID[验证任务格式]
+    TASK_VALID --> TASK_CREATE[创建 Task 实例]
+    TASK_CREATE --> TASK_ACTIVATE[激活任务事件]
+    TASK_ACTIVATE --> TASK_RESULT[返回任务面板]
+    
+    EXIT_FLOW --> EXIT_CONFIRM[确认退出意图]
+    EXIT_CONFIRM --> EXIT_CLEANUP[清理任务状态]
+    EXIT_CLEANUP --> EXIT_SEND[发送放弃剧情]
+    EXIT_SEND --> EXIT_RETURN[返回主剧情]
+    
+    QUERY_FLOW --> QUERY_GET[获取当前任务状态]
+    QUERY_GET --> QUERY_EVAL[TaskProgressEngine 评估]
+    QUERY_EVAL --> QUERY_REPORT[生成进度报告]
+    QUERY_REPORT --> QUERY_RETURN[返回给用户]
+    
+    ACTION_FLOW --> ACTION_PARSE[解析选项编号]
+    ACTION_PARSE --> ACTION_APPEND[追加到对话历史]
+    ACTION_APPEND --> ACTION_NARRATIVE[调用 Storyboard Agent]
+    ACTION_NARRATIVE --> ACTION_CHECK[检查任务进度]
+    ACTION_CHECK --> ACTION_RETURN[返回剧情+选项]
+    
+    DIALOG_FLOW --> DIALOG_APPEND[用户消息追加历史]
+    DIALOG_APPEND --> DIALOG_BUILD[构建剧情生成提示]
+    DIALOG_BUILD --> DIALOG_GENERATE[Storyboard Agent 生成]
+    DIALOG_GENERATE --> DIALOG_PARSE[解析生成结果]
+    DIALOG_PARSE --> DIALOG_UPDATE[更新会话状态]
+    DIALOG_UPDATE --> DIALOG_CHECK{任务触发点检测}
+    DIALOG_CHECK -->|是| TASK_TRIGGER[触发任务推荐 UI]
+    DIALOG_CHECK -->|否| DIALOG_RETURN[返回剧情和选项]
+    
+    TASK_TRIGGER --> DIALOG_RETURN
+    
+    %% 结果输出
+    TASK_RESULT --> RESULT([返回渲染数据])
+    EXIT_RETURN --> RESULT
+    QUERY_RETURN --> RESULT
+    ACTION_RETURN --> RESULT
+    DIALOG_RETURN --> RESULT
+    
+    %% 样式
+    classDef process fill:#e1f5fe,stroke:#01579b,stroke-width:2px
+    classDef decision fill:#fff3e0,stroke:#e65100,stroke-width:2px
+    classDef agent fill:#f3e5f5,stroke:#4a148c,stroke-width:2px
+    classDef result fill:#e8f5e9,stroke:#1b5e20,stroke-width:2px
+    
+    class PRE,CTX,INTENT,TASK_GEN,TASK_VALID,TASK_CREATE,TASK_ACTIVATE process
+    class CMD,OPT,RULE,SWITCH,DIALOG_CHECK,QUERY_EVAL decision
+    class TASK_RESULT,EXIT_CONFIRM,QUERY_REPORT,ACTION_NARRATIVE agent
+    class RESULT,EXIT_RETURN,QUERY_RETURN,ACTION_RETURN,DIALOG_RETURN result

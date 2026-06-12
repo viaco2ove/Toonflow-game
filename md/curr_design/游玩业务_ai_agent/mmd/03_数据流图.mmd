@@ -1,0 +1,82 @@
+flowchart LR
+    subgraph INPUT["📥 输入数据"]
+        UM[用户消息<br/>userMessage]
+        CHAT[对话历史<br/>recentMessages]
+        MINI[游戏状态<br/>miniGameState]
+        TASK[当前任务<br/>activeTask]
+    end
+
+    subgraph PROCESS["⚙️ 处理组件"]
+        PRE[消息预处理]
+        INT[意图分析]
+        DIS[分流调度]
+        
+        subgraph AGENTS["🤖 AI Agents"]
+            STORY[Storyboard<br/>剧情生成]
+            INTENT_A[IntentAnalyzer<br/>意图分析]
+            TASK_A[TaskService<br/>任务服务]
+            PROGRESS[ProgressEngine<br/>进度引擎]
+        end
+        
+        AI[AI 模型调用层]
+    end
+
+    subgraph OUTPUT["📤 输出数据"]
+        NARRATIVE[剧情内容]
+        OPTIONS[选项列表]
+        TASK_PANEL[任务面板]
+        PROGRESS_R[进度报告]
+    end
+
+    subgraph STORAGE["💾 存储层"]
+        SESSION_DB[(Session<br/>会话数据库)]
+        MESSAGE_DB[(Message<br/>消息数据库)]
+        TASK_DB[(Task<br/>任务数据库)]
+        MINI_DB[(MiniGame<br/>游戏状态)]
+    end
+
+    %% 输入流向
+    UM --> PRE
+    CHAT --> PRE
+    MINI --> PRE
+    TASK --> PRE
+    
+    PRE --> INT
+    INT --> DIS
+    
+    DIS --> STORY
+    DIS --> INTENT_A
+    DIS --> TASK_A
+    DIS --> PROGRESS
+    
+    STORY --> AI
+    INTENT_A --> AI
+    TASK_A --> AI
+    PROGRESS --> AI
+    
+    %% 输出流向
+    STORY --> NARRATIVE
+    STORY --> OPTIONS
+    TASK_A --> TASK_PANEL
+    PROGRESS --> PROGRESS_R
+
+    %% 存储交互
+    PRE <--> SESSION_DB
+    PRE <--> MESSAGE_DB
+    TASK_A <--> TASK_DB
+    DIS <--> MINI_DB
+    
+    AI --> RESP[AI 响应]
+
+    %% 样式
+    classDef input fill:#e3f2fd,stroke:#1565c0,stroke-width:2px
+    classDef process fill:#fff8e1,stroke:#f9a825,stroke-width:2px
+    classDef agent fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px
+    classDef output fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
+    classDef storage fill:#fce4ec,stroke:#c2185b,stroke-width:2px
+    
+    class UM,CHAT,MINI,TASK input
+    class PRE,INT,DIS,AI process
+    class STORY,INTENT_A,TASK_A,PROGRESS agent
+    class NARRATIVE,OPTIONS,TASK_PANEL,PROGRESS_R output
+    class SESSION_DB,MESSAGE_DB,TASK_DB,MINI_DB storage
