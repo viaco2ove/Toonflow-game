@@ -23,6 +23,7 @@ const STRICT_MODEL_KEYS = new Set([
   "storyAsrModel",
   "storyVoiceDesignModel",
   "storyVoiceCloneModel",
+  "intentClassifierModel",
 ]);
 
 export default async function getPromptAi(key: string, userId?: number): Promise<AiConfig | {}> {
