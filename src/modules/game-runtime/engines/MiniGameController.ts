@@ -13,7 +13,8 @@ import {
   type MiniGameIntentLogMeta,
 } from "@/modules/game-runtime/services/MiniGameIntentService";
 import { resolveSellIntent } from "@/modules/game-runtime/services/MiniGameSellService";
-import { abandonActiveFreeChapterTaskEvent } from "@/modules/game-runtime/services/FreeChapterTaskService";
+import { abandonActiveFreeChapterTaskEvent, createTaskFromUserRequest } from "@/modules/game-runtime/services/FreeChapterTaskService";
+import { analyzeIntent, type IntentResult } from "@/modules/game-runtime/agents/intentAnalyzer";
 
 export interface MiniGameActionOption {
   action_id: string;
@@ -255,6 +256,14 @@ export function isMiniGameActiveState(state: JsonRecord): boolean {
   const session = asRecord(asRecord(state.miniGame).session);
   const status = scalarText(session.status) as MiniGameStatus;
   return activeStatuses().has(status);
+}
+
+/**
+ * 读取当前活跃任务 id（如果有）。T1.3 意图分析 context aware 用。
+ */
+function readActiveTaskIdFromState(state: JsonRecord): string | null {
+  const card = asRecord(asRecord(state.player).parameterCardJson);
+  return scalarText(card.activeTaskId) || null;
 }
 
 /**
@@ -5571,11 +5580,85 @@ function buildRuleNarration(rulebook: MiniGameRulebook): string {
   return `${rulebook.displayName}规则：${rulebook.ruleSummary}`;
 }
 
+export async function handleCreateTaskFromCommand(
+  input: MiniGameControllerInput,
+  intent: IntentResult,
+): Promise<MiniGameControllerResult | null> {
+  if (intent.intent !== "create_task") return null;
+  const taskDescription = String(intent.params?.task_description || "").trim();
+  if (!taskDescription) return null;
+
+  // 调新加的 createTaskFromUserRequest —— 不依赖自由章节 / 旁白推荐
+  const created = await createTaskFromUserRequest({
+    userId: input.userId,
+    world: input.world,
+    chapter: input.chapter,
+    state: input.state,
+    userRequest: taskDescription,
+    recentMessages: input.recentMessages,
+  });
+  if (!created) return null;
+
+  // 取出当前 miniGame 运行时（applyFreeChapterTaskBlueprintToState 已经写好）
+  const root = asRecord(input.state.miniGame);
+  const session = asRecord(root.session);
+  const narratorName = scalarText(input.world?.narratorRole?.name) || "旁白";
+
+  const content = created.hasActiveTask
+    ? `任务【${created.title}】已加入任务列表（当前执行的任务不变）。目标：${created.objective}。\n任务列表共 ${(input.state?.player?.parameterCardJson?.taskList?.length || 0) + 1} 项。\n直接输入行动可推进当前任务，输入 #任务列表 查看全部。`
+    : `任务【${created.title}】已开启。目标：${created.objective}。\n直接输入你的行动推进任务；输入 #退出 可放弃当前任务。`;
+
+  return {
+    intercepted: true,
+    runtime: root,
+    message: {
+      role: narratorName,
+      roleType: "narrator",
+      eventType: "on_mini_game_start",
+      content,
+      meta: {
+        miniGameType: "task",
+        taskId: created.task_id,
+        taskTitle: created.title,
+        taskCategory: created.category,
+        taskObjective: created.objective,
+        taskSource: created.source,
+        hasActiveTask: created.hasActiveTask,
+      },
+    },
+  };
+}
+
 export async function handleMiniGameTurn(input: MiniGameControllerInput): Promise<MiniGameControllerResult | null> {
   const state = input.state;
   const root = ensureMiniGameRoot(state);
   const activeSession = asRecord(root.session);
   const hasActiveGame = isMiniGameActiveState(state);
+
+  // ★ T1.3 意图分析 - 命令快路径
+  // 仅在用户消息以 # 开头时尝试 detectCommand；命中后立即返回对应分支
+  // 这一步先于所有"无活跃小游戏"分支，确保 #任务:xxx 不会被当成普通输入或被 #退出 误伤
+  if (input.playerMessage && input.playerMessage.trim().startsWith("#")) {
+    const intent = analyzeIntent({
+      userId: input.userId,
+      playerMessage: input.playerMessage,
+      activeTaskId: readActiveTaskIdFromState(state),
+      chapterTitle: scalarText(input.chapter?.title),
+    });
+    if (intent) {
+      console.log("[intent] 命令命中", {
+        intent: intent.intent,
+        params: intent.params,
+        confidence: intent.confidence,
+      });
+      if (intent.intent === "create_task") {
+        const created = await handleCreateTaskFromCommand(input, intent);
+        if (created) return created;
+      }
+      // 其他意图（exit_task / query_progress / switch_task / list_tasks）
+      // 暂由后续阶段（T4.x）实现，先 fall through 走原有链路
+    }
+  }
 
   if (!hasActiveGame) {
     // #退出 在没有激活小游戏时也要有稳定语义，不能再落到“未识别小游戏”分支。

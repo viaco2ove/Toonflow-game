@@ -324,6 +324,78 @@ function setExecutingTaskCardValue(state: JsonRecord, task: ExecutingTaskCardVal
 }
 
 /**
+ * 把任务追加到 taskList，并更新 activeTaskId 为新任务（如果是新激活的话）。
+ *
+ * 行为：
+ * - 已有同 task_id 的项 → 仅更新 status 和 lastUpdate（避免重复追加）
+ * - 没有同 task_id 的项 → 追加到 taskList 末尾
+ * - 总长度超过 20 时，把最旧的"非 doing"任务归档（删除）
+ *
+ * 与 setExecutingTaskCardValue 互补：那个只管"当前焦点"，这个管"全部历史"。
+ */
+function appendTaskListEntry(
+  state: JsonRecord,
+  entry: {
+    task_id: string;
+    title: string;
+    category: string;
+    objective: string;
+    status: "doing" | "completed" | "failed" | "aborted";
+    createdAt?: number;
+  },
+  options?: { setActive?: boolean },
+): void {
+  const card = ensurePlayerParameterCard(state);
+  const list = Array.isArray(card.taskList) ? (card.taskList as JsonRecord[]) : [];
+  const existsIdx = list.findIndex((item) => scalarText((item as any)?.task_id) === entry.task_id);
+  const record: JsonRecord = {
+    task_id: entry.task_id,
+    title: entry.title,
+    category: entry.category,
+    objective: entry.objective,
+    status: entry.status,
+    createdAt: entry.createdAt || nowTs(),
+    updatedAt: nowTs(),
+  };
+  if (existsIdx >= 0) {
+    list[existsIdx] = { ...list[existsIdx], ...record };
+  } else {
+    list.push(record);
+  }
+  // 超过 20 条时，归档最旧的非 doing 项
+  if (list.length > 20) {
+    const archiveIdx = list.findIndex((item) => scalarText((item as any)?.status) !== "doing");
+    if (archiveIdx >= 0) list.splice(archiveIdx, 1);
+  }
+  card.taskList = list;
+  if (options?.setActive) {
+    card.activeTaskId = entry.task_id;
+  }
+}
+
+/**
+ * 更新指定 task_id 在 taskList 中的状态（如 completed / failed / aborted）。
+ * 同时如果该任务是当前 activeTaskId，则清空 activeTaskId（任务已结束）。
+ */
+function updateTaskListEntryStatus(
+  state: JsonRecord,
+  taskId: string,
+  status: "doing" | "completed" | "failed" | "aborted",
+): void {
+  if (!taskId) return;
+  const card = ensurePlayerParameterCard(state);
+  const list = Array.isArray(card.taskList) ? (card.taskList as JsonRecord[]) : [];
+  const idx = list.findIndex((item) => scalarText((item as any)?.task_id) === taskId);
+  if (idx >= 0) {
+    list[idx] = { ...list[idx], status, updatedAt: nowTs() };
+    card.taskList = list;
+  }
+  if (scalarText(card.activeTaskId) === taskId && status !== "doing") {
+    delete card.activeTaskId;
+  }
+}
+
+/**
  * 将当前任务写入任务面板运行态，复用小游戏面板展示任务信息。
  *
  * 用途：
@@ -1025,7 +1097,9 @@ function applyFreeChapterTaskBlueprintToState(input: {
   state: JsonRecord;
   option: FreeChapterTaskOption;
   blueprint: FreeChapterTaskBlueprint;
-}): void {
+  /** T2.2: 可选 task_id；不传则自动生成。用于支持多任务列表追踪。 */
+  taskId?: string;
+}): { taskId: string } {
   const outline = normalizeChapterRuntimeOutline(input.chapter?.runtimeOutline);
   const currentProgress = readChapterProgressState(input.state);
   const currentEvent = readRuntimeCurrentEventState(input.state);
@@ -1118,6 +1192,15 @@ function applyFreeChapterTaskBlueprintToState(input: {
     failureConditions: input.blueprint.failureConditions,
     status: "doing",
   });
+  // T2.2: 多任务列表追踪 —— 把新任务追加到 taskList 并设为 active
+  const generatedTaskId = scalarText(input.taskId) || `task_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  appendTaskListEntry(input.state, {
+    task_id: generatedTaskId,
+    title: input.blueprint.taskTitle,
+    category: scalarText(input.option.category) || "自由任务",
+    objective: input.blueprint.objective,
+    status: "doing",
+  }, { setActive: true });
   setFreeTaskMiniGameState({
     state: input.state,
     blueprint: input.blueprint,
@@ -1125,6 +1208,7 @@ function applyFreeChapterTaskBlueprintToState(input: {
     eventIndex,
   });
   syncRuntimeCurrentEventFromChapterProgress(input.state);
+  return { taskId: generatedTaskId };
 }
 
 /**
@@ -1201,6 +1285,11 @@ export function abandonActiveFreeChapterTaskEvent(state: JsonRecord): JsonRecord
     removeTags: ["任务进行中", "等待任务选择", "等待进入任务流程"],
   });
   setExecutingTaskCardValue(state, null);
+  // T2.2: 标记 taskList 中对应 task 为 aborted（找当前 activeTaskId）
+  const activeTaskIdForAbort = scalarText(ensurePlayerParameterCard(state).activeTaskId);
+  if (activeTaskIdForAbort) {
+    updateTaskListEntryStatus(state, activeTaskIdForAbort, "aborted");
+  }
   clearFreeTaskMiniGameState(state);
   enterFreeChapterWaitingState(
     state,
@@ -1231,7 +1320,8 @@ export async function maybeResolveActiveFreeChapterTaskEvent(input: {
   }>;
   playerMessage: string;
 }): Promise<FreeChapterTaskResolutionResult | null> {
-  if (!input.chapter || !isFreeChapterRuntimeMode(input.chapter)) {
+  // T2.1: 移除 isFreeChapterRuntimeMode 检查 —— 任何章节里只要有活跃任务都需结算
+  if (!input.chapter) {
     return null;
   }
   const activeTask = readActiveFreeTaskState(input.state);
@@ -1380,7 +1470,8 @@ export async function maybeActivateFreeChapterTaskEvent(input: {
   }>;
   playerMessage: string;
 }): Promise<boolean> {
-  if (!input.chapter || !isFreeChapterRuntimeMode(input.chapter)) {
+  // T2.1: 移除 isFreeChapterRuntimeMode 检查 —— 任何章节都能创建任务
+  if (!input.chapter) {
     return false;
   }
   const playerMessage = scalarText(input.playerMessage);
@@ -1389,7 +1480,7 @@ export async function maybeActivateFreeChapterTaskEvent(input: {
   }
   const outline = normalizeChapterRuntimeOutline(input.chapter?.runtimeOutline);
   const currentProgress = readChapterProgressState(input.state);
-  // 只有静态“任务推荐引导”阶段，才允许把用户输入解释成“领取某个任务”。
+  // 只有静态"任务推荐引导"阶段，才允许把用户输入解释成"领取某个任务"。
   // 一旦已经进入真正的动态任务事件，就不能再拿旧推荐列表重复抢占输入。
   if (Number(currentProgress.eventIndex || 0) > outline.phases.length) {
     return false;
@@ -1424,4 +1515,95 @@ export async function maybeActivateFreeChapterTaskEvent(input: {
     }));
   }
   return true;
+}
+
+/**
+ * 从用户直接输入创建任务（无需自由章节、无需旁白推荐列表）。
+ *
+ * 用法：用户输入 "#任务:到村长家偷鸡" 时调用本函数。
+ * 与 maybeActivateFreeChapterTaskEvent 的区别：
+ *   1) 不依赖 isFreeChapterRuntimeMode —— 任何章节都能创建
+ *   2) 不依赖 collectRecentFreeChapterTaskOptions —— 不需要旁白先推荐
+ *   3) 不依赖 resolveSelectedFreeChapterTask —— 直接用用户描述当 task_description
+ *
+ * 并发任务处理：
+ *   - 如果已有 executing_task，会把新任务追加到 taskList，executing_task 保持不变
+ *   - 新任务的 task_id 用 uuid 区分
+ *   - 当前活跃 task 仍由 miniGame session 承载
+ */
+export interface CreateTaskFromUserRequestInput {
+  userId: number;
+  world: any;
+  chapter: any;
+  state: JsonRecord;
+  userRequest: string;
+  recentMessages?: Array<{ role?: string | null; content?: string | null }>;
+}
+
+export interface CreateTaskFromUserRequestResult {
+  task_id: string;
+  title: string;
+  category: string;
+  objective: string;
+  process: string[];
+  successConditions: string[];
+  failureConditions: string[];
+  status: "doing";
+  /** 触发的选项来源: ai / fallback */
+  source: "ai" | "fallback";
+  /** 之前是否已有活跃任务（true 表示本次是追加） */
+  hasActiveTask: boolean;
+}
+
+export async function createTaskFromUserRequest(
+  input: CreateTaskFromUserRequestInput,
+): Promise<CreateTaskFromUserRequestResult | null> {
+  const description = scalarText(input.userRequest);
+  if (!description) return null;
+
+  // 合成 FreeChapterTaskOption（兼容现有 API）
+  const syntheticOption: FreeChapterTaskOption = {
+    index: 0,
+    category: "自由任务",
+    description,
+    rawLine: description,
+  };
+
+  // T2.2: 在写 state 之前先检查是否已有活跃任务（之后 active 会被覆盖）
+  const previousActive = readActiveFreeTaskState(input.state);
+  const hadActive = Boolean(previousActive && scalarText((previousActive as any).title));
+
+  // 调用 AI 生成 blueprint（如果失败用 fallback）
+  let blueprint = await generateFreeChapterTaskBlueprintByAi({
+    userId: input.userId,
+    world: input.world,
+    chapter: input.chapter,
+    state: input.state,
+    option: syntheticOption,
+  });
+  if (!blueprint) {
+    blueprint = buildFallbackFreeChapterTaskBlueprint(syntheticOption);
+  }
+
+  // 写 state（不依赖 isFreeChapterRuntimeMode）—— applyFreeChapterTaskBlueprintToState
+  // 已经把任务追加到 taskList 并 setActive，并返回最终的 taskId
+  const { taskId } = applyFreeChapterTaskBlueprintToState({
+    chapter: input.chapter,
+    state: input.state,
+    option: syntheticOption,
+    blueprint,
+  });
+
+  return {
+    task_id: taskId,
+    title: blueprint.taskTitle,
+    category: scalarText(syntheticOption.category) || "自由任务",
+    objective: blueprint.objective,
+    process: blueprint.process,
+    successConditions: blueprint.successConditions,
+    failureConditions: blueprint.failureConditions,
+    status: "doing",
+    source: blueprint.source === "ai" ? "ai" : "fallback",
+    hasActiveTask: hadActive,
+  };
 }
