@@ -88,6 +88,39 @@ export default router.post(
         ? "请直接回复：T8Star 文本模型连通成功"
         : `请直接回复：${manufacturer || "文本模型"}连通成功`;
 
+      // 本地 Qwen3-0.6B 走 node-llama-cpp，绕过 ai-sdk
+      if (manufacturerKey === "qwen060") {
+        const { chatWithQwen060, getQwen060InstallStatus } = await import("@/lib/localQwen060");
+        const status = await getQwen060InstallStatus();
+        if (status.status !== "installed") {
+          throw new Error(`Qwen3-0.6B 未安装：${status.message}`);
+        }
+        const r = await withTimeout(
+          chatWithQwen060({
+            messages: [{ role: "user", content: testPrompt }],
+            maxTokens: 256,
+            temperature: 0.3,
+            // 测试场景禁用 thinking 模式（Qwen3 默认开启会先输出 <think>，可能耗光 token 还没回答）
+            enableThinking: false,
+          }),
+          TEST_TIMEOUT_MS,
+          `Qwen3-0.6B 测试超时（>${TEST_TIMEOUT_MS}ms）`,
+        );
+        const reply = r.text || "";
+        if (!reply) {
+          throw new Error("模型测试未返回可读文本");
+        }
+        debugLog("success", {
+          manufacturer,
+          modelName,
+          manufacturerKey,
+          costMs: Date.now() - startedAt,
+          replyPreview: trimPreview(reply),
+        });
+        res.status(200).send(success(reply));
+        return;
+      }
+
       // 火山/豆包系列（含 260428 这种默认开启思考的新版本）必须显式传 reasoning_effort，
       // 否则模型可能进入思考模式，导致返回内容混入推理过程而无法解析出可读文本。
       // 测试连通性时统一兜底为 minimal（不思考），让模型直接给出回复。

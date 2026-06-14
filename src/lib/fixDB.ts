@@ -718,6 +718,7 @@ export default async (knex: Knex): Promise<void> => {
     { name: "AI故事-语音克隆", key: "storyVoiceCloneModel" },
     { name: "AI故事-语音生成", key: "storyVoiceModel" },
     { name: "AI故事-语音识别", key: "storyAsrModel" },
+    { name: "AI Agent-意图分析师", key: "intentClassifierModel" },
   ];
   const keys = aiModels.map((m) => m.key);
   const existItems = await knex("t_aiModelMap").whereIn("key", keys).select("key");

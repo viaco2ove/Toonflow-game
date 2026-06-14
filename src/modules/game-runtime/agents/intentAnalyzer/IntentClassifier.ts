@@ -177,8 +177,15 @@ export async function classifyIntentWithAi(ctx: IntentContext): Promise<IntentRe
     // 1. 获取模型配置
     const modelConfig = await u.getPromptAi(INTENT_MODEL_KEY, ctx.userId) as any;
 
-    if (!modelConfig || !modelConfig.model || !modelConfig.apiKey) {
+    if (!modelConfig || !modelConfig.model) {
       console.debug("[intent-classifier] 未配置模型，跳过 AI 分类");
+      return null;
+    }
+
+    // 本地模型（qwen060）不需要 apiKey
+    const isLocalModel = modelConfig.manufacturer === "qwen060";
+    if (!isLocalModel && !modelConfig.apiKey) {
+      console.debug("[intent-classifier] 未配置 apiKey，跳过 AI 分类");
       return null;
     }
 
@@ -188,32 +195,43 @@ export async function classifyIntentWithAi(ctx: IntentContext): Promise<IntentRe
 
     // 3. 调用 AI
     const startedAt = Date.now();
-    const result = await u.ai.text.invoke(
-      {
-        system: systemPrompt,
-        messages: [{ role: "user" as const, content: userPrompt }],
-        output: {
-          intent: z.string(),
-          confidence: z.number(),
-          reasoning: z.string(),
-          params: z.record(z.string(), z.unknown()),
+    let rawText: string;
+
+    if (isLocalModel) {
+      // qwen060：直接走 node-llama-cpp 本地推理
+      const { chatWithQwen060 } = await import("@/lib/localQwen060");
+      const result = await chatWithQwen060({
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userPrompt },
+        ],
+        maxTokens: 512,
+        temperature: 0.3,
+      });
+      rawText = result.text;
+    } else {
+      // 其他厂商：走 ai-sdk
+      const aiResult = await u.ai.text.invoke(
+        {
+          system: systemPrompt,
+          messages: [{ role: "user" as const, content: userPrompt }],
+          output: {
+            intent: z.string(),
+            confidence: z.number(),
+            reasoning: z.string(),
+            params: z.record(z.string(), z.unknown()),
+          },
         },
-      },
-      modelConfig,
-    ) as any;
-
-    const latencyMs = Date.now() - startedAt;
-
-    // 4. 解析结果
-    if (result && typeof result === "object") {
-      const validated = AI_RESPONSE_SCHEMA.safeParse(result);
+        modelConfig,
+      ) as any;
+      // ai-sdk 已经解析为对象
+      const validated = AI_RESPONSE_SCHEMA.safeParse(aiResult);
       if (validated.success) {
         const { intent, confidence, reasoning, params } = validated.data;
-
-        // 校验 intent 是否为有效值
         const validIntents: IntentType[] = ["create_task", "exit_task", "query_progress", "game_action", "normal_dialog"];
         const normalizedIntent = validIntents.includes(intent as IntentType) ? (intent as IntentType) : "normal_dialog";
-
+        const latencyMs = Date.now() - startedAt;
+        console.debug(`[intent-classifier] AI 分类完成，耗时 ${latencyMs}ms`);
         return {
           intent: normalizedIntent,
           confidence: Math.max(0, Math.min(1, confidence)),
@@ -222,9 +240,45 @@ export async function classifyIntentWithAi(ctx: IntentContext): Promise<IntentRe
           path: "ai",
         };
       }
+      console.debug("[intent-classifier] AI 返回格式解析失败:", aiResult);
+      return null;
     }
 
-    console.debug("[intent-classifier] AI 返回格式解析失败:", result);
+    const latencyMs = Date.now() - startedAt;
+    console.debug(`[intent-classifier] qwen060 推理完成，耗时 ${latencyMs}ms，输出: ${rawText.slice(0, 100)}...`);
+
+    // 4. 解析 qwen060 的纯文本输出（应该是 JSON）
+    // 提取 JSON 部分（可能被 ```json...``` 包裹）
+    const jsonMatch = rawText.match(/\{[\s\S]*?\}/);
+    if (!jsonMatch) {
+      console.debug("[intent-classifier] 未找到 JSON 输出");
+      return null;
+    }
+
+    let parsed: any;
+    try {
+      parsed = JSON.parse(jsonMatch[0]);
+    } catch (err) {
+      console.debug("[intent-classifier] JSON 解析失败:", (err as Error).message);
+      return null;
+    }
+
+    const validated = AI_RESPONSE_SCHEMA.safeParse(parsed);
+    if (validated.success) {
+      const { intent, confidence, reasoning, params } = validated.data;
+      const validIntents: IntentType[] = ["create_task", "exit_task", "query_progress", "game_action", "normal_dialog"];
+      const normalizedIntent = validIntents.includes(intent as IntentType) ? (intent as IntentType) : "normal_dialog";
+
+      return {
+        intent: normalizedIntent,
+        confidence: Math.max(0, Math.min(1, confidence)),
+        reasoning: reasoning || "无推理",
+        params: (params as Record<string, unknown>) || {},
+        path: "ai",
+      };
+    }
+
+    console.debug("[intent-classifier] qwen060 输出格式校验失败:", parsed);
     return null;
   } catch (err) {
     console.warn("[intent-classifier] AI 分类失败:", (err as Error)?.message);
