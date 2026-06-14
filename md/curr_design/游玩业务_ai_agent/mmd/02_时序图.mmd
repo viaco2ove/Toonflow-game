@@ -2,71 +2,77 @@ sequenceDiagram
     autonumber
     participant USER as 用户
     participant FRONT as 前端<br/>ScenePlay.vue
+    participant ADD as POST<br/>/game/addMessage
+    participant ORCH as POST<br/>/game/orchestration
+    participant SS as 会话服务<br/>SessionService
     participant CTRL as 控制器<br/>MiniGameController
-    participant SESSION as 会话服务<br/>SessionService
-    participant INTENT as 意图分析<br/>intentAnalyzer
-    participant STORY as 剧情生成<br/>Storyboard Agent
+    participant INTENT as 意图分析<br/>IntentClassifier
+    participant QWEN as 本地模型<br/>node-llama-cpp
     participant TASK as 任务服务<br/>FreeChapterTaskService
-    participant PROGRESS as 进度引擎<br/>TaskProgressEngine
-    participant AI as AI 模型调用<br/>text/index.ts
+    participant NARR as 编排师<br/>NarrativeOrchestrator
+    participant DB as 数据库
 
-    %% 正常对话流程
-    USER->>FRONT: 发送消息
+    %% ===== 阶段 1：消息入库 + 意图分析 =====
+    Note over USER,DB: 阶段 1：addMessage（消息入库 + 意图分析）
+
+    USER->>FRONT: 发送消息（如"任务为：找到舍友"）
     FRONT->>FRONT: 消息预处理
-    FRONT->>CTRL: POST /session/continue
-    
-    CTRL->>INTENT: analyzeIntent(ctx)
-    INTENT->>INTENT: 规则预检
-    INTENT->>AI: callAiModel()
-    AI-->>INTENT: 返回意图结果
-    
-    INTENT-->>CTRL: IntentResult
-    
-    CTRL->>CTRL: 分流调度
-    CTRL->>SESSION: continueSessionNarrative()
-    
-    SESSION->>STORY: generateNarrative()
-    STORY->>AI: callAiModel('storyboard')
-    AI-->>STORY: 剧情内容
-    
-    STORY-->>SESSION: NarrativeResult
-    SESSION->>PROGRESS: evaluate()
-    PROGRESS-->>SESSION: TaskProgressResult
-    
-    SESSION-->>CTRL: SessionResult
-    CTRL-->>FRONT: 返回渲染数据
-    FRONT-->>USER: 显示剧情+选项
+    FRONT->>ADD: POST /game/addMessage
+    ADD->>SS: addSessionMessage()
 
-    %% 创建任务流程
-    Note over USER,CTRL: 创建任务流程 (intent: create_task)
-    USER->>FRONT: #开任务
-    FRONT->>CTRL: POST /session/continue
-    CTRL->>INTENT: analyzeIntent()
-    INTENT-->>CTRL: intent: create_task
-    CTRL->>TASK: generateFreeChapterTaskBlueprintByAi()
-    TASK->>AI: 生成任务蓝图
-    AI-->>TASK: TaskBlueprint
-    TASK-->>CTRL: 任务实例
-    CTRL-->>FRONT: 任务面板数据
-    FRONT-->>USER: 显示任务卡片
+    SS->>DB: 插入 t_sessionMessage
+    SS->>CTRL: handleMiniGameTurn()
 
-    %% 退出任务流程
-    Note over USER,CTRL: 退出任务流程 (intent: exit_task)
-    USER->>FRONT: #退出
-    FRONT->>CTRL: POST /session/continue
-    CTRL->>INTENT: analyzeIntent()
-    INTENT-->>CTRL: intent: exit_task
-    CTRL->>TASK: abandonActiveFreeChapterTaskEvent()
-    TASK-->>CTRL: 任务已放弃
-    CTRL-->>FRONT: 返回主剧情
-    FRONT-->>USER: 显示放弃剧情
+    %% 双通道意图分析
+    rect rgb(243, 229, 245)
+        Note over CTRL,QWEN: 意图分析双通道
 
-    %% 查询进度流程
-    Note over USER,CTRL: 查询进度流程 (intent: query_progress)
-    USER->>FRONT: #任务
-    FRONT->>CTRL: POST /session/continue
-    CTRL->>PROGRESS: evaluate()
-    PROGRESS->>PROGRESS: 静态检查 → 规则评估 → AI评估
-    PROGRESS-->>CTRL: TaskProgressResult
-    CTRL-->>FRONT: 进度报告
-    FRONT-->>USER: 显示进度面板
+        alt Fast Path: # 开头命令
+            CTRL->>INTENT: analyzeIntent() 正则匹配
+            INTENT-->>CTRL: { intent, confidence: 1.0 }
+        else Slow Path: 自然语言
+            CTRL->>INTENT: analyzeIntentWithAiFallback()
+            INTENT->>INTENT: 取用户配置 intentClassifierModel
+            alt manufacturer = qwen060
+                INTENT->>QWEN: chatWithQwen060()
+                QWEN-->>INTENT: 原始 JSON 文本
+                INTENT->>INTENT: extractJsonObject 解析
+            else 线上模型
+                INTENT->>INTENT: ai-sdk text.invoke()
+            end
+            INTENT-->>CTRL: { intent, confidence, reasoning, path }
+        end
+    end
+
+    alt intent === create_task && confidence ≥ 0.7
+        CTRL->>TASK: createTaskFromUserRequest()
+        TASK->>TASK: generateFreeChapterTaskBlueprintByAi
+        TASK->>TASK: applyFreeChapterTaskBlueprintToState
+        TASK-->>CTRL: { taskId, title, objective }
+        CTRL-->>SS: { intercepted: true, message: on_mini_game_start }
+        SS-->>ADD: 任务创建结果（短路返回，跳过编排）
+        ADD-->>FRONT: 任务面板数据
+        FRONT-->>USER: 显示任务卡片
+    else 其他意图 / normal_dialog
+        CTRL-->>SS: null（不拦截）
+        SS->>SS: runTriggerEngine + runTaskProgressEngine
+        SS->>SS: maybeResolveActiveFreeChapterTaskEvent
+        SS-->>ADD: 普通响应
+        ADD-->>FRONT: messageId 等元信息
+
+        %% ===== 阶段 2：编排 =====
+        Note over USER,DB: 阶段 2：orchestration（编排剧情）
+        FRONT->>ORCH: POST /game/orchestration
+        ORCH->>SS: orchestrateSessionTurn()
+        SS->>NARR: runNarrativeOrchestrator()
+        NARR-->>SS: NarrativePlan
+        SS->>SS: maybeActivateFreeChapterTaskEvent<br/>（旧链路兼容自由章节推荐）
+        SS->>NARR: runNarrativePlan() 生成台词
+        NARR-->>SS: 台词消息
+        SS-->>ORCH: 编排结果
+        ORCH-->>FRONT: 剧情消息列表
+        FRONT-->>USER: 渲染剧情对话
+    end
+
+    %% ===== 关键说明 =====
+    Note over CTRL,INTENT: ⚠ 关键：handleMiniGameTurn 仅在 addMessage 阶段触发<br/>orchestration 阶段不再调意图分析师<br/>所以意图分析必须在阶段 1 完成判断与短路

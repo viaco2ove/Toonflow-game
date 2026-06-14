@@ -1494,6 +1494,21 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
   );
   state.round = Number(state.round || 0) + 1;
 
+  // 诊断：addMessage 入口时检查 state 中的任务字段
+  {
+    const card = (state.player?.parameterCardJson || {}) as Record<string, any>;
+    const miniGameSession = (state.miniGame as any)?.session;
+    console.log("[story:mini_game:task] addMessage 入口 state", {
+      sessionId,
+      activeTaskId: card.activeTaskId || null,
+      taskListLength: Array.isArray(card.taskList) ? card.taskList.length : 0,
+      executingTaskTitle: card.executing_task ? (card.executing_task as any).title : null,
+      miniGameSessionStatus: miniGameSession?.status || null,
+      miniGameGameType: miniGameSession?.game_type || null,
+      stateJsonHasActiveTaskId: typeof sessionRow.stateJson === "string" ? sessionRow.stateJson.includes("\"activeTaskId\"") : null,
+    });
+  }
+
   const roleTypeValue = String(input.roleType || "player").trim() || "player";
   const eventTypeValue = String(input.eventType || "on_message").trim() || "on_message";
   const messageContent = String(input.content || "");
@@ -1697,6 +1712,17 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
         chapterId: prevChapterId,
         status: prevStatus,
         updateTime: now,
+      });
+      // 任务/小游戏 拦截路径下的状态校验
+      const cardAfterSave = (state.player?.parameterCardJson || {}) as Record<string, any>;
+      const taskListLen = Array.isArray(cardAfterSave.taskList) ? cardAfterSave.taskList.length : 0;
+      console.log("[story:mini_game:task] handleMiniGameTurn 拦截路径 state 已保存", {
+        sessionId,
+        activeTaskId: cardAfterSave.activeTaskId || null,
+        taskListLength: taskListLen,
+        executingTaskTitle: cardAfterSave.executing_task ? (cardAfterSave.executing_task as any).title : null,
+        miniGameSessionStatus: ((state.miniGame as any)?.session?.status) || null,
+        miniGameGameType: ((state.miniGame as any)?.session?.game_type) || null,
       });
 
       const snapshotResult = await persistSnapshotIfNeeded({
@@ -2457,7 +2483,20 @@ export async function orchestrateSessionTurn(sessionIdInput: string): Promise<Se
   if (!sessionId) {
     throw new SessionServiceError(400, "sessionId 不能为空");
   }
+
   return withSessionLock(sessionId, async () => orchestrateSessionTurnInner(sessionId));
+}
+
+/**
+ * 读取 state.player.parameterCardJson.activeTaskId（orchestration 内联用）
+ * MiniGameController 中的同名函数未导出，这里复刻一份以避免循环依赖。
+ */
+function readActiveTaskIdFromStateOrch(state: any): string | null {
+  const card = (state?.player?.parameterCardJson as Record<string, unknown>) || {};
+  const id = card?.activeTaskId;
+  if (id == null) return null;
+  const s = String(id).trim();
+  return s ? s : null;
 }
 
 async function orchestrateSessionTurnInner(sessionId: string): Promise<SessionOrchestrationResult> {
@@ -2712,27 +2751,54 @@ async function orchestrateSessionTurnInner(sessionId: string): Promise<SessionOr
         delete state.heldNarrativePlan;
       }
     } else {
-      // 小游戏的旁白播报 / 敌人回合都通过 pendingNarrativePlan 进入正式编排链。
-      // 这里必须优先返回，避免再跑普通剧情编排把小游戏回合冲掉。
-      if (DebugLogUtil.isDebugLogEnabled()) {
-        console.log("[story:orchestrator:runtime] 判断为不走到模型。原因：pendingNarrativePlan_exists", JSON.stringify({
+      // 任务/小游戏 active 中：检查 plan 是否已过期（用户已发新消息）
+      const planEventType = String(pendingNarrativePlan.eventType || "");
+      const planRoleType = String(pendingNarrativePlan.roleType || "").toLowerCase();
+      const isWaitingInputPlan =
+        planEventType === "on_waiting_input"
+        || (planRoleType === "player" && Boolean(pendingNarrativePlan.awaitUser));
+      const latestMsg = recentMessages[recentMessages.length - 1];
+      const latestMsgRoleType = String(latestMsg?.roleType || "").toLowerCase();
+      const latestMsgEventType = String(latestMsg?.eventType || "");
+      const userJustSpoke = latestMsgRoleType === "player" && latestMsgEventType === "on_message";
+
+      if (isWaitingInputPlan && userJustSpoke) {
+        // 用户已发新消息 + plan 是"等待输入"
+        // → 清除旧 plan，让编排正常走，让旁白回应用户的任务内行动
+        console.log("[story:orchestrator:runtime] 清除过期 waiting_input plan（用户已发新消息）", {
           sessionId,
-          chapterId: Number(chapter?.id || 0),
-          planRole: String(pendingNarrativePlan.role || ""),
-          planRoleType: String(pendingNarrativePlan.roleType || ""),
-          planAwaitUser: Boolean(pendingNarrativePlan.awaitUser),
-          planEventType: String(pendingNarrativePlan.eventType || ""),
-        }));
+          planEventType,
+          planRoleType,
+          latestMsgRoleType,
+        });
+        setPendingSessionNarrativePlan(state, null);
+        if (state.heldNarrativePlan) {
+          delete state.heldNarrativePlan;
+        }
+        // 不 return，继续往下走编排
+      } else {
+        // 小游戏的旁白播报 / 敌人回合都通过 pendingNarrativePlan 进入正式编排链。
+        // 这里必须优先返回，避免再跑普通剧情编排把小游戏回合冲掉。
+        if (DebugLogUtil.isDebugLogEnabled()) {
+          console.log("[story:orchestrator:runtime] 判断为不走到模型。原因：pendingNarrativePlan_exists", JSON.stringify({
+            sessionId,
+            chapterId: Number(chapter?.id || 0),
+            planRole: String(pendingNarrativePlan.role || ""),
+            planRoleType: String(pendingNarrativePlan.roleType || ""),
+            planAwaitUser: Boolean(pendingNarrativePlan.awaitUser),
+            planEventType: String(pendingNarrativePlan.eventType || ""),
+          }));
+        }
+        return finalizeOrchestrationResult({
+          sessionId,
+          status: sessionStatus,
+          chapterId: Number(chapter.id || 0) || null,
+          expectedRole: "",
+          expectedRoleType: "",
+          command: null,
+          plan: pendingNarrativePlan,
+        });
       }
-      return finalizeOrchestrationResult({
-        sessionId,
-        status: sessionStatus,
-        chapterId: Number(chapter.id || 0) || null,
-        expectedRole: "",
-        expectedRoleType: "",
-        command: null,
-        plan: pendingNarrativePlan,
-      });
     }
   }
 
@@ -2776,6 +2842,117 @@ async function orchestrateSessionTurnInner(sessionId: string): Promise<SessionOr
   }
 
   const latestRecentMessage = recentMessages[recentMessages.length - 1];
+
+  // ★ B: orchestration 阶段意图分析
+  // 用户最新发言若被分类为 create_task，直接调用 createTaskFromUserRequest，
+  // 跳过编排，把任务接取消息作为本轮 plan 返回。
+  if (latestRecentMessage
+      && String(latestRecentMessage.roleType || "").toLowerCase() === "player"
+      && String(latestRecentMessage.eventType || "") === "on_message"
+      && !isMiniGameActiveState(state)
+      && readActiveTaskIdFromStateOrch(state) === null) {
+    const playerMsg = String(latestRecentMessage.content || "").trim();
+    if (playerMsg) {
+      const { analyzeIntent, analyzeIntentWithAiFallback } = await import("@/modules/game-runtime/agents/intentAnalyzer");
+      // Fast path: 命令命中
+      let intentDescription: string | null = null;
+      let intentSource: "command" | "ai" = "command";
+      let intentConfidence = 1.0;
+      const fastIntent = analyzeIntent({
+        userId: currentUserId,
+        playerMessage: playerMsg,
+        chapterTitle: String(chapter?.title || "") || null,
+      });
+      if (fastIntent && fastIntent.intent === "create_task") {
+        intentDescription = String(fastIntent.params?.task_description || "").trim() || null;
+      } else if (!fastIntent) {
+        // Slow path: AI 分类
+        console.log("[story:intent:analysis] orchestration 阶段进入 AI 分类", {
+          messagePreview: playerMsg.slice(0, 60),
+        });
+        const aiResult = await analyzeIntentWithAiFallback({
+          userId: currentUserId,
+          playerMessage: playerMsg,
+          recentMessages,
+          chapterTitle: String(chapter?.title || "") || null,
+        });
+        console.log("[story:intent:analysis] orchestration AI 分类结果", {
+          intent: aiResult.intent,
+          confidence: aiResult.confidence,
+          path: aiResult.path,
+          reasoning: String(aiResult.reasoning || "").slice(0, 80),
+        });
+        if (aiResult.intent === "create_task" && aiResult.confidence >= 0.7) {
+          const td = (aiResult.params as any)?.task_description;
+          intentDescription = td && String(td).trim() ? String(td).trim() : playerMsg;
+          intentSource = "ai";
+          intentConfidence = aiResult.confidence;
+        }
+      }
+
+      if (intentDescription) {
+        console.log("[story:mini_game:task] orchestration 触发任务创建", {
+          source: intentSource,
+          confidence: intentConfidence,
+          taskDescription: intentDescription.slice(0, 80),
+        });
+        const { createTaskFromUserRequest } = await import("@/modules/game-runtime/services/FreeChapterTaskService");
+        const created = await createTaskFromUserRequest({
+          userId: currentUserId,
+          world,
+          chapter,
+          state,
+          userRequest: intentDescription,
+          recentMessages,
+        });
+        if (created) {
+          console.log("[story:mini_game:task] orchestration 任务创建成功", {
+            taskId: created.task_id,
+            title: created.title,
+            objective: String(created.objective || "").slice(0, 80),
+          });
+          // 设置 turn 状态：旁白接管，发开场介绍
+          setRuntimeTurnState(state, world, {
+            canPlayerSpeak: false,
+            expectedRoleType: "narrator",
+            expectedRole: String(state.narrator?.name || "旁白"),
+            lastSpeakerRoleType: "player",
+            lastSpeaker: String(latestRecentMessage.role || state.player?.name || "用户"),
+          });
+          // 持久化 state
+          await db("t_gameSession").where({ sessionId }).update({
+            stateJson: toJsonText(state, {}),
+            chapterId: Number(chapter.id || 0) || currentChapterId,
+            status: sessionStatus,
+            updateTime: nowTs(),
+          });
+          // 返回一个开场 plan，让 streamlines 生成旁白介绍任务
+          const openingMotive = `任务【${created.title}】已开启。请简要介绍任务目标：${created.objective}。`;
+          return finalizeOrchestrationResult({
+            sessionId,
+            status: sessionStatus,
+            chapterId: Number(chapter.id || 0) || null,
+            expectedRole: "",
+            expectedRoleType: "",
+            command: null,
+            plan: buildSessionPlanResult({
+              role: String(state.narrator?.name || "旁白"),
+              roleType: "narrator",
+              motive: openingMotive,
+              awaitUser: true,
+              nextRole: String(state.player?.name || "用户"),
+              nextRoleType: "player",
+              source: "task_created",
+              triggerMemoryAgent: true,
+              eventType: "on_mini_game_start",
+              presetContent: "",
+            }),
+          });
+        }
+      }
+    }
+  }
+
   if (isOpeningRuntimeEventType(latestRecentMessage?.eventType)) {
     resetSessionChapterContentProgressForOpening(chapter, state);
     logSessionOrchestrationKeyNode("session_opening:skip_judge", requestTrace, {

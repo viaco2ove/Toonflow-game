@@ -50,93 +50,68 @@ const AI_RESPONSE_SCHEMA = z.object({
 // ============================================================================
 
 function buildSystemPrompt(): string {
-  return `# 角色：意图分析师
+  return `你是意图分类器。读用户输入后只输出一个严格 JSON 对象，禁止任何其他文本。
 
-你是一个意图分析专家，专门分析用户在角色扮演游戏中的输入，识别用户意图。
+# 5 类意图
 
-## 上下文
+1. create_task：用户想接受/创建/开启一个任务（含明确描述任务内容）
+   - 触发词：好、接受、我来做、我去、没问题、我试试、开任务、任务为/任务是、找/做/打/探索/收集/调查/找到 + 具体目标
+   - 例："任务为：找到舍友" / "我想去探索古墓" / "好我接受这个挑战" / "去打哥布林"
 
-- 当前环境：Toonflow Game 角色扮演游戏引擎
-- 用户正在进行沉浸式剧情对话，偶尔会触发任务系统
-- 任务系统（Task）复用 MiniGame 框架，非阻塞模式
+2. exit_task：用户想退出/放弃当前任务
+   - 触发词：退出、放弃、不做了、算了、取消任务
+   - 例："算了不做了" / "退出任务"
 
-## 意图类别
+3. query_progress：用户查询当前任务进度
+   - 触发词：任务进度、完成了多少、还差什么、进展如何
+   - 例："我的任务怎么样了"
 
-你必须将用户输入分类到以下 5 个意图之一：
+4. game_action：用户执行具体游戏操作（与任务系统无关）
+   - 触发词：攻击、使用、打开、查看背包、对话
+   - 例："我攻击那只怪物"
 
-### 1. create_task（创建/接受任务）
-**触发条件**：用户表达了接受、承诺、执行某个任务/挑战的意愿
-**关键词**：好、我接受、好的、我来做、我去、没问题、我试试、开始行动、执行任务、接取任务
-**示例**：
-- 用户输入："好，我接受这个挑战"
-- 用户输入："没问题，包在我身上"
-- 用户输入："让我去调查一下"
+5. normal_dialog：普通对话（兜底，不涉及任务）
+   - 例："老板你好" / "你认识他吗"
 
-### 2. exit_task（退出/放弃任务）
-**触发条件**：用户明确表示要放弃、退出、终止当前任务
-**关键词**：退出、放弃、不做了、算了、取消任务、终止任务、结束任务、离开任务
-**示例**：
-- 用户输入："算了，我不想做了"
-- 用户输入："退出任务"
-- 用户输入："放弃这个任务"
-
-### 3. query_progress（查询任务进度）
-**触发条件**：用户想查看当前任务的完成情况、进度、状态
-**关键词**：任务进度、完成了多少、有几个、完成了吗、任务状态、进展如何、还差什么
-**示例**：
-- 用户输入："我的任务进度怎么样了"
-- 用户输入："完成了多少了"
-- 用户输入："任务还差什么"
-
-### 4. game_action（游戏行为）
-**触发条件**：用户在执行具体的游戏操作（攻击、探索、交易、互动等）
-**关键词**：攻击、探索、交易、使用、打开、关闭、查看背包、对话NPC、战斗、移动
-**示例**：
-- 用户输入："我攻击那只怪物"
-- 用户输入："向老板询问线索"
-- 用户输入："打开背包看看"
-
-### 5. normal_dialog（正常对话）
-**触发条件**：用户在正常推进剧情对话，不涉及任务系统
-**关键词**：无特定关键词，只要不属于以上 4 类即为 normal_dialog
-**示例**：
-- 用户输入："老板，今天生意怎么样"
-- 用户输入："你好，很高兴认识你"
-- 用户输入："这座城市有什么历史"
-
-## 优先级
-
+# 优先级（同时匹配时取高）
 exit_task > create_task > query_progress > game_action > normal_dialog
-同时匹配多个意图时，按优先级取最高。
 
-## 输出格式
+# 输出格式（严格 JSON，不要 markdown 代码块，不要 \\\`\\\`\\\`，不要思考过程）
 
-你必须输出一个 JSON 对象，不要输出任何其他内容：
+{"intent":"标签","confidence":0.0~1.0,"reasoning":"一句话理由","params":{"task_description":"如果是create_task必填用户想做的事，否则空字符串"}}
 
-\`\`\`json
-{
-  "intent": "意图标签",
-  "confidence": 0.0-1.0,
-  "reasoning": "简要推理过程（1-2句话）",
-  "params": {}
-}
-\`\`\`
+# 置信度
+- 0.95-1.0：明确关键词
+- 0.85-0.94：多个匹配点
+- 0.70-0.84：单弱匹配
+- <0.70：不确定 → 用 normal_dialog
 
-## 置信度标准
+# 重要规则
+1. 直接输出 JSON，第一个字符必须是 { 最后一个字符必须是 }
+2. 不要输出 \\\`\\\`\\\`json 标记
+3. 不要思考过程、不要解释
+4. 中文输入"任务为：xxx" / "任务是xxx" 必判 create_task，task_description = xxx
+5. 用户主动表达去做某事（找/打/探索）也判 create_task
 
-| 置信度 | 含义 | 示例 |
-|--------|------|------|
-| 0.95-1.0 | 非常明确，关键词高度匹配 | "退出任务" → exit_task |
-| 0.85-0.94 | 明确，有多个匹配点 | "好，我接受这个挑战，去调查那个山洞" → create_task |
-| 0.70-0.84 | 中等，单个弱匹配 | "让我试试" → create_task |
-| < 0.70 | 不确定，偏向默认 | 无法判断 → normal_dialog |
+# 示例
 
-## 推理规则
+输入：任务为：找到舍友
+输出：{"intent":"create_task","confidence":0.95,"reasoning":"明确以\\"任务为\\"开头表达接受任务","params":{"task_description":"找到舍友"}}
 
-1. **优先级顺序**：exit_task > create_task > query_progress > game_action > normal_dialog
-2. **模糊处理**：如果用户输入模糊且置信度低于 0.7，返回 normal_dialog
-3. **上下文感知**：如果当前没有进行中的任务，create_task 意图应该降权
-4. **中文语境**："包在我身上" = create_task，"试试看" = create_task`;
+输入：我想去探索古墓
+输出：{"intent":"create_task","confidence":0.90,"reasoning":"明确表达去探索的意愿","params":{"task_description":"探索古墓"}}
+
+输入：算了不做了
+输出：{"intent":"exit_task","confidence":0.92,"reasoning":"放弃意图明确","params":{"task_description":""}}
+
+输入：老板你好
+输出：{"intent":"normal_dialog","confidence":0.90,"reasoning":"普通问候","params":{"task_description":""}}
+
+输入：我的任务进度怎么样了
+输出：{"intent":"query_progress","confidence":0.95,"reasoning":"明确询问任务进度","params":{"task_description":""}}
+
+输入：攻击那只怪物
+输出：{"intent":"game_action","confidence":0.90,"reasoning":"游戏战斗动作","params":{"task_description":""}}`;
 }
 
 // ============================================================================
@@ -144,19 +119,9 @@ exit_task > create_task > query_progress > game_action > normal_dialog
 // ============================================================================
 
 function buildUserPrompt(ctx: IntentContext): string {
-  const recentContext = ctx.recentMessages
-    ? ctx.recentMessages.slice(-5).map((m) => `${m.role || "user"}: ${m.content || ""}`).join("\n")
-    : "（无最近对话历史）";
-
-  return `用户输入：${ctx.playerMessage}
-
-最近对话：
-${recentContext}
-
-${ctx.activeTaskId ? `当前任务ID: ${ctx.activeTaskId}` : "（当前无进行中任务）"}
-${ctx.chapterTitle ? `当前章节: ${ctx.chapterTitle}` : ""}
-
-请分析用户意图。`;
+  // 简化：只给意图分类需要的最小上下文，避免 Qwen3 被长 prompt 干扰
+  const hasActiveTask = !!ctx.activeTaskId;
+  return `输入：${ctx.playerMessage}\n（${hasActiveTask ? "当前有进行中任务" : "当前无进行中任务"}）\n输出 JSON：`;
 }
 
 // ============================================================================
@@ -172,22 +137,66 @@ const INTENT_MODEL_KEY = "intentClassifierModel";
  * @param ctx 意图分析上下文
  * @returns 分类结果，失败返回 null
  */
+/**
+ * 从文本中提取第一个完整的 JSON 对象。
+ * 使用括号配平算法，跳过字符串内的括号。
+ *
+ * 兼容场景：
+ * - ```json { ... } ```
+ * - 纯 JSON: { ... }
+ * - 多余前缀/后缀文本
+ */
+function extractJsonObject(text: string): string | null {
+  if (!text) return null;
+  let i = text.indexOf("{");
+  if (i < 0) return null;
+
+  // 从第一个 { 开始，找配平的 }
+  let depth = 0;
+  let inString = false;
+  let escapeNext = false;
+  for (; i < text.length; i++) {
+    const ch = text[i];
+    if (escapeNext) { escapeNext = false; continue; }
+    if (ch === "\\") { escapeNext = true; continue; }
+    if (ch === '"' && !escapeNext) { inString = !inString; continue; }
+    if (inString) continue;
+    if (ch === "{") depth++;
+    else if (ch === "}") {
+      depth--;
+      if (depth === 0) {
+        return text.slice(text.indexOf("{"), i + 1);
+      }
+    }
+  }
+  return null;
+}
+
 export async function classifyIntentWithAi(ctx: IntentContext): Promise<IntentResult | null> {
+  const TAG = "[story:intent:analysis]";
   try {
     // 1. 获取模型配置
     const modelConfig = await u.getPromptAi(INTENT_MODEL_KEY, ctx.userId) as any;
 
     if (!modelConfig || !modelConfig.model) {
-      console.debug("[intent-classifier] 未配置模型，跳过 AI 分类");
+      console.log(`${TAG} 未配置意图分析师模型，跳过 AI 分类`, { userId: ctx.userId });
       return null;
     }
 
     // 本地模型（qwen060）不需要 apiKey
     const isLocalModel = modelConfig.manufacturer === "qwen060";
     if (!isLocalModel && !modelConfig.apiKey) {
-      console.debug("[intent-classifier] 未配置 apiKey，跳过 AI 分类");
+      console.log(`${TAG} 未配置 apiKey，跳过 AI 分类`, { manufacturer: modelConfig.manufacturer });
       return null;
     }
+
+    console.log(`${TAG} 开始意图分析`, {
+      userId: ctx.userId,
+      manufacturer: modelConfig.manufacturer,
+      model: modelConfig.model,
+      messagePreview: String(ctx.playerMessage || "").slice(0, 80),
+      activeTaskId: ctx.activeTaskId || null,
+    });
 
     // 2. 构建 prompt
     const systemPrompt = buildSystemPrompt();
@@ -207,6 +216,8 @@ export async function classifyIntentWithAi(ctx: IntentContext): Promise<IntentRe
         ],
         maxTokens: 512,
         temperature: 0.3,
+        // 意图分类不需要思考模式，直接出 JSON
+        enableThinking: false,
       });
       rawText = result.text;
     } else {
@@ -231,7 +242,13 @@ export async function classifyIntentWithAi(ctx: IntentContext): Promise<IntentRe
         const validIntents: IntentType[] = ["create_task", "exit_task", "query_progress", "game_action", "normal_dialog"];
         const normalizedIntent = validIntents.includes(intent as IntentType) ? (intent as IntentType) : "normal_dialog";
         const latencyMs = Date.now() - startedAt;
-        console.debug(`[intent-classifier] AI 分类完成，耗时 ${latencyMs}ms`);
+        console.log(`${TAG} AI 分类完成`, {
+          path: "ai-sdk",
+          intent: normalizedIntent,
+          confidence: Math.max(0, Math.min(1, confidence)),
+          reasoning: reasoning?.slice(0, 80) || "无推理",
+          latencyMs,
+        });
         return {
           intent: normalizedIntent,
           confidence: Math.max(0, Math.min(1, confidence)),
@@ -240,26 +257,33 @@ export async function classifyIntentWithAi(ctx: IntentContext): Promise<IntentRe
           path: "ai",
         };
       }
-      console.debug("[intent-classifier] AI 返回格式解析失败:", aiResult);
+      console.log(`${TAG} AI 返回格式解析失败`, { rawResult: aiResult });
       return null;
     }
 
     const latencyMs = Date.now() - startedAt;
-    console.debug(`[intent-classifier] qwen060 推理完成，耗时 ${latencyMs}ms，输出: ${rawText.slice(0, 100)}...`);
+    console.log(`${TAG} qwen060 推理完成`, {
+      latencyMs,
+      rawTextLength: rawText.length,
+      rawTextPreview: rawText.slice(0, 200),
+    });
 
     // 4. 解析 qwen060 的纯文本输出（应该是 JSON）
-    // 提取 JSON 部分（可能被 ```json...``` 包裹）
-    const jsonMatch = rawText.match(/\{[\s\S]*?\}/);
-    if (!jsonMatch) {
-      console.debug("[intent-classifier] 未找到 JSON 输出");
+    // 使用括号配平算法提取完整 JSON
+    const jsonStr = extractJsonObject(rawText);
+    if (!jsonStr) {
+      console.log(`${TAG} 未找到 JSON 输出`, { rawText: rawText.slice(0, 300) });
       return null;
     }
 
     let parsed: any;
     try {
-      parsed = JSON.parse(jsonMatch[0]);
+      parsed = JSON.parse(jsonStr);
     } catch (err) {
-      console.debug("[intent-classifier] JSON 解析失败:", (err as Error).message);
+      console.log(`${TAG} JSON 解析失败`, {
+        error: (err as Error).message,
+        jsonStr: jsonStr.slice(0, 300),
+      });
       return null;
     }
 
@@ -268,6 +292,14 @@ export async function classifyIntentWithAi(ctx: IntentContext): Promise<IntentRe
       const { intent, confidence, reasoning, params } = validated.data;
       const validIntents: IntentType[] = ["create_task", "exit_task", "query_progress", "game_action", "normal_dialog"];
       const normalizedIntent = validIntents.includes(intent as IntentType) ? (intent as IntentType) : "normal_dialog";
+
+      console.log(`${TAG} qwen060 分类完成`, {
+        path: "qwen060",
+        intent: normalizedIntent,
+        confidence: Math.max(0, Math.min(1, confidence)),
+        reasoning: reasoning?.slice(0, 80) || "无推理",
+        latencyMs,
+      });
 
       return {
         intent: normalizedIntent,
@@ -278,10 +310,10 @@ export async function classifyIntentWithAi(ctx: IntentContext): Promise<IntentRe
       };
     }
 
-    console.debug("[intent-classifier] qwen060 输出格式校验失败:", parsed);
+    console.log(`${TAG} qwen060 输出格式校验失败`, { parsed });
     return null;
   } catch (err) {
-    console.warn("[intent-classifier] AI 分类失败:", (err as Error)?.message);
+    console.warn(`${TAG} AI 分类失败`, { error: (err as Error)?.message });
     return null;
   }
 }

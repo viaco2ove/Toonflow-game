@@ -17,7 +17,8 @@ if (DebugLogUtil.isDebugLogEnabled()) {
 }
 ```
 
-## LOG_LEVEL=DEBUG 时 输出的日志
+## LOG_LEVEL=DEBUG 时 输出的日志】
+[DEBUG] 通用debug 日志
 [story:orchestrator:runtime] :编排师日志
 [story:orchestrator:stats]: 编排师日志 token 统计 
 [story:orchestrator:runtime]：判断为不走到模型。原因：{原因}
@@ -52,11 +53,20 @@ if (DebugLogUtil.isDebugLogEnabled()) {
 [story:mini_game:agent]: AI故事-小游戏agent 日志
 [story:mini_game:stats]: AI故事-小游戏agent token 统计（参考[story:orchestrator:stats]）
 [story:mini_game:agent] 识别到小游戏
-
 [voice-preview] 语音生成相关
 
-[DEBUG] 通用debug 日志
- 
+[story:intent:analysis]: AI故事-意图分析相关日志
+  - 命令快路径命中：path=command, intent=create_task/exit_task/...
+  - 进入 AI 分类通道：调用前的上下文
+  - AI 分类完成：path=ai-sdk/qwen060, intent, confidence, reasoning, latencyMs
+  - JSON 解析失败 / 输出格式校验失败 / 未配置模型
+  - qwen060 推理完成：rawTextLength, rawTextPreview, latencyMs
+
+[story:mini_game:task]: AI故事-任务系统相关日志
+  - 命令触发任务创建：taskDescription
+  - AI 触发任务创建：confidence, reasoning, taskDescription
+  - AI 触发退出任务（T4.x 待实现）
+  - AI 触发查询进度（T4.x 待实现）
 ## 后端通用tag
 [debug:revisit:not_found]: 回溯失败
 [debug:revisit]: 回溯相关

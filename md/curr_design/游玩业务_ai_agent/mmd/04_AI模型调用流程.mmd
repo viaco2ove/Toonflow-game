@@ -1,105 +1,101 @@
-
 flowchart TD
     %% 入口
-    START([发起 AI 调用]) --> MODEL_GET[获取模型配置<br/>getPromptAi.ts]
-    
-    %% 模型配置检查
-    MODEL_GET --> CONFIG{是否有<br/>自定义配置}
-    CONFIG -->|是| CUSTOM[使用自定义配置]
-    CONFIG -->|否| DEFAULT[使用默认模型]
-    
-    CUSTOM --> PROVIDER[解析 Provider]
-    DEFAULT --> PROVIDER
-    
-    PROVIDER --> PROVIDER_TYPE{Provider 类型}
-    
-    %% Provider 分支
-    PROVIDER_TYPE -->|openai| OPENAI[OpenAI API]
-    PROVIDER_TYPE -->|anthropic| ANTHROPIC[Claude API]
-    PROVIDER_TYPE -->|ollama| OLLAMA[Ollama 本地]
-    PROVIDER_TYPE -->|lm-studio| LMSTUDIO[LM Studio 本地]
-    PROVIDER_TYPE -->|其他| FALLBACK[默认 GPT-4]
-    
-    %% OpenAI 流程
-    OPENAI --> OAUTH[构建 OpenAI 请求]
-    OAUTH --> OA_CALL[发送请求]
-    
-    %% Claude 流程
-    ANTHROPIC --> CLAUTH[构建 Claude 请求]
-    CLAUTH --> CL_CALL[发送请求]
-    
-    %% Ollama 流程
-    OLLAMA --> OLURL[连接 Ollama<br/>localhost:11434]
-    OLURL --> OL_CALL[发送请求]
-    
-    %% LM Studio 流程
-    LMSTUDIO --> LMSURL[连接 LM Studio<br/>localhost:1234]
-    LMSURL --> LMS_CALL[发送请求]
-    
-    FALLBACK --> DEF_CALL[调用 GPT-4]
-    
+    START([业务模块发起 AI 调用]) --> WHICH{用途}
+
+    WHICH -->|意图分析| INTENT_KEY[key=intentClassifierModel]
+    WHICH -->|编排| ORCH_KEY[key=storyOrchestratorModel]
+    WHICH -->|任务蓝图| TASK_KEY[key=storyOrchestratorModel<br/>复用编排师]
+    WHICH -->|角色发言| SPEAKER_KEY[key=storySpeakerModel]
+    WHICH -->|记忆| MEM_KEY[key=storyMemoryModel]
+    WHICH -->|章节判定| JUDGE_KEY[key=storyChapterJudgeModel]
+    WHICH -->|事件进度| PROGRESS_KEY[key=storyEventProgressModel]
+    WHICH -->|小游戏| MINI_KEY[key=storyMiniGameModel]
+
+    INTENT_KEY --> GET_PROMPT[getPromptAi key, userId<br/>utils/getPromptAi.ts]
+    ORCH_KEY --> GET_PROMPT
+    TASK_KEY --> GET_PROMPT
+    SPEAKER_KEY --> GET_PROMPT
+    MEM_KEY --> GET_PROMPT
+    JUDGE_KEY --> GET_PROMPT
+    PROGRESS_KEY --> GET_PROMPT
+    MINI_KEY --> GET_PROMPT
+
+    %% 配置查询
+    GET_PROMPT --> T_AI_MAP[(t_aiModelMap<br/>查 configId)]
+    T_AI_MAP --> T_CONFIG[(t_config<br/>查 model/apiKey/baseURL/manufacturer)]
+    T_CONFIG --> CONFIG_OK{配置完整?}
+
+    CONFIG_OK -->|否| FALLBACK[返回 null<br/>调用方降级]
+    CONFIG_OK -->|是| MFR{manufacturer 类型}
+
+    %% 本地模型（绕过 ai-sdk）
+    MFR -->|qwen060| LOCAL_PATH[localQwen060.ts<br/>node-llama-cpp]
+    LOCAL_PATH --> LOCAL_MODEL{安装状态}
+    LOCAL_MODEL -->|installed| LOCAL_INFER[chatWithQwen060<br/>本地推理]
+    LOCAL_MODEL -->|not_installed| LOCAL_ERR[抛错: 未安装]
+    LOCAL_INFER --> LOCAL_PARSE[输出: 纯文本<br/>extractJsonObject 解析]
+    LOCAL_PARSE --> LOCAL_OK[返回结构化结果]
+
+    %% 线上模型（走 ai-sdk）
+    MFR -->|线上| SDK_PATH[utils/ai/text/index.ts<br/>buildOptions]
+    SDK_PATH --> MODEL_LIST[查 modelList<br/>判断 manufacturer 兼容性]
+    MODEL_LIST --> PROVIDER{Provider}
+
+    PROVIDER -->|volcengine/doubao| DOUBAO[createOpenAI<br/>火山方舟接口]
+    PROVIDER -->|deepseek| DEEPSEEK[createDeepSeek]
+    PROVIDER -->|openai| OPENAI[createOpenAI]
+    PROVIDER -->|gemini| GEMINI[createGoogleGenerativeAI]
+    PROVIDER -->|t8star| T8STAR[createOpenAI<br/>t8star 兼容接口]
+    PROVIDER -->|anthropic| ANTHROPIC[createAnthropic]
+    PROVIDER -->|zhipu| ZHIPU[createZhipu]
+    PROVIDER -->|qwen 阿里云| QWEN_API[createQwen]
+    PROVIDER -->|lmstudio| LMSTUDIO[createOpenAICompatible]
+    PROVIDER -->|autodl/其他| OTHERS[OpenAI Compatible]
+
+    DOUBAO --> AI_INVOKE[generateText<br/>ai-sdk core]
+    DEEPSEEK --> AI_INVOKE
+    OPENAI --> AI_INVOKE
+    GEMINI --> AI_INVOKE
+    T8STAR --> AI_INVOKE
+    ANTHROPIC --> AI_INVOKE
+    ZHIPU --> AI_INVOKE
+    QWEN_API --> AI_INVOKE
+    LMSTUDIO --> AI_INVOKE
+    OTHERS --> AI_INVOKE
+
+    %% 输出处理
+    AI_INVOKE --> RESP_FORMAT{responseFormat}
+    RESP_FORMAT -->|schema| SCHEMA_OUT[Output.object zod schema]
+    RESP_FORMAT -->|object| TEXT_OUT[纯文本 → JSON.parse]
+    SCHEMA_OUT --> SDK_OK[返回结构化对象]
+    TEXT_OUT --> SDK_OK
+
+    %% 通用处理
+    SDK_OK --> USAGE_LOG[writeAiTokenUsageLog<br/>token 计量入库]
+    LOCAL_OK --> USAGE_LOG_LOCAL[本地推理无 token 计量]
+
+    USAGE_LOG --> END([返回结果])
+    USAGE_LOG_LOCAL --> END
+    LOCAL_ERR --> FALLBACK
+    FALLBACK --> END
+
     %% 错误处理
-    OA_CALL --> OA_OK{请求成功}
-    CL_CALL --> CL_OK{请求成功}
-    OL_CALL --> OL_OK{请求成功}
-    LMS_CALL --> LMS_OK{请求成功}
-    DEF_CALL --> DEF_OK{请求成功}
-    
-    OA_OK -->|否| RETRY1[重试 1次]
-    CL_OK -->|否| RETRY2[重试 1次]
-    OL_OK -->|否| RETRY3[重试 1次]
-    LMS_OK -->|否| RETRY4[重试 1次]
-    DEF_OK -->|否| RETRY5[重试 1次]
-    
-    RETRY1 --> RETRY_OK1{重试成功}
-    RETRY2 --> RETRY_OK2{重试成功}
-    RETRY3 --> RETRY_OK3{重试成功}
-    RETRY4 --> RETRY_OK4{重试成功}
-    RETRY5 --> RETRY_OK5{重试成功}
-    
-    RETRY_OK1 -->|否| DEGRADE[降级到 GPT-4]
-    RETRY_OK2 -->|否| DEGRADE
-    RETRY_OK3 -->|否| DEGRADE
-    RETRY_OK4 -->|否| DEGRADE
-    RETRY_OK5 -->|否| ERROR_H[返回错误]
-    
-    DEGRADE --> DEF_CALL
-    
-    %% 成功返回
-    OA_OK -->|是| SUCCESS[返回响应]
-    CL_OK -->|是| SUCCESS
-    OL_OK -->|是| SUCCESS
-    LMS_OK -->|是| SUCCESS
-    DEF_OK -->|是| SUCCESS
-    RETRY_OK1 -->|是| SUCCESS
-    RETRY_OK2 -->|是| SUCCESS
-    RETRY_OK3 -->|是| SUCCESS
-    RETRY_OK4 -->|是| SUCCESS
-    RETRY_OK5 -->|是| SUCCESS
-    
-    SUCCESS --> END([返回给调用方])
-    
-    %% 模型映射
-    MODEL_TYPE{模型用途}
-    MODEL_TYPE -->|storyboard| MODEL_SB[storyboard 模型]
-    MODEL_TYPE -->|intent-classifier| MODEL_IC[intent-classifier 模型]
-    MODEL_TYPE -->|task-evaluator| MODEL_TE[task-evaluator 模型]
-    MODEL_TYPE -->|outline-generator| MODEL_OG[outline-generator 模型]
-    
-    MODEL_SB --> MODEL_GET
-    MODEL_IC --> MODEL_GET
-    MODEL_TE --> MODEL_GET
-    MODEL_OG --> MODEL_GET
+    AI_INVOKE -->|失败| RETRY{重试}
+    RETRY -->|maxRetries 内| AI_INVOKE
+    RETRY -->|超出| THROW[抛错]
+    THROW --> END
 
     %% 样式
     classDef entry fill:#e3f2fd,stroke:#1565c0,stroke-width:2px
-    classDef decision fill:#fff8e1,stroke:#f9a825,stroke-width:2px
+    classDef config fill:#fff3e0,stroke:#e65100,stroke-width:2px
     classDef provider fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px
-    classDef success fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
+    classDef local fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
+    classDef storage fill:#fce4ec,stroke:#c2185b,stroke-width:2px
     classDef error fill:#ffebee,stroke:#c62828,stroke-width:2px
-    
+
     class START,END entry
-    class CONFIG,PROVIDER_TYPE,OA_OK,CL_OK,OL_OK,LMS_OK,DEF_OK,RETRY_OK1,RETRY_OK2,RETRY_OK3,RETRY_OK4,RETRY_OK5 decision
-    class OPENAI,ANTHROPIC,OLLAMA,LMSTUDIO,FALLBACK provider
-    class SUCCESS success
-    class ERROR_H error
+    class GET_PROMPT,SDK_PATH,MODEL_LIST,RESP_FORMAT,CONFIG_OK,MFR config
+    class DOUBAO,DEEPSEEK,OPENAI,GEMINI,T8STAR,ANTHROPIC,ZHIPU,QWEN_API,LMSTUDIO,OTHERS provider
+    class LOCAL_PATH,LOCAL_INFER,LOCAL_PARSE local
+    class T_AI_MAP,T_CONFIG storage
+    class FALLBACK,LOCAL_ERR,THROW error

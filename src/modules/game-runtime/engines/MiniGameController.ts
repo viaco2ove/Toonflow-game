@@ -5586,7 +5586,17 @@ export async function handleCreateTaskFromCommand(
 ): Promise<MiniGameControllerResult | null> {
   if (intent.intent !== "create_task") return null;
   const taskDescription = String(intent.params?.task_description || "").trim();
-  if (!taskDescription) return null;
+  if (!taskDescription) {
+    console.log("[story:mini_game:task] handleCreateTaskFromCommand 跳过：taskDescription 为空");
+    return null;
+  }
+
+  console.log("[story:mini_game:task] handleCreateTaskFromCommand 开始创建任务", {
+    taskDescription: taskDescription.slice(0, 80),
+    userId: input.userId,
+    chapterId: input.chapter?.id,
+    chapterTitle: scalarText(input.chapter?.title),
+  });
 
   // 调新加的 createTaskFromUserRequest —— 不依赖自由章节 / 旁白推荐
   const created = await createTaskFromUserRequest({
@@ -5597,7 +5607,18 @@ export async function handleCreateTaskFromCommand(
     userRequest: taskDescription,
     recentMessages: input.recentMessages,
   });
-  if (!created) return null;
+  if (!created) {
+    console.log("[story:mini_game:task] createTaskFromUserRequest 返回 null，任务未创建");
+    return null;
+  }
+
+  console.log("[story:mini_game:task] 任务创建成功", {
+    taskId: created.task_id,
+    title: created.title,
+    objective: String(created.objective || "").slice(0, 80),
+    hasActiveTask: created.hasActiveTask,
+    source: created.source,
+  });
 
   // 取出当前 miniGame 运行时（applyFreeChapterTaskBlueprintToState 已经写好）
   const root = asRecord(input.state.miniGame);
@@ -5635,6 +5656,14 @@ export async function handleMiniGameTurn(input: MiniGameControllerInput): Promis
   const activeSession = asRecord(root.session);
   const hasActiveGame = isMiniGameActiveState(state);
 
+  // ★ 入口诊断日志 - 确认 handleMiniGameTurn 被调用，避免被上游短路
+  console.log("[story:intent:analysis] handleMiniGameTurn 入口", {
+    mode: input.mode,
+    hasActiveGame,
+    messagePreview: String(input.playerMessage || "").slice(0, 80),
+    userId: input.userId,
+  });
+
   // ★ T1.3 + T3.3 意图分析 - 双通道
   // Fast path: 命令快路径（以 # 开头）
   // Slow path: AI 分类（命令未命中时）
@@ -5646,12 +5675,18 @@ export async function handleMiniGameTurn(input: MiniGameControllerInput): Promis
       chapterTitle: scalarText(input.chapter?.title),
     });
     if (intent) {
-      console.log("[intent] 命令命中", {
+      console.log("[story:intent:analysis] 命令快路径命中", {
+        path: "command",
         intent: intent.intent,
         params: intent.params,
         confidence: intent.confidence,
+        messagePreview: input.playerMessage.slice(0, 60),
       });
       if (intent.intent === "create_task") {
+        console.log("[story:mini_game:task] 命令触发任务创建", {
+          taskDescription: intent.params?.task_description,
+          messagePreview: input.playerMessage.slice(0, 60),
+        });
         const created = await handleCreateTaskFromCommand(input, intent);
         if (created) return created;
       }
@@ -5661,49 +5696,73 @@ export async function handleMiniGameTurn(input: MiniGameControllerInput): Promis
   }
 
   // ★ T3.3 AI 意图分类（slow path）
-  // 命令快路径未命中时，调用 AI 分类器
-  // 5 类意图：create_task / exit_task / query_progress / game_action / normal_dialog
-  const aiIntentResult = await analyzeIntentWithAiFallback({
-    userId: input.userId,
-    playerMessage: input.playerMessage,
-    recentMessages: input.recentMessages,
-    activeTaskId: readActiveTaskIdFromState(state),
-    chapterTitle: scalarText(input.chapter?.title),
-  });
-
-  if (aiIntentResult.intent === "create_task" && aiIntentResult.confidence >= 0.7) {
-    console.log("[intent] AI 分类 create_task", {
-      confidence: aiIntentResult.confidence,
-      reasoning: aiIntentResult.reasoning,
+  // 关键：仅在「无活跃小游戏 + 用户没在任务中」时才跑 AI 分类
+  // 否则用户在任务模式下的正常发言（"开始吧"、"先去哪里"）会被误判为新意图
+  const activeTaskIdForGate = readActiveTaskIdFromState(state);
+  const hasActiveTask = !!activeTaskIdForGate;
+  if (!hasActiveGame && !hasActiveTask) {
+    console.log("[story:intent:analysis] 进入 AI 分类通道", {
+      userId: input.userId,
+      messagePreview: String(input.playerMessage || "").slice(0, 60),
+      activeTaskId: activeTaskIdForGate || null,
+      chapterTitle: scalarText(input.chapter?.title) || "",
     });
-    // 从 AI 返回的 params.task_keywords 提取任务描述
-    const taskKeywords = (aiIntentResult.params as any)?.task_keywords || [];
-    const taskDescription = taskKeywords.length > 0 ? taskKeywords.join(" ") : input.playerMessage;
-    const created = await handleCreateTaskFromCommand(input, {
-      intent: "create_task",
-      confidence: aiIntentResult.confidence,
-      params: { task_description: taskDescription },
-    } as any);
-    if (created) return created;
-  }
-
-  if (aiIntentResult.intent === "exit_task" && aiIntentResult.confidence >= 0.7) {
-    console.log("[intent] AI 分类 exit_task", {
-      confidence: aiIntentResult.confidence,
-      reasoning: aiIntentResult.reasoning,
+    const aiIntentResult = await analyzeIntentWithAiFallback({
+      userId: input.userId,
+      playerMessage: input.playerMessage,
+      recentMessages: input.recentMessages,
+      activeTaskId: activeTaskIdForGate,
+      chapterTitle: scalarText(input.chapter?.title),
     });
-    // T4.x 实现退出任务逻辑
-  }
-
-  if (aiIntentResult.intent === "query_progress" && aiIntentResult.confidence >= 0.7) {
-    console.log("[intent] AI 分类 query_progress", {
+    console.log("[story:intent:analysis] AI 分类结果", {
+      path: aiIntentResult.path,
+      intent: aiIntentResult.intent,
       confidence: aiIntentResult.confidence,
-      reasoning: aiIntentResult.reasoning,
+      reasoning: String(aiIntentResult.reasoning || "").slice(0, 80),
     });
-    // T4.x 实现查询进度逻辑
-  }
 
-  // game_action / normal_dialog：继续走原有链路
+    if (aiIntentResult.intent === "create_task" && aiIntentResult.confidence >= 0.7) {
+      // 从 AI 返回的 params 提取任务描述（优先 task_description，回退原始消息）
+      const taskDescriptionFromAi = String((aiIntentResult.params as any)?.task_description || "").trim();
+      const taskKeywords = (aiIntentResult.params as any)?.task_keywords || [];
+      const taskDescription = taskDescriptionFromAi
+        || (Array.isArray(taskKeywords) && taskKeywords.length ? taskKeywords.join(" ") : input.playerMessage);
+      console.log("[story:mini_game:task] AI 触发任务创建", {
+        confidence: aiIntentResult.confidence,
+        reasoning: String(aiIntentResult.reasoning || "").slice(0, 80),
+        taskDescription: taskDescription.slice(0, 80),
+      });
+      const created = await handleCreateTaskFromCommand(input, {
+        intent: "create_task",
+        confidence: aiIntentResult.confidence,
+        params: { task_description: taskDescription },
+      } as any);
+      if (created) return created;
+    }
+
+    if (aiIntentResult.intent === "exit_task" && aiIntentResult.confidence >= 0.7) {
+      console.log("[story:mini_game:task] AI 触发退出任务（T4.x 待实现）", {
+        confidence: aiIntentResult.confidence,
+        reasoning: String(aiIntentResult.reasoning || "").slice(0, 80),
+      });
+    }
+
+    if (aiIntentResult.intent === "query_progress" && aiIntentResult.confidence >= 0.7) {
+      console.log("[story:mini_game:task] AI 触发查询进度（T4.x 待实现）", {
+        confidence: aiIntentResult.confidence,
+        reasoning: String(aiIntentResult.reasoning || "").slice(0, 80),
+      });
+    }
+
+    // game_action / normal_dialog：继续走原有链路
+  } else {
+    console.log("[story:intent:analysis] 跳过 AI 分类（任务/小游戏激活中，由小游戏内部消化用户输入）", {
+      hasActiveGame,
+      hasActiveTask,
+      activeTaskId: activeTaskIdForGate || null,
+      messagePreview: String(input.playerMessage || "").slice(0, 60),
+    });
+  }
 
   if (!hasActiveGame) {
     // #退出 在没有激活小游戏时也要有稳定语义，不能再落到“未识别小游戏”分支。

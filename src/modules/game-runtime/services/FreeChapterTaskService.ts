@@ -1201,6 +1201,14 @@ function applyFreeChapterTaskBlueprintToState(input: {
     objective: input.blueprint.objective,
     status: "doing",
   }, { setActive: true });
+  // 校验 setActive 是否真的生效
+  const cardForVerify = ensurePlayerParameterCard(input.state);
+  console.log("[story:mini_game:task] applyFreeChapterTaskBlueprintToState 已写入", {
+    taskId: generatedTaskId,
+    activeTaskId: scalarText(cardForVerify.activeTaskId),
+    taskListLength: Array.isArray(cardForVerify.taskList) ? cardForVerify.taskList.length : 0,
+    executingTask: cardForVerify.executing_task ? scalarText((cardForVerify.executing_task as any).title) : null,
+  });
   setFreeTaskMiniGameState({
     state: input.state,
     blueprint: input.blueprint,
