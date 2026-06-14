@@ -1,0 +1,137 @@
+flowchart TD
+    %% 主入口
+    START([用户输入]) --> INPUT
+
+    subgraph INPUT["输入处理"]
+        MESSAGE[/"用户消息"/]
+        RECENT[/"最近对话"/]
+        TASK_STATE[/"任务状态"/]
+        MINI_GAME[/"小游戏状态"/]
+    end
+
+    INPUT --> INTENT_ANALYZE
+
+    %% 意图分析 Agent
+    subgraph INTENT_ANALYZE["TaskIntentAgent<br/>任务意图分析"]
+        INTENT_CHECK{判断意图}
+        INTENT_CHECK -->|exit_task| EXIT_PATH
+        INTENT_CHECK -->|query_progress| QUERY_PATH
+        INTENT_CHECK -->|create_task| CREATE_PATH
+        INTENT_CHECK -->|game_action| PROGRESS_PATH
+        INTENT_CHECK -->|normal_dialog| PROGRESS_PATH
+    end
+
+    %% 退出路径
+    subgraph EXIT_PATH["退出处理"]
+        EXIT_CHECK[/"#退出 命令检测"/]
+        EXIT_CHECK --> ABANDON_TASK
+        ABANDON_TASK["abandonActiveFreeChapterTaskEvent()"]
+        ABANDON_TASK --> CLEAR_PARAMS
+        CLEAR_PARAMS["清空参数卡"]
+        CLEAR_PARAMS --> CLEAR_PANEL
+        CLEAR_PANEL["清空任务面板"]
+        CLEAR_PANEL --> FREE_WAIT
+        FREE_WAIT["切回自由剧情等待"]
+        FREE_WAIT --> SUPPRESS
+        SUPPRESS["禁止被动重进"]
+    end
+
+    %% 查询进度路径
+    subgraph QUERY_PATH["查询进度"]
+        QUERY_GET["获取任务状态"]
+        QUERY_GET --> QUERY_BUILD
+        QUERY_BUILD["生成进度报告"]
+    end
+
+    %% 创建任务路径
+    subgraph CREATE_PATH["创建任务"]
+        CREATE_AI["AI 生成任务蓝图"]
+        CREATE_AI --> CREATE_VALIDATE
+        CREATE_VALIDATE["验证任务格式"]
+        CREATE_VALIDATE --> CREATE_SETUP
+        CREATE_SETUP["设置任务状态"]
+        CREATE_SETUP --> CREATE_PANEL
+        CREATE_PANEL["显示任务面板"]
+    end
+
+    %% 任务推进路径
+    subgraph PROGRESS_PATH["任务推进"]
+        PROGRESS_EVAL["TaskProgressAgent.evaluate()"]
+        
+        PROGRESS_EVAL --> EVAL_LAYER1
+        subgraph EVAL_LAYER1["层级1: 静态条件"]
+            EVAL_STATIC_COND[/"evaluateCondition()"/]
+            EVAL_STATIC_COND -->|failed| EVAL_FAILED
+            EVAL_STATIC_COND -->|success| EVAL_SUCCESS
+            EVAL_STATIC_COND -->|continue| EVAL_LAYER2
+        end
+        
+        subgraph EVAL_LAYER2["层级2: 规则兜底"]
+            EVAL_RULES["关键词匹配"]
+            EVAL_RULES -->|失败词| EVAL_FAILED
+            EVAL_RULES -->|成功词| EVAL_SUCCESS
+            EVAL_RULES -->|无匹配| EVAL_LAYER3
+        end
+        
+        subgraph EVAL_LAYER3["层级3: AI 判定"]
+            EVAL_AI["AI 模型判断"]
+            EVAL_AI -->|success| EVAL_SUCCESS
+            EVAL_AI -->|failed| EVAL_FAILED
+            EVAL_AI -->|continue| EVAL_CONTINUE
+        end
+        
+        EVAL_SUCCESS["decision = success"]
+        EVAL_FAILED["decision = failed"]
+        EVAL_CONTINUE["decision = continue"]
+        
+        PROGRESS_EVAL -->|success/failed| TASK_END
+        PROGRESS_EVAL -->|continue| SPEAKER_ORCHESTRATE
+    end
+
+    %% 任务结束处理
+    subgraph TASK_END["任务结束处理"]
+        END_WRITE["写入任务状态"]
+        END_WRITE --> END_REWARD
+        END_REWARD["发放奖励"]
+        END_REWARD --> END_NARRATION
+        END_NARRATION["生成收尾旁白"]
+    end
+
+    %% 发言编排
+    subgraph SPEAKER_ORCHESTRATE["TaskSpeakerAgent<br/>发言编排"]
+        SPEAKER_DECIDE{决定发言人}
+        SPEAKER_DECIDE -->|summary有@角色名| SPEAKER_FORCED
+        SPEAKER_DECIDE -->|用户刚发言| SPEAKER_NPC
+        SPEAKER_DECIDE -->|NPC刚发言| SPEAKER_USER
+        SPEAKER_DECIDE -->|其他| SPEAKER_DEFAULT
+        
+        SPEAKER_FORCED["speaker = @角色名"]
+        SPEAKER_NPC["speaker = 随机NPC"]
+        SPEAKER_USER["speaker = 用户"]
+        SPEAKER_DEFAULT["speaker = 旁白/NPC"]
+        
+        SPEAKER_MOTIVE["生成发言动机 motive"]
+        SPEAKER_STATUS["更新事件状态"]
+    end
+
+    %% 输出
+    subgraph OUTPUT["输出"]
+        NARRATIVE_PLAN["生成 NarrativePlan"]
+        NARRATIVE_PLAN --> UPDATE_STATE["更新状态"]
+        UPDATE_STATE --> ORCHESTRATOR
+        ORCHESTRATOR["NarrativeOrchestrator.run()"]
+    end
+
+    %% 连接线
+    EXIT_PATH --> OUTPUT
+    QUERY_PATH --> OUTPUT
+    CREATE_PATH --> OUTPUT
+    TASK_END --> OUTPUT
+    SPEAKER_ORCHESTRATE --> OUTPUT
+
+    %% 样式
+    style INTENT_ANALYZE fill:#e1f5fe
+    style PROGRESS_PATH fill:#fff3e0
+    style SPEAKER_ORCHESTRATE fill:#e8f5e9
+    style TASK_END fill:#ffebee
+    style EXIT_PATH fill:#fce4ec

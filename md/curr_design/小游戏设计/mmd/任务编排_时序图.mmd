@@ -1,0 +1,81 @@
+sequenceDiagram
+    participant USER as 用户
+    participant FRONT as ScenePlay.vue
+    participant SESSION as SessionService
+    participant MINI as MiniGameController
+    participant INTENT as TaskIntentAgent
+    participant PROGRESS as TaskProgressAgent
+    participant SPEAKER as TaskSpeakerAgent
+    participant ORCH as NarrativeOrchestrator
+    participant DB as SQLite
+
+    %% 退出流程
+    rect rgb(255, 235, 238)
+        Note over USER,SPEAKER: 退出流程 (#退出)
+        USER->>FRONT: 输入 "#退出"
+        FRONT->>SESSION: continueSessionNarrative()
+        SESSION->>MINI: handleMiniGameTurn()
+        MINI->>INTENT: analyzeIntent()
+        INTENT-->>MINI: intent = exit_task
+        MINI->>DB: abandonActiveFreeChapterTaskEvent()
+        DB-->>MINI: 更新任务状态为 aborted
+        MINI-->>FRONT: eventType = "on_mini_game_abort"
+        FRONT->>FRONT: 隐藏任务面板
+    end
+
+    %% 查询进度流程
+    rect rgb(227, 242, 233)
+        Note over USER,SPEAKER: 查询进度流程
+        USER->>FRONT: 输入 "查看任务进度"
+        FRONT->>SESSION: continueSessionNarrative()
+        SESSION->>MINI: handleMiniGameTurn()
+        MINI->>INTENT: analyzeIntent()
+        INTENT-->>MINI: intent = query_progress
+        MINI-->>FRONT: 返回进度报告
+        FRONT->>FRONT: 显示进度面板
+    end
+
+    %% 任务推进流程（继续）
+    rect rgb(255, 243, 224)
+        Note over USER,SPEAKER: 任务推进流程（继续）
+        USER->>FRONT: 输入 "去采集药材"
+        FRONT->>SESSION: continueSessionNarrative()
+        SESSION->>MINI: handleMiniGameTurn()
+        MINI->>PROGRESS: evaluate()
+        PROGRESS->>PROGRESS: 层级1静态条件 → 层级2规则 → 层级3AI
+        PROGRESS-->>MINI: decision = continue
+        MINI->>SPEAKER: orchestrate()
+        SPEAKER-->>MINI: speaker = "NPC", motive = "回应用户动作"
+        MINI->>ORCH: run()
+        ORCH-->>FRONT: NarrativePlan
+        FRONT->>FRONT: 显示NPC发言
+    end
+
+    %% 任务推进流程（完成）
+    rect rgb(225, 245, 254)
+        Note over USER,SPEAKER: 任务推进流程（完成）
+        USER->>FRONT: 输入 "交付药材给委托人"
+        FRONT->>SESSION: continueSessionNarrative()
+        SESSION->>MINI: handleMiniGameTurn()
+        MINI->>PROGRESS: evaluate()
+        PROGRESS-->>MINI: decision = success
+        MINI->>DB: applyFreeTaskRewardToState()
+        DB-->>MINI: 发放奖励
+        MINI->>MINI: 生成收尾旁白
+        MINI-->>FRONT: 任务完成事件
+        FRONT->>FRONT: 显示完成面板 + 奖励
+    end
+
+    %% 任务推进流程（失败）
+    rect rgb(255, 238, 236)
+        Note over USER,SPEAKER: 任务推进流程（失败）
+        USER->>FRONT: 输入 "放弃任务撤退"
+        FRONT->>SESSION: continueSessionNarrative()
+        SESSION->>MINI: handleMiniGameTurn()
+        MINI->>PROGRESS: evaluate()
+        PROGRESS-->>MINI: decision = failed
+        MINI->>DB: 更新任务状态为 failed
+        DB-->>MINI: 记录失败原因
+        MINI-->>FRONT: 任务失败事件
+        FRONT->>FRONT: 显示失败提示
+    end
