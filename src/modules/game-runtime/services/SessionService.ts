@@ -1492,6 +1492,11 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
     rolePair,
     world,
   );
+  // ★ 回溯支持：在 state 任何修改之前先快照一份 preMessageState
+  // 用户消息的 revisitData 用这份"消息发送前"的 state，
+  // 这样回溯到用户消息时可以重新走一遍 handleMiniGameTurn / orchestration 流程
+  // 而不是停留在已处理完的 state（旁白丢失）。
+  const preMessageStateJson = toJsonText(state, {});
   state.round = Number(state.round || 0) + 1;
 
   // 诊断：addMessage 入口时检查 state 中的任务字段
@@ -1742,14 +1747,30 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
       });
 
       const messageRow = await db("t_sessionMessage").where({ id: messageId }).first();
+      // ★ 用户消息的 revisitData 存"消息发送前"的 state（preMessageState）
+      // 这样回溯后还能重新触发 handleMiniGameTurn（再次创建任务、推进剧情等）
+      const preMessageState = parseJsonSafe<Record<string, any>>(preMessageStateJson, {});
       await persistSessionMessageRevisitData({
         db,
-        rows: [messageRow, narrativeMessageRow],
-        state,
+        rows: [messageRow],
+        state: preMessageState,
         chapterId: prevChapterId,
         status: prevStatus,
         capturedAt: now,
+        sessionId,
       });
+      // ★ 旁白/小游戏消息的 revisitData 存"消息发送后"的最终 state
+      if (narrativeMessageRow) {
+        await persistSessionMessageRevisitData({
+          db,
+          rows: [narrativeMessageRow],
+          state,
+          chapterId: prevChapterId,
+          status: prevStatus,
+          capturedAt: now,
+          sessionId,
+        });
+      }
       const eventView = buildEventView(state);
       // 如果有编排计划（小游戏或普通编排），返回它
       const returnedPlan = state.pendingNarrativePlan
@@ -1916,15 +1937,28 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
         const narrativeRow = taskNarrativeRows[taskNarrativeRows.length - 1]
           ? await db("t_sessionMessage").where({ id: Number(taskNarrativeRows[taskNarrativeRows.length - 1].id || 0) }).first()
           : null;
+        // ★ 用户消息存"发送前" state，旁白消息存"最终" state
+        const preMessageState = parseJsonSafe<Record<string, any>>(preMessageStateJson, {});
         await persistSessionMessageRevisitData({
           db,
-          rows: [messageRow, narrativeRow],
-          state,
-          chapterId: state.chapterId || prevChapterId,
-          status: sessionStatus,
+          rows: [messageRow],
+          state: preMessageState,
+          chapterId: prevChapterId,
+          status: prevStatus,
           capturedAt: now,
           sessionId,
         });
+        if (narrativeRow) {
+          await persistSessionMessageRevisitData({
+            db,
+            rows: [narrativeRow],
+            state,
+            chapterId: state.chapterId || prevChapterId,
+            status: sessionStatus,
+            capturedAt: now,
+            sessionId,
+          });
+        }
         const activeChapterId = Number(state.chapterId || prevChapterId || 0) || null;
         const activeChapter = activeChapterId
           ? normalizeChapterOutput(await db("t_storyChapter").where({ id: activeChapterId }).first())
@@ -2094,13 +2128,16 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
       world,
     });
     const messageRow = await db("t_sessionMessage").where({ id: messageId }).first();
+    // ★ 用户消息存"发送前" state，回溯后能重新触发后续编排
+    const preMessageState = parseJsonSafe<Record<string, any>>(preMessageStateJson, {});
     await persistSessionMessageRevisitData({
       db,
       rows: [messageRow],
-      state,
-      chapterId: state.chapterId || prevChapterId,
-      status: sessionStatus,
+      state: preMessageState,
+      chapterId: prevChapterId,
+      status: prevStatus,
       capturedAt: now,
+      sessionId,
     });
     const activeChapterId = Number(state.chapterId || prevChapterId || 0) || null;
     const activeChapter = activeChapterId
@@ -2226,14 +2263,30 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
   });
 
   const messageRow = await db("t_sessionMessage").where({ id: messageId }).first();
+  // ★ 用户消息（messageRow）存"发送前" state，回溯能重新触发后续编排
+  const preMessageStateForRevisit = parseJsonSafe<Record<string, any>>(preMessageStateJson, {});
   await persistSessionMessageRevisitData({
     db,
-    rows: [messageRow, chapterSwitchMessageRow, ...generatedMessages],
-    state,
-    chapterId: state.chapterId || prevChapterId,
-    status: sessionStatus,
+    rows: [messageRow],
+    state: preMessageStateForRevisit,
+    chapterId: prevChapterId,
+    status: prevStatus,
     capturedAt: now,
+    sessionId,
   });
+  // ★ 旁白/章节切换消息存"最终" state
+  const otherRows = [chapterSwitchMessageRow, ...generatedMessages].filter(Boolean);
+  if (otherRows.length) {
+    await persistSessionMessageRevisitData({
+      db,
+      rows: otherRows,
+      state,
+      chapterId: state.chapterId || prevChapterId,
+      status: sessionStatus,
+      capturedAt: now,
+      sessionId,
+    });
+  }
   const activeChapterId = Number(state.chapterId || prevChapterId || 0) || null;
   const activeChapter = activeChapterId
     ? normalizeChapterOutput(await db("t_storyChapter").where({ id: activeChapterId }).first())

@@ -15,6 +15,7 @@ import {
 import { resolveSellIntent } from "@/modules/game-runtime/services/MiniGameSellService";
 import { abandonActiveFreeChapterTaskEvent, createTaskFromUserRequest } from "@/modules/game-runtime/services/FreeChapterTaskService";
 import { analyzeIntent, analyzeIntentWithAiFallback, type IntentResult } from "@/modules/game-runtime/agents/intentAnalyzer";
+import { orchestrateTaskMode, type TaskModeContext, type TaskModeResult } from "@/modules/game-runtime/agents/taskMode/TaskModeOrchestrator";
 
 export interface MiniGameActionOption {
   action_id: string;
@@ -264,6 +265,62 @@ export function isMiniGameActiveState(state: JsonRecord): boolean {
 function readActiveTaskIdFromState(state: JsonRecord): string | null {
   const card = asRecord(asRecord(state.player).parameterCardJson);
   return scalarText(card.activeTaskId) || null;
+}
+
+/**
+ * 读取当前活跃任务的完整状态（供 TaskModeOrchestrator 使用）
+ */
+function readActiveTaskStateFromState(state: JsonRecord): {
+  title?: string;
+  objective?: string;
+  process?: string[];
+} | null {
+  const vars = asRecord(state.vars);
+  const activeFreeTask = asRecord(vars.activeFreeTask);
+  if (!scalarText(activeFreeTask.title)) {
+    // 兜底：从 player.parameterCardJson.executing_task 读
+    const card = asRecord(asRecord(state.player).parameterCardJson);
+    const exec = asRecord(card.executing_task);
+    if (scalarText(exec.title)) {
+      return {
+        title: scalarText(exec.title),
+        objective: scalarText(exec.objective),
+        process: Array.isArray(exec.process) ? (exec.process as unknown[]).map(p => String(p || "")) : [],
+      };
+    }
+    return null;
+  }
+  return {
+    title: scalarText(activeFreeTask.title),
+    objective: scalarText(activeFreeTask.objective),
+    process: Array.isArray(activeFreeTask.process) ? (activeFreeTask.process as unknown[]).map(p => String(p || "")) : [],
+  };
+}
+
+/**
+ * 收集任务可用的 NPC 列表（供 TaskDirectorAgent 使用）
+ */
+function collectNpcListForTask(input: MiniGameControllerInput): Array<{
+  id: string;
+  name: string;
+  roleType?: string;
+  card?: string;
+}> {
+  const world = input.world;
+  const npcs: Array<{ id: string; name: string; roleType?: string; card?: string }> = [];
+  const settings = asRecord(world?.settings);
+  const settingRoles = Array.isArray(settings.roles) ? settings.roles as any[] : [];
+  for (const role of settingRoles) {
+    const roleRec = asRecord(role);
+    const roleType = scalarText(roleRec.roleType) || "npc";
+    if (roleType === "player" || roleType === "narrator") continue;
+    const id = scalarText(roleRec.id) || `npc_${scalarText(roleRec.name)}`;
+    const name = scalarText(roleRec.name);
+    if (!name) continue;
+    const card = scalarText(roleRec.description) || JSON.stringify(roleRec.parameterCardJson || {});
+    npcs.push({ id, name, roleType, card: card.slice(0, 600) });
+  }
+  return npcs;
 }
 
 /**
@@ -5762,6 +5819,67 @@ export async function handleMiniGameTurn(input: MiniGameControllerInput): Promis
       activeTaskId: activeTaskIdForGate || null,
       messagePreview: String(input.playerMessage || "").slice(0, 60),
     });
+
+    // ★ 任务模式专用编排链路（4 个 Agent 串联）
+    // 当 hasActiveTask=true 时，不走主线编排，而是走 TaskModeOrchestrator
+    if (hasActiveTask && input.playerMessage) {
+      console.log("[story:mini_game:task] 进入任务模式 4-Agent 编排链路");
+      try {
+        const taskState = readActiveTaskStateFromState(state);
+        const npcList = collectNpcListForTask(input);
+        const recentDialogue = (input.recentMessages || []).map(m => ({
+          role: scalarText(m.role) || "?",
+          content: scalarText(m.content) || "",
+        }));
+
+        const taskCtx: TaskModeContext = {
+          userId: input.userId,
+          playerMessage: input.playerMessage,
+          activeTaskId: activeTaskIdForGate,
+          task: taskState,
+          npcList,
+          recentDialogue,
+          chapterTitle: scalarText(input.chapter?.title),
+        };
+
+        const taskResult = await orchestrateTaskMode(taskCtx);
+        console.log("[story:mini_game:task] 任务编排返回", {
+          shouldComplete: taskResult.shouldComplete,
+          completionLevel: taskResult.completionLevel,
+          speaker: taskResult.speaker,
+          contentPreview: String(taskResult.narration || "").slice(0, 60),
+        });
+
+        // 任务完成（放弃/成功/失败） → 触发任务收尾
+        if (taskResult.shouldComplete) {
+          console.log("[story:mini_game:task] 任务完成，调用 abandonActiveFreeChapterTaskEvent");
+          abandonActiveFreeChapterTaskEvent(state);
+        }
+
+        if (taskResult.intercepted) {
+          return {
+            intercepted: true,
+            runtime: root,
+            message: {
+              role: taskResult.speaker || scalarText(input.world?.narratorRole?.name) || "旁白",
+              roleType: taskResult.speakerRole === "system"
+                ? "narrator" // system 用 narrator roleType（前端不识别 system）
+                : (taskResult.speakerRole || "narrator"),
+              eventType: taskResult.shouldComplete ? "on_mini_game_finished" : "on_orchestrated_reply",
+              content: taskResult.narration || "",
+              meta: {
+                miniGameType: "task",
+                taskAgentChain: true,
+                ...taskResult.meta,
+              },
+            },
+          };
+        }
+      } catch (taskError) {
+        console.error("[story:mini_game:task] 任务编排异常，回退到主线编排", taskError);
+        // 异常时不拦截，让主线编排继续处理
+      }
+    }
   }
 
   if (!hasActiveGame) {

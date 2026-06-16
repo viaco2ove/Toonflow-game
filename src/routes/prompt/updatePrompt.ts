@@ -3,6 +3,7 @@ import u from "@/utils";
 import { error, success } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
 import { z } from "zod";
+import { clearTaskPromptCache } from "@/modules/game-runtime/agents/taskMode/loadTaskPrompt";
 const router = express.Router();
 
 // 更新提示词
@@ -35,6 +36,11 @@ export default router.post(
       "story-mini-game-alchemy",
       "story-mini-game-upgrade-equipment",
       "story-safety",
+      "intent-analyzer",
+      "task-progress-agent",
+      "task-director-agent",
+      "task-speaker-agent",
+      "task-completion-agent",
     ]);
 
     if (storyPromptCodes.has(String(code || "")) && userId !== 1) {
@@ -47,6 +53,9 @@ export default router.post(
         customValue: customValue,
       })
       .where("id", id);
+
+    // 清除任务模式 prompt 缓存，确保下次调用读取最新版本
+    clearTaskPromptCache();
 
     res.status(200).send(success({ message: "更新提示词成功" }));
   },

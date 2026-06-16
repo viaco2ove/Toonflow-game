@@ -198,8 +198,9 @@ export async function classifyIntentWithAi(ctx: IntentContext): Promise<IntentRe
       activeTaskId: ctx.activeTaskId || null,
     });
 
-    // 2. 构建 prompt
-    const systemPrompt = buildSystemPrompt();
+    // 2. 构建 prompt（优先从数据库读取自定义版本）
+    const { loadTaskPrompt } = await import("../taskMode/loadTaskPrompt");
+    const systemPrompt = await loadTaskPrompt("intent-analyzer", buildSystemPrompt());
     const userPrompt = buildUserPrompt(ctx);
 
     // 3. 调用 AI
