@@ -15,7 +15,8 @@ import {
 import { resolveSellIntent } from "@/modules/game-runtime/services/MiniGameSellService";
 import { abandonActiveFreeChapterTaskEvent, createTaskFromUserRequest } from "@/modules/game-runtime/services/FreeChapterTaskService";
 import { analyzeIntent, analyzeIntentWithAiFallback, type IntentResult } from "@/modules/game-runtime/agents/intentAnalyzer";
-import { orchestrateTaskMode, type TaskModeContext, type TaskModeResult } from "@/modules/game-runtime/agents/taskMode/TaskModeOrchestrator";
+// 任务模式 Agent 由 SessionService.orchestrateSessionTurn / streamlines 调用，
+// 本文件只需导出 readActiveTaskStateFromState、collectNpcListForTask 给上层使用。
 
 export interface MiniGameActionOption {
   action_id: string;
@@ -270,7 +271,7 @@ function readActiveTaskIdFromState(state: JsonRecord): string | null {
 /**
  * 读取当前活跃任务的完整状态（供 TaskModeOrchestrator 使用）
  */
-function readActiveTaskStateFromState(state: JsonRecord): {
+export function readActiveTaskStateFromState(state: JsonRecord): {
   title?: string;
   objective?: string;
   process?: string[];
@@ -300,7 +301,7 @@ function readActiveTaskStateFromState(state: JsonRecord): {
 /**
  * 收集任务可用的 NPC 列表（供 TaskDirectorAgent 使用）
  */
-function collectNpcListForTask(input: MiniGameControllerInput): Array<{
+export function collectNpcListForTask(input: MiniGameControllerInput): Array<{
   id: string;
   name: string;
   roleType?: string;
@@ -5820,66 +5821,10 @@ export async function handleMiniGameTurn(input: MiniGameControllerInput): Promis
       messagePreview: String(input.playerMessage || "").slice(0, 60),
     });
 
-    // ★ 任务模式专用编排链路（4 个 Agent 串联）
-    // 当 hasActiveTask=true 时，不走主线编排，而是走 TaskModeOrchestrator
-    if (hasActiveTask && input.playerMessage) {
-      console.log("[story:mini_game:task] 进入任务模式 4-Agent 编排链路");
-      try {
-        const taskState = readActiveTaskStateFromState(state);
-        const npcList = collectNpcListForTask(input);
-        const recentDialogue = (input.recentMessages || []).map(m => ({
-          role: scalarText(m.role) || "?",
-          content: scalarText(m.content) || "",
-        }));
-
-        const taskCtx: TaskModeContext = {
-          userId: input.userId,
-          playerMessage: input.playerMessage,
-          activeTaskId: activeTaskIdForGate,
-          task: taskState,
-          npcList,
-          recentDialogue,
-          chapterTitle: scalarText(input.chapter?.title),
-        };
-
-        const taskResult = await orchestrateTaskMode(taskCtx);
-        console.log("[story:mini_game:task] 任务编排返回", {
-          shouldComplete: taskResult.shouldComplete,
-          completionLevel: taskResult.completionLevel,
-          speaker: taskResult.speaker,
-          contentPreview: String(taskResult.narration || "").slice(0, 60),
-        });
-
-        // 任务完成（放弃/成功/失败） → 触发任务收尾
-        if (taskResult.shouldComplete) {
-          console.log("[story:mini_game:task] 任务完成，调用 abandonActiveFreeChapterTaskEvent");
-          abandonActiveFreeChapterTaskEvent(state);
-        }
-
-        if (taskResult.intercepted) {
-          return {
-            intercepted: true,
-            runtime: root,
-            message: {
-              role: taskResult.speaker || scalarText(input.world?.narratorRole?.name) || "旁白",
-              roleType: taskResult.speakerRole === "system"
-                ? "narrator" // system 用 narrator roleType（前端不识别 system）
-                : (taskResult.speakerRole || "narrator"),
-              eventType: taskResult.shouldComplete ? "on_mini_game_finished" : "on_orchestrated_reply",
-              content: taskResult.narration || "",
-              meta: {
-                miniGameType: "task",
-                taskAgentChain: true,
-                ...taskResult.meta,
-              },
-            },
-          };
-        }
-      } catch (taskError) {
-        console.error("[story:mini_game:task] 任务编排异常，回退到主线编排", taskError);
-        // 异常时不拦截，让主线编排继续处理
-      }
-    }
+    // ★ 任务模式：用户消息落库后 NOT intercept，让前端走标准链路
+    //   addMessage → /game/orchestration/minigame → /game/streamlines → /game/streamvoice
+    // 4-Agent 编排（Director / Speaker / Completion）由
+    //   /orchestration/minigame 阶段执行，本处不再生成台词。
   }
 
   if (!hasActiveGame) {

@@ -17,6 +17,7 @@ import {
   runtimeStoryRoles,
   setRuntimeTurnState,
 } from "@/modules/game-runtime/engines/NarrativeOrchestrator";
+import { generateTaskSpeech } from "@/modules/game-runtime/agents/taskMode/TaskSpeakerAgent";
 import {
   applyDebugNarrativeMessageProgress,
   cacheAndBuildDebugStateSnapshot,
@@ -485,6 +486,16 @@ router.post(
           if (!plan.presetContent && pendingPlan.presetContent) {
             plan.presetContent = pendingPlan.presetContent;
           }
+          // ★ 任务模式专属字段：speakerRouteReason / taskMeta
+          if (!plan.speakerRouteReason && pendingPlan.speakerRouteReason) {
+            plan.speakerRouteReason = pendingPlan.speakerRouteReason;
+          }
+          if (!(plan as any).taskMeta && (pendingPlan as any).taskMeta) {
+            (plan as any).taskMeta = (pendingPlan as any).taskMeta;
+          }
+          if (!plan.motive && pendingPlan.motive) {
+            plan.motive = pendingPlan.motive;
+          }
         }
         // 小游戏模式时，只用小游戏相关的消息，避免章节事件污染小游戏台词
         const isMiniGamePlan = pendingPlan && String(pendingPlan.source || "") === "rule";
@@ -600,8 +611,62 @@ router.post(
       // 小游戏规则说明回合（on_mini_game_start）直接使用 presetContent 作为最终输出，
       // 跳过 speaker 模型。原因：规则说明包含完整的可选项列表，speaker 有字数限制会丢失关键信息。
       const isMiniGameStartEvent = eventType === "on_mini_game_start" && presetContent;
+      // ★ 任务模式：plan 由 TaskDirector 编排好（含 speakerRouteReason="task-mode-plan"），
+      //   这里调用 TaskSpeaker 生成自然语言台词，而不是走主线 speaker
+      const isTaskModePlan = String(plan.speakerRouteReason || "").trim() === "task-mode-plan";
+      // 任务完成（presetContent 已存好）直接落库，不走 Speaker
+      const hasFinishedPreset = eventType === "on_mini_game_finished" && presetContent;
       if (isMiniGameStartEvent) {
         content = presetContent;
+      } else if (hasFinishedPreset) {
+        content = presetContent;
+      } else if (isTaskModePlan) {
+        // 任务模式：调用 TaskSpeakerAgent 生成台词
+        let heartbeatTimer: NodeJS.Timeout | null = null;
+        try {
+          heartbeatTimer = setInterval(() => {
+            try {
+              writeStreamLine(res, {
+                type: "heartbeat",
+                data: { stage: "task_speaker_generating", timestamp: Date.now() },
+              });
+            } catch {
+              // 心跳异常忽略
+            }
+          }, 5000);
+          const card = (state.player?.parameterCardJson || {}) as Record<string, any>;
+          const exec = (card.executing_task || {}) as Record<string, any>;
+          const taskInfo = {
+            objective: String(exec.objective || ""),
+          };
+          const npcCard = String(currentRole.parameterCardJson || currentRole.description || "");
+          const taskMeta = (plan as any).taskMeta || {};
+          const directorResult = {
+            speaker: roleName,
+            speakerRole: roleType === "npc" ? "npc" : "narrator",
+            motive: effectiveMotive || "推进任务",
+            taskType: String(taskMeta.taskType || "advance") as any,
+            direction: String(taskMeta.direction || effectiveMotive || ""),
+            expectedResult: String(taskMeta.expectedResult || "玩家推进任务"),
+          } as const;
+          const dialogueForSpeaker = recentMessages.map((m) => ({
+            role: String((m as any).role || "?"),
+            content: String((m as any).content || ""),
+          }));
+          const speakerResult = await generateTaskSpeech(
+            directorResult as any,
+            npcCard,
+            taskInfo,
+            dialogueForSpeaker,
+            playerContent,
+            userId,
+          );
+          content = String(speakerResult.content || "").trim() || effectiveMotive || "";
+        } finally {
+          if (heartbeatTimer) {
+            clearInterval(heartbeatTimer);
+          }
+        }
       } else {
         let heartbeatTimer: NodeJS.Timeout | null = null;
         try {

@@ -17,6 +17,7 @@ import { startSessionMemoryWorker, stopSessionMemoryWorker } from "@/modules/gam
 import { syncBundledVoicePresetSeeds } from "@/lib/voicePresetSeeds";
 import { dbBootstrapReady } from "@/utils/db";
 import { startMossTtsServe, isMossTtsServeEnabled, stopMossTtsServe } from "@/lib/localMossTts";
+import { startQwen060OnBoot, isQwen060BootEnabled } from "@/lib/localQwen060";
 
 function ensureNoProxyForLocalhost() {
   const localHosts = ["127.0.0.1", "localhost", "::1"];
@@ -83,6 +84,12 @@ export default async function startServe(randomPort: Boolean = false) {
       .catch((err) => {
         console.log("[MOSS-TTS-Nano] serve 启动失败，后续将使用 CLI 模式:", err instanceof Error ? err.message : String(err));
       });
+  }
+
+  // 本地大模型 Qwen3-0.6B：程序启动时自动安装并预热（LOCAL_CHAT_MODEL_RUN_START=true）
+  if (isQwen060BootEnabled()) {
+    console.log("[qwen3-0.6b] LOCAL_CHAT_MODEL_RUN_START=true，启动自动安装/加载流程");
+    void startQwen060OnBoot();
   }
 
   app.use(express.static(rootDir));

@@ -640,3 +640,64 @@ export async function unloadQwen060(): Promise<void> {
     dlog("[inference] 卸载失败:", err);
   }
 }
+
+// ============================================================================
+// 启动时自动安装并加载本地模型
+// ============================================================================
+
+/**
+ * 是否启用"程序启动时自动安装+加载本地大模型"
+ * 通过环境变量 LOCAL_CHAT_MODEL_RUN_START=true 开启
+ */
+export function isQwen060BootEnabled(): boolean {
+  return String(process.env.LOCAL_CHAT_MODEL_RUN_START || "").trim().toLowerCase() === "true";
+}
+
+/**
+ * 程序启动时尝试：
+ * 1. 如果未安装 → 触发安装（异步、不阻塞主进程启动）
+ * 2. 如果已安装 → 预热加载模型到内存（首次推理可立即响应）
+ *
+ * 失败不抛错，只打日志，避免影响主程序启动。
+ */
+export async function startQwen060OnBoot(): Promise<void> {
+  try {
+    const status = await getQwen060InstallStatus();
+    console.log("[qwen3-0.6b][boot] 启动检查", {
+      status: status.status,
+      installed: status.installed,
+    });
+
+    if (!status.installed) {
+      // 未安装 → 触发安装（异步）
+      console.log("[qwen3-0.6b][boot] 检测到未安装，自动开始安装（异步进行，不阻塞服务启动）");
+      // 不 await，让安装在后台进行
+      installQwen060((msg) => {
+        console.log(`[qwen3-0.6b][boot] ${msg}`);
+      })
+        .then(() => {
+          console.log("[qwen3-0.6b][boot] 安装完成，预热加载模型...");
+          return ensureModelLoaded();
+        })
+        .then(() => {
+          console.log("[qwen3-0.6b][boot] 模型已加载到内存，可立即推理");
+        })
+        .catch((err) => {
+          console.error("[qwen3-0.6b][boot] 安装/加载失败:", err instanceof Error ? err.message : String(err));
+        });
+      return;
+    }
+
+    // 已安装 → 直接预热
+    console.log("[qwen3-0.6b][boot] 已安装，预热加载模型到内存...");
+    ensureModelLoaded()
+      .then(() => {
+        console.log("[qwen3-0.6b][boot] 模型已加载到内存，可立即推理");
+      })
+      .catch((err) => {
+        console.error("[qwen3-0.6b][boot] 模型预热失败:", err instanceof Error ? err.message : String(err));
+      });
+  } catch (err) {
+    console.error("[qwen3-0.6b][boot] 启动检查异常:", err instanceof Error ? err.message : String(err));
+  }
+}

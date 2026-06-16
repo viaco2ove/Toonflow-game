@@ -43,7 +43,11 @@ import {
   readNextEventProgressHint,
   syncChapterProgressWithRuntime,
 } from "@/modules/game-runtime/engines/ChapterProgressEngine";
-import { handleMiniGameTurn, isMiniGameActiveState } from "@/modules/game-runtime/engines/MiniGameController";
+import { handleMiniGameTurn, isMiniGameActiveState, readActiveTaskStateFromState } from "@/modules/game-runtime/engines/MiniGameController";
+import { evaluateTaskProgress } from "@/modules/game-runtime/agents/taskMode/TaskProgressAgent";
+import { directTaskNarrative } from "@/modules/game-runtime/agents/taskMode/TaskDirectorAgent";
+import { evaluateTaskCompletion } from "@/modules/game-runtime/agents/taskMode/TaskCompletionAgent";
+import { analyzeIntentWithAi as analyzeTaskIntent } from "@/modules/game-runtime/agents/intentAnalyzer/IntentClassifier";
 import { runTaskProgressEngine } from "@/modules/game-runtime/engines/TaskProgressEngine";
 import {
   applyAttributeChanges,
@@ -1155,6 +1159,236 @@ function applySessionNarrativePlanToState(params: {
     ...params.plan,
     eventType: "on_orchestrated_reply",
   });
+}
+
+/**
+ * 任务模式下构造 NarrativePlan：
+ *  - Intent → Progress → Director 三步走完，得到 speaker / motive / taskType
+ *  - 不调用 Speaker（台词由 /game/streamlines 流式生成）
+ *  - 任务结束时调用 Completion 生成总结旁白（这种情况 plan.presetContent 直接落库）
+ *
+ * 返回 null 表示当前不是任务模式，调用方继续走主线编排。
+ */
+async function tryBuildTaskModePlan(input: {
+  state: Record<string, any>;
+  sessionId: string;
+  userId: number;
+  world: any;
+  chapter: any;
+  recentMessages: RuntimeMessageInput[];
+  latestRecentMessage: RuntimeMessageInput | null;
+}): Promise<SessionNarrativePlanResult | null> {
+  const card = (input.state.player?.parameterCardJson || {}) as Record<string, any>;
+  const activeTaskId = String(card.activeTaskId || "").trim();
+  if (DebugLogUtil.isDebugLogEnabled()) {
+    console.log("[task-mode-plan] tryBuildTaskModePlan 入口", {
+      sessionId: input.sessionId,
+      activeTaskId: activeTaskId || null,
+      hasPlayerMessage: !!input.latestRecentMessage,
+      latestRoleType: String((input.latestRecentMessage as any)?.roleType || ""),
+    });
+  }
+  if (!activeTaskId) return null; // 不是任务模式
+
+  const taskState = readActiveTaskStateFromState(input.state);
+  if (!taskState) return null;
+
+  // 取最新的玩家消息（latestRecentMessage 可能是旁白），找到最近的 player 消息
+  const latestPlayerMsg = [...input.recentMessages]
+    .reverse()
+    .find((m) => String((m as any).roleType || "").trim() === "player");
+  const playerMessage = String((latestPlayerMsg as any)?.content || "").trim();
+  if (!playerMessage) {
+    // 没有用户输入（比如刚开局），无需 task 编排，让主线接管
+    return null;
+  }
+
+  console.log("[task-mode-plan] 启动 task 编排", {
+    sessionId: input.sessionId,
+    playerMessage: playerMessage.slice(0, 60),
+    taskTitle: taskState.title,
+  });
+
+  const dialogue = input.recentMessages.map((m) => ({
+    role: String((m as any).role || "?"),
+    content: String((m as any).content || ""),
+  }));
+
+  // 1. Intent
+  const intentResult = await analyzeTaskIntent({
+    userId: input.userId,
+    playerMessage,
+    activeTaskId,
+    chapterTitle: String(input.chapter?.title || ""),
+  });
+  console.log("[task-mode-plan] Intent:", intentResult.intent, intentResult.confidence);
+
+  // 退出/放弃 → Completion 评估，写为 narrator preset 落库（不需要 streamlines）
+  if (intentResult.intent === "exit_task" && intentResult.confidence >= 0.7) {
+    const completion = await evaluateTaskCompletion(
+      "abandon",
+      taskState,
+      dialogue,
+      playerMessage,
+      intentResult.reasoning || "用户主动放弃",
+      input.userId,
+    );
+    console.log("[task-mode-plan] 任务放弃，生成完成评估");
+    return buildTaskNarrativePlan({
+      state: input.state,
+      role: "旁白",
+      roleType: "narrator",
+      motive: completion.statement,
+      eventType: "on_mini_game_finished",
+      presetContent: completion.narration,
+      taskMeta: {
+        completionLevel: completion.level,
+        suggestion: completion.suggestion,
+      },
+    });
+  }
+
+  // 2. Progress
+  const progressResult = await evaluateTaskProgress(
+    {
+      intent: intentResult.intent,
+      confidence: intentResult.confidence,
+      reasoning: intentResult.reasoning || "",
+    },
+    taskState,
+    dialogue,
+    playerMessage,
+    input.userId,
+  );
+  console.log("[task-mode-plan] Progress:", progressResult.level, "/", progressResult.tier);
+
+  if (progressResult.level === "abandon") {
+    const completion = await evaluateTaskCompletion(
+      "abandon",
+      taskState,
+      dialogue,
+      playerMessage,
+      progressResult.reason,
+      input.userId,
+    );
+    return buildTaskNarrativePlan({
+      state: input.state,
+      role: "旁白",
+      roleType: "narrator",
+      motive: completion.statement,
+      eventType: "on_mini_game_finished",
+      presetContent: completion.narration,
+      taskMeta: {
+        completionLevel: completion.level,
+        suggestion: completion.suggestion,
+      },
+    });
+  }
+
+  if (progressResult.needClarify && progressResult.clarifyContent) {
+    return buildTaskNarrativePlan({
+      state: input.state,
+      role: "任务系统",
+      roleType: "narrator",
+      motive: "请求澄清",
+      eventType: "on_orchestrated_reply",
+      presetContent: progressResult.clarifyContent,
+      taskMeta: {
+        progressLevel: progressResult.level,
+        clarify: true,
+      },
+    });
+  }
+
+  // 3. Director
+  const npcList = collectTaskNpcList(input.world);
+  const directorResult = await directTaskNarrative(
+    progressResult.level,
+    taskState,
+    npcList,
+    dialogue,
+    playerMessage,
+    input.userId,
+  );
+  console.log("[task-mode-plan] Director:", directorResult.speaker, "/", directorResult.taskType);
+
+  // Director 决定 speaker，但 speaker 实际台词由 /streamlines 调 TaskSpeaker 生成
+  return buildTaskNarrativePlan({
+    state: input.state,
+    role: directorResult.speaker,
+    roleType: directorResult.speakerRole === "system"
+      ? "narrator"
+      : (directorResult.speakerRole as "narrator" | "npc"),
+    motive: directorResult.motive,
+    eventType: "on_orchestrated_reply",
+    presetContent: null,
+    taskMeta: {
+      progressLevel: progressResult.level,
+      taskType: directorResult.taskType,
+      direction: directorResult.direction,
+      expectedResult: directorResult.expectedResult,
+    },
+  });
+}
+
+/**
+ * 从 world.settings.roles 收集 NPC 列表（task agents 使用）
+ */
+function collectTaskNpcList(world: any): Array<{ id: string; name: string; roleType?: string; card?: string }> {
+  const settings = (world?.settings || {}) as Record<string, any>;
+  const roles = Array.isArray(settings.roles) ? settings.roles : [];
+  const npcs: Array<{ id: string; name: string; roleType?: string; card?: string }> = [];
+  for (const role of roles) {
+    if (!role || typeof role !== "object") continue;
+    const r = role as Record<string, any>;
+    const roleType = String(r.roleType || "npc").trim();
+    if (roleType === "player" || roleType === "narrator") continue;
+    const name = String(r.name || "").trim();
+    if (!name) continue;
+    const id = String(r.id || `npc_${name}`).trim();
+    const card = String(r.description || JSON.stringify(r.parameterCardJson || {})).slice(0, 600);
+    npcs.push({ id, name, roleType, card });
+  }
+  return npcs;
+}
+
+/**
+ * 构造 task 模式专用的 SessionNarrativePlanResult
+ */
+function buildTaskNarrativePlan(params: {
+  state: Record<string, any>;
+  role: string;
+  roleType: "narrator" | "npc";
+  motive: string;
+  eventType: "on_orchestrated_reply" | "on_mini_game_finished";
+  presetContent: string | null;
+  taskMeta?: Record<string, unknown>;
+}): SessionNarrativePlanResult {
+  const currentEvent = (params.state.currentEvent || {}) as Record<string, any>;
+  const eventIndex = Number(currentEvent.index || 0) || 1;
+  return {
+    role: params.role,
+    roleType: params.roleType,
+    motive: params.motive,
+    awaitUser: false,
+    nextRole: "",
+    nextRoleType: "",
+    memoryHints: [],
+    source: "rule",
+    triggerMemoryAgent: false,
+    eventType: params.eventType,
+    presetContent: params.presetContent,
+    eventAdjustMode: "keep",
+    eventIndex,
+    eventKind: (String(currentEvent.kind || "scene") as any) || "scene",
+    eventSummary: String(currentEvent.summary || ""),
+    eventFacts: Array.isArray(currentEvent.facts) ? currentEvent.facts : [],
+    eventStatus: (String(currentEvent.status || "active") as any) || "active",
+    speakerMode: "fast",
+    speakerRouteReason: "task-mode-plan",
+    // taskMeta 不在 SessionNarrativePlanResult 类型上，但前端能从 plan.meta 读取
+    ...(params.taskMeta ? { taskMeta: params.taskMeta } : {}),
+  } as SessionNarrativePlanResult;
 }
 
 async function countSessionMessages(db: any, sessionId: string): Promise<number> {
@@ -3060,6 +3294,30 @@ async function orchestrateSessionTurnInner(sessionId: string): Promise<SessionOr
       latestEventType: String(latestRecentMessage?.eventType || ""),
     }));
   }
+
+  // ★ 任务模式：直接走 4-Agent 编排（Intent → Progress → Director），跳过主线编排
+  // Speaker 由 /game/streamlines 调用（任务模式判断在 streamlines 里）
+  const taskPlan = await tryBuildTaskModePlan({
+    state,
+    sessionId,
+    userId: currentUserId,
+    world,
+    chapter,
+    recentMessages,
+    latestRecentMessage,
+  });
+  if (taskPlan) {
+    return finalizeOrchestrationResult({
+      sessionId,
+      status: sessionStatus,
+      chapterId: Number(chapter?.id || 0) || null,
+      expectedRole: "",
+      expectedRoleType: "",
+      command: null,
+      plan: taskPlan,
+    });
+  }
+
   const arbitration = await runConcurrentSessionJudgeAndNarrative({
     userId: currentUserId,
     world,
