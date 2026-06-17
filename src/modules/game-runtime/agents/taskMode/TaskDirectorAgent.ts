@@ -70,6 +70,7 @@ function resolveSpeakerRole(
 async function directorAi(
   progressLevel: ProgressLevel,
   taskObjective: string,
+  taskProcess: string[],
   npcList: Array<{ name: string; roleType?: string }>,
   dialogue: string,
   message: string,
@@ -81,7 +82,12 @@ async function directorAi(
     ? npcList.map(n => `- ${n.name}（${n.roleType || "npc"}）`).join("\n")
     : "（无可用 NPC，可让旁白或任务系统说话）";
 
+  const processText = taskProcess.length
+    ? `【推进过程】${taskProcess.join(" → ")}`
+    : "";
+
   const userPrompt = `【推进等级】${progressLevel}
+${processText}
 【任务目标】${taskObjective}
 【可用 NPC 列表】
 ${npcText}
@@ -174,7 +180,7 @@ function fallbackDirector(
 
 export async function directTaskNarrative(
   progressLevel: ProgressLevel,
-  task: { objective?: string },
+  task: { objective?: string; process?: string[] },
   npcList: Array<{ id: string; name: string; roleType?: string }>,
   dialogue: Array<{ role: string; content: string }>,
   message: string,
@@ -182,5 +188,5 @@ export async function directTaskNarrative(
 ): Promise<DirectorResult> {
   const hist = dialogue.slice(-6).map(d => `${d.role}:${String(d.content || "").slice(0, 60)}`).join("|");
   // ★ 不再短路：所有等级都走 AI（包括 maintain），保证任务系统/旁白也是 AI 编排出来的
-  return directorAi(progressLevel, task?.objective || "无", npcList, hist, message, userId);
+  return directorAi(progressLevel, task?.objective || "无", task?.process || [], npcList, hist, message, userId);
 }
