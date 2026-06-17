@@ -97,5 +97,35 @@ yarn debug:mini-game logs/app-2026-05-08.log
 打上log tag 输出 用户进入小游戏回合， 规则说明回合。用户回合，陪练回合,
   播报回合，敌方攻击回合，小游戏规程性退出回合，小游戏#退出回合。
 
+## 任务模型日志摘要生成
+yarn debug:mini-game:task logs/app-2026-05-08.log
+模板参考[debug-mini-game-task.md](template/debug-mini-game-task.md)
+
+**Log Tag 图例：**
+
+| Tag | 含义 |
+|-----|------|
+| `[task:addMessage:entry]` | addMessage 入口时的任务状态 |
+| `[task:created]` | 任务已创建（applyFreeChapterTaskBlueprintToState 写入） |
+| `[task:minigame:intercept]` | 小游戏拦截路径（handleMiniGameTurn） |
+| `[task:orchestration:entry]` | tryBuildTaskModePlan 编排入口 |
+| `[task:orchestration:result]` | 编排返回结果 |
+| `[task:intent]` | Intent Agent 结果 |
+| `[task:progress]` | Progress Agent 推进判定结果 |
+| `[task:director]` | Director Agent 编排结果 |
+| `[task:speaker]` | Speaker / Streamlines 执行记录 |
+| `[task:completion]` | Completion Agent 任务完成评估 |
+| `[task:revisit]` | 回溯操作记录 |
+| `[task:memory:patch]` | 记忆补丁写入 player.parameterCardJson |
+
+**输出内容：**
+- 用户如何进入任务模式
+- 每个回合：用户说了什么、角色说了什么、旁白说了什么
+- 调用了哪些 Agent（Intent → Progress → Director → Speaker）
+- 任务进度变化
+- 任务成功/失败/主动退出
+- 任务结算旁白
+- 回溯时状态是否正确保留
+
 ## @记忆管理 日志
 如 @记忆管理 睡觉恢复

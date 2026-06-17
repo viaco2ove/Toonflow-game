@@ -62,6 +62,7 @@
     "debug:ai": "npx @ai-sdk/devtools",
     "debug:event-chain": "node scripts/generateEventChainSummary.js",
     "debug:mini-game": "node scripts/generateMiniGameSummary.js",
+    "debug:mini-game:task": "node scripts/generateMiniGameTaskSummary.js",
     "license": "bun run scripts/license.ts",
     "voice:regen:presets": "tsx scripts/regenerateStoryVoicePresets.ts"
   },

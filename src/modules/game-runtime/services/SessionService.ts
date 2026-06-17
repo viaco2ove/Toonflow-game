@@ -1179,28 +1179,49 @@ async function tryBuildTaskModePlan(input: {
   latestRecentMessage: RuntimeMessageInput | null;
 }): Promise<SessionNarrativePlanResult | null> {
   const card = (input.state.player?.parameterCardJson || {}) as Record<string, any>;
-  const activeTaskId = String(card.activeTaskId || "").trim();
-  if (DebugLogUtil.isDebugLogEnabled()) {
-    console.log("[task-mode-plan] tryBuildTaskModePlan 入口", {
-      sessionId: input.sessionId,
-      activeTaskId: activeTaskId || null,
-      hasPlayerMessage: !!input.latestRecentMessage,
-      latestRoleType: String((input.latestRecentMessage as any)?.roleType || ""),
-    });
+  const miniGameSession = (input.state.miniGame as any)?.session || {};
+  const vars = (input.state.vars || {}) as Record<string, any>;
+  // 主要依据：activeTaskId；其次：miniGame.game_type="task"；最后：vars.activeFreeTask
+  const primaryTaskId = String(card.activeTaskId || "").trim();
+  const miniGameTaskActive = String(miniGameSession.game_type || "").trim() === "task"
+    && String(miniGameSession.status || "").trim() === "active";
+  const varsTaskActive = Boolean(vars.activeFreeTask && typeof vars.activeFreeTask === "object");
+  const taskModeActive = primaryTaskId || miniGameTaskActive || varsTaskActive;
+  console.log("[task-mode-plan] tryBuildTaskModePlan 入口", {
+    sessionId: input.sessionId,
+    activeTaskId: primaryTaskId || null,
+    miniGameTaskActive,
+    varsTaskActive,
+    taskModeActive,
+    hasLatestMessage: !!input.latestRecentMessage,
+    latestRoleType: String((input.latestRecentMessage as any)?.roleType || ""),
+    recentMessageCount: input.recentMessages.length,
+  });
+  if (!taskModeActive) {
+    console.log("[task-mode-plan] 不是任务模式，返回 null");
+    return null;
   }
-  if (!activeTaskId) return null; // 不是任务模式
 
   const taskState = readActiveTaskStateFromState(input.state);
-  if (!taskState) return null;
+  if (!taskState) {
+    console.log("[task-mode-plan] task 状态缺失，返回 null");
+    return null;
+  }
 
   // 取最新的玩家消息（latestRecentMessage 可能是旁白），找到最近的 player 消息
   const latestPlayerMsg = [...input.recentMessages]
     .reverse()
     .find((m) => String((m as any).roleType || "").trim() === "player");
-  const playerMessage = String((latestPlayerMsg as any)?.content || "").trim();
+  // 优先用 latestRecentMessage（addMessage 接口最新一条）；其次用最近的 player 消息
+  let playerMessage = String((input.latestRecentMessage as any)?.content || "").trim()
+    || String((latestPlayerMsg as any)?.content || "").trim();
   if (!playerMessage) {
-    // 没有用户输入（比如刚开局），无需 task 编排，让主线接管
-    return null;
+    // 没有任何用户输入时，task 模式继续主动推进：给 AI 一个占位文本
+    playerMessage = "（任务继续推进）";
+    console.log("[task-mode-plan] 无明确 player 消息，使用占位文本继续 task 编排", {
+      sessionId: input.sessionId,
+      lastRole: String(((input.recentMessages.slice(-1)[0]) as any)?.role || ""),
+    });
   }
 
   console.log("[task-mode-plan] 启动 task 编排", {
@@ -1218,7 +1239,7 @@ async function tryBuildTaskModePlan(input: {
   const intentResult = await analyzeTaskIntent({
     userId: input.userId,
     playerMessage,
-    activeTaskId,
+    activeTaskId: primaryTaskId || null,
     chapterTitle: String(input.chapter?.title || ""),
   });
   console.log("[task-mode-plan] Intent:", intentResult.intent, intentResult.confidence);
@@ -1260,7 +1281,21 @@ async function tryBuildTaskModePlan(input: {
     playerMessage,
     input.userId,
   );
-  console.log("[task-mode-plan] Progress:", progressResult.level, "/", progressResult.tier);
+  console.log("[task-mode-plan] Progress:", progressResult.level, "/", progressResult.tier, "/", JSON.stringify(progressResult.processUpdate));
+
+  // ★★★ 将 processUpdate 写回 state.vars.activeFreeTask.process ★★★
+  if (progressResult.processUpdate?.action && progressResult.processUpdate.action !== "none") {
+    const vars = (input.state.vars || {}) as Record<string, any>;
+    const activeTask = vars.activeFreeTask as Record<string, any> | null;
+    if (activeTask && Array.isArray(activeTask.process)) {
+      const { applyProcessUpdateToPhases } = await import("@/modules/game-runtime/agents/taskMode/TaskProgressAgent");
+      const updatedProcess = applyProcessUpdateToPhases(activeTask.process as string[], progressResult.processUpdate);
+      activeTask.process = updatedProcess;
+      vars.activeFreeTask = activeTask;
+      input.state.vars = vars;
+      console.log("[task-mode-plan] process 已更新:", JSON.stringify(updatedProcess));
+    }
+  }
 
   if (progressResult.level === "abandon") {
     const completion = await evaluateTaskCompletion(
@@ -3305,6 +3340,14 @@ async function orchestrateSessionTurnInner(sessionId: string): Promise<SessionOr
     chapter,
     recentMessages,
     latestRecentMessage,
+  });
+  console.log("[story:orchestrator:runtime] tryBuildTaskModePlan 返回", {
+    sessionId,
+    hasTaskPlan: !!taskPlan,
+    taskPlanRole: taskPlan?.role,
+    taskPlanRoleType: taskPlan?.roleType,
+    taskPlanEventType: taskPlan?.eventType,
+    taskPlanSpeakerReason: taskPlan?.speakerRouteReason,
   });
   if (taskPlan) {
     return finalizeOrchestrationResult({

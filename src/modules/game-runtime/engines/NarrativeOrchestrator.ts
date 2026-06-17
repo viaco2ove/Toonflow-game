@@ -4955,6 +4955,15 @@ function applyMemoryPlayerCardPatchToState(state: JsonRecord, memory: MemoryMana
 } {
   const player = asRecord(state.player);
   const existedBefore = Boolean(player.parameterCardJson && typeof player.parameterCardJson === "object");
+  const rawCard = asRecord(player.parameterCardJson);
+  // 保留任务模式专属字段，防止被 buildDefaultRoleParameterCardForMemory 覆盖而丢失
+  const preservedTaskFields = {
+    activeTaskId: rawCard.activeTaskId,
+    executing_task: rawCard.executing_task,
+    executingTask: rawCard.executingTask,
+    taskList: rawCard.taskList,
+    miniGameSession: (rawCard as any).miniGameSession,
+  };
   const currentCard = buildDefaultRoleParameterCardForMemory({
     role: player,
     fallbackName: normalizeScalarText(player.name) || "用户",
@@ -4971,6 +4980,12 @@ function applyMemoryPlayerCardPatchToState(state: JsonRecord, memory: MemoryMana
     ], 20),
   };
   const nextCard = mergeMemoryParameterCardPatch(currentCard, mergedPatch);
+  // 恢复任务专属字段
+  if (preservedTaskFields.activeTaskId) (nextCard as any).activeTaskId = preservedTaskFields.activeTaskId;
+  if (preservedTaskFields.executing_task) (nextCard as any).executing_task = preservedTaskFields.executing_task;
+  if (preservedTaskFields.executingTask) (nextCard as any).executingTask = preservedTaskFields.executingTask;
+  if (Array.isArray(preservedTaskFields.taskList)) (nextCard as any).taskList = preservedTaskFields.taskList;
+  if (preservedTaskFields.miniGameSession) (nextCard as any).miniGameSession = preservedTaskFields.miniGameSession;
   player.parameterCardJson = nextCard;
   state.player = player;
   return {

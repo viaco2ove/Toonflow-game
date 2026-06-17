@@ -321,6 +321,13 @@ function setExecutingTaskCardValue(state: JsonRecord, task: ExecutingTaskCardVal
     status: task.status,
     summary: formatExecutingTaskSummary(task),
   };
+  console.log("[task-system] setExecutingTaskCardValue", {
+    title: task.title,
+    hasCard: !!card,
+    hasCardActiveTaskId: !!card.activeTaskId,
+    hasCardExecutingTask: !!card.executing_task,
+    stateHasCard: !!(state.player as any)?.parameterCardJson,
+  });
 }
 
 /**
@@ -371,6 +378,12 @@ function appendTaskListEntry(
   if (options?.setActive) {
     card.activeTaskId = entry.task_id;
   }
+  console.log("[task-system] appendTaskListEntry 写入", {
+    taskId: entry.task_id,
+    setActive: options?.setActive,
+    finalActiveTaskId: card.activeTaskId,
+    listLength: list.length,
+  });
 }
 
 /**
