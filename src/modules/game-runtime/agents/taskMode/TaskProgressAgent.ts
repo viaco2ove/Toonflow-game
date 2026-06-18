@@ -93,8 +93,10 @@ function parsePhase(text: string): { text: string; status: "idle" | "active" | "
 
 /** 带标记渲染阶段文本 */
 function renderPhase(text: string, status: "idle" | "active" | "complete" | "failed"): string {
+  // 防御：即使 text 本身带了 [] 标记，也只保留内容部分，避免出现 [][]text
+  const clean = String(text || "").replace(/^\[[isaf]*\]\s*/, "").trim();
   const tag = status === "active" ? "[i]" : status === "complete" ? "[s]" : status === "failed" ? "[f]" : "[]";
-  return `${tag}${text}`;
+  return `${tag}${clean}`;
 }
 
 /**
@@ -144,14 +146,9 @@ function evalStatic(intent: IntentType, currentPhases: string[]): ProgressResult
       processUpdate: { action: "none", phaseIndex: null, newPhase: null },
     };
   }
-  if (intent === "normal_dialog") {
-    return {
-      level: "maintain", tier: "static",
-      reason: "普通对话不推进",
-      needClarify: false,
-      processUpdate: { action: "none", phaseIndex: null, newPhase: null },
-    };
-  }
+  // 注意：normal_dialog 不能在这里静态短路。
+  // 任务模式下，玩家输入即使被意图分类器误判为 normal_dialog，
+  // 也必须继续交给 AI 根据任务目标、当前推进过程、历史对话、本轮输入判断是否推进。
   return (null as any);
 }
 
@@ -213,19 +210,27 @@ async function evalAi(
 ): Promise<ProgressResult> {
   const systemPrompt = await loadTaskPrompt("task-progress-agent", FALLBACK_SYSTEM);
 
-  const userPrompt = `意图：${intent} 置信度：${confidence} 理由：${reasoning}
-目标：${objective}
-当前推进过程：${progress}
-历史对话：${dialogue || "无"}
+  const userPrompt = `【重要】请根据玩家的实际行动判断是否推进任务！
+
+当前任务目标：${objective}
+
+推进过程阶段（[]=未开始, [i]=进行中, [s]=已完成, [f]=已失败）：
+${progress}
+
 玩家本轮输入：${message}
+历史对话：${dialogue || "无"}
 
-请根据以上信息判断任务推进等级，并决定如何更新推进过程。
+【判断规则】
+1. 如果玩家正在执行与任务目标相关的动作（探索、移动、询问、打探、寻找、排查、开始行动等），标记当前进行中的阶段为完成
+2. 如果玩家描述了新的行动步骤，插入新阶段
+3. 如果玩家说"好"、"开始"、"那开始吧"等接受指令，标记当前阶段完成并激活下一阶段
+4. 只有当玩家明确在闲聊、问无关问题、放弃时才返回 none
 
-推进更新规则：
-- mark_complete：玩家完成了当前阶段，标记为完成 [s]
-- mark_failed：玩家该阶段失败，标记为失败 [f]
-- insert：玩家行为需要新阶段，插入到当前阶段之后
-- none：不更新推进过程
+【返回要求】
+- 必须返回一个有效的 processUpdate！
+- phaseIndex：第一个状态为[i]或[]的阶段下标（从0开始）
+- 如果当前没有未完成阶段，action 填 none
+- 大部分情况下应该返回 mark_complete 或 insert！
 
 请输出严格JSON：
 {"level":"等级","tier":"判定层级","reason":"理由","needClarify":true/false,"clarifyContent":"追问","processUpdate":{"action":"none|mark_complete|mark_failed|insert","phaseIndex":数字|null,"newPhase":"新阶段文本(仅insert时)"}}`;

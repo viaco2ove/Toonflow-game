@@ -22,8 +22,10 @@ function parsePhaseStep(text: string): { text: string; status: "idle" | "active"
   return { text: m[2].trim(), status: map[m[1]] || "idle" };
 }
 function renderPhaseStep(text: string, status: "idle" | "active" | "complete" | "failed"): string {
+  // 防御：即使 text 本身带了 [] 标记，也只保留内容部分，避免出现 [][]text
+  const clean = String(text || "").replace(/^\[[isaf]*\]\s*/, "").trim();
   const tag = status === "active" ? "[i]" : status === "complete" ? "[s]" : status === "failed" ? "[f]" : "[]";
-  return `${tag}${text}`;
+  return `${tag}${clean}`;
 }
 function initTaskProcessWithActive(process: string[]): string[] {
   if (!process || process.length === 0) return process;

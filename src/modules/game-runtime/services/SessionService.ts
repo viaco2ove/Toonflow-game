@@ -1242,7 +1242,7 @@ async function tryBuildTaskModePlan(input: {
     activeTaskId: primaryTaskId || null,
     chapterTitle: String(input.chapter?.title || ""),
   });
-  console.log("[task-mode-plan] Intent:", intentResult.intent, intentResult.confidence);
+  console.log("[task-mode-plan] Intent:", intentResult.intent, intentResult.confidence, "| reasoning:", intentResult.reasoning?.slice(0, 50));
 
   // 退出/放弃 → Completion 评估，写为 narrator preset 落库（不需要 streamlines）
   if (intentResult.intent === "exit_task" && intentResult.confidence >= 0.7) {
@@ -1281,7 +1281,7 @@ async function tryBuildTaskModePlan(input: {
     playerMessage,
     input.userId,
   );
-  console.log("[task-mode-plan] Progress:", progressResult.level, "/", progressResult.tier, "/", JSON.stringify(progressResult.processUpdate));
+  console.log("[task-mode-plan] Progress:", progressResult.level, "/", progressResult.tier, "/", JSON.stringify(progressResult.processUpdate), "| process:", taskState.process?.join(" → "));
 
   // ★★★ 将 processUpdate 写回 state.vars.activeFreeTask.process ★★★
   if (progressResult.processUpdate?.action && progressResult.processUpdate.action !== "none") {
@@ -1357,7 +1357,7 @@ async function tryBuildTaskModePlan(input: {
     playerMessage,
     input.userId,
   );
-  console.log("[task-mode-plan] Director:", directorResult.speaker, "/", directorResult.taskType);
+  console.log("[task-mode-plan] Director:", directorResult.speaker, "/", directorResult.taskType, "| motive:", directorResult.motive, "| direction:", directorResult.direction, "| speakerRole:", directorResult.speakerRole);
 
   // Director 决定 speaker，但 speaker 实际台词由 /streamlines 调 TaskSpeaker 生成
   return buildTaskNarrativePlan({

@@ -59,7 +59,15 @@
 - 推进等级: `maintain`
 - 分层: ai
 - 需澄清: false
+- processUpdate: `{"action":"none"}`
 - 推进过程：[i]抬手用金属钥匙拧开宿舍房门，踏入屋内探查周遭动静；[]凭借模糊听觉与触感，逐一摸索宿舍内的床铺与置物区域；[]主动出声试探，确认舍友所在的具体位置并完成碰面
+
+**回合 2** (2026-06-17 00:01:00.000)
+- 推进等级: `advance`
+- 分层: keyword
+- 需澄清: false
+- processUpdate: `{"action":"mark_complete","phaseIndex":0,"newPhase":null}`
+- 推进过程：[s]抬手用金属钥匙拧开宿舍房门，踏入屋内探查周遭动静；[i]凭借模糊听觉与触感，逐一摸索宿舍内的床铺与置物区域；[]主动出声试探，确认舍友所在的具体位置并完成碰面
 
 #### Director Agent
 
@@ -69,6 +77,7 @@
 - 动机: 告知玩家当前任务进展
 - 任务类型: status
 - 方向: 回应玩家询问并指明当前任务方向
+- processUpdate: `{"action":"none","phaseIndex":null,"newPhase":null}`
 
 #### 编排返回结果
 

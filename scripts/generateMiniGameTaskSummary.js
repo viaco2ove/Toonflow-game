@@ -111,9 +111,11 @@ const TASK_LOG_TAGS = {
     label: "Intent Agent",
     desc: "任务意图分析结果",
     extract: (line) => {
-      const m = line.match(/Intent:\s*(\w+)[\s\S]*?confidence["\s:]+([^,\s}]+)/);
-      const m2 = line.match(/intent["\s:]+(\w+)[\s\S]*?confidence["\s:]+([^,\s}]+)/);
-      if (m) return { intent: m[1], confidence: m[2] };
+      // 格式1: [task-mode-plan] Intent: task_inquiry 0.92
+      const m1 = line.match(/Intent:\s*(\w+)[\s\t ]+([\d.]+)/);
+      if (m1) return { intent: m1[1], confidence: m1[2] };
+      // 格式2: intent:"xxx", confidence:0.92
+      const m2 = line.match(/intent["\s:]+([^,\s}]+)[\s\S]*?confidence["\s:]+([^,\s}]+)/);
       if (m2) return { intent: m2[1], confidence: m2[2] };
       return {};
     },
@@ -124,13 +126,24 @@ const TASK_LOG_TAGS = {
     label: "Progress Agent",
     desc: "任务推进判定结果",
     extract: (line) => {
-      const m = line.match(/level["\s:]+([^,\s}]+)/);
-      const m2 = line.match(/tier["\s:]+([^,\s}]+)/);
-      const m3 = line.match(/needClarify["\s:]+([^,\s}]+)/);
+      // 格式1: [task-mode-plan] Progress: normal / keyword / {...} | process: xxx → yyy
+      // 提取 level
+      const levelMatch = line.match(/Progress:\s*(\w+)[\/ ]/);
+      // 提取 tier
+      const tierMatch = line.match(/\/ ([\w]+)[\/ ]/);
+      // 提取 JSON（从 / 后的 { 开始到 | process: 之前）
+      const puMatch = line.match(/ \/ (\{[^|]+)\| process:/);
+      // 提取 process 字段
+      const processMatch = line.match(/\| process:\s*(.+)$/);
+      // 格式2: level:"xxx", tier:"xxx" (JSON 格式)
+      const levelMatch2 = line.match(/level["\s:]+([^,\s}]+)/);
+      const tierMatch2 = line.match(/tier["\s:]+([^,\s}]+)/);
+      const puMatch2 = line.match(/processUpdate["\s:]+(\{[\s\S]*?\})/);
       return {
-        level: m ? m[1] : null,
-        tier: m2 ? m2[1] : null,
-        needClarify: m3 ? m3[1] : null,
+        level: levelMatch ? levelMatch[1] : (levelMatch2 ? levelMatch2[1] : null),
+        tier: tierMatch ? tierMatch[1] : (tierMatch2 ? tierMatch2[1] : null),
+        processUpdate: puMatch ? puMatch[1].replace(/}\s*$/, "}").trim() : (puMatch2 ? puMatch2[1] : null),
+        process: processMatch ? processMatch[1].trim() : null,
       };
     },
   },
@@ -140,17 +153,24 @@ const TASK_LOG_TAGS = {
     label: "Director Agent",
     desc: "任务剧情编排结果",
     extract: (line) => {
+      // 格式1: Director: 任务系统 / status | motive: xxx | direction: xxx | speakerRole: xxx
+      const m1 = line.match(/Director:\s*([^/]+)\s*\/\s*(\w+)\s*\|\s*motive:\s*([^|]+)(?:\| direction:\s*([^|]+))?(?:\| speakerRole:\s*([^|]+))?/);
+      if (m1) return { speaker: m1[1].trim(), taskType: m1[2], motive: m1[3]?.trim(), direction: m1[4]?.trim(), speakerRole: m1[5]?.trim() };
+      // 格式2: Director: 任务系统 / status
+      const m2 = line.match(/Director:\s*([^/]+)\s*\/\s*(\w+)/);
+      if (m2) return { speaker: m2[1].trim(), taskType: m2[2] };
+      // 格式3: JSON 格式
       const m = line.match(/speaker["\s:]+([^,\s}]+)/);
-      const m2 = line.match(/speakerRole["\s:]+([^,\s}]+)/);
-      const m3 = line.match(/motive["\s:]+([^,\s}]+)/);
-      const m4 = line.match(/taskType["\s:]+([^,\s}]+)/);
-      const m5 = line.match(/direction["\s:]+([^,\s}]+)/);
+      const m3 = line.match(/speakerRole["\s:]+([^,\s}]+)/);
+      const m4 = line.match(/motive["\s:]+([^,\s}]+)/);
+      const m5 = line.match(/taskType["\s:]+([^,\s}]+)/);
+      const m6 = line.match(/direction["\s:]+([^,\s}]+)/);
       return {
         speaker: m ? m[1] : null,
-        speakerRole: m2 ? m2[1] : null,
-        motive: m3 ? m3[1] : null,
-        taskType: m4 ? m4[1] : null,
-        direction: m5 ? m5[1] : null,
+        speakerRole: m3 ? m3[1] : null,
+        motive: m4 ? m4[1] : null,
+        taskType: m5 ? m5[1] : null,
+        direction: m6 ? m6[1] : null,
       };
     },
   },
@@ -160,6 +180,10 @@ const TASK_LOG_TAGS = {
     label: "Speaker / Streamlines",
     desc: "任务角色发言",
     extract: (line) => {
+      // 格式1: [story:streamlines:debug] 剧情模式 - role: xxx, contentPreview: xxx
+      const m1 = line.match(/role:\s*([^,]+),\s*eventType:\s*([^,]+),\s*contentPreview:\s*(.+)/);
+      if (m1) return { role: m1[1].trim(), eventType: m1[2].trim(), contentPreview: m1[3].slice(0, 100) };
+      // 格式2: JSON 格式
       const m = line.match(/modelKey["\s:]+([^,\s}]+)/);
       const m2 = line.match(/isTaskModePlan["\s:]+([^,\s}]+)/);
       const m3 = line.match(/speakerRouteReason["\s:]+([^,\s}]+)/);
@@ -261,15 +285,54 @@ function extractTimestamp(line) {
 }
 
 function extractNewDialogue(line) {
-  // 匹配 | 新增对话 | [...] | 格式
-  const match = line.match(/\|\s*新增对话\s*\|\s*(\[[\s\S]*?\])\s*\|/);
-  if (!match) return null;
-  let jsonStr = match[1];
-  jsonStr = jsonStr.replace(/↩/g, " ").replace(/\s+/g, " ").trim();
-  try {
-    const dialogues = JSON.parse(jsonStr);
-    if (Array.isArray(dialogues) && dialogues.length > 0) return dialogues;
-  } catch (e) {}
+  // 格式1: | 新增对话 | [...] | (旧格式)
+  const match1 = line.match(/\|\s*新增对话\s*\|\s*(\[[\s\S]*?\])\s*\|/);
+  if (match1) {
+    let jsonStr = match1[1].replace(/↩/g, " ").replace(/\s+/g, " ").trim();
+    try {
+      const dialogues = JSON.parse(jsonStr);
+      if (Array.isArray(dialogues) && dialogues.length > 0) return dialogues;
+    } catch (e) {}
+  }
+  // 格式2: [新增对话(JSON数组)]\n[...]\n\n (多行格式)
+  if (line.includes("[新增对话(JSON数组)]") || line.includes("新增对话(JSON数组)")) {
+    // 尝试从后续行获取完整 JSON（多行情况）
+    // 在主循环中会继续处理后续行，这里只做标记
+    return null; // 由多行处理逻辑处理
+  }
+  return null;
+}
+
+// 多行对话提取器 - 用于处理跨行的 JSON 数组
+function parseMultiLineDialogue(lines, startIndex) {
+  const result = [];
+  // 跳过标题行，从 [ 开始收集
+  let jsonLines = [];
+  for (let i = startIndex; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (line === "]" || line.startsWith("]") || line === "" || line.startsWith("[任务]") || line.startsWith("[输出格式")) {
+      // JSON 结束
+      break;
+    }
+    jsonLines.push(line);
+  }
+  if (jsonLines.length > 0) {
+    const jsonStr = jsonLines.join("").replace(/↩/g, " ");
+    try {
+      const parsed = JSON.parse(jsonStr);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        return { dialogues: parsed, endIndex: startIndex + jsonLines.length };
+      }
+    } catch (e) {
+      // 尝试逐个解析
+      try {
+        const parsed = JSON.parse("[" + jsonLines.join(",") + "]");
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return { dialogues: parsed, endIndex: startIndex + jsonLines.length };
+        }
+      } catch (e2) {}
+    }
+  }
   return null;
 }
 
@@ -283,6 +346,7 @@ const TASK_MODE_TAG_PREFIXES = [
   "[story:orchestrator:runtime]",
   "[story:orchestrator:minigame]",
   "[story:streamlines:runtime]",
+  "[story:streamlines:debug]",
   "[story:revisit",
   "[task:",
 ];
@@ -314,8 +378,10 @@ function parseTaskModeLogs(lines) {
   const sessions = new Map();
   let currentSession = null;
   let currentTimestamp = "";
+  let dialogueBuffer = null; // 多行对话缓冲
 
-  for (const rawLine of lines) {
+  for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
+    const rawLine = lines[lineIndex];
     const line = rawLine.trim();
     if (!line) continue;
 
@@ -342,6 +408,40 @@ function parseTaskModeLogs(lines) {
       }
     }
 
+    // 提取对话（多行格式处理）- 不依赖 isTaskModeLogLine，因为对话行可能不在任务标签列表中
+    // 精确匹配纯标题行（不含 [LOG] 前缀）
+    if (rawLine.trim() === "[新增对话(JSON数组)]") {
+      const dialogueBuffer = [];
+      for (let j = lineIndex + 1; j < lines.length && j < lineIndex + 50; j++) {
+        const nextLine = lines[j].trim();
+        // 遇到空行或任务标记就停止
+        if (nextLine === "" || nextLine.startsWith("[任务]") || nextLine.startsWith("[输出格式") || nextLine.startsWith("已生成台词")) {
+          break;
+        }
+        // 收集所有内容
+        dialogueBuffer.push(nextLine);
+        // 检测到结束标记
+        if (nextLine === "]" || nextLine.startsWith("],")) {
+          break;
+        }
+      }
+      // 解析对话
+      const dialogueSession = sessions.get(currentSession);
+      if (dialogueBuffer.length > 0 && dialogueSession) {
+        // 直接拼接（buffer 已经是完整 JSON 数组内容：[{...}, {...}...]）
+        const jsonStr = dialogueBuffer.join("").replace(/↩/g, " ");
+        try {
+          const dialogues = JSON.parse(jsonStr);
+          if (Array.isArray(dialogues) && dialogues.length > 0) {
+            dialogueSession.dialogues.push(...dialogues);
+          }
+        } catch (e) {
+          // 解析失败，跳过
+        }
+      }
+      // 对话行继续往下走，可能会被 isTaskModeLogLine 过滤，但对话已提取
+    }
+
     if (!currentSession || !isTaskModeLogLine(line)) continue;
 
     const tagInfo = detectLogTag(line);
@@ -354,6 +454,7 @@ function parseTaskModeLogs(lines) {
     };
 
     const session = sessions.get(currentSession);
+    if (!session) continue;
 
     // 任务创建
     if (tagName === "task:created" || line.includes("[story:mini_game:task] applyFreeChapterTaskBlueprintToState")) {
@@ -399,7 +500,7 @@ function parseTaskModeLogs(lines) {
       session.logEntries.push(entry);
     }
     // Speaker / streamlines
-    else if (tagName === "task:speaker" || line.includes("[story:streamlines:runtime]")) {
+    else if (tagName === "task:speaker" || line.includes("[story:streamlines:runtime]") || line.includes("[story:streamlines:debug]")) {
       const extract = TASK_LOG_TAGS["task:speaker"]?.extract(line) || {};
       session.speakerEntries.push({ timestamp: currentTimestamp, ...extract, raw: line });
       session.logEntries.push(entry);
@@ -431,12 +532,6 @@ function parseTaskModeLogs(lines) {
     // 其他任务日志
     else {
       session.logEntries.push(entry);
-    }
-
-    // 提取对话
-    const dialogues = extractNewDialogue(line);
-    if (dialogues && dialogues.length > 0) {
-      session.dialogues.push(...dialogues);
     }
   }
 
@@ -588,6 +683,12 @@ function generateMarkdown(sessions, logFilePath) {
           lines.push(`- 推进等级: \`${entry.level || "未知"}\``);
           lines.push(`- 分层: ${entry.tier || "未知"}`);
           lines.push(`- 需澄清: ${entry.needClarify || "未知"}`);
+          if (entry.processUpdate) {
+            lines.push(`- processUpdate: \`${entry.processUpdate.slice(0, 100)}${entry.processUpdate.length > 100 ? "..." : ""}\``);
+          }
+          if (entry.process) {
+            lines.push(`- 推进过程：${entry.process}`);
+          }
           lines.push("");
         });
       }
@@ -630,13 +731,26 @@ function generateMarkdown(sessions, logFilePath) {
     if (session.speakerEntries.length > 0) {
       lines.push("### Speaker / Streamlines");
       lines.push("");
-      lines.push("| # | 时间 | 模型 | isTaskModePlan | speakerRouteReason | speakerMode |");
-      lines.push("|---|------|------|----------------|--------------------|-------------|");
-      session.speakerEntries.forEach((entry, i) => {
-        const isWrong = entry.isMainSpeaker;
-        const row = `| ${i + 1} | ${entry.timestamp} | \`${entry.modelKey || ""}\` | ${entry.isTaskModePlan || ""} | \`${entry.speakerRouteReason || ""}\` | ${entry.speakerMode || ""} |`;
-        lines.push(isWrong ? row + " ⚠️走主线" : row);
-      });
+      // 优先使用 role/eventType/contentPreview 格式（格式1）
+      const hasRoleFormat = session.speakerEntries.some(e => e.role);
+      if (hasRoleFormat) {
+        lines.push("| # | 时间 | 角色 | 事件类型 | 发言预览 |");
+        lines.push("|---|------|------|---------|---------|");
+        session.speakerEntries.forEach((entry, i) => {
+          const role = entry.role || "";
+          const eventType = entry.eventType || "";
+          const preview = entry.contentPreview ? entry.contentPreview.slice(0, 60) : "";
+          lines.push(`| ${i + 1} | ${entry.timestamp} | ${role} | ${eventType} | ${preview} |`);
+        });
+      } else {
+        lines.push("| # | 时间 | 模型 | isTaskModePlan | speakerRouteReason | speakerMode |");
+        lines.push("|---|------|------|----------------|--------------------|-------------|");
+        session.speakerEntries.forEach((entry, i) => {
+          const isWrong = entry.isMainSpeaker;
+          const row = `| ${i + 1} | ${entry.timestamp} | \`${entry.modelKey || ""}\` | ${entry.isTaskModePlan || ""} | \`${entry.speakerRouteReason || ""}\` | ${entry.speakerMode || ""} |`;
+          lines.push(isWrong ? row + " ⚠️走主线" : row);
+        });
+      }
       lines.push("");
     }
 
