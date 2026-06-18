@@ -235,7 +235,18 @@ ${progress}
 请输出严格JSON：
 {"level":"等级","tier":"判定层级","reason":"理由","needClarify":true/false,"clarifyContent":"追问","processUpdate":{"action":"none|mark_complete|mark_failed|insert","phaseIndex":数字|null,"newPhase":"新阶段文本(仅insert时)"}}`;
 
+  console.log("[story:mini_game:task:progress:runtime] request", JSON.stringify({
+    userId,
+    intent,
+    objective,
+    progressPreview: progress.slice(0, 200),
+    messagePreview: message.slice(0, 100),
+    systemPromptChars: systemPrompt.length,
+    userPromptChars: userPrompt.length,
+  }));
+
   try {
+    const startedAt = Date.now();
     const modelConfig = await u.getPromptAi("storyEventProgressModel", userId);
     const result = await u.ai.text.invoke({
       plainTextOutput: true,
@@ -248,9 +259,17 @@ ${progress}
     }, modelConfig as any) as any;
 
     const rawText = String(result?.text || "").trim();
+    const latencyMs = Date.now() - startedAt;
+
+    console.log("[story:mini_game:task:progress:runtime] response", JSON.stringify({
+      rawTextPreview: rawText.slice(0, 200),
+      latencyMs,
+    }));
+
     const jsonMatch = rawText.match(/\{[\s\S]*\}/);
     if (!jsonMatch) {
       console.warn("[TaskProgressAgent] AI 未返回 JSON：", rawText.slice(0, 200));
+      console.log(`[story:mini_game:task:progress:stats] status=json_not_found latency_ms=${latencyMs}`);
       return { level: "maintain", tier: "ai", reason: "AI 未返回 JSON", needClarify: false, processUpdate: { action: "none", phaseIndex: null, newPhase: null } };
     }
     let obj: any;
@@ -258,15 +277,20 @@ ${progress}
       obj = JSON.parse(jsonMatch[0]);
     } catch (e) {
       console.warn("[TaskProgressAgent] JSON 解析失败：", e);
+      console.log(`[story:mini_game:task:progress:stats] status=parse_error latency_ms=${latencyMs}`);
       return { level: "maintain", tier: "ai", reason: "AI JSON 解析失败", needClarify: false, processUpdate: { action: "none", phaseIndex: null, newPhase: null } };
     }
     const parsed = AI_SCHEMA.safeParse(obj);
     if (!parsed.success) {
       console.warn("[TaskProgressAgent] schema 校验失败：", parsed.error);
+      console.log(`[story:mini_game:task:progress:stats] status=schema_error latency_ms=${latencyMs}`);
       return { level: "maintain", tier: "ai", reason: "AI schema 校验失败", needClarify: false, processUpdate: { action: "none", phaseIndex: null, newPhase: null } };
     }
     const d = parsed.data;
     const update = d.processUpdate;
+
+    console.log(`[story:mini_game:task:progress:stats] level=${LEVEL_MAP[d.level] || "maintain"} tier=${TIER_MAP[d.tier] || "ai"} action=${update?.action || "none"} latency_ms=${latencyMs}`);
+
     return {
       level: LEVEL_MAP[d.level] || "maintain",
       tier: TIER_MAP[d.tier] || "ai",
@@ -281,6 +305,7 @@ ${progress}
     };
   } catch (e) {
     console.error("[TaskProgressAgent] AI调用失败", e);
+    console.log(`[story:mini_game:task:progress:stats] status=exception error=${(e as Error)?.message}`);
     return { level: "maintain", tier: "ai", reason: "AI异常", needClarify: false, processUpdate: { action: "none", phaseIndex: null, newPhase: null } };
   }
 }

@@ -66,7 +66,14 @@ ${npcCard ? `【NPC 人设】\n${npcCard}` : ""}
 
 只输出台词内容本身，不要 JSON 包装、不要标签。`;
 
-  try {
+  console.log("[story:mini_game:task:streamlines:runtime] request", JSON.stringify({
+      userId,
+      speaker: director.speaker,
+      taskType: director.taskType,
+      motive: director.motive,
+    }));
+
+    const startedAt = Date.now();
     const modelConfig = await u.getPromptAi("storyOrchestratorModel", userId);
     const result = await u.ai.text.invoke({
       plainTextOutput: true,
@@ -79,8 +86,16 @@ ${npcCard ? `【NPC 人设】\n${npcCard}` : ""}
     }, modelConfig as any) as any;
 
     const rawText = String(result?.text || "").trim();
+    const latencyMs = Date.now() - startedAt;
+
+    console.log("[story:mini_game:task:streamlines:runtime] response", JSON.stringify({
+      rawTextPreview: rawText.slice(0, 200),
+      latencyMs,
+    }));
+
     if (!rawText) {
       console.warn("[TaskSpeakerAgent] AI 返回空文本");
+      console.log(`[story:mini_game:task:streamlines:stats] status=empty latency_ms=${latencyMs}`);
       return fallbackTemplate(director);
     }
     // 去掉可能的 markdown 代码围栏 / JSON 包装
@@ -101,6 +116,9 @@ ${npcCard ? `【NPC 人设】\n${npcCard}` : ""}
       .replace(/^```[\w]*\s*|```\s*$/g, "")
       .replace(/^"|"$/g, "")
       .trim();
+
+    console.log(`[story:mini_game:task:streamlines:stats] speaker=${director.speaker} content_chars=${content.length} latency_ms=${latencyMs}`);
+
     return {
       speaker: director.speaker,
       speakerRole: director.speakerRole,
@@ -108,6 +126,7 @@ ${npcCard ? `【NPC 人设】\n${npcCard}` : ""}
     };
   } catch (e) {
     console.error("[TaskSpeakerAgent] AI调用失败", e);
+    console.log(`[story:mini_game:task:streamlines:stats] status=exception error=${(e as Error)?.message}`);
     return fallbackTemplate(director);
   }
 }

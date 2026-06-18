@@ -21,7 +21,7 @@ if (DebugLogUtil.isDebugLogEnabled()) {
 [DEBUG] 通用debug 日志
 [story:orchestrator:runtime] :编排师日志
 [story:orchestrator:stats]: 编排师日志 token 统计 
-[story:orchestrator:runtime]：判断为不走到模型。原因：{原因}
+
 
 [tag_api]:请求日志
 [tag_end_chapter]:章节结束判断。{章节}{条件}{为什么判断结束}
@@ -66,7 +66,39 @@ if (DebugLogUtil.isDebugLogEnabled()) {
   - 命令触发任务创建：taskDescription
   - AI 触发任务创建：confidence, reasoning, taskDescription
   - AI 触发退出任务（T4.x 待实现）
-  - AI 触发查询进度（T4.x 待实现）
+- AI 触发查询进度（T4.x 待实现）
+
+[story:intent:analysis:runtime]: 意图分析请求/响应日志
+  - request: manufacturer, model, messagePreview, activeTaskId, systemPromptChars, userPromptChars
+  - response / qwen060_response / qwen060_classification_result: path, intent, confidence, reasoning, latencyMs
+[story:intent:analysis:stats]: 意图分析统计
+  - path=ai-sdk/qwen060 intent=xxx confidence=x latency_ms=x
+  - status=skipped/json_not_found/parse_error/schema_error/exception
+
+[story:mini_game:task:orchestrator:runtime]: 任务剧情编排师请求/响应日志
+  - request: userId, progressLevel, objective, processPreview, npcCount, messagePreview
+  - response: rawTextPreview, latencyMs
+[story:mini_game:task:orchestrator:stats]: 任务编排师统计
+  - speaker=xxx taskType=xxx latency_ms=x
+  - status=json_not_found/parse_error/schema_error
+
+[story:mini_game:task:progress:runtime]: 任务推进判定器请求/响应日志
+  - request: userId, intent, objective, progressPreview, messagePreview, systemPromptChars, userPromptChars
+  - response: rawTextPreview, latencyMs
+[story:mini_game:task:progress:stats]: 任务推进判定统计
+  - level=xxx tier=xxx action=xxx latency_ms=x
+  - status=json_not_found/parse_error/schema_error/exception
+
+[story:mini_game:task:streamlines:runtime]: 任务角色发言器请求/响应日志
+  - request: userId, speaker, taskType, motive
+  - response: rawTextPreview, latencyMs
+[story:mini_game:task:streamlines:stats]: 任务角色发言统计
+  - speaker=xxx content_chars=x latency_ms=x
+  - status=empty/exception
+
+[story:mini_game:task:completion:runtime]: 任务完成评估器日志
+[story:mini_game:task:completion:stats]: 任务完成评估 token 统计
+
 ## 后端通用tag
 [debug:revisit:not_found]: 回溯失败
 [debug:revisit]: 回溯相关

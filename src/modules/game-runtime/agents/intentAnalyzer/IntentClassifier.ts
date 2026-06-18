@@ -119,7 +119,6 @@ exit_task > create_task > query_progress > game_action > normal_dialog
 // ============================================================================
 
 function buildUserPrompt(ctx: IntentContext): string {
-  // 简化：只给意图分类需要的最小上下文，避免 Qwen3 被长 prompt 干扰
   const hasActiveTask = !!ctx.activeTaskId;
   return `输入：${ctx.playerMessage}\n（${hasActiveTask ? "当前有进行中任务" : "当前无进行中任务"}）\n输出 JSON：`;
 }
@@ -132,26 +131,14 @@ function buildUserPrompt(ctx: IntentContext): string {
 const INTENT_MODEL_KEY = "intentClassifierModel";
 
 /**
- * 调用用户配置的模型进行意图分类
- *
- * @param ctx 意图分析上下文
- * @returns 分类结果，失败返回 null
- */
-/**
  * 从文本中提取第一个完整的 JSON 对象。
  * 使用括号配平算法，跳过字符串内的括号。
- *
- * 兼容场景：
- * - ```json { ... } ```
- * - 纯 JSON: { ... }
- * - 多余前缀/后缀文本
  */
 function extractJsonObject(text: string): string | null {
   if (!text) return null;
   let i = text.indexOf("{");
   if (i < 0) return null;
 
-  // 从第一个 { 开始，找配平的 }
   let depth = 0;
   let inString = false;
   let escapeNext = false;
@@ -173,42 +160,38 @@ function extractJsonObject(text: string): string | null {
 }
 
 export async function classifyIntentWithAi(ctx: IntentContext): Promise<IntentResult | null> {
-  const TAG = "[story:intent:analysis]";
   try {
-    // 1. 获取模型配置
     const modelConfig = await u.getPromptAi(INTENT_MODEL_KEY, ctx.userId) as any;
 
     if (!modelConfig || !modelConfig.model) {
-      console.log(`${TAG} 未配置意图分析师模型，跳过 AI 分类`, { userId: ctx.userId });
+      console.log("[story:intent:analysis:stats] status=skipped reason=model_not_configured");
       return null;
     }
 
-    // 本地模型（qwen060）不需要 apiKey
     const isLocalModel = modelConfig.manufacturer === "qwen060";
     if (!isLocalModel && !modelConfig.apiKey) {
-      console.log(`${TAG} 未配置 apiKey，跳过 AI 分类`, { manufacturer: modelConfig.manufacturer });
+      console.log("[story:intent:analysis:stats] status=skipped reason=api_key_missing");
       return null;
     }
 
-    console.log(`${TAG} 开始意图分析`, {
-      userId: ctx.userId,
-      manufacturer: modelConfig.manufacturer,
-      model: modelConfig.model,
-      messagePreview: String(ctx.playerMessage || "").slice(0, 80),
-      activeTaskId: ctx.activeTaskId || null,
-    });
-
-    // 2. 构建 prompt（优先从数据库读取自定义版本）
     const { loadTaskPrompt } = await import("../taskMode/loadTaskPrompt");
     const systemPrompt = await loadTaskPrompt("intent-analyzer", buildSystemPrompt());
     const userPrompt = buildUserPrompt(ctx);
 
-    // 3. 调用 AI
+    console.log("[story:intent:analysis:runtime] request", JSON.stringify({
+      userId: ctx.userId,
+      manufacturer: modelConfig.manufacturer,
+      model: modelConfig.model,
+      messagePreview: String(ctx.playerMessage || "").slice(0, 100),
+      activeTaskId: ctx.activeTaskId || null,
+      systemPromptChars: systemPrompt.length,
+      userPromptChars: userPrompt.length,
+    }));
+
     const startedAt = Date.now();
     let rawText: string;
 
     if (isLocalModel) {
-      // qwen060：直接走 node-llama-cpp 本地推理
       const { chatWithQwen060 } = await import("@/lib/localQwen060");
       const result = await chatWithQwen060({
         messages: [
@@ -217,12 +200,10 @@ export async function classifyIntentWithAi(ctx: IntentContext): Promise<IntentRe
         ],
         maxTokens: 512,
         temperature: 0.3,
-        // 意图分类不需要思考模式，直接出 JSON
         enableThinking: false,
       });
       rawText = result.text;
     } else {
-      // 其他厂商：走 ai-sdk
       const aiResult = await u.ai.text.invoke(
         {
           system: systemPrompt,
@@ -236,20 +217,23 @@ export async function classifyIntentWithAi(ctx: IntentContext): Promise<IntentRe
         },
         modelConfig,
       ) as any;
-      // ai-sdk 已经解析为对象
+
       const validated = AI_RESPONSE_SCHEMA.safeParse(aiResult);
       if (validated.success) {
         const { intent, confidence, reasoning, params } = validated.data;
         const validIntents: IntentType[] = ["create_task", "exit_task", "query_progress", "game_action", "normal_dialog"];
         const normalizedIntent = validIntents.includes(intent as IntentType) ? (intent as IntentType) : "normal_dialog";
         const latencyMs = Date.now() - startedAt;
-        console.log(`${TAG} AI 分类完成`, {
+
+        console.log("[story:intent:analysis:runtime] response", JSON.stringify({
           path: "ai-sdk",
           intent: normalizedIntent,
           confidence: Math.max(0, Math.min(1, confidence)),
           reasoning: reasoning?.slice(0, 80) || "无推理",
           latencyMs,
-        });
+        }));
+        console.log(`[story:intent:analysis:stats] path=ai-sdk intent=${normalizedIntent} confidence=${Math.max(0, Math.min(1, confidence))} latency_ms=${latencyMs}`);
+
         return {
           intent: normalizedIntent,
           confidence: Math.max(0, Math.min(1, confidence)),
@@ -258,33 +242,28 @@ export async function classifyIntentWithAi(ctx: IntentContext): Promise<IntentRe
           path: "ai",
         };
       }
-      console.log(`${TAG} AI 返回格式解析失败`, { rawResult: aiResult });
+      console.log("[story:intent:analysis:stats] path=ai-sdk status=parse_error");
       return null;
     }
 
     const latencyMs = Date.now() - startedAt;
-    console.log(`${TAG} qwen060 推理完成`, {
+    console.log("[story:intent:analysis:runtime] qwen060_response", JSON.stringify({
       latencyMs,
       rawTextLength: rawText.length,
       rawTextPreview: rawText.slice(0, 200),
-    });
+    }));
 
-    // 4. 解析 qwen060 的纯文本输出（应该是 JSON）
-    // 使用括号配平算法提取完整 JSON
     const jsonStr = extractJsonObject(rawText);
     if (!jsonStr) {
-      console.log(`${TAG} 未找到 JSON 输出`, { rawText: rawText.slice(0, 300) });
+      console.log("[story:intent:analysis:stats] path=qwen060 status=json_not_found latency_ms=" + latencyMs);
       return null;
     }
 
     let parsed: any;
     try {
       parsed = JSON.parse(jsonStr);
-    } catch (err) {
-      console.log(`${TAG} JSON 解析失败`, {
-        error: (err as Error).message,
-        jsonStr: jsonStr.slice(0, 300),
-      });
+    } catch {
+      console.log("[story:intent:analysis:stats] path=qwen060 status=json_parse_error latency_ms=" + latencyMs);
       return null;
     }
 
@@ -294,13 +273,14 @@ export async function classifyIntentWithAi(ctx: IntentContext): Promise<IntentRe
       const validIntents: IntentType[] = ["create_task", "exit_task", "query_progress", "game_action", "normal_dialog"];
       const normalizedIntent = validIntents.includes(intent as IntentType) ? (intent as IntentType) : "normal_dialog";
 
-      console.log(`${TAG} qwen060 分类完成`, {
+      console.log("[story:intent:analysis:runtime] qwen060_classification_result", JSON.stringify({
         path: "qwen060",
         intent: normalizedIntent,
         confidence: Math.max(0, Math.min(1, confidence)),
         reasoning: reasoning?.slice(0, 80) || "无推理",
         latencyMs,
-      });
+      }));
+      console.log(`[story:intent:analysis:stats] path=qwen060 intent=${normalizedIntent} confidence=${Math.max(0, Math.min(1, confidence))} latency_ms=${latencyMs}`);
 
       return {
         intent: normalizedIntent,
@@ -311,19 +291,16 @@ export async function classifyIntentWithAi(ctx: IntentContext): Promise<IntentRe
       };
     }
 
-    console.log(`${TAG} qwen060 输出格式校验失败`, { parsed });
+    console.log("[story:intent:analysis:stats] path=qwen060 status=schema_error latency_ms=" + latencyMs);
     return null;
   } catch (err) {
-    console.warn(`${TAG} AI 分类失败`, { error: (err as Error)?.message });
+    console.warn("[story:intent:analysis:stats] status=exception error=" + (err as any)?.message);
     return null;
   }
 }
 
 /**
- * 意图分析兜底链
- *
- * @param ctx 意图分析上下文
- * @returns 分类结果（永不为 null）
+ * 意图分析入口（永不为 null）
  */
 export async function analyzeIntentWithAi(ctx: IntentContext): Promise<IntentResult> {
   const result = await classifyIntentWithAi(ctx);
@@ -332,11 +309,10 @@ export async function analyzeIntentWithAi(ctx: IntentContext): Promise<IntentRes
     return result;
   }
 
-  // 降级到 normal_dialog
   return {
     intent: "normal_dialog",
     confidence: 0,
-    reasoning: result ? "AI 分类置信度不足，默认为普通对话" : "AI 分类不可用，默认为普通对话",
+    reasoning: result ? "AI 分类置信度不足" : "AI 分类不可用",
     params: {},
     path: "fallback",
   };

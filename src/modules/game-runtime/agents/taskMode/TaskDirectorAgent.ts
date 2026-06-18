@@ -98,6 +98,16 @@ ${npcText}
 {"speaker":"...","motive":"...","taskType":"...","direction":"...","expectedResult":"..."}`;
 
   try {
+    console.log("[story:mini_game:task:orchestrator:runtime] request", JSON.stringify({
+      userId,
+      progressLevel,
+      objective: taskObjective,
+      processPreview: taskProcess.join("→").slice(0, 200),
+      npcCount: npcList.length,
+      messagePreview: message.slice(0, 100),
+    }));
+
+    const startedAt = Date.now();
     const modelConfig = await u.getPromptAi("storyOrchestratorModel", userId);
     const result = await u.ai.text.invoke({
       plainTextOutput: true,
@@ -110,9 +120,17 @@ ${npcText}
     }, modelConfig as any) as any;
 
     const rawText = String(result?.text || "").trim();
+    const latencyMs = Date.now() - startedAt;
+
+    console.log("[story:mini_game:task:orchestrator:runtime] response", JSON.stringify({
+      rawTextPreview: rawText.slice(0, 200),
+      latencyMs,
+    }));
+
     const jsonMatch = rawText.match(/\{[\s\S]*\}/);
     if (!jsonMatch) {
       console.warn("[TaskDirectorAgent] AI 未返回 JSON：", rawText.slice(0, 200));
+      console.log(`[story:mini_game:task:orchestrator:stats] status=json_not_found latency_ms=${latencyMs}`);
       return fallbackDirector(progressLevel, npcList);
     }
     let obj: any;
@@ -120,13 +138,17 @@ ${npcText}
       obj = JSON.parse(jsonMatch[0]);
     } catch (e) {
       console.warn("[TaskDirectorAgent] JSON 解析失败：", e);
+      console.log(`[story:mini_game:task:orchestrator:stats] status=parse_error latency_ms=${latencyMs}`);
       return fallbackDirector(progressLevel, npcList);
     }
     const parsed = AI_SCHEMA.safeParse(obj);
     if (!parsed.success) {
       console.warn("[TaskDirectorAgent] schema 校验失败：", parsed.error);
+      console.log(`[story:mini_game:task:orchestrator:stats] status=schema_error latency_ms=${latencyMs}`);
       return fallbackDirector(progressLevel, npcList);
     }
+
+    console.log(`[story:mini_game:task:orchestrator:stats] speaker=${obj.speaker} taskType=${obj.taskType} latency_ms=${latencyMs}`);
     const d = parsed.data;
     return {
       speaker: d.speaker,
