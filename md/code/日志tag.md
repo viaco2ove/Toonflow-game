@@ -98,7 +98,7 @@ yarn debug:mini-game logs/app-2026-05-08.log
   播报回合，敌方攻击回合，小游戏规程性退出回合，小游戏#退出回合。
 
 ## 任务模型日志摘要生成
-yarn debug:mini-game:task logs/app-2026-05-08.log
+yarn debug:mini-game:task logs/app-2026-06-18.log
 模板参考[debug-mini-game-task.md](template/debug-mini-game-task.md)
 
 **Log Tag 图例：**
