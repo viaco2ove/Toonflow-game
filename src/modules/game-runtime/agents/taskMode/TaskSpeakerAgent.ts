@@ -66,7 +66,8 @@ ${npcCard ? `【NPC 人设】\n${npcCard}` : ""}
 
 只输出台词内容本身，不要 JSON 包装、不要标签。`;
 
-  console.log("[story:mini_game:task:streamlines:runtime] request", JSON.stringify({
+  try {
+    console.log("[story:mini_game:task:streamlines:runtime] request", JSON.stringify({
       userId,
       speaker: director.speaker,
       taskType: director.taskType,
