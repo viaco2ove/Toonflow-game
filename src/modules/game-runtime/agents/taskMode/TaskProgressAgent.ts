@@ -154,6 +154,9 @@ function evalStatic(intent: IntentType, currentPhases: string[]): ProgressResult
 
 function evalKeyword(intent: IntentType, msg: string, currentPhases: string[]): ProgressResult | null {
   const m = String(msg || "").toLowerCase();
+
+  // 只保留明确“不需要大模型”的非推进类判断。
+  // 注意：推进过程是否完成、插入、失败，必须交给 evalAi 根据上下文动态判断。
   if (intent === "query_progress" && QUERY_KW.some(k => m.includes(k))) {
     return {
       level: "maintain", tier: "keyword",
@@ -162,40 +165,26 @@ function evalKeyword(intent: IntentType, msg: string, currentPhases: string[]): 
       processUpdate: { action: "none", phaseIndex: null, newPhase: null },
     };
   }
-  if (intent === "create_task" || intent === "game_action") {
-    if (DOWN_ABANDON.some(k => m.includes(k))) {
-      return {
-        level: "abandon", tier: "keyword",
-        reason: "包含放弃关键词",
-        needClarify: false,
-        processUpdate: { action: "none", phaseIndex: null, newPhase: null },
-      };
-    }
-    if (DOWN_QUERY.some(k => m.includes(k))) {
-      return {
-        level: "maintain", tier: "keyword",
-        reason: "降级为查询",
-        needClarify: true, clarifyContent: "你想了解什么？",
-        processUpdate: { action: "none", phaseIndex: null, newPhase: null },
-      };
-    }
-    // 有效任务意图 → 推进，标记第一个未完成阶段为进行中
-    const firstIdle = currentPhases.findIndex(p => {
-      const { status } = parsePhase(p);
-      return status === "idle" || status === "active";
-    });
+
+  if (DOWN_ABANDON.some(k => m.includes(k))) {
     return {
-      level: "normal", tier: "keyword",
-      reason: "有效任务意图，推进阶段",
+      level: "abandon", tier: "keyword",
+      reason: "包含放弃关键词",
       needClarify: false,
-      processUpdate: {
-        action: firstIdle >= 0 ? "mark_complete" : "none",
-        phaseIndex: firstIdle >= 0 ? firstIdle : null,
-        newPhase: null,
-      },
+      processUpdate: { action: "none", phaseIndex: null, newPhase: null },
     };
   }
-  return (null as any);
+
+  if (DOWN_QUERY.some(k => m.includes(k))) {
+    return {
+      level: "maintain", tier: "keyword",
+      reason: "降级为查询",
+      needClarify: true, clarifyContent: "你想了解什么？",
+      processUpdate: { action: "none", phaseIndex: null, newPhase: null },
+    };
+  }
+
+  return null;
 }
 
 async function evalAi(
@@ -269,7 +258,9 @@ ${progress}
     const jsonMatch = rawText.match(/\{[\s\S]*\}/);
     if (!jsonMatch) {
       console.warn("[TaskProgressAgent] AI 未返回 JSON：", rawText.slice(0, 200));
-      console.log(`[story:mini_game:task:progress:stats] status=json_not_found latency_ms=${latencyMs}`);
+      console.log(`[story:mini_game:task:progress:stats] status=json_not_found latency_ms=${latencyMs} response_chars=${rawText.length} response_preview=${rawText.slice(0, 150)}`);
+      console.log(`[story:mini_game:task:progress:stats] | System Prompt | ${systemPrompt.replace(/\n/g, "↩").slice(0, 120)} | ${systemPrompt.length} |`);
+      console.log(`[story:mini_game:task:progress:stats] | User Prompt | ${userPrompt.replace(/\n/g, "↩").slice(0, 120)} | ${userPrompt.length} |`);
       return { level: "maintain", tier: "ai", reason: "AI 未返回 JSON", needClarify: false, processUpdate: { action: "none", phaseIndex: null, newPhase: null } };
     }
     let obj: any;
@@ -277,19 +268,32 @@ ${progress}
       obj = JSON.parse(jsonMatch[0]);
     } catch (e) {
       console.warn("[TaskProgressAgent] JSON 解析失败：", e);
-      console.log(`[story:mini_game:task:progress:stats] status=parse_error latency_ms=${latencyMs}`);
+      console.log(`[story:mini_game:task:progress:stats] status=parse_error latency_ms=${latencyMs} response_chars=${rawText.length} response_preview=${rawText.slice(0, 150)}`);
+      console.log(`[story:mini_game:task:progress:stats] | System Prompt | ${systemPrompt.replace(/\n/g, "↩").slice(0, 120)} | ${systemPrompt.length} |`);
+      console.log(`[story:mini_game:task:progress:stats] | User Prompt | ${userPrompt.replace(/\n/g, "↩").slice(0, 120)} | ${userPrompt.length} |`);
       return { level: "maintain", tier: "ai", reason: "AI JSON 解析失败", needClarify: false, processUpdate: { action: "none", phaseIndex: null, newPhase: null } };
     }
     const parsed = AI_SCHEMA.safeParse(obj);
     if (!parsed.success) {
       console.warn("[TaskProgressAgent] schema 校验失败：", parsed.error);
-      console.log(`[story:mini_game:task:progress:stats] status=schema_error latency_ms=${latencyMs}`);
+      console.log(`[story:mini_game:task:progress:stats] status=schema_error latency_ms=${latencyMs} response_chars=${rawText.length} response_preview=${rawText.slice(0, 150)}`);
+      console.log(`[story:mini_game:task:progress:stats] | System Prompt | ${systemPrompt.replace(/\n/g, "↩").slice(0, 120)} | ${systemPrompt.length} |`);
+      console.log(`[story:mini_game:task:progress:stats] | User Prompt | ${userPrompt.replace(/\n/g, "↩").slice(0, 120)} | ${userPrompt.length} |`);
       return { level: "maintain", tier: "ai", reason: "AI schema 校验失败", needClarify: false, processUpdate: { action: "none", phaseIndex: null, newPhase: null } };
     }
     const d = parsed.data;
     const update = d.processUpdate;
 
-    console.log(`[story:mini_game:task:progress:stats] level=${LEVEL_MAP[d.level] || "maintain"} tier=${TIER_MAP[d.tier] || "ai"} action=${update?.action || "none"} latency_ms=${latencyMs}`);
+    console.log(`[story:mini_game:task:progress:stats] level=${LEVEL_MAP[d.level] || "maintain"} tier=${TIER_MAP[d.tier] || "ai"} action=${update?.action || "none"} phaseIndex=${update?.phaseIndex ?? null} latency_ms=${latencyMs}`);
+    if (result?.usage) {
+      console.log(`[story:mini_game:task:progress:stats] actual_input_tokens=${result.usage.inputTokens || 0} actual_output_tokens=${result.usage.outputTokens || 0} actual_reasoning_tokens=${result.usage.reasoningTokens || 0} cache_read_tokens=${result.usage.cacheReadTokens || 0}`);
+    }
+    console.log(`[story:mini_game:task:progress:stats] response_chars=${rawText.length} response_preview=${rawText.slice(0, 150)}`);
+    console.log(`[story:mini_game:task:progress:stats] 以下为 prompt 体积估算，不等于模型真实 usage。`);
+    console.log(`[story:mini_game:task:progress:stats] | 区块 | 实际内容 | 字符数 |`);
+    console.log(`[story:mini_game:task:progress:stats] |---|---|---:|`);
+    console.log(`[story:mini_game:task:progress:stats] | System Prompt | ${systemPrompt.replace(/\n/g, "↩").slice(0, 120)} | ${systemPrompt.length} |`);
+    console.log(`[story:mini_game:task:progress:stats] | User Prompt | ${userPrompt.replace(/\n/g, "↩").slice(0, 120)} | ${userPrompt.length} |`);
 
     return {
       level: LEVEL_MAP[d.level] || "maintain",
