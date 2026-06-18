@@ -14,6 +14,27 @@ import {
 import { DebugLogUtil } from "@/utils/debugLogUtil";
 import u from "@/utils";
 
+// 复用 TaskProgressAgent 的纯函数（避免循环依赖）
+function parsePhaseStep(text: string): { text: string; status: "idle" | "active" | "complete" | "failed" } {
+  const m = text.match(/^\[([isaf])\]\s*(.*)$/s);
+  if (!m) return { text, status: "idle" };
+  const map: Record<string, "idle" | "active" | "complete" | "failed"> = { i: "active", s: "complete", f: "failed", "": "idle" };
+  return { text: m[2].trim(), status: map[m[1]] || "idle" };
+}
+function renderPhaseStep(text: string, status: "idle" | "active" | "complete" | "failed"): string {
+  const tag = status === "active" ? "[i]" : status === "complete" ? "[s]" : status === "failed" ? "[f]" : "[]";
+  return `${tag}${text}`;
+}
+function initTaskProcessWithActive(process: string[]): string[] {
+  if (!process || process.length === 0) return process;
+  const phases = process.map(p => parsePhaseStep(p));
+  const firstIdle = phases.findIndex(p => p.status === "idle" || p.status === "active");
+  if (firstIdle >= 0) {
+    phases[firstIdle] = { ...phases[firstIdle], status: "active" };
+  }
+  return phases.map(p => renderPhaseStep(p.text, p.status));
+}
+
 const FREE_TASK_MINI_GAME_TYPE = "task";
 
 /**
@@ -421,6 +442,8 @@ function setFreeTaskMiniGameState(input: {
   option: FreeChapterTaskOption;
   eventIndex: number;
 }): void {
+  // ★ 对 blueprint.process 做初始化：第一个阶段标记为 [i]
+  const initializedProcess = initTaskProcessWithActive(input.blueprint.process);
   const root = asRecord(input.state.miniGame);
   root.rulebook = {
     gameType: FREE_TASK_MINI_GAME_TYPE,
@@ -440,7 +463,7 @@ function setFreeTaskMiniGameState(input: {
       task_category: scalarText(input.option.category) || "自由任务",
       task_description: scalarText(input.option.description),
       current_objective: input.blueprint.objective,
-      process_steps: input.blueprint.process,
+      process_steps: initializedProcess,
       success_conditions: input.blueprint.successConditions,
       failure_conditions: input.blueprint.failureConditions,
       current_status: "进行中",
@@ -459,7 +482,7 @@ function setFreeTaskMiniGameState(input: {
       { key: "任务标题", value: input.blueprint.taskTitle },
       { key: "任务分类", value: scalarText(input.option.category) || "自由任务" },
       { key: "当前目标", value: input.blueprint.objective },
-      { key: "推进过程", value: input.blueprint.process.join("；") },
+      { key: "推进过程", value: initializedProcess.join("；") },
       { key: "成功条件", value: input.blueprint.successConditions.join("；") },
       { key: "失败条件", value: input.blueprint.failureConditions.join("；") },
     ],
@@ -1172,12 +1195,13 @@ function applyFreeChapterTaskBlueprintToState(input: {
   const vars = typeof input.state.vars === "object" && input.state.vars && !Array.isArray(input.state.vars)
     ? input.state.vars as JsonRecord
     : {};
+  const initializedProcess = initTaskProcessWithActive(input.blueprint.process);
   vars.activeFreeTask = {
     title: input.blueprint.taskTitle,
     category: input.option.category,
     description: input.option.description,
     objective: input.blueprint.objective,
-    process: input.blueprint.process,
+    process: initializedProcess,
     successConditions: input.blueprint.successConditions,
     failureConditions: input.blueprint.failureConditions,
     status: "doing",
@@ -1196,11 +1220,12 @@ function applyFreeChapterTaskBlueprintToState(input: {
     addTags: ["任务进行中", "自由行动阶段"],
     removeTags: ["等待任务推荐请求", "等待任务选择", "等待进入任务流程"],
   });
+  // ★ 初始化 process：第一个阶段标记为 [i]（进行中），其余保持 []
   setExecutingTaskCardValue(input.state, {
     title: input.blueprint.taskTitle,
     category: scalarText(input.option.category) || "自由任务",
     objective: input.blueprint.objective,
-    process: input.blueprint.process,
+    process: initializedProcess,
     successConditions: input.blueprint.successConditions,
     failureConditions: input.blueprint.failureConditions,
     status: "doing",

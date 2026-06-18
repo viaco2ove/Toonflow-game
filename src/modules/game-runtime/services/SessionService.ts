@@ -1293,6 +1293,18 @@ async function tryBuildTaskModePlan(input: {
       activeTask.process = updatedProcess;
       vars.activeFreeTask = activeTask;
       input.state.vars = vars;
+      // ★ 同时同步到 miniGame.ui.state_items，让前端小游戏面板能看到更新的推进过程
+      const miniGame = (input.state.miniGame || {}) as Record<string, any>;
+      const ui = (miniGame.ui || {}) as Record<string, any>;
+      const stateItems = Array.isArray(ui.state_items) ? ui.state_items as Record<string, string>[] : [];
+      const processItem = stateItems.find(item => item.key === "推进过程");
+      if (processItem) {
+        processItem.value = updatedProcess.join("；");
+      }
+      // ★ 同步到 miniGame.session.public_state.process_steps
+      const session = (miniGame.session || {}) as Record<string, any>;
+      const publicState = (session.public_state || {}) as Record<string, any>;
+      publicState.process_steps = updatedProcess;
       console.log("[task-mode-plan] process 已更新:", JSON.stringify(updatedProcess));
     }
   }

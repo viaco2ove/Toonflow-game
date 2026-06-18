@@ -555,7 +555,9 @@ async function ensureModelLoaded(): Promise<void> {
   }
 
   if (!llamaContext) {
-    llamaContext = await llamaModel.createContext({ contextSize: 4096 });
+    const nCtx = parseInt(process.env.LOCAL_CHAT_N_CTX || "4096", 10);
+    const nThreads = parseInt(process.env.LOCAL_CHAT_N_THREADS || "2", 10);
+    llamaContext = await llamaModel.createContext({ contextSize: nCtx, nThreads });
     dlog("[inference] context 创建完成");
   }
 }
@@ -592,7 +594,7 @@ export async function chatWithQwen060(opts: Qwen060ChatOptions): Promise<Qwen060
 
   const startedAt = Date.now();
   const rawText = await session.prompt(userContent, {
-    maxTokens: opts.maxTokens || 1024,  // Qwen3 思考模式需要更多 token
+    maxTokens: opts.maxTokens || parseInt(process.env.LOCAL_CHAT_MAX_TOKENS || "1024", 10),
     temperature: opts.temperature ?? 0.3,
   });
   const cost = Date.now() - startedAt;
