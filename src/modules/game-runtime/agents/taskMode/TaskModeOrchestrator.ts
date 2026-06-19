@@ -89,6 +89,9 @@ export async function orchestrateTaskMode(ctx: TaskModeContext): Promise<TaskMod
     ctx.recentDialogue || [],
     ctx.playerMessage,
     ctx.userId,
+    ctx.npcCards || "",
+    ctx.originalGlobalBackground || "",
+    ctx.dynamicGlobalBackground || "",
   );
   console.log("[TaskMode] Step3 编排：", directorResult.speaker, "/", directorResult.taskType);
 

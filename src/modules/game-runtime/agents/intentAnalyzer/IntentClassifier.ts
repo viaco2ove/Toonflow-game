@@ -16,8 +16,8 @@ import { z } from "zod";
 // 类型定义
 // ============================================================================
 
-/** 5 类意图（复用意图分析师_prompt.md） */
-export type IntentType = "create_task" | "exit_task" | "query_progress" | "game_action" | "normal_dialog";
+/** 6 类意图（复用意图分析师_prompt.md） */
+export type IntentType = "create_task" | "exit_task" | "query_progress" | "game_action" | "memory_update" | "normal_dialog";
 
 /** IntentContext：意图分析输入 */
 export interface IntentContext {
@@ -70,11 +70,15 @@ function buildSystemPrompt(): string {
    - 触发词：攻击、使用、打开、查看背包、对话
    - 例："我攻击那只怪物"
 
-5. normal_dialog：普通对话（兜底，不涉及任务）
+5. memory_update：用户想更新自己的角色参数卡（物品、装备、技能、状态、身份、等级、经验等长期数据）
+   - 触发词：放入物品栏、记录在、加入背包、装备上、学会了、升级到、把xx记录、把xx放入、获得物品、丢掉、消耗、记忆管理
+   - 例："把宿舍牌放入物品栏" / "我学会了xxx技能" / "在其他里记录我是xx" / "我装备上xx"
+
+6. normal_dialog：普通对话（兜底，不涉及任务）
    - 例："老板你好" / "你认识他吗"
 
 # 优先级（同时匹配时取高）
-exit_task > create_task > query_progress > game_action > normal_dialog
+exit_task > memory_update > create_task > query_progress > game_action > normal_dialog
 
 # 输出格式（严格 JSON，不要 markdown 代码块，不要 \\\`\\\`\\\`，不要思考过程）
 
@@ -111,7 +115,13 @@ exit_task > create_task > query_progress > game_action > normal_dialog
 输出：{"intent":"query_progress","confidence":0.95,"reasoning":"明确询问任务进度","params":{"task_description":""}}
 
 输入：攻击那只怪物
-输出：{"intent":"game_action","confidence":0.90,"reasoning":"游戏战斗动作","params":{"task_description":""}}`;
+输出：{"intent":"game_action","confidence":0.90,"reasoning":"游戏战斗动作","params":{"task_description":""}}
+
+输入：把302宿舍牌放入物品栏，记录我是诡异学校302宿舍的舍友
+输出：{"intent":"memory_update","confidence":0.95,"reasoning":"明确要求更新参数卡的物品和身份信息","params":{"task_description":""}}
+
+输入：我学会了发蛇缠绕技能
+输出：{"intent":"memory_update","confidence":0.92,"reasoning":"明确要求记录新学会的技能","params":{"task_description":""}}`;
 }
 
 // ============================================================================
@@ -187,6 +197,7 @@ export async function classifyIntentWithAi(ctx: IntentContext): Promise<IntentRe
       systemPromptChars: systemPrompt.length,
       userPromptChars: userPrompt.length,
     }));
+    console.log("[story:intent:analysis:runtime] full_user_prompt:", userPrompt.replace(/\n/g, "↩"));
 
     const startedAt = Date.now();
     let rawText: string;
@@ -221,7 +232,7 @@ export async function classifyIntentWithAi(ctx: IntentContext): Promise<IntentRe
       const validated = AI_RESPONSE_SCHEMA.safeParse(aiResult);
       if (validated.success) {
         const { intent, confidence, reasoning, params } = validated.data;
-        const validIntents: IntentType[] = ["create_task", "exit_task", "query_progress", "game_action", "normal_dialog"];
+        const validIntents: IntentType[] = ["create_task", "exit_task", "query_progress", "game_action", "memory_update", "normal_dialog"];
         const normalizedIntent = validIntents.includes(intent as IntentType) ? (intent as IntentType) : "normal_dialog";
         const latencyMs = Date.now() - startedAt;
 
@@ -270,7 +281,7 @@ export async function classifyIntentWithAi(ctx: IntentContext): Promise<IntentRe
     const validated = AI_RESPONSE_SCHEMA.safeParse(parsed);
     if (validated.success) {
       const { intent, confidence, reasoning, params } = validated.data;
-      const validIntents: IntentType[] = ["create_task", "exit_task", "query_progress", "game_action", "normal_dialog"];
+      const validIntents: IntentType[] = ["create_task", "exit_task", "query_progress", "game_action", "memory_update", "normal_dialog"];
       const normalizedIntent = validIntents.includes(intent as IntentType) ? (intent as IntentType) : "normal_dialog";
 
       console.log("[story:intent:analysis:runtime] qwen060_classification_result", JSON.stringify({

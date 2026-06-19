@@ -41,6 +41,9 @@ async function generateAi(
   dialogue: string,
   message: string,
   userId: number,
+  npcCards: string,
+  originalGlobalBackground: string,
+  dynamicGlobalBackground: string,
 ): Promise<SpeakerResult> {
   const systemPrompt = await loadTaskPrompt("task-speaker-agent", FALLBACK_SYSTEM);
 
@@ -59,6 +62,15 @@ ${npcCard ? `【NPC 人设】\n${npcCard}` : ""}
 【最近对话】${dialogue || "无"}
 【玩家本轮输入】${message}
 
+角色动态参数卡列表：
+${npcCards || "（无可用角色参数卡）"}
+
+故事初始全局背景描述：
+${originalGlobalBackground || "（无）"}
+
+故事动态全局背景描述：
+${dynamicGlobalBackground || "（无）"}
+
 请生成本轮台词，要求：
 - 直接、自然，不要废话和元说明（不要写"作为旁白"、"任务系统说明"等）
 - 紧扣玩家本轮输入与任务目标
@@ -73,6 +85,7 @@ ${npcCard ? `【NPC 人设】\n${npcCard}` : ""}
       taskType: director.taskType,
       motive: director.motive,
     }));
+    console.log("[story:mini_game:task:streamlines:runtime] full_user_prompt:", userPrompt.replace(/\n/g, "↩"));
 
     const startedAt = Date.now();
     const modelConfig = await u.getPromptAi("storyOrchestratorModel", userId);
@@ -161,9 +174,12 @@ export async function generateTaskSpeech(
   dialogue: Array<{ role: string; content: string }>,
   message: string,
   userId: number,
+  npcCards: string,
+  originalGlobalBackground: string,
+  dynamicGlobalBackground: string,
 ): Promise<SpeakerResult> {
   const hist = dialogue.slice(-8).map(d => `${d.role}:${String(d.content || "").slice(0, 60)}`).join("|");
   // ★ 不再短路：system/narrator/npc 都走 AI 生成台词
   // 之前直接返回模板会让"任务系统"、"旁白"输出僵硬的占位文本（如"清晰告知玩家任务进展"）
-  return generateAi(director, npcCard, task?.objective || "无", hist, message, userId);
+  return generateAi(director, npcCard, task?.objective || "无", hist, message, userId, npcCards, originalGlobalBackground, dynamicGlobalBackground);
 }

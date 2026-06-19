@@ -75,6 +75,9 @@ async function directorAi(
   dialogue: string,
   message: string,
   userId: number,
+  npcCards: string,
+  originalGlobalBackground: string,
+  dynamicGlobalBackground: string,
 ): Promise<DirectorResult> {
   const systemPrompt = await loadTaskPrompt("task-director-agent", FALLBACK_SYSTEM);
 
@@ -94,6 +97,15 @@ ${npcText}
 【最近对话】${dialogue || "无"}
 【玩家本轮输入】${message}
 
+角色动态参数卡列表：
+${npcCards || "（无可用角色参数卡）"}
+
+故事初始全局背景描述：
+${originalGlobalBackground || "（无）"}
+
+故事动态全局背景描述：
+${dynamicGlobalBackground || "（无）"}
+
 请输出 JSON：
 {"speaker":"...","motive":"...","taskType":"...","direction":"...","expectedResult":"..."}`;
 
@@ -106,6 +118,7 @@ ${npcText}
       npcCount: npcList.length,
       messagePreview: message.slice(0, 100),
     }));
+    console.log("[story:mini_game:task:orchestrator:runtime] full_user_prompt:", userPrompt.replace(/\n/g, "↩"));
 
     const startedAt = Date.now();
     const modelConfig = await u.getPromptAi("storyOrchestratorModel", userId);
@@ -207,8 +220,11 @@ export async function directTaskNarrative(
   dialogue: Array<{ role: string; content: string }>,
   message: string,
   userId: number,
+  npcCards: string,
+  originalGlobalBackground: string,
+  dynamicGlobalBackground: string,
 ): Promise<DirectorResult> {
   const hist = dialogue.slice(-6).map(d => `${d.role}:${String(d.content || "").slice(0, 60)}`).join("|");
   // ★ 不再短路：所有等级都走 AI（包括 maintain），保证任务系统/旁白也是 AI 编排出来的
-  return directorAi(progressLevel, task?.objective || "无", task?.process || [], npcList, hist, message, userId);
+  return directorAi(progressLevel, task?.objective || "无", task?.process || [], npcList, hist, message, userId, npcCards, originalGlobalBackground, dynamicGlobalBackground);
 }

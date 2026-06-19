@@ -660,6 +660,9 @@ router.post(
             dialogueForSpeaker,
             playerContent,
             userId,
+            "", // npcCards（由 SpeakerAgent 自己查 npc 列表时补充）
+            "", // originalGlobalBackground
+            "", // dynamicGlobalBackground
           );
           content = String(speakerResult.content || "").trim() || effectiveMotive || "";
         } finally {

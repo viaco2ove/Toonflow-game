@@ -57,7 +57,6 @@ import { evaluateRuntimeOutcome } from "@/modules/game-runtime/services/ChapterR
 import { evaluateEventProgressByAi } from "@/modules/game-runtime/services/EventProgressRuntimeService";
 import {
   maybeActivateFreeChapterTaskEvent,
-  maybeResolveActiveFreeChapterTaskEvent,
 } from "@/modules/game-runtime/services/FreeChapterTaskService";
 import { persistSnapshotIfNeeded } from "@/modules/game-runtime/services/SnapshotService";
 import {
@@ -1269,19 +1268,46 @@ async function tryBuildTaskModePlan(input: {
     });
   }
 
+  // ★ 意图 = memory_update：调用记忆管理器更新参数卡，然后继续走任务编排
+  if (intentResult.intent === "memory_update" && intentResult.confidence >= 0.7) {
+    try {
+      const { refreshStoryMemoryBestEffort } = await import("@/modules/game-runtime/engines/NarrativeOrchestrator");
+      console.log("[task-mode-plan] 命中 memory_update，调用记忆管理器更新参数卡", {
+        sessionId: input.sessionId,
+        playerMessage: playerMessage.slice(0, 80),
+      });
+      await refreshStoryMemoryBestEffort({
+        userId: input.userId,
+        world: input.world,
+        chapter: input.chapter,
+        state: input.state,
+        recentMessages: input.recentMessages,
+      });
+      console.log("[task-mode-plan] 记忆管理器已更新参数卡");
+    } catch (err) {
+      console.error("[task-mode-plan] memory_update 记忆管理器调用失败", err);
+    }
+  }
+
   // 2. Progress
   // 收集三个额外上下文字段
   const memoryDigest = readStableMemoryEventDigest(input.state);
-  const npcList = collectTaskNpcList(input.world);
+  const npcList = collectTaskNpcList(input.world, input.state);
   const npcCards = npcList.map(n => `- ${n.name}（${n.roleType || "npc"}）：${n.card || "无描述"}`).join("\n") || "（无可用NPC）";
-  // 故事初始全局背景：从 world.settings.roles 里提取世界观设定
-  const worldSettings = (input.world?.settings || {}) as Record<string, any>;
-  const originalGlobalBg = [
-    String(worldSettings.background || "").trim(),
-    String(worldSettings.globalRules || "").trim(),
-    String(worldSettings.premise || "").trim(),
-  ].filter(Boolean).join("\n") || "（无）";
-  const dynamicGlobalBg = memoryDigest.stableMemoryFacts.slice(0, 6).join("；") || "（无动态事实）";
+  // 故事初始全局背景：world.intro（与记忆管理器保持一致）
+  const worldIntro = String(input.world?.intro || "").trim();
+  const originalGlobalBg = worldIntro || "（无）";
+  // 故事动态全局背景：当前的 stableMemorySummary + 最新事实
+  const memorySummary = String(memoryDigest.stableMemorySummary || "").trim();
+  const dynamicFacts = memoryDigest.stableMemoryFacts.slice(0, 6).join("；");
+  const dynamicGlobalBg = [memorySummary, dynamicFacts].filter(Boolean).join("\n") || "（无动态事实）";
+
+  console.log("[task-mode-plan] context_summary", JSON.stringify({
+    npcCount: npcList.length,
+    npcCardsChars: npcCards.length,
+    originalGlobalBgChars: originalGlobalBg.length,
+    dynamicGlobalBgChars: dynamicGlobalBg.length,
+  }));
 
   const progressResult = await evaluateTaskProgress(
     {
@@ -1353,7 +1379,21 @@ async function tryBuildTaskModePlan(input: {
       playerMessage,
       progressResult.reason,
       input.userId,
+      npcCards,
+      originalGlobalBg,
+      dynamicGlobalBg,
     );
+    await finalizeTaskMiniGame({
+      state: input.state,
+      world: input.world,
+      chapter: input.chapter,
+      sessionId: input.sessionId,
+      userId: input.userId,
+      recentMessages: input.recentMessages,
+      taskState,
+      reason: progressResult.reason,
+      finalStatus: "abandon",
+    });
     return buildTaskNarrativePlan({
       state: input.state,
       role: "旁白",
@@ -1367,6 +1407,60 @@ async function tryBuildTaskModePlan(input: {
       },
     });
   }
+
+  // ★ 每轮都调用 TaskCompletionAgent 让它自己判断 decision
+  // 强信号：用户输入"完成任务""提交任务""结算"等 → 标记 finalStatus=success 提示 AI
+  const submitKeywords = /(完成任务|提交任务|结算|任务结束|交差|收工)/;
+  const hintFinalStatus: "auto" | "success" = submitKeywords.test(playerMessage) ? "success" : "auto";
+  const completionResult = await evaluateTaskCompletion(
+    hintFinalStatus,
+    {
+      title: taskState.title,
+      objective: taskState.objective,
+      // 优先使用 AI 刚返回的 processItem 文字，否则用原 process 数组
+      process: progressResult.processItem || taskState.process,
+    },
+    dialogue,
+    playerMessage,
+    progressResult.level || "",
+    input.userId,
+    npcCards,
+    originalGlobalBg,
+    dynamicGlobalBg,
+  );
+  console.log("[task-mode-plan] Completion 评估", {
+    decision: completionResult.decision,
+    level: completionResult.level,
+    hintFinalStatus,
+  });
+
+  if (completionResult.decision === "success" || completionResult.decision === "failed") {
+    const finalStatus = completionResult.decision === "success" ? "success" : "failed";
+    await finalizeTaskMiniGame({
+      state: input.state,
+      world: input.world,
+      chapter: input.chapter,
+      sessionId: input.sessionId,
+      userId: input.userId,
+      recentMessages: input.recentMessages,
+      taskState,
+      reason: completionResult.statement || `任务${finalStatus === "success" ? "完成" : "失败"}`,
+      finalStatus,
+    });
+    return buildTaskNarrativePlan({
+      state: input.state,
+      role: "旁白",
+      roleType: "narrator",
+      motive: completionResult.statement,
+      eventType: "on_mini_game_finished",
+      presetContent: completionResult.narration,
+      taskMeta: {
+        completionLevel: completionResult.level,
+        suggestion: completionResult.suggestion,
+      },
+    });
+  }
+  // decision === "continue" → 任务继续，往下走 Director
 
   if (progressResult.needClarify && progressResult.clarifyContent) {
     return buildTaskNarrativePlan({
@@ -1391,6 +1485,9 @@ async function tryBuildTaskModePlan(input: {
     dialogue,
     playerMessage,
     input.userId,
+    npcCards,
+    originalGlobalBg,
+    dynamicGlobalBg,
   );
   console.log("[task-mode-plan] Director:", directorResult.speaker, "/", directorResult.taskType, "| motive:", directorResult.motive, "| direction:", directorResult.direction, "| speakerRole:", directorResult.speakerRole);
 
@@ -1414,12 +1511,73 @@ async function tryBuildTaskModePlan(input: {
 }
 
 /**
+ * 任务完成/放弃后的统一收尾：
+ * 1. 调用记忆管理器写双方关系到 player/npc 参数卡的 other 字段、写奖励到 player 卡
+ * 2. 关闭 miniGame session、清 vars.activeFreeTask、清 player.activeTaskId
+ */
+async function finalizeTaskMiniGame(params: {
+  state: Record<string, any>;
+  world: any;
+  chapter: any;
+  sessionId: string;
+  userId: number;
+  recentMessages: RuntimeMessageInput[];
+  taskState: { title?: string; objective?: string; process?: any };
+  reason: string;
+  finalStatus: "success" | "abandon" | "failed";
+}): Promise<void> {
+  const { state, world, chapter, userId, recentMessages, taskState, finalStatus } = params;
+
+  // 1. 触发记忆管理器，把任务结果（包括 NPC 关系、奖励、状态变化）合并进参数卡
+  try {
+    const { refreshStoryMemoryBestEffort } = await import("@/modules/game-runtime/engines/NarrativeOrchestrator");
+    console.log("[task-mode-plan] finalize 触发记忆管理器", {
+      sessionId: params.sessionId,
+      taskTitle: taskState.title,
+      finalStatus,
+    });
+    await refreshStoryMemoryBestEffort({ userId, world, chapter, state, recentMessages });
+  } catch (err) {
+    console.error("[task-mode-plan] finalize 记忆管理器失败", err);
+  }
+
+  // 2. 清掉 miniGame 会话，让玩家退出小游戏模式
+  const miniGame = (state.miniGame || {}) as Record<string, any>;
+  const session = (miniGame.session || {}) as Record<string, any>;
+  session.status = "finished";
+  session.result = finalStatus;
+  session.finish_reason = params.reason;
+  miniGame.session = session;
+  state.miniGame = miniGame;
+
+  // 3. 清 vars.activeFreeTask + player.parameterCardJson.activeTaskId
+  const vars = (state.vars || {}) as Record<string, any>;
+  delete vars.activeFreeTask;
+  state.vars = vars;
+  const player = (state.player || {}) as Record<string, any>;
+  const card = (player.parameterCardJson || {}) as Record<string, any>;
+  delete card.activeTaskId;
+  delete card.activeTaskTitle;
+  delete card.activeTaskCategory;
+  player.parameterCardJson = card;
+  state.player = player;
+
+  console.log("[task-mode-plan] finalize 已退出小游戏，已清 activeTaskId/activeFreeTask", {
+    sessionId: params.sessionId,
+    finalStatus,
+  });
+}
+
+/**
  * 从 world.settings.roles 收集 NPC 列表（task agents 使用）
  */
-function collectTaskNpcList(world: any): Array<{ id: string; name: string; roleType?: string; card?: string }> {
+function collectTaskNpcList(world: any, state?: Record<string, any>): Array<{ id: string; name: string; roleType?: string; card?: string }> {
   const settings = (world?.settings || {}) as Record<string, any>;
   const roles = Array.isArray(settings.roles) ? settings.roles : [];
+  const stateNpcs = (state?.npcs || {}) as Record<string, any>;
   const npcs: Array<{ id: string; name: string; roleType?: string; card?: string }> = [];
+
+  // 1. 先从 world.settings.roles 收集
   for (const role of roles) {
     if (!role || typeof role !== "object") continue;
     const r = role as Record<string, any>;
@@ -1428,9 +1586,33 @@ function collectTaskNpcList(world: any): Array<{ id: string; name: string; roleT
     const name = String(r.name || "").trim();
     if (!name) continue;
     const id = String(r.id || `npc_${name}`).trim();
-    const card = String(r.description || JSON.stringify(r.parameterCardJson || {})).slice(0, 600);
+    // 优先用 state.npcs 里运行时更新过的最新参数卡
+    const stateCard = stateNpcs[id]?.parameterCardJson;
+    const card = stateCard
+      ? JSON.stringify(stateCard).slice(0, 800)
+      : String(r.description || JSON.stringify(r.parameterCardJson || {})).slice(0, 800);
     npcs.push({ id, name, roleType, card });
   }
+
+  // 2. 兜底：state.npcs 里有但 world.settings.roles 里没有的（线上历史数据）
+  for (const [id, npcVal] of Object.entries(stateNpcs)) {
+    if (npcs.find(n => n.id === id)) continue;
+    const npc = npcVal as Record<string, any>;
+    const name = String(npc?.name || npc?.role_name || "").trim();
+    if (!name) continue;
+    const card = npc?.parameterCardJson
+      ? JSON.stringify(npc.parameterCardJson).slice(0, 800)
+      : String(npc?.description || "").slice(0, 800);
+    npcs.push({ id, name, roleType: "npc", card });
+  }
+
+  console.log("[task-mode-plan] collectTaskNpcList", JSON.stringify({
+    fromWorldRoles: roles.length,
+    fromStateNpcs: Object.keys(stateNpcs).length,
+    finalCount: npcs.length,
+    names: npcs.map(n => n.name),
+  }));
+
   return npcs;
 }
 
@@ -2175,20 +2357,17 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
         },
       });
       /**
-       * 如果当前已经处于"任务小游戏"中，就优先判定本轮动作是否触发任务成功/失败。
+       * ★ 旧的"自由章节任务结算"链路（resolveFreeChapterTask）已被禁用。
        *
-       * 用途：
-       * - 任务中的用户输入应先服务于当前任务，而不是继续走普通自由剧情旁白；
-       * - 一旦命中成功/失败，就要立刻发奖励、结束任务、关闭任务面板，并直接返回任务收尾文案。
+       * 现在任务的完成/放弃/继续判定全部走新的 task-mode-plan 链路：
+       *   addMessage → /orchestration/minigame → tryBuildTaskModePlan
+       *     → Intent → Progress → TaskCompletionAgent (decision: success/failed/continue)
+       *     → finalizeTaskMiniGame
+       *
+       * 这样 [story:mini_game:task:completion:runtime/stats] 才会真正出现在日志里。
+       * 不再在 addMessage 阶段直接 return on_task_resolution。
        */
-      const resolvedFreeChapterTask = await maybeResolveActiveFreeChapterTaskEvent({
-        userId: currentUserId,
-        world,
-        chapter: currentChapter,
-        state,
-        recentMessages: recentMessagesForProgress,
-        playerMessage: messageContent,
-      });
+      const resolvedFreeChapterTask: { narration: string } | null = null;
       if (resolvedFreeChapterTask) {
         setRuntimeTurnState(state, world, {
           canPlayerSpeak: true,
