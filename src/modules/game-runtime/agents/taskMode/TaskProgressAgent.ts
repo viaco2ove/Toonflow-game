@@ -248,6 +248,8 @@ ${dynamicGlobalBackground || "（无）"}
     systemPromptChars: systemPrompt.length,
     userPromptChars: userPrompt.length,
   }));
+  // 单独打印完整 user prompt（用 ↩ 替换换行避免日志框架按行截断）
+  console.log("[story:mini_game:task:progress:runtime] full_user_prompt:", userPrompt.replace(/\n/g, "↩"));
 
   try {
     const startedAt = Date.now();
@@ -308,8 +310,8 @@ ${dynamicGlobalBackground || "（无）"}
     console.log(`[story:mini_game:task:progress:stats] 以下为 prompt 体积估算，不等于模型真实 usage。`);
     console.log(`[story:mini_game:task:progress:stats] | 区块 | 实际内容 | 字符数 |`);
     console.log(`[story:mini_game:task:progress:stats] |---|---|---:|`);
-    console.log(`[story:mini_game:task:progress:stats] | System Prompt | ${systemPrompt.replace(/\n/g, "↩").slice(0, 120)} | ${systemPrompt.length} |`);
-    console.log(`[story:mini_game:task:progress:stats] | User Prompt | ${userPrompt.replace(/\n/g, "↩").slice(0, 120)} | ${userPrompt.length} |`);
+    console.log(`[story:mini_game:task:progress:stats] | System Prompt | ${systemPrompt.replace(/\n/g, "↩")} | ${systemPrompt.length} |`);
+    console.log(`[story:mini_game:task:progress:stats] | User Prompt | ${userPrompt.replace(/\n/g, "↩")} | ${userPrompt.length} |`);
 
     return {
       level: LEVEL_MAP[d.level] || "maintain",
