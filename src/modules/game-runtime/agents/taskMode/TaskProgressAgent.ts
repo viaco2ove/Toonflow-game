@@ -47,6 +47,8 @@ export interface ProgressResult {
   clarifyContent?: string;
   /** 推进过程修改指令 */
   processUpdate: ProcessUpdate;
+  /** AI 直接返回的完整推进过程文字 */
+  processItem?: string;
 }
 
 const AI_SCHEMA = z.object({
@@ -55,12 +57,13 @@ const AI_SCHEMA = z.object({
   reason: z.string(),
   needClarify: z.boolean().optional(),
   clarifyContent: z.string().optional(),
-  // 新增：AI 返回 processUpdate
   processUpdate: z.object({
     action: z.enum(["none", "mark_complete", "mark_failed", "insert"]),
     phaseIndex: z.number().nullable().optional(),
     newPhase: z.string().nullable().optional(),
   }).optional(),
+  /** AI 直接返回的完整推进过程文字，优先级高于 processUpdate */
+  processItem: z.string().optional(),
 });
 
 const LEVEL_MAP: Record<string, ProgressLevel> = {
@@ -196,6 +199,9 @@ async function evalAi(
   dialogue: string,
   message: string,
   userId: number,
+  npcCards: string,
+  originalGlobalBackground: string,
+  dynamicGlobalBackground: string,
 ): Promise<ProgressResult> {
   const systemPrompt = await loadTaskPrompt("task-progress-agent", FALLBACK_SYSTEM);
 
@@ -208,6 +214,15 @@ ${progress}
 
 玩家本轮输入：${message}
 历史对话：${dialogue || "无"}
+
+角色动态参数卡列表：
+${npcCards || "（无可用角色参数卡）"}
+
+故事初始全局背景描述：
+${originalGlobalBackground || "（无）"}
+
+故事动态全局背景描述：
+${dynamicGlobalBackground || "（无）"}
 
 【判断规则】
 1. 如果玩家正在执行与任务目标相关的动作（探索、移动、询问、打探、寻找、排查、开始行动等），标记当前进行中的阶段为完成
@@ -222,7 +237,7 @@ ${progress}
 - 大部分情况下应该返回 mark_complete 或 insert！
 
 请输出严格JSON：
-{"level":"等级","tier":"判定层级","reason":"理由","needClarify":true/false,"clarifyContent":"追问","processUpdate":{"action":"none|mark_complete|mark_failed|insert","phaseIndex":数字|null,"newPhase":"新阶段文本(仅insert时)"}}`;
+{"level":"等级","tier":"判定层级","reason":"理由","needClarify":true/false,"clarifyContent":"追问","processUpdate":{"action":"none|mark_complete|mark_failed|insert","phaseIndex":数字|null,"newPhase":"新阶段文本(仅insert时)"},"processItem":"推进过程文字"}`;
 
   console.log("[story:mini_game:task:progress:runtime] request", JSON.stringify({
     userId,
@@ -283,8 +298,9 @@ ${progress}
     }
     const d = parsed.data;
     const update = d.processUpdate;
+    const processItem = d.processItem;
 
-    console.log(`[story:mini_game:task:progress:stats] level=${LEVEL_MAP[d.level] || "maintain"} tier=${TIER_MAP[d.tier] || "ai"} action=${update?.action || "none"} phaseIndex=${update?.phaseIndex ?? null} latency_ms=${latencyMs}`);
+    console.log(`[story:mini_game:task:progress:stats] level=${LEVEL_MAP[d.level] || "maintain"} tier=${TIER_MAP[d.tier] || "ai"} action=${update?.action || "none"} phaseIndex=${update?.phaseIndex ?? null} processItem=${processItem ? "有" : "无"} latency_ms=${latencyMs}`);
     if (result?.usage) {
       console.log(`[story:mini_game:task:progress:stats] actual_input_tokens=${result.usage.inputTokens || 0} actual_output_tokens=${result.usage.outputTokens || 0} actual_reasoning_tokens=${result.usage.reasoningTokens || 0} cache_read_tokens=${result.usage.cacheReadTokens || 0}`);
     }
@@ -306,6 +322,7 @@ ${progress}
         phaseIndex: update?.phaseIndex ?? null,
         newPhase: update?.newPhase ?? null,
       },
+      processItem: d.processItem,
     };
   } catch (e) {
     console.error("[TaskProgressAgent] AI调用失败", e);
@@ -320,6 +337,9 @@ export async function evaluateTaskProgress(
   dialogue: Array<{ role: string; content: string }>,
   message: string,
   userId: number,
+  npcCards: string,
+  originalGlobalBackground: string,
+  dynamicGlobalBackground: string,
 ): Promise<ProgressResult> {
   const phases = task?.process ?? [];
 
@@ -339,5 +359,8 @@ export async function evaluateTaskProgress(
     hist,
     message,
     userId,
+    npcCards,
+    originalGlobalBackground,
+    dynamicGlobalBackground,
   );
 }

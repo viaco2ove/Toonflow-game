@@ -1270,6 +1270,19 @@ async function tryBuildTaskModePlan(input: {
   }
 
   // 2. Progress
+  // 收集三个额外上下文字段
+  const memoryDigest = readStableMemoryEventDigest(input.state);
+  const npcList = collectTaskNpcList(input.world);
+  const npcCards = npcList.map(n => `- ${n.name}（${n.roleType || "npc"}）：${n.card || "无描述"}`).join("\n") || "（无可用NPC）";
+  // 故事初始全局背景：从 world.settings.roles 里提取世界观设定
+  const worldSettings = (input.world?.settings || {}) as Record<string, any>;
+  const originalGlobalBg = [
+    String(worldSettings.background || "").trim(),
+    String(worldSettings.globalRules || "").trim(),
+    String(worldSettings.premise || "").trim(),
+  ].filter(Boolean).join("\n") || "（无）";
+  const dynamicGlobalBg = memoryDigest.stableMemoryFacts.slice(0, 6).join("；") || "（无动态事实）";
+
   const progressResult = await evaluateTaskProgress(
     {
       intent: intentResult.intent,
@@ -1280,11 +1293,37 @@ async function tryBuildTaskModePlan(input: {
     dialogue,
     playerMessage,
     input.userId,
+    npcCards,
+    originalGlobalBg,
+    dynamicGlobalBg,
   );
   console.log("[task-mode-plan] Progress:", progressResult.level, "/", progressResult.tier, "/", JSON.stringify(progressResult.processUpdate), "| process:", taskState.process?.join(" → "));
 
   // ★★★ 将 processUpdate 写回 state.vars.activeFreeTask.process ★★★
-  if (progressResult.processUpdate?.action && progressResult.processUpdate.action !== "none") {
+  const miniGame = (input.state.miniGame || {}) as Record<string, any>;
+
+  if (progressResult.processItem) {
+    // AI 直接返回了完整推进过程文字，直接用
+    const vars = (input.state.vars || {}) as Record<string, any>;
+    const activeTask = vars.activeFreeTask as Record<string, any> | null;
+    if (activeTask) {
+      activeTask.process = progressResult.processItem;
+      vars.activeFreeTask = activeTask;
+      input.state.vars = vars;
+    }
+    // 同步到 miniGame.ui.state_items
+    const ui = (miniGame.ui || {}) as Record<string, any>;
+    const stateItems = Array.isArray(ui.state_items) ? ui.state_items as Record<string, string>[] : [];
+    const processItemEntry = stateItems.find(item => item.key === "推进过程");
+    if (processItemEntry) {
+      processItemEntry.value = progressResult.processItem;
+    }
+    const session = (miniGame.session || {}) as Record<string, any>;
+    const publicState = (session.public_state || {}) as Record<string, any>;
+    publicState.process_steps = progressResult.processItem;
+    console.log("[task-mode-plan] processItem 直接更新:", progressResult.processItem);
+  } else if (progressResult.processUpdate?.action && progressResult.processUpdate.action !== "none") {
+    // 旧逻辑：通过 processUpdate 指令更新
     const vars = (input.state.vars || {}) as Record<string, any>;
     const activeTask = vars.activeFreeTask as Record<string, any> | null;
     if (activeTask && Array.isArray(activeTask.process)) {
@@ -1293,19 +1332,16 @@ async function tryBuildTaskModePlan(input: {
       activeTask.process = updatedProcess;
       vars.activeFreeTask = activeTask;
       input.state.vars = vars;
-      // ★ 同时同步到 miniGame.ui.state_items，让前端小游戏面板能看到更新的推进过程
-      const miniGame = (input.state.miniGame || {}) as Record<string, any>;
       const ui = (miniGame.ui || {}) as Record<string, any>;
       const stateItems = Array.isArray(ui.state_items) ? ui.state_items as Record<string, string>[] : [];
-      const processItem = stateItems.find(item => item.key === "推进过程");
-      if (processItem) {
-        processItem.value = updatedProcess.join("；");
+      const processEntry = stateItems.find(item => item.key === "推进过程");
+      if (processEntry) {
+        processEntry.value = updatedProcess.join("；");
       }
-      // ★ 同步到 miniGame.session.public_state.process_steps
       const session = (miniGame.session || {}) as Record<string, any>;
       const publicState = (session.public_state || {}) as Record<string, any>;
       publicState.process_steps = updatedProcess;
-      console.log("[task-mode-plan] process 已更新:", JSON.stringify(updatedProcess));
+      console.log("[task-mode-plan] processUpdate 更新:", JSON.stringify(updatedProcess));
     }
   }
 
@@ -1347,8 +1383,7 @@ async function tryBuildTaskModePlan(input: {
     });
   }
 
-  // 3. Director
-  const npcList = collectTaskNpcList(input.world);
+  // 3. Director（npcList 已在 Progress 段收集）
   const directorResult = await directTaskNarrative(
     progressResult.level,
     taskState,
