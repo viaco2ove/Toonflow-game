@@ -61,3 +61,4 @@ run.local.ps1
 /logs2/
 .hide.*
 /.claude/worktrees/agent-a4554f8deb76d473f/
+/.claude/worktrees/

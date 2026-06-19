@@ -561,6 +561,20 @@ function shortText(input: unknown, limit = 120): string {
   return text.length > limit ? `${text.slice(0, limit)}...` : text;
 }
 
+/**
+ * 解析"世界全局背景"字段。
+ * 优先级：world.globalBackground > world.intro > world.background
+ * 说明：
+ *   - world.intro 对应前端"故事简介"（短描述）
+ *   - world.globalBackground 对应前端"全局背景"（长描述，含等级体系、世界规则等）
+ *   - 后端记忆管理 prompt 需要的是后者，否则模型看不到等级称号映射等关键设定
+ */
+function resolveWorldGlobalBackground(world: any): string {
+  if (!world || typeof world !== "object") return "";
+  const w = world as Record<string, any>;
+  return String(w.globalBackground || w.intro || w.background || "").trim();
+}
+
 // 将对象或数组压缩成短摘要，便于塞进 prompt。
 function summarizeJsonValue(input: unknown, maxPairs = 6): string {
   if (!input || typeof input !== "object") return normalizeScalarText(input);
@@ -3598,7 +3612,7 @@ function buildOrchestratorPromptPayload(input: {
   // 目的就是让模型只盯住当前事件，不要被完整大纲带偏。
   const payload: OrchestratorPromptPayload = {
     worldName: normalizeScalarText(input.world?.name),
-    worldIntro: shortText(input.world?.intro, input.compactMode ? 600 : 1200),
+    worldIntro: shortText(resolveWorldGlobalBackground(input.world), input.compactMode ? 600 : 1200),
     chapterTitle: input.currentChapter.title,
     chapterDirective: shouldSuppressCompletedGuide
       ? ""
@@ -4062,7 +4076,7 @@ export async function runStorySpeakerContent(input: {
     : promptEventFacts;
   const payload: SpeakerPromptPayload = {
     worldName: normalizeScalarText(input.world?.name),
-    worldIntro: useFastSpeakerPrompt ? "" : shortText(input.world?.intro, speakerWorldIntroLimit),
+    worldIntro: useFastSpeakerPrompt ? "" : shortText(resolveWorldGlobalBackground(input.world), speakerWorldIntroLimit),
     chapterTitle: currentChapter.title,
     chapterContentHint,
     chapterEndingConditionHint,
@@ -4635,7 +4649,7 @@ export async function runStoryMemoryManager(input: {
     worldName: normalizeScalarText(input.world?.name),
     // 记忆管理同样需要看到世界级背景，否则它只能根据局部章节和最近对话压缩记忆，
     // 很容易漏掉“当前事件为何重要”以及长期标签该如何贴合世界设定。
-    worldIntro: shortText(input.world?.intro, compactMode ? 2400 : 4800),
+    worldIntro: shortText(resolveWorldGlobalBackground(input.world), compactMode ? 2400 : 4800),
     chapterTitle: normalizeScalarText(input.chapter?.title),
     ...buildPromptEventContextTextPayload(currentEvent, compactMode),
     eventDeltaText: buildMemoryEventDeltaText(memoryInputs.eventDeltaMessages, compactMode),
