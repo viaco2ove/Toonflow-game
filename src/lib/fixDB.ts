@@ -33,6 +33,7 @@ import {
   PROMPT_TASK_DIRECTOR_AGENT,
   PROMPT_TASK_PROGRESS_AGENT,
   PROMPT_TASK_SPEAKER_AGENT,
+  PROMPT_PLAY_TIP_AGENT,
   PROMPT_VIDEO_TEXT,
 } from "./fixDB.prompts";
 
@@ -1062,6 +1063,14 @@ export default async (knex: Knex): Promise<void> => {
         parentCode: null,
         defaultValue:
           PROMPT_TASK_COMPLETION_AGENT,
+      },
+      {
+        code: "play-tip-agent",
+        name: "AI Agent-玩家提示器",
+        type: "aiAgent",
+        parentCode: null,
+        defaultValue:
+          PROMPT_PLAY_TIP_AGENT,
       },
     ];
     const existingRows = await knex("t_prompts").whereIn(

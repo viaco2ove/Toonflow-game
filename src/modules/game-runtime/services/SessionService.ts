@@ -2809,6 +2809,96 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
   };
 }
 
+// =============================================================================
+// 玩家行动提示器 (PlayTipAgent)
+// =============================================================================
+
+/**
+ * 给玩家生成 3 条第一人称行动提示，每次点击 play-tip-fab 都会调一次。
+ *
+ * - 模型：storyOrchestratorModel（与 task speaker / director 一致）
+ * - 失败兜底：返回 3 条与角色/章节相关的中性提示，永不抛错
+ */
+export async function generatePlayTips(sessionIdInput: string): Promise<{ tips: string[]; source: "ai" | "fallback"; latencyMs: number }> {
+  const sessionId = String(sessionIdInput || "").trim();
+  if (!sessionId) {
+    throw new SessionServiceError(400, "sessionId 不能为空");
+  }
+
+  const db = getGameDb();
+  const sessionRow = await db("t_gameSession").where({ sessionId }).first();
+  if (!sessionRow) {
+    throw new SessionServiceError(404, "会话不存在");
+  }
+  const currentUserId = getCurrentUserId(0);
+  if (currentUserId > 0 && Number(sessionRow.userId || 0) !== currentUserId) {
+    throw new SessionServiceError(403, "无权访问该会话");
+  }
+
+  const currentChapterId = Number(sessionRow.chapterId || 0) || null;
+  const world = await loadSessionWorld(db, Number(sessionRow.worldId || 0));
+  const rolePair = normalizeRolePair(world?.playerRole, world?.narratorRole);
+  const state = normalizeSessionState(
+    sessionRow.stateJson,
+    Number(sessionRow.worldId || 0),
+    currentChapterId,
+    rolePair,
+    world,
+  );
+  const chapter = currentChapterId
+    ? normalizeChapterOutput(await db("t_storyChapter").where({ id: currentChapterId }).first())
+    : null;
+
+  const rawRecentMessages = await db("t_sessionMessage").where({ sessionId }).orderBy("id", "desc").limit(10);
+  const recentMessages = buildRecentMessages(rawRecentMessages, state);
+  const dialogueText = recentMessages
+    .map(m => `${m.role || "?"}：${String((m as any).content || "").slice(0, 80)}`)
+    .join("\n");
+
+  // 当前任务（如有）
+  const vars = (state.vars || {}) as Record<string, any>;
+  const activeTask = vars.activeFreeTask as Record<string, any> | null;
+  const taskTitle = String(activeTask?.title || "").trim();
+  const taskObjective = String(activeTask?.objective || "").trim();
+  const taskProcess = Array.isArray(activeTask?.process)
+    ? (activeTask?.process as string[]).join("；")
+    : String(activeTask?.process || "").trim();
+
+  // NPC 卡 / 全局背景
+  const npcList = collectTaskNpcList(world, state);
+  const npcCards = npcList.length
+    ? npcList.map(n => `- ${n.name}（${n.roleType || "npc"}）：${n.card || ""}`).join("\n")
+    : "（无可用 NPC）";
+
+  // 全局背景：优先 globalBackground，回退 intro / background
+  const w = (world || {}) as Record<string, any>;
+  const globalBackground = String(w.globalBackground || w.intro || w.background || "").trim();
+
+  // 玩家身份卡
+  const player = (state.player || {}) as Record<string, any>;
+  const playerCard = player.parameterCardJson
+    ? JSON.stringify(player.parameterCardJson).slice(0, 800)
+    : `${String(player.name || "用户")}（${String(player.description || "").slice(0, 200)}）`;
+  const playerHandle = `@${String(player.name || "故事角色")}`;
+
+  const { generatePlayerTips } = await import("@/modules/game-runtime/agents/playTip/PlayTipAgent");
+  const result = await generatePlayerTips({
+    userId: currentUserId,
+    worldName: String(w.name || "未命名世界"),
+    chapterTitle: String(chapter?.title || state.chapterTitle || "未命名章节"),
+    globalBackground,
+    taskTitle: taskTitle || undefined,
+    taskObjective: taskObjective || undefined,
+    taskProcess: taskProcess || undefined,
+    npcCards,
+    recentDialogue: dialogueText,
+    playerCard,
+    playerHandle,
+  });
+
+  return result;
+}
+
 export async function continueSessionNarrative(sessionIdInput: string): Promise<ContinueSessionNarrativeResult> {
   const db = getGameDb();
   const now = nowTs();
