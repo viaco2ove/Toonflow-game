@@ -1402,9 +1402,17 @@ export const PROMPT_INTENT_ANALYZER = `
 - 用户输入："你好，很高兴认识你"
 - 用户输入："这座城市有什么历史"
 
+### 6.memory_update
+**触发条件**：用户表达了更新记忆、回忆、背景信息的意愿
+**关键词**：更新记忆、记忆管理、得到奖励、更新物品、更新角色卡、@记忆管理器、得到了物品
+**示例**：
+- 用户输入："@记忆管理器,更新角色卡"
+- 用户输入："@记忆管理器"
+- 用户输入："@记忆管理器，我完成了任务，得到了奖励"
+
 ## 优先级
 
-exit_task > create_task > query_progress > game_action > normal_dialog
+exit_task > memory_update > create_task > query_progress > game_action > normal_dialog
 同时匹配多个意图时，按优先级取最高。
 
 ## 输出格式
