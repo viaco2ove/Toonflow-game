@@ -55,9 +55,10 @@ Toonflow 是"Toonflow Game" 的前身，在当前项目更多是残留功能而�
 ## github url
 https://github.com/topics/toonflow-game
 https://github.com/viaco2ove/Toonflow-game.git
-https://github.com/viaco2ove/Toonflow-game-vedio-web.git
+~~https://github.com/viaco2ove/Toonflow-game-vedio-web.git~~
 https://github.com/viaco2ove/Toonflow-game-web.git
-https://github.com/viaco2ove/Toonflow-game-android.git
+~~https://github.com/viaco2ove/Toonflow-game-android.git~~
+https://github.com/viaco2ove/Toonflow-game-android-h5.git
 
 ---
 # 🌟 主要功能
