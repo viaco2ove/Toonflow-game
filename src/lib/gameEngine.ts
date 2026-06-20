@@ -1696,9 +1696,12 @@ export function normalizeRuntimeCurrentEventState(
   fallback?: Partial<RuntimeCurrentEventState> | null,
 ): RuntimeCurrentEventState {
   const base = parseJsonSafe<JsonRecord>(raw, {});
+  // ★ 合并顺序：raw（已有 state.currentEvent）在前，fallback（算出来的新值）在后
+  //   这样新算出来的 index/kind/summary/status/status 会覆盖旧值。
+  //   修复 sync 之前 currentEvent 还是旧值的"鬼打墙"问题。
   const merged = {
+    ...(base || {}),
     ...(fallback || {}),
-    ...base,
   } as JsonRecord;
   return {
     index: Number.isFinite(Number(merged.index))
@@ -2207,6 +2210,10 @@ export function readChapterProgressState(state: unknown): ChapterProgressState {
 
 // 从 state 中读取当前事件，
 // 并优先用当前 eventIndex 命中的动态事件来补足 summary/facts/status。
+//
+// ★ 关键规则：如果 chapterProgress 指向的事件已经是 completed，
+//   不允许把"已完成事件"当成 current 暴露给后续 agent，
+//   而是自动跳到下一个 idle/active/waiting_input 的事件。
 export function readRuntimeCurrentEventState(state: unknown): RuntimeCurrentEventState {
   if (!isRecord(state)) {
     return normalizeRuntimeCurrentEventState(undefined);
@@ -2214,6 +2221,26 @@ export function readRuntimeCurrentEventState(state: unknown): RuntimeCurrentEven
   const progress = readChapterProgressState(state);
   const dynamicEvents = normalizeRuntimeDynamicEventList(state.dynamicEvents);
   const matchedDynamicEvent = dynamicEvents.find((item) => item.eventIndex === progress.eventIndex) || null;
+
+  // 如果 progress 指向的事件已 completed，向后找第一个未完成事件
+  const isCompleted = (status: string): boolean => String(status || "").trim().toLowerCase() === "completed";
+  if (isCompleted(progress.eventStatus) || (matchedDynamicEvent && isCompleted(matchedDynamicEvent.status))) {
+    const nextEvent = dynamicEvents
+      .slice()
+      .sort((a, b) => Number(a.eventIndex || 0) - Number(b.eventIndex || 0))
+      .find((item) => Number(item.eventIndex || 0) > Number(progress.eventIndex || 0)
+        && !isCompleted(String(item.status || "")));
+    if (nextEvent) {
+      return normalizeRuntimeCurrentEventState(state.currentEvent, {
+        index: Number(nextEvent.eventIndex || 1),
+        kind: String(nextEvent.kind || progress.eventKind || "scene"),
+        summary: String(nextEvent.summary || ""),
+        facts: Array.isArray(nextEvent.runtimeFacts) ? nextEvent.runtimeFacts : [],
+        status: String(nextEvent.status || "active") as any,
+      });
+    }
+  }
+
   return normalizeRuntimeCurrentEventState(state.currentEvent, {
     index: progress.eventIndex,
     kind: progress.eventKind,
@@ -2225,19 +2252,24 @@ export function readRuntimeCurrentEventState(state: unknown): RuntimeCurrentEven
 
 // 将 chapterProgress 当前指向的事件同步回 `state.currentEvent`，
 // 避免 UI/提示词继续读取到过期 currentEvent。
+//
+// 复用 readRuntimeCurrentEventState 的"completed → 自动跳到下一个未完成事件"规则，
+// 防止 storyInfo / 编排师 prompt 还在引用已经标记 completed 的旧事件。
+//
+// 注意：必须把 state.currentEvent 临时清空再调 readRuntimeCurrentEventState，
+// 否则 normalizeRuntimeCurrentEventState 会用旧值覆盖新算出的 index/summary/status。
 export function syncRuntimeCurrentEventFromChapterProgress(state: JsonRecord): RuntimeCurrentEventState {
-  const progress = readChapterProgressState(state);
-  const dynamicEvents = normalizeRuntimeDynamicEventList(state.dynamicEvents);
-  const matchedDynamicEvent = dynamicEvents.find((item) => item.eventIndex === progress.eventIndex) || null;
-  const next = normalizeRuntimeCurrentEventState(state.currentEvent, {
-    index: progress.eventIndex,
-    kind: progress.eventKind,
-    summary: matchedDynamicEvent?.summary || progress.eventSummary,
-    facts: matchedDynamicEvent?.runtimeFacts || [],
-    status: progress.eventStatus,
-  });
-  state.currentEvent = next;
-  return next;
+  const previous = state.currentEvent;
+  delete state.currentEvent;
+  try {
+    const next = readRuntimeCurrentEventState(state);
+    state.currentEvent = next;
+    return next;
+  } catch (err) {
+    // 兜底：算出不来也要保留旧值
+    if (previous !== undefined) state.currentEvent = previous;
+    throw err;
+  }
 }
 
 // 整体覆盖动态事件列表，同时统一做归一化。

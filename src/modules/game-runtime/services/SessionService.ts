@@ -11,6 +11,7 @@ import {
   readRuntimeCurrentEventDigestState,
   RuntimeEventDigestState,
   RuntimeEventViewState,
+  syncRuntimeCurrentEventFromChapterProgress,
   toJsonText,
   upsertRuntimeEventDigestState,
 } from "@/lib/gameEngine";
@@ -1764,6 +1765,47 @@ async function runConcurrentSessionJudgeAndNarrative(params: {
   }
   try {
     const candidatePlan = await candidatePlanPromise;
+
+    // ★ 防"事件鬼打墙"：candidate 是基于旧 state 跑的，如果它的 eventIndex 比当前 state 已推进的事件还旧，
+    //   直接丢弃 candidate 重新跑 final，避免把 chapterProgress 倒退到旧事件。
+    const currentProgress = readChapterProgressState(params.state);
+    const candidateEventIndex = Number.isFinite(Number((candidatePlan as any)?.eventIndex))
+      ? Math.max(0, Number((candidatePlan as any).eventIndex))
+      : 0;
+    if (candidateEventIndex > 0 && candidateEventIndex < currentProgress.eventIndex) {
+      logSessionOrchestrationKeyNode("session_concurrent_arbiter:discard_stale_candidate", params.traceMeta, {
+        candidateEventIndex,
+        currentEventIndex: currentProgress.eventIndex,
+        reason: "candidate_event_index_behind_state",
+      });
+      const finalPlan = await runNarrativePlan({
+        userId: params.userId,
+        world: params.world,
+        chapter: params.chapter,
+        state: params.state,
+        recentMessages: params.recentMessages,
+        playerMessage: "",
+        maxRetries: 0,
+        allowControlHints: false,
+        allowStateDelta: false,
+        traceMeta: {
+          ...params.traceMeta,
+          planMode: "rerun_after_stale_candidate",
+        },
+      });
+      return {
+        mergedOutcome,
+        plan: applySessionNarrativePlanToState({
+          userId: params.userId,
+          world: params.world,
+          chapter: params.chapter,
+          state: params.state,
+          recentMessages: params.recentMessages,
+          plan: finalPlan,
+        }),
+      };
+    }
+
     logSessionOrchestrationKeyNode("session_concurrent_arbiter:reuse_candidate", params.traceMeta, {
       role: String(candidatePlan.role || ""),
       awaitUser: Boolean(candidatePlan.awaitUser),
@@ -3160,6 +3202,8 @@ async function orchestrateSessionTurnInner(sessionId: string): Promise<SessionOr
     rolePair,
     world,
   );
+  // ★ 编排入口：先同步 currentEvent，让所有 agent / 提示词 / 候选 plan 都看到"未完成的当前事件"
+  syncRuntimeCurrentEventFromChapterProgress(state);
   const rawRecentMessages = await db("t_sessionMessage").where({ sessionId }).orderBy("id", "desc").limit(20);
   const recentMessages = buildRecentMessages(rawRecentMessages, state);
   const requestTrace = {

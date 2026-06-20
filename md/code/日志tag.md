@@ -49,6 +49,7 @@ if (DebugLogUtil.isDebugLogEnabled()) {
 [story:memory:stats]: AI故事-忆管理agent token 统计
 [story:memory_directive:stats]: 显式 @记忆管理 参数卡写回日志。打印是否命中，以及新增的技能/物品/装备/其他
 [story:memory:runtime] triggerMemoryAgent
+[story:memory:storyInfo] 获取故事信息接口时的日志
 
 [story:mini_game:agent]: AI故事-小游戏agent 日志
 [story:mini_game:stats]: AI故事-小游戏agent token 统计（参考[story:orchestrator:stats]）

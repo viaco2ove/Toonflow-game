@@ -4,7 +4,10 @@ cp ~/ubuntu/detail/start-panel.sh /opt/toonflow/panel/start-panel.sh
 chmod +x /opt/toonflow/panel/start-panel.sh
 systemctl restart toonflow-panel.service                                                                                                                                          
 systemctl status toonflow-panel.service --no-pager
+```
 
+
+```
 systemctl stop toonflow-panel.service 
 ```
 
