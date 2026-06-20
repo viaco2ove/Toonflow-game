@@ -9,6 +9,7 @@ import {
   normalizeSessionState,
   normalizeWorldOutput,
   readDefaultRuntimeEventViewState,
+  syncRuntimeCurrentEventFromChapterProgress,
 } from "@/lib/gameEngine";
 import {
   buildEffectiveDebugChapter,
@@ -101,6 +102,21 @@ export default router.post(
         // 这里必须用章节行数据回填标题，防止旧 state.chapterTitle 残留为别的章节名。
         activeState.chapterId = activeChapterId || 0;
         activeState.chapterTitle = String(chapter?.title || "").trim() || String(activeState.chapterTitle || "").trim();
+        // ★ 关键：返回前把 state.currentEvent 同步到"最新且未完成"的事件，
+        //   防止前端 / 后端编排师拿到 completed 的旧事件（例如事件 1 被错误显示为 active）。
+        console.log("[story:memory:storyInfo] sync_before", JSON.stringify({
+          chapterProgress: activeState.chapterProgress,
+          currentEventBeforeSync: activeState.currentEvent,
+          dynamicEventsSnapshot: (Array.isArray(activeState.dynamicEvents) ? activeState.dynamicEvents : []).map((item: any) => ({
+            eventIndex: item.eventIndex,
+            status: item.status,
+            summaryPreview: String(item.summary || "").slice(0, 50),
+          })),
+        }));
+        syncRuntimeCurrentEventFromChapterProgress(activeState);
+        console.log("[story:memory:storyInfo] sync_after", JSON.stringify({
+          currentEventAfterSync: activeState.currentEvent,
+        }));
         const eventView = readDefaultRuntimeEventViewState(activeState, chapter);
         console.log("[storyInfo] chapter phases count:", chapter?.runtimeOutline?.phases?.length, "allEventStageProgress:", JSON.stringify(eventView.allEventStageProgress || []).slice(0, 500));
         const sessionEndDialog = buildSessionEndDialog(sessionStatus);
