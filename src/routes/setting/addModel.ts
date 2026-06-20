@@ -9,7 +9,7 @@ const router = express.Router();
 export default router.post(
   "/",
   validateFields({
-    type: z.enum(["text", "video", "image", "voice", "voice_design"]),
+    type: z.enum(["text", "video", "image", "voice", "voice_design", "voice_clone"]),
     model: z.string(),
     baseUrl: z.string(),
     apiKey: z.string(),
@@ -54,6 +54,13 @@ export default router.post(
       remark: remark || null,
       createTime: Date.now(),
       userId,
+    });
+    console.log("[addModel] 新增配置", {
+      inputType: type,
+      inputModelType: modelType,
+      inputManufacturer: manufacturer,
+      persistedType: normalized.persistedType,
+      modelType_result: normalized.modelType,
     });
     res.status(200).send(success("新增成功"));
   },

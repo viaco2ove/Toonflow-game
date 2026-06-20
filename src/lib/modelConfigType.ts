@@ -1,6 +1,7 @@
 import { normalizePersistedVoiceConfig } from "@/lib/voiceGateway";
+import {DebugLogUtil} from "@/utils/debugLogUtil";
 
-export type ExternalModelConfigType = "text" | "image" | "voice" | "voice_design" | "video";
+export type ExternalModelConfigType = "text" | "image" | "voice" | "voice_design" | "voice_clone" | "video";
 export type PersistedModelConfigType = "text" | "image" | "voice" | "video";
 export type ModelReasoningEffort = "minimal" | "low" | "medium" | "high";
 
@@ -25,24 +26,15 @@ function normalizeReasoningEffort(input: unknown): ModelReasoningEffort {
 export function isVoiceDesignModelConfig(input: {
   type?: unknown;
   modelType?: unknown;
-  manufacturer?: unknown;
-  model?: unknown;
 }): boolean {
-  const externalType = trimText(input.type).toLowerCase();
-  if (externalType === "voice_design") return true;
+  return trimText(input.modelType).toLowerCase() === "voice_design";
+}
 
-  const modelType = trimText(input.modelType).toLowerCase();
-  if (modelType === "voice_design") return true;
-
-  const manufacturer = trimText(input.manufacturer).toLowerCase();
-  const model = trimText(input.model).toLowerCase();
-  return manufacturer === "qwen" && (
-    model === "qwen-voice-design"
-    || model.startsWith("qwen3-tts-vd")
-    || model === "voice-enrollment"
-    || model.startsWith("cosyvoice-v3")
-    || model.startsWith("cosyvoice-v3.5")
-  );
+export function isVoiceCloneModelConfig(input: {
+  type?: unknown;
+  modelType?: unknown;
+}): boolean {
+  return trimText(input.modelType).toLowerCase() === "voice_clone";
 }
 
 export function toExternalModelConfigRow<T extends Record<string, any>>(row: T): T & {
@@ -54,7 +46,10 @@ export function toExternalModelConfigRow<T extends Record<string, any>>(row: T):
   cacheReadPricePer1M: number;
   reasoningEffort: ModelReasoningEffort | "";
 } {
-  if (isVoiceDesignModelConfig(row)) {
+  const resolvedType = trimText(row.type).toLowerCase();
+  const modelType = trimText(row.modelType).toLowerCase();
+
+  if (modelType === "voice_design") {
     return {
       ...row,
       type: "voice_design",
@@ -66,7 +61,18 @@ export function toExternalModelConfigRow<T extends Record<string, any>>(row: T):
       reasoningEffort: "",
     };
   }
-  const resolvedType = trimText(row.type).toLowerCase();
+  if (modelType === "voice_clone") {
+    return {
+      ...row,
+      type: "voice_clone",
+      modelType: "voice_clone",
+      currency: trimText(row.currency).toUpperCase() || "CNY",
+      inputPricePer1M: normalizeNonNegativeNumber(row.inputPricePer1M),
+      outputPricePer1M: normalizeNonNegativeNumber(row.outputPricePer1M),
+      cacheReadPricePer1M: normalizeNonNegativeNumber(row.cacheReadPricePer1M),
+      reasoningEffort: "",
+    };
+  }
   const externalType = (resolvedType || "text") as ExternalModelConfigType;
   return {
     ...row,
@@ -120,13 +126,30 @@ export function normalizeExternalModelConfig(input: {
 
   if (requestedType === "voice_design") {
     return {
-      persistedType: "text",
+      persistedType: "voice_design",
       externalType: "voice_design",
       model,
       baseUrl,
       apiKey,
       manufacturer,
       modelType: "voice_design",
+      inputPricePer1M,
+      outputPricePer1M,
+      cacheReadPricePer1M,
+      currency,
+      reasoningEffort,
+    };
+  }
+
+  if (requestedType === "voice_clone") {
+    return {
+      persistedType: "voice_clone",
+      externalType: "voice_clone",
+      model,
+      baseUrl,
+      apiKey,
+      manufacturer,
+      modelType: "voice_clone",
       inputPricePer1M,
       outputPricePer1M,
       cacheReadPricePer1M,

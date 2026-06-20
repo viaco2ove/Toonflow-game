@@ -34,6 +34,7 @@ export default router.post(
   async (req, res) => {
     try {
       const { worldId, projectId, name, intro, coverPath, publishStatus, settings, playerRole, narratorRole } = req.body;
+      console.log("[saveWorld] playerRole.description:", playerRole?.description);
       const db = getGameDb();
       const now = nowTs();
       const currentUserId = Number((req as any)?.user?.id || 0);

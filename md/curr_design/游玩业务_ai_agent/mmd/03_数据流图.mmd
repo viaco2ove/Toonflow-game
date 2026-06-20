@@ -1,0 +1,111 @@
+flowchart LR
+    subgraph INPUT["📥 输入"]
+        UM[用户消息<br/>messageContent]
+        CHAT[最近对话<br/>recent 20]
+        STATE[Session State<br/>state.player.parameterCardJson]
+        MINI[miniGame state]
+    end
+
+    subgraph ROUTES["🚪 HTTP 路由"]
+        ADD[/game/addMessage]
+        ORCHESTRATION[/game/orchestration]
+        DEBUG_STEP[/game/debugStep]
+    end
+
+    subgraph SVC["⚙️ 服务层"]
+        SS[SessionService<br/>addSessionMessage<br/>orchestrateSessionTurn]
+        CTRL[MiniGameController<br/>handleMiniGameTurn<br/>handleCreateTaskFromCommand]
+        TASK_SVC[FreeChapterTaskService<br/>createTaskFromUserRequest<br/>generateBlueprintByAi]
+    end
+
+    subgraph AGENTS["🤖 AI Agents"]
+        INTENT_AGENT[IntentClassifier<br/>analyzeIntentWithAi]
+        ORCH_AGENT[NarrativeOrchestrator<br/>runNarrativePlan]
+        MEMORY_AGENT[Memory Agent<br/>refreshStoryMemory]
+    end
+
+    subgraph MODELS["🧠 模型调用"]
+        QWEN_LOCAL[Qwen3-0.6B<br/>node-llama-cpp]
+        AI_SDK[ai-sdk text.invoke<br/>doubao/openai/gemini/...]
+    end
+
+    subgraph CONFIG["⚙️ 配置层"]
+        GET_PROMPT_AI[getPromptAi<br/>STRICT_MODEL_KEYS]
+        T_AI_MAP[(t_aiModelMap<br/>intentClassifierModel<br/>storyOrchestratorModel<br/>...)]
+        T_CONFIG[(t_config<br/>用户模型配置)]
+    end
+
+    subgraph STORAGE["💾 数据库"]
+        SESSION_DB[(t_gameSession<br/>stateJson)]
+        MESSAGE_DB[(t_sessionMessage)]
+        WORLD_DB[(t_storyWorld<br/>+ chapter)]
+        STATE_FILE[(install-state.json<br/>qwen3-0.6b)]
+    end
+
+    subgraph OUTPUT["📤 输出"]
+        TASK_PANEL[任务面板<br/>executing_task]
+        TASK_LIST[任务列表<br/>taskList]
+        NARRATIVE[剧情台词]
+    end
+
+    %% 路由分流
+    UM --> ADD
+    UM --> ORCHESTRATION
+    UM --> DEBUG_STEP
+
+    ADD --> SS
+    ORCHESTRATION --> SS
+    DEBUG_STEP --> CTRL
+
+    %% 阶段1：addMessage 流程
+    SS -->|阶段1| CTRL
+    CTRL --> INTENT_AGENT
+    INTENT_AGENT --> GET_PROMPT_AI
+    GET_PROMPT_AI --> T_AI_MAP
+    GET_PROMPT_AI --> T_CONFIG
+    INTENT_AGENT --> QWEN_LOCAL
+    INTENT_AGENT --> AI_SDK
+
+    %% 任务创建
+    CTRL --> TASK_SVC
+    TASK_SVC --> AI_SDK
+    TASK_SVC --> STATE
+    STATE --> TASK_PANEL
+    STATE --> TASK_LIST
+
+    %% 阶段2：编排
+    SS -->|阶段2| ORCH_AGENT
+    ORCH_AGENT --> AI_SDK
+    ORCH_AGENT --> MEMORY_AGENT
+    MEMORY_AGENT --> AI_SDK
+    ORCH_AGENT --> NARRATIVE
+
+    %% 模型本地资源
+    QWEN_LOCAL <-.GGUF模型.-> STATE_FILE
+
+    %% 数据存储
+    SS <--> SESSION_DB
+    SS <--> MESSAGE_DB
+    SS <--> WORLD_DB
+    CHAT --> SS
+    STATE --> SS
+    MINI --> SS
+
+    %% 样式
+    classDef input fill:#e3f2fd,stroke:#1565c0,stroke-width:2px
+    classDef route fill:#bbdefb,stroke:#1565c0,stroke-width:2px
+    classDef service fill:#fff8e1,stroke:#f9a825,stroke-width:2px
+    classDef agent fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px
+    classDef model fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
+    classDef config fill:#fff3e0,stroke:#e65100,stroke-width:2px
+    classDef storage fill:#fce4ec,stroke:#c2185b,stroke-width:2px
+    classDef output fill:#dcedc8,stroke:#33691e,stroke-width:2px
+
+    class UM,CHAT,STATE,MINI input
+    class ADD,ORCHESTRATION,DEBUG_STEP route
+    class SS,CTRL,TASK_SVC service
+    class INTENT_AGENT,ORCH_AGENT,MEMORY_AGENT agent
+    class QWEN_LOCAL,AI_SDK model
+    class GET_PROMPT_AI,T_AI_MAP,T_CONFIG config
+    class SESSION_DB,MESSAGE_DB,WORLD_DB,STATE_FILE storage
+    class TASK_PANEL,TASK_LIST,NARRATIVE output

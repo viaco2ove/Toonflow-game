@@ -191,6 +191,8 @@ type OrchestratorPromptPayload = {
     kind: string;
     summary: string;
   } | null;
+  // ★ P4: 完整 state（用于任务模式上下文提取）
+  state?: JsonRecord;
 };
 
 type SpeakerPromptPayload = {
@@ -228,6 +230,8 @@ type SpeakerPromptPayload = {
   // 当前阶段索引和摘要，用于角色发言器判断当前阶段
   currentStageIndex?: number | null;
   currentStageSummary?: string | null;
+  // ★ P4: 任务模式上下文（来自 state.executing_task）
+  taskContext?: TaskContextPayload | null;
 };
 
 type RecentDialogueTurn = {
@@ -555,6 +559,20 @@ function shortText(input: unknown, limit = 120): string {
   const text = normalizeScalarText(input);
   if (!text) return "";
   return text.length > limit ? `${text.slice(0, limit)}...` : text;
+}
+
+/**
+ * 解析"世界全局背景"字段。
+ * 优先级：world.globalBackground > world.intro > world.background
+ * 说明：
+ *   - world.intro 对应前端"故事简介"（短描述）
+ *   - world.globalBackground 对应前端"全局背景"（长描述，含等级体系、世界规则等）
+ *   - 后端记忆管理 prompt 需要的是后者，否则模型看不到等级称号映射等关键设定
+ */
+function resolveWorldGlobalBackground(world: any): string {
+  if (!world || typeof world !== "object") return "";
+  const w = world as Record<string, any>;
+  return String(w.globalBackground || w.intro || w.background || "").trim();
 }
 
 // 将对象或数组压缩成短摘要，便于塞进 prompt。
@@ -2122,6 +2140,8 @@ function buildOrchestratorInputSnapshot(payload: OrchestratorPromptPayload, comp
       last_speaker_role_type: sanitizeRoleType(payload.turnState.lastSpeakerRoleType),
       last_speaker: payload.turnState.lastSpeaker || "",
     },
+    // ★ P4: 任务模式上下文（从 state 提取）—— 任务激活时序列化到 prompt
+    active_task: payload.state ? (extractTaskContext(payload.state) || null) : null,
     recent_dialogue: payload.recentDialogue,
     latest_player_message: payload.latestPlayerMessage || "",
   };
@@ -2448,6 +2468,8 @@ function buildSpeakerUserPrompt(payload: {
   otherRoles: string[];
   currentStageIndex?: number | null;
   currentStageSummary?: string | null;
+  /** 任务模式上下文（只有任务激活时才不为空） */
+  taskContext?: TaskContextPayload | null;
 }): string {
   const worldLines = buildSpeakerWorldLines(payload);
   const chapterLines = buildSpeakerChapterLines(payload);
@@ -2456,11 +2478,13 @@ function buildSpeakerUserPrompt(payload: {
   const nextEventLines = buildSpeakerNextEventLines(payload);
   const speakerIdentityLines = buildSpeakerIdentityLines(payload);
   const visibleRolesText = payload.otherRoles.length ? payload.otherRoles.join("、") : "无";
+  const taskContextLines = payload.taskContext ? buildTaskContextLines(payload.taskContext) : [];
 
   if (DebugLogUtil.isDebugLogEnabled()) {
     console.log("[story:memory:runtime] buildSpeakerUserPrompt", JSON.stringify({
       worldIntro: payload.worldIntro || "无",
       currWorldIntro: payload.worldIntro || "无",
+      hasTaskContext: !!payload.taskContext,
     }));
   }
   return [
@@ -2475,6 +2499,8 @@ function buildSpeakerUserPrompt(payload: {
     ...chapterLines,
     "",
     ...phaseLines,
+    "",
+    ...taskContextLines,    // ★ P4 任务模式上下文注入
     "",
     "[当前事件]",
     ...currentEventLines,
@@ -2502,6 +2528,105 @@ function buildSpeakerUserPrompt(payload: {
     "[输出要求]",
     "直接输出本轮真正展示给用户的一段正文，不要 JSON，不要字段名，不要代码块。",
   ].filter(Boolean).join("\n");
+}
+
+/** 任务上下文 payload（来自 state） */
+interface TaskContextPayload {
+  title: string;
+  category: string;
+  objective: string;
+  process: string[];
+  successConditions: string[];
+  failureConditions: string[];
+  status: string;
+  /** 已完成的过程步骤 */
+  processCompleted?: number;
+  /** 总过程步骤数 */
+  processTotal?: number;
+}
+
+/**
+ * 从 state 提取当前任务上下文。
+ * 任务激活时返回完整上下文；无任务时返回 null。
+ */
+function extractTaskContext(state: JsonRecord): TaskContextPayload | null {
+  const card = (state?.player?.parameterCardJson || {}) as Record<string, any>;
+  const executing = card.executing_task as Record<string, any> | undefined;
+  if (!executing || !normalizeScalarText(executing.title)) return null;
+
+  const process = Array.isArray(executing.process) ? (executing.process as string[]) : [];
+  const success = Array.isArray(executing.successConditions) ? (executing.successConditions as string[]) : [];
+  const failure = Array.isArray(executing.failureConditions) ? (executing.failureConditions as string[]) : [];
+
+  // 从当前事件摘要中提取已完成步骤数
+  const currentEvent = readRuntimeCurrentEventState(state);
+  const eventSummary = normalizeScalarText((currentEvent as any).summary || (currentEvent as any).eventSummary || "");
+  let processCompleted = 0;
+  const summaryMatch = eventSummary.match(/(\d+)\s*\/\s*(\d+)\s*步/);
+  if (summaryMatch) {
+    processCompleted = Math.min(Number(summaryMatch[1] || 0), process.length);
+  }
+  const processTotal = process.length;
+
+  return {
+    title: normalizeScalarText(executing.title),
+    category: normalizeScalarText(executing.category) || "自由任务",
+    objective: normalizeScalarText(executing.objective),
+    process,
+    successConditions: success,
+    failureConditions: failure,
+    status: normalizeScalarText(executing.status) || "doing",
+    processCompleted,
+    processTotal,
+  };
+}
+
+/**
+ * 把任务上下文拼到 speaker prompt 中。
+ * 关键：让编排师/角色发言器明确知道自己"在任务中"，不要瞎发主线剧情。
+ */
+function buildTaskContextLines(task: TaskContextPayload): string[] {
+  const lines: string[] = [];
+  if (!task.title) return lines;
+
+  lines.push("[当前任务模式] ⚠ 当前处于小游戏（任务）模式，所有发言必须围绕此任务推进，不允许出现主线剧情推进 / 章节切换 / 新事件生成。");
+
+  lines.push("[任务标题]");
+  lines.push(task.title);
+
+  if (task.category) {
+    lines.push("[任务分类]");
+    lines.push(task.category);
+  }
+
+  if (task.objective) {
+    lines.push("[任务目标]");
+    lines.push(task.objective);
+  }
+
+  if (task.process.length > 0) {
+    lines.push("[任务过程]");
+    task.process.forEach((step, idx) => {
+      const completed = idx < task.processCompleted!;
+      const marker = completed ? "[✓]" : "[ ]";
+      lines.push(`${marker} ${idx + 1}. ${step}`);
+    });
+    if (task.processTotal && task.processCompleted !== undefined) {
+      lines.push(`(进度: ${task.processCompleted}/${task.processTotal})`);
+    }
+  }
+
+  if (task.successConditions.length > 0) {
+    lines.push("[成功条件 - 达到任何一条即视为任务完成]");
+    task.successConditions.forEach((c) => lines.push(`- ${c}`));
+  }
+
+  if (task.failureConditions.length > 0) {
+    lines.push("[失败条件 - 触发任何一条即视为任务失败]");
+    task.failureConditions.forEach((c) => lines.push(`- ${c}`));
+  }
+
+  return lines;
 }
 
 // 把最近对话和现有记忆拼成记忆管理提示词。
@@ -2995,28 +3120,6 @@ function resolveNextFallbackRole(roles: RuntimeStoryRole[], currentRole: Runtime
   return otherNpc || narrator || currentRole;
 }
 
-// 构造模型不可用时的兜底发言内容。
-function buildFallbackContent(role: RuntimeStoryRole, latestPlayerMessage: string, fallbackIsSkip: boolean): string {
-  const roleName = normalizeScalarText(role.name) || "旁白";
-  const roleType = sanitizeRoleType(role.roleType);
-  if (fallbackIsSkip) {
-    if (roleType === "npc") {
-      return `${roleName}见你暂时沉默，便先一步接过话头，继续推动眼前的局势。`;
-    }
-    return "你选择暂时沉默，其他角色顺势接过话头，剧情继续推进。";
-  }
-  if (!latestPlayerMessage) {
-    if (roleType === "npc") {
-      return `${roleName}率先打破僵持，开始根据眼前的异动继续行动。`;
-    }
-    return "局势仍在迅速变化，场上的角色开始根据眼前的异动继续行动。";
-  }
-  if (roleType === "npc") {
-    return `${roleName}接住了你的回应，顺着当前局势继续推进。`;
-  }
-  return "你的回应让场上的气氛发生了变化，剧情继续向前推进。";
-}
-
 function normalizeFallbackCueText(input: unknown): string {
   return String(input || "")
     .replace(/[\s，。、“”"'‘’：:；;（）()【】\[\]\-—_·•・⋯…,.!?！？]/g, "")
@@ -3286,7 +3389,20 @@ function buildOrchestratorSystemPrompt(
 }
 
 // 组装角色发言器的系统提示词。
-function buildSpeakerSystemPrompt(speakerPrompt: string, compactMode = false): string {
+function buildSpeakerSystemPrompt(speakerPrompt: string, compactMode = false, taskContext?: TaskContextPayload | null): string {
+  // ★ P4: 任务模式额外加硬性约束，避免角色发言器发"主线剧情"台词
+  const taskModeExtra = taskContext
+    ? [
+        "",
+        "★★★ 关键：本轮处于任务（小游戏）模式，必须严格遵守以下任务模式规则 ★★★",
+        `当前任务标题：${taskContext.title}`,
+        taskContext.objective ? `任务目标：${taskContext.objective}` : "",
+        "1. 只能在以下角色中选一个作为本轮 speaker：旁白 / 章节内任意 NPC 角色 / 敌方诡异（如果任务里出现）。",
+        "2. 本轮台词必须**直接服务于任务推进**：提供线索 / 制造冲突 / 推进用户行动。绝不允许推进章节主线剧情或开启新事件。",
+        "3. 不要复述章节开头、世界观、章节内其他事件的背景。",
+        "4. 不要让剧情完全停止——必须给用户留下可继续的输入切入点。",
+      ].filter(Boolean).join("\n")
+    : "";
   if (compactMode) {
     return [
       speakerPrompt,
@@ -3296,7 +3412,8 @@ function buildSpeakerSystemPrompt(speakerPrompt: string, compactMode = false): s
       "如果这一轮里既有动作/神态/场景描写，也有真正说出口的台词：描写必须单独放进一段小括号 `(...)`，真正台词放在括号外。",
       "小括号里的描写是展示用舞台提示，不属于可朗读台词；不要把整段都写成旁白。",
       "只推进当前这一小步，默认 40~80 字，最多 2 句。",
-    ].join("\n");
+      taskModeExtra,
+    ].filter(Boolean).join("\n");
   }
   const lengthRule = compactMode
     ? "7. 当前模型较弱，默认控制在 80 字以内，最多 2 小段。"
@@ -3314,6 +3431,7 @@ function buildSpeakerSystemPrompt(speakerPrompt: string, compactMode = false): s
     "8. 如果内容同时包含描写和角色真正说出口的台词：描写必须单独写成一段 `(...)`，真实台词放在下一段；不要把描写和台词混成一整段。",
     "9. 只有括号外的内容算台词；括号内只能放动作、神态、镜头或气氛描写。",
     "10. 本阶段禁止 JSON、禁止代码块、禁止字段名；只返回最终展示给用户的一段正文。",
+    taskModeExtra,
   ].filter(Boolean).join("\n\n");
 }
 
@@ -3494,7 +3612,7 @@ function buildOrchestratorPromptPayload(input: {
   // 目的就是让模型只盯住当前事件，不要被完整大纲带偏。
   const payload: OrchestratorPromptPayload = {
     worldName: normalizeScalarText(input.world?.name),
-    worldIntro: shortText(input.world?.intro, input.compactMode ? 600 : 1200),
+    worldIntro: shortText(resolveWorldGlobalBackground(input.world), input.compactMode ? 600 : 1200),
     chapterTitle: input.currentChapter.title,
     chapterDirective: shouldSuppressCompletedGuide
       ? ""
@@ -3590,6 +3708,8 @@ function buildOrchestratorPromptPayload(input: {
   // 编排 prompt 只读取精简后的事件摘要与事实，避免把章节正文当成”当前事件”再次送进模型。
   payload.currentEventSummary = promptEventSummary;
   payload.currentEventFacts = promptEventFacts;
+  // ★ P4: 传递完整 state 给 payload，供任务模式上下文提取
+  payload.state = input.state;
   return payload;
 }
 
@@ -3956,7 +4076,7 @@ export async function runStorySpeakerContent(input: {
     : promptEventFacts;
   const payload: SpeakerPromptPayload = {
     worldName: normalizeScalarText(input.world?.name),
-    worldIntro: useFastSpeakerPrompt ? "" : shortText(input.world?.intro, speakerWorldIntroLimit),
+    worldIntro: useFastSpeakerPrompt ? "" : shortText(resolveWorldGlobalBackground(input.world), speakerWorldIntroLimit),
     chapterTitle: currentChapter.title,
     chapterContentHint,
     chapterEndingConditionHint,
@@ -4003,6 +4123,8 @@ export async function runStorySpeakerContent(input: {
         .filter((item) => item.name !== input.currentRole.name)
         .map((item) => `${item.name}(${sanitizeRoleType(item.roleType)})`)
         .slice(0, compactMode ? 3 : 4),
+    // ★ P4: 任务模式上下文注入 —— 任务激活时把 task 上下文喂给角色发言器
+    taskContext: extractTaskContext(input.state),
     traceMeta: {
       worldId: Number(input.world?.id || 0),
       chapterId: Number(input.chapter?.id || 0),
@@ -4015,10 +4137,16 @@ export async function runStorySpeakerContent(input: {
     currentStageSummary: currentStage?.targetSummary || null,
   };
   // 只在 prompt payload 层切换当前/下一事件上下文，不改运行态原始事件信息，避免 UI 和回溯链失真。
-  const systemPrompt = buildSpeakerSystemPrompt(prompts.storySpeaker || prompts.storyOrchestrator, useFastSpeakerPrompt || compactMode);
   // 无论快路由还是标准路由，都统一使用完整版 speaker prompt。
   // 区别只保留在模型槽位和上下文裁剪，不再分裂成另一套缺少章节/事件信息的 prompt 结构。
-  const userPrompt = buildSpeakerUserPrompt(payload);
+  // ★ P4: 任务模式上下文注入 —— 任务激活时把 task 上下文喂给角色发言器
+  const taskContextForPrompt = extractTaskContext(input.state);
+  const userPrompt = buildSpeakerUserPrompt({ ...payload, taskContext: taskContextForPrompt });
+  const systemPrompt = buildSpeakerSystemPrompt(
+    prompts.storySpeaker || prompts.storyOrchestrator,
+    useFastSpeakerPrompt || compactMode,
+    taskContextForPrompt,
+  );
   const buildMs = Date.now() - totalStartedAt;
   let invokeMs = 0;
   let rawResponse = "";
@@ -4152,11 +4280,7 @@ export async function runStorySpeakerContent(input: {
     if (isProviderBalanceOrQuotaError(err)) {
       throw createRuntimeModelError("speaker", "当前角色发言模型余额不足，请充值或切换模型后重试");
     }
-    return buildFallbackContent(
-      input.currentRole,
-      normalizeScalarText(input.playerMessage),
-      normalizeScalarText(input.playerMessage) === ".",
-    );
+    throw err;
   }
 }
 
@@ -4213,6 +4337,27 @@ export async function runNarrativePlan(input: OrchestratorInput): Promise<Narrat
   }
 }
 
+
+function getNotCompletedCurrentEvent(currentEvent: ReturnType<typeof readCurrentRuntimeEventContext>): ReturnType<typeof readCurrentRuntimeEventContext> {
+  if (currentEvent.eventStatus === "completed") {
+    return {
+      ...currentEvent,
+      eventIndex: null as unknown as number, // 已完成事件不暴露给 AI，防止 AI 错误写回 eventIndex=1
+      eventSummary: "",
+      eventFacts: [],
+      eventMemorySummary: "",
+      eventMemoryFacts: [],
+      eventStatus: "idle",
+    };
+  }
+  return currentEvent;
+}
+
+function getNotCompletedCurrentPhase(currentPhase: ChapterRuntimePhase | null): ChapterRuntimePhase | null {
+  if (!currentPhase) return null;
+  return currentPhase;
+}
+
 // 调用编排模型，决定本轮谁说话、为什么说、以及是否轮到用户。
 async function doRunNarrativePlan(input: OrchestratorInput): Promise<NarrativePlanResult> {
   // 第一段：准备编排所需的固定上下文。
@@ -4228,8 +4373,14 @@ async function doRunNarrativePlan(input: OrchestratorInput): Promise<NarrativePl
   const turnState = readRuntimeTurnState(input.state, input.world);
   const currentPhase = readCurrentChapterPhase(input.chapter, input.state);
   const currentEvent = readCurrentRuntimeEventContext(input.chapter, input.state);
+
   const roles = filterRolesForPhase(allRoles, currentPhase);
   const currentChapter = buildOrchestratorChapterMeta(input.chapter);
+  // 增加事件是否完成的判断
+  const notCompletedCurrentEvent = getNotCompletedCurrentEvent(currentEvent);
+  const notCompletedcurrentPhase = getNotCompletedCurrentPhase(currentPhase);
+
+
   // 这里开始只保留“流程控制”：
   // payload 的具体拼装细节已经全部挪到 buildOrchestratorPromptPayload 里。
   const payload = buildOrchestratorPromptPayload({
@@ -4237,8 +4388,8 @@ async function doRunNarrativePlan(input: OrchestratorInput): Promise<NarrativePl
     state: input.state,
     chapter: input.chapter,
     currentChapter,
-    currentPhase,
-    currentEvent,
+    currentPhase: notCompletedcurrentPhase,
+    currentEvent: notCompletedCurrentEvent,
     roles,
     recentMessages: input.recentMessages,
     turnState,
@@ -4374,18 +4525,7 @@ async function doRunNarrativePlan(input: OrchestratorInput): Promise<NarrativePl
     if (pendingEndingGuide) {
       input.state.__pendingEndingGuide = false;
     }
-    return buildFallbackNarrativePlan({
-      roles,
-      turnState,
-      latestPlayerMessage: payload.latestPlayerMessage,
-      currentPhase,
-      currentEvent,
-      hasPlayerInput,
-      world: input.world,
-      fallbackReason: err,
-      pendingEndingGuide,
-      orchestratorRuntime,
-    });
+    throw err;
   } finally {
     // 不论成功、失败还是 fallback，最后都统一打 prompt 体积和耗时日志。
     console.log("[orchestrator] request_chars=", systemPrompt.length + userPrompt.length);
@@ -4509,7 +4649,7 @@ export async function runStoryMemoryManager(input: {
     worldName: normalizeScalarText(input.world?.name),
     // 记忆管理同样需要看到世界级背景，否则它只能根据局部章节和最近对话压缩记忆，
     // 很容易漏掉“当前事件为何重要”以及长期标签该如何贴合世界设定。
-    worldIntro: shortText(input.world?.intro, compactMode ? 2400 : 4800),
+    worldIntro: shortText(resolveWorldGlobalBackground(input.world), compactMode ? 2400 : 4800),
     chapterTitle: normalizeScalarText(input.chapter?.title),
     ...buildPromptEventContextTextPayload(currentEvent, compactMode),
     eventDeltaText: buildMemoryEventDeltaText(memoryInputs.eventDeltaMessages, compactMode),
@@ -4829,6 +4969,15 @@ function applyMemoryPlayerCardPatchToState(state: JsonRecord, memory: MemoryMana
 } {
   const player = asRecord(state.player);
   const existedBefore = Boolean(player.parameterCardJson && typeof player.parameterCardJson === "object");
+  const rawCard = asRecord(player.parameterCardJson);
+  // 保留任务模式专属字段，防止被 buildDefaultRoleParameterCardForMemory 覆盖而丢失
+  const preservedTaskFields = {
+    activeTaskId: rawCard.activeTaskId,
+    executing_task: rawCard.executing_task,
+    executingTask: rawCard.executingTask,
+    taskList: rawCard.taskList,
+    miniGameSession: (rawCard as any).miniGameSession,
+  };
   const currentCard = buildDefaultRoleParameterCardForMemory({
     role: player,
     fallbackName: normalizeScalarText(player.name) || "用户",
@@ -4845,6 +4994,12 @@ function applyMemoryPlayerCardPatchToState(state: JsonRecord, memory: MemoryMana
     ], 20),
   };
   const nextCard = mergeMemoryParameterCardPatch(currentCard, mergedPatch);
+  // 恢复任务专属字段
+  if (preservedTaskFields.activeTaskId) (nextCard as any).activeTaskId = preservedTaskFields.activeTaskId;
+  if (preservedTaskFields.executing_task) (nextCard as any).executing_task = preservedTaskFields.executing_task;
+  if (preservedTaskFields.executingTask) (nextCard as any).executingTask = preservedTaskFields.executingTask;
+  if (Array.isArray(preservedTaskFields.taskList)) (nextCard as any).taskList = preservedTaskFields.taskList;
+  if (preservedTaskFields.miniGameSession) (nextCard as any).miniGameSession = preservedTaskFields.miniGameSession;
   player.parameterCardJson = nextCard;
   state.player = player;
   return {
@@ -5182,13 +5337,17 @@ export function applyOrchestratorResultToState(state: JsonRecord, result: Narrat
   const nextEventSummary = result.eventAdjustMode === "keep"
     ? currentProgress.eventSummary
     : normalizeScalarText(result.eventSummary) || currentProgress.eventSummary;
-  setChapterProgressState(state, {
-    eventIndex: Number.isFinite(Number(result.eventIndex)) ? Math.max(1, Number(result.eventIndex)) : currentProgress.eventIndex,
-    eventKind: result.eventKind || currentProgress.eventKind,
-    eventSummary: nextEventSummary,
-    eventStatus: nextEventStatus,
-  });
-  syncRuntimeCurrentEventFromChapterProgress(state);
+  // ★ P5 修复：只有有效 eventIndex 才更新 chapterProgress，防止已完成事件被错误写回 eventIndex=1
+  const shouldUpdateChapterProgress = targetEventIndex != null || result.eventAdjustMode === "completed";
+  if (shouldUpdateChapterProgress) {
+    setChapterProgressState(state, {
+      eventIndex: targetEventIndex ?? currentProgress.eventIndex,
+      eventKind: result.eventKind || currentProgress.eventKind,
+      eventSummary: nextEventSummary,
+      eventStatus: nextEventStatus,
+    });
+    syncRuntimeCurrentEventFromChapterProgress(state);
+  }
 }
 
 /**

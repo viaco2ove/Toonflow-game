@@ -16,6 +16,8 @@ import { enforceResourceIsolation } from "@/middleware/resourceIsolation";
 import { startSessionMemoryWorker, stopSessionMemoryWorker } from "@/modules/game-runtime/services/SessionMemoryWorker";
 import { syncBundledVoicePresetSeeds } from "@/lib/voicePresetSeeds";
 import { dbBootstrapReady } from "@/utils/db";
+import { startMossTtsServe, isMossTtsServeEnabled, stopMossTtsServe } from "@/lib/localMossTts";
+import { startQwen060OnBoot, isQwen060BootEnabled } from "@/lib/localQwen060";
 
 function ensureNoProxyForLocalhost() {
   const localHosts = ["127.0.0.1", "localhost", "::1"];
@@ -72,6 +74,23 @@ export default async function startServe(randomPort: Boolean = false) {
   // 调试回溯需要跨热更新/重启保留临时文件，这里不再启动即清空。
 
   startSessionMemoryWorker();
+
+  // MOSS-TTS-Nano：程序启动时尝试一次启动 serve，启动失败则回退到 CLI，后续不再重试
+  if (isMossTtsServeEnabled()) {
+    startMossTtsServe()
+      .then(() => {
+        console.log("[MOSS-TTS-Nano] 常驻服务已启动");
+      })
+      .catch((err) => {
+        console.log("[MOSS-TTS-Nano] serve 启动失败，后续将使用 CLI 模式:", err instanceof Error ? err.message : String(err));
+      });
+  }
+
+  // 本地大模型 Qwen3-0.6B：程序启动时自动安装并预热（LOCAL_CHAT_MODEL_RUN_START=true）
+  if (isQwen060BootEnabled()) {
+    console.log("[qwen3-0.6b] LOCAL_CHAT_MODEL_RUN_START=true，启动自动安装/加载流程");
+    void startQwen060OnBoot();
+  }
 
   app.use(express.static(rootDir));
 
@@ -163,6 +182,7 @@ export function closeServe(): Promise<void> {
 
 // 进程退出不再删除调试回溯文件，避免热更新/重启后回溯点全部丢失。
 function onProcessExit() {
+  try { stopMossTtsServe(); } catch { /* ignore */ }
   try { stopSessionMemoryWorker(); } catch { /* ignore */ }
 }
 process.on("exit", onProcessExit);

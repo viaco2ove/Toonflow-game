@@ -417,10 +417,10 @@ export async function enforceResourceIsolation(req: Request, res: Response, next
       }
     }
 
-    // 语音配置按 userId 隔离
+    // 语音配置按 userId 隔离（voice / voice_design / voice_clone 均可）
     if (path === "/voice/getVoices" || path === "/voice/preview" || path === "/voice/transcribe" || path === "/game/streamvoice") {
       const configId = toPositiveInt((req.body || {}).configId);
-      if (configId && !(await ensureConfigOwned(configId, userId, "voice"))) {
+      if (configId && !(await ensureConfigOwned(configId, userId))) {
         return res.status(403).send({ message: "无权访问该语音模型配置" });
       }
     }

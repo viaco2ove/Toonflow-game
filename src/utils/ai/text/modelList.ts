@@ -319,6 +319,8 @@ const modelList: Owned[] = [
       } as any),
     tool: true,
   },
+  // 注：qwen060（local文本模型 / Qwen3-0.6B）走 node-llama-cpp 直接推理，
+  // 不通过 ai-sdk，所以不在此处注册。详见 src/lib/localQwen060.ts
 
   // 豆包
   ...createAliasedModels(["volcengine", "doubao"], DOUBAO_TEXT_MODELS),
@@ -426,7 +428,7 @@ const modelList: Owned[] = [
   },
   // Qwen
   {
-    manufacturer: "qwen",
+    manufacturer: "aliyun_direct",
     model: "qwen-vl-max",
     responseFormat: "schema",
     image: true,
@@ -435,7 +437,7 @@ const modelList: Owned[] = [
     tool: true,
   },
   {
-    manufacturer: "qwen",
+    manufacturer: "aliyun_direct",
     model: "qwen-plus-latest",
     responseFormat: "schema",
     image: false,
@@ -444,7 +446,7 @@ const modelList: Owned[] = [
     tool: true,
   },
   {
-    manufacturer: "qwen",
+    manufacturer: "aliyun_direct",
     model: "qwen-max",
     responseFormat: "schema",
     image: false,
@@ -453,7 +455,7 @@ const modelList: Owned[] = [
     tool: true,
   },
   {
-    manufacturer: "qwen",
+    manufacturer: "aliyun_direct",
     model: "qwen2.5-72b-instruct",
     responseFormat: "schema",
     image: false,
@@ -462,7 +464,7 @@ const modelList: Owned[] = [
     tool: true,
   },
   {
-    manufacturer: "qwen",
+    manufacturer: "aliyun_direct",
     model: "qwen2.5-14b-instruct-1m",
     responseFormat: "schema",
     image: false,
@@ -471,7 +473,7 @@ const modelList: Owned[] = [
     tool: true,
   },
   {
-    manufacturer: "qwen",
+    manufacturer: "aliyun_direct",
     model: "qwen2.5-vl-72b-instruct",
     responseFormat: "schema",
     image: true,

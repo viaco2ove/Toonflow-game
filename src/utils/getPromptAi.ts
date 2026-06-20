@@ -22,6 +22,8 @@ const STRICT_MODEL_KEYS = new Set([
   "storyVoiceModel",
   "storyAsrModel",
   "storyVoiceDesignModel",
+  "storyVoiceCloneModel",
+  "intentClassifierModel",
 ]);
 
 export default async function getPromptAi(key: string, userId?: number): Promise<AiConfig | {}> {
@@ -86,6 +88,8 @@ export default async function getPromptAi(key: string, userId?: number): Promise
       storyAvatarMattingModel: "image",
       storyVoiceModel: "voice",
       storyAsrModel: "asr",
+      storyVoiceDesignModel: "voice",
+      storyVoiceCloneModel: "voice",
     };
     const fallbackType = fallbackTypeMap[key];
     if (fallbackType) {

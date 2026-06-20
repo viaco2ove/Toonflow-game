@@ -29,7 +29,8 @@ async function resolveVoicePromptContext(configId: number, userId: number): Prom
     };
   }
   const row = await u.db("t_config")
-    .where({ id: configId, type: "voice", userId })
+    .where({ id: configId, userId })
+    .whereIn("type", ["voice", "voice_design", "voice_clone"])
     .first();
   return {
     manufacturer: String(row?.manufacturer || "").trim(),
@@ -53,35 +54,41 @@ export default router.post(
     const voiceDesignConfig = String(mode || "").trim() === "prompt_voice"
       ? await getStoryVoiceDesignConfig(userId)
       : null;
-    if (isDebugLogEnabled()) {
-      console.log("[voice:polish:debug] request", {
-        userId,
-        configId: Number(configId || 0),
-        mode: String(mode || "").trim(),
-        provider: String(provider || "").trim(),
-        manufacturer: context.manufacturer,
-        model: context.model,
-        voiceDesignModel: String(voiceDesignConfig?.model || "").trim(),
-        textLength: String(text || "").trim().length,
-      });
-    }
+    // 如果是 prompt_voice 模式，用 voiceDesignConfig 的厂商
+    const effectiveManufacturer = voiceDesignConfig
+      ? String(voiceDesignConfig.manufacturer || "").trim()
+      : context.manufacturer;
+    const effectiveModel = voiceDesignConfig
+      ? String(voiceDesignConfig.model || "").trim()
+      : context.model;
+    console.log("[voice:polish] request", {
+      userId,
+      configId: Number(configId || 0),
+      mode: String(mode || "").trim(),
+      provider: String(provider || "").trim(),
+      manufacturer: context.manufacturer,
+      model: context.model,
+      effectiveManufacturer,
+      effectiveModel,
+      voiceDesignModel: String(voiceDesignConfig?.model || "").trim(),
+      voiceDesignManufacturer: String(voiceDesignConfig?.manufacturer || "").trim(),
+      textLength: String(text || "").trim().length,
+    });
     const result = await polishVoicePromptAgent({
       text,
       userId,
       mode,
       provider,
-      manufacturer: context.manufacturer,
-      model: context.model,
+      manufacturer: effectiveManufacturer,
+      model: effectiveModel,
       voiceDesignModel: String(voiceDesignConfig?.model || "").trim(),
     });
-    if (isDebugLogEnabled()) {
-      console.log("[voice:polish:debug] result", {
-        prompt: result.prompt,
-        keywords: result.keywords,
-        signalGroups: result.signalGroups,
-        source: result.source,
-      });
-    }
+    console.log("[voice:polish] result", {
+      prompt: result.prompt,
+      keywords: result.keywords,
+      signalGroups: result.signalGroups,
+      source: result.source,
+    });
     res.status(200).send(success(result));
   },
 );

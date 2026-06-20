@@ -1,0 +1,80 @@
+stateDiagram-v2
+    [*] --> IDLE: 系统启动
+
+    state IDLE {
+        [*] --> WAITING_INPUT
+        WAITING_INPUT --> WAITING_INPUT: 普通输入
+    }
+
+    IDLE --> TASK_RECOMMEND: 章节进入任务引导阶段
+
+    TASK_RECOMMEND --> TASK_OPTIONS: AI旁白输出任务列表
+    TASK_OPTIONS --> TASK_SELECTED: 用户选择序号/任务名
+
+    TASK_SELECTED --> TASK_CREATED: 解析选项生成蓝图
+    TASK_CREATED --> TASK_DOING: 激活任务状态
+
+    state TASK_DOING {
+        [*] --> STEP_1
+        STEP_1 --> STEP_1: 用户动作推进
+        STEP_1 --> STEP_2: 进入下一阶段
+        STEP_2 --> STEP_2: 用户动作推进
+        STEP_2 --> STEP_N: 更多阶段...
+        STEP_N --> STEP_N: 用户动作推进
+    }
+
+    TASK_DOING --> EVALUATE: 每轮用户输入后评估
+
+    state EVALUATE {
+        [*] --> LAYER1_STATIC
+        LAYER1_STATIC --> COMPLETED: 静态条件满足
+        LAYER1_STATIC --> FAILED: 静态条件失败
+        LAYER1_STATIC --> LAYER2_RULES
+
+        LAYER2_RULES --> COMPLETED: 规则匹配成功
+        LAYER2_RULES --> FAILED: 规则匹配失败
+        LAYER2_RULES --> LAYER3_AI
+
+        LAYER3_AI --> COMPLETED: AI判断成功
+        LAYER3_AI --> FAILED: AI判断失败
+        LAYER3_AI --> CONTINUE: AI判断继续
+    }
+
+    EVALUATE --> COMPLETED: decision = success
+    EVALUATE --> FAILED: decision = failed
+    EVALUATE --> TASK_DOING: decision = continue
+
+    COMPLETED --> TASK_REWARDS: 发放奖励
+    FAILED --> TASK_REWARDS: 记录失败
+    TASK_REWARDS --> TASK_FINISHED
+
+    TASK_DOING --> ABORTED: 用户输入 #退出
+    ABORTED --> TASK_ABANDONED
+
+    TASK_FINISHED --> IDLE: 切回自由剧情
+    TASK_ABANDONED --> IDLE: 切回自由剧情
+
+    %% 状态说明
+    note right of IDLE
+        等待用户输入
+        普通对话流程
+    end note
+
+    note right of TASK_DOING
+        任务进行中
+        用户输入推进任务
+        #退出 可放弃任务
+    end note
+
+    note right of EVALUATE
+        三层判定机制：
+        1. 静态条件
+        2. 规则兜底
+        3. AI 智能判定
+    end note
+
+    note right of TASK_REWARDS
+        - 经验值
+        - 金币
+        - 物品奖励
+    end note

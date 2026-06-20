@@ -13,7 +13,10 @@ import {
   type MiniGameIntentLogMeta,
 } from "@/modules/game-runtime/services/MiniGameIntentService";
 import { resolveSellIntent } from "@/modules/game-runtime/services/MiniGameSellService";
-import { abandonActiveFreeChapterTaskEvent } from "@/modules/game-runtime/services/FreeChapterTaskService";
+import { abandonActiveFreeChapterTaskEvent, createTaskFromUserRequest } from "@/modules/game-runtime/services/FreeChapterTaskService";
+import { analyzeIntent, analyzeIntentWithAiFallback, type IntentResult } from "@/modules/game-runtime/agents/intentAnalyzer";
+// 任务模式 Agent 由 SessionService.orchestrateSessionTurn / streamlines 调用，
+// 本文件只需导出 readActiveTaskStateFromState、collectNpcListForTask 给上层使用。
 
 export interface MiniGameActionOption {
   action_id: string;
@@ -255,6 +258,70 @@ export function isMiniGameActiveState(state: JsonRecord): boolean {
   const session = asRecord(asRecord(state.miniGame).session);
   const status = scalarText(session.status) as MiniGameStatus;
   return activeStatuses().has(status);
+}
+
+/**
+ * 读取当前活跃任务 id（如果有）。T1.3 意图分析 context aware 用。
+ */
+function readActiveTaskIdFromState(state: JsonRecord): string | null {
+  const card = asRecord(asRecord(state.player).parameterCardJson);
+  return scalarText(card.activeTaskId) || null;
+}
+
+/**
+ * 读取当前活跃任务的完整状态（供 TaskModeOrchestrator 使用）
+ */
+export function readActiveTaskStateFromState(state: JsonRecord): {
+  title?: string;
+  objective?: string;
+  process?: string[];
+} | null {
+  const vars = asRecord(state.vars);
+  const activeFreeTask = asRecord(vars.activeFreeTask);
+  if (!scalarText(activeFreeTask.title)) {
+    // 兜底：从 player.parameterCardJson.executing_task 读
+    const card = asRecord(asRecord(state.player).parameterCardJson);
+    const exec = asRecord(card.executing_task);
+    if (scalarText(exec.title)) {
+      return {
+        title: scalarText(exec.title),
+        objective: scalarText(exec.objective),
+        process: Array.isArray(exec.process) ? (exec.process as unknown[]).map(p => String(p || "")) : [],
+      };
+    }
+    return null;
+  }
+  return {
+    title: scalarText(activeFreeTask.title),
+    objective: scalarText(activeFreeTask.objective),
+    process: Array.isArray(activeFreeTask.process) ? (activeFreeTask.process as unknown[]).map(p => String(p || "")) : [],
+  };
+}
+
+/**
+ * 收集任务可用的 NPC 列表（供 TaskDirectorAgent 使用）
+ */
+export function collectNpcListForTask(input: MiniGameControllerInput): Array<{
+  id: string;
+  name: string;
+  roleType?: string;
+  card?: string;
+}> {
+  const world = input.world;
+  const npcs: Array<{ id: string; name: string; roleType?: string; card?: string }> = [];
+  const settings = asRecord(world?.settings);
+  const settingRoles = Array.isArray(settings.roles) ? settings.roles as any[] : [];
+  for (const role of settingRoles) {
+    const roleRec = asRecord(role);
+    const roleType = scalarText(roleRec.roleType) || "npc";
+    if (roleType === "player" || roleType === "narrator") continue;
+    const id = scalarText(roleRec.id) || `npc_${scalarText(roleRec.name)}`;
+    const name = scalarText(roleRec.name);
+    if (!name) continue;
+    const card = scalarText(roleRec.description) || JSON.stringify(roleRec.parameterCardJson || {});
+    npcs.push({ id, name, roleType, card: card.slice(0, 600) });
+  }
+  return npcs;
 }
 
 /**
@@ -5571,11 +5638,194 @@ function buildRuleNarration(rulebook: MiniGameRulebook): string {
   return `${rulebook.displayName}规则：${rulebook.ruleSummary}`;
 }
 
+export async function handleCreateTaskFromCommand(
+  input: MiniGameControllerInput,
+  intent: { intent: string; confidence: number; params: Record<string, unknown> },
+): Promise<MiniGameControllerResult | null> {
+  if (intent.intent !== "create_task") return null;
+  const taskDescription = String(intent.params?.task_description || "").trim();
+  if (!taskDescription) {
+    console.log("[story:mini_game:task] handleCreateTaskFromCommand 跳过：taskDescription 为空");
+    return null;
+  }
+
+  console.log("[story:mini_game:task] handleCreateTaskFromCommand 开始创建任务", {
+    taskDescription: taskDescription.slice(0, 80),
+    userId: input.userId,
+    chapterId: input.chapter?.id,
+    chapterTitle: scalarText(input.chapter?.title),
+  });
+
+  // 调新加的 createTaskFromUserRequest —— 不依赖自由章节 / 旁白推荐
+  const created = await createTaskFromUserRequest({
+    userId: input.userId,
+    world: input.world,
+    chapter: input.chapter,
+    state: input.state,
+    userRequest: taskDescription,
+    recentMessages: input.recentMessages,
+  });
+  if (!created) {
+    console.log("[story:mini_game:task] createTaskFromUserRequest 返回 null，任务未创建");
+    return null;
+  }
+
+  console.log("[story:mini_game:task] 任务创建成功", {
+    taskId: created.task_id,
+    title: created.title,
+    objective: String(created.objective || "").slice(0, 80),
+    hasActiveTask: created.hasActiveTask,
+    source: created.source,
+  });
+
+  // 取出当前 miniGame 运行时（applyFreeChapterTaskBlueprintToState 已经写好）
+  const root = asRecord(input.state.miniGame);
+  const session = asRecord(root.session);
+  const narratorName = scalarText(input.world?.narratorRole?.name) || "旁白";
+
+  const content = created.hasActiveTask
+    ? `任务【${created.title}】已加入任务列表（当前执行的任务不变）。目标：${created.objective}。\n任务列表共 ${(input.state?.player?.parameterCardJson?.taskList?.length || 0) + 1} 项。\n直接输入行动可推进当前任务，输入 #任务列表 查看全部。`
+    : `任务【${created.title}】已开启。目标：${created.objective}。\n直接输入你的行动推进任务；输入 #退出 可放弃当前任务。`;
+
+  return {
+    intercepted: true,
+    runtime: root,
+    message: {
+      role: narratorName,
+      roleType: "narrator",
+      eventType: "on_mini_game_start",
+      content,
+      meta: {
+        miniGameType: "task",
+        taskId: created.task_id,
+        taskTitle: created.title,
+        taskCategory: created.category,
+        taskObjective: created.objective,
+        taskSource: created.source,
+        hasActiveTask: created.hasActiveTask,
+      },
+    },
+  };
+}
+
 export async function handleMiniGameTurn(input: MiniGameControllerInput): Promise<MiniGameControllerResult | null> {
   const state = input.state;
   const root = ensureMiniGameRoot(state);
   const activeSession = asRecord(root.session);
   const hasActiveGame = isMiniGameActiveState(state);
+
+  // ★ 入口诊断日志 - 确认 handleMiniGameTurn 被调用，避免被上游短路
+  console.log("[story:intent:analysis] handleMiniGameTurn 入口", {
+    mode: input.mode,
+    hasActiveGame,
+    messagePreview: String(input.playerMessage || "").slice(0, 80),
+    userId: input.userId,
+  });
+
+  // ★ T1.3 + T3.3 意图分析 - 双通道
+  // Fast path: 命令快路径（以 # 开头）
+  // Slow path: AI 分类（命令未命中时）
+  if (input.playerMessage && input.playerMessage.trim().startsWith("#")) {
+    const intent = analyzeIntent({
+      userId: input.userId,
+      playerMessage: input.playerMessage,
+      activeTaskId: readActiveTaskIdFromState(state),
+      chapterTitle: scalarText(input.chapter?.title),
+    });
+    if (intent) {
+      console.log("[story:intent:analysis] 命令快路径命中", {
+        path: "command",
+        intent: intent.intent,
+        params: intent.params,
+        confidence: intent.confidence,
+        messagePreview: input.playerMessage.slice(0, 60),
+      });
+      if (intent.intent === "create_task") {
+        console.log("[story:mini_game:task] 命令触发任务创建", {
+          taskDescription: intent.params?.task_description,
+          messagePreview: input.playerMessage.slice(0, 60),
+        });
+        const created = await handleCreateTaskFromCommand(input, intent);
+        if (created) return created;
+      }
+      // 其他意图（exit_task / query_progress / switch_task / list_tasks）
+      // 暂由后续阶段（T4.x）实现，先 fall through 走原有链路
+    }
+  }
+
+  // ★ T3.3 AI 意图分类（slow path）
+  // 关键：仅在「无活跃小游戏 + 用户没在任务中」时才跑 AI 分类
+  // 否则用户在任务模式下的正常发言（"开始吧"、"先去哪里"）会被误判为新意图
+  const activeTaskIdForGate = readActiveTaskIdFromState(state);
+  const hasActiveTask = !!activeTaskIdForGate;
+  if (!hasActiveGame && !hasActiveTask) {
+    console.log("[story:intent:analysis] 进入 AI 分类通道", {
+      userId: input.userId,
+      messagePreview: String(input.playerMessage || "").slice(0, 60),
+      activeTaskId: activeTaskIdForGate || null,
+      chapterTitle: scalarText(input.chapter?.title) || "",
+    });
+    const aiIntentResult = await analyzeIntentWithAiFallback({
+      userId: input.userId,
+      playerMessage: input.playerMessage,
+      recentMessages: input.recentMessages,
+      activeTaskId: activeTaskIdForGate,
+      chapterTitle: scalarText(input.chapter?.title),
+    });
+    console.log("[story:intent:analysis] AI 分类结果", {
+      path: aiIntentResult.path,
+      intent: aiIntentResult.intent,
+      confidence: aiIntentResult.confidence,
+      reasoning: String(aiIntentResult.reasoning || "").slice(0, 80),
+    });
+
+    if (aiIntentResult.intent === "create_task" && aiIntentResult.confidence >= 0.7) {
+      // 从 AI 返回的 params 提取任务描述（优先 task_description，回退原始消息）
+      const taskDescriptionFromAi = String((aiIntentResult.params as any)?.task_description || "").trim();
+      const taskKeywords = (aiIntentResult.params as any)?.task_keywords || [];
+      const taskDescription = taskDescriptionFromAi
+        || (Array.isArray(taskKeywords) && taskKeywords.length ? taskKeywords.join(" ") : input.playerMessage);
+      console.log("[story:mini_game:task] AI 触发任务创建", {
+        confidence: aiIntentResult.confidence,
+        reasoning: String(aiIntentResult.reasoning || "").slice(0, 80),
+        taskDescription: taskDescription.slice(0, 80),
+      });
+      const created = await handleCreateTaskFromCommand(input, {
+        intent: "create_task",
+        confidence: aiIntentResult.confidence,
+        params: { task_description: taskDescription },
+      } as any);
+      if (created) return created;
+    }
+
+    if (aiIntentResult.intent === "exit_task" && aiIntentResult.confidence >= 0.7) {
+      console.log("[story:mini_game:task] AI 触发退出任务（T4.x 待实现）", {
+        confidence: aiIntentResult.confidence,
+        reasoning: String(aiIntentResult.reasoning || "").slice(0, 80),
+      });
+    }
+
+    if (aiIntentResult.intent === "query_progress" && aiIntentResult.confidence >= 0.7) {
+      console.log("[story:mini_game:task] AI 触发查询进度（T4.x 待实现）", {
+        confidence: aiIntentResult.confidence,
+        reasoning: String(aiIntentResult.reasoning || "").slice(0, 80),
+      });
+    }
+
+    // game_action / normal_dialog：继续走原有链路
+  } else {
+    console.log("[story:intent:analysis] 跳过 AI 分类（任务/小游戏激活中，由小游戏内部消化用户输入）", {
+      hasActiveGame,
+      hasActiveTask,
+      activeTaskId: activeTaskIdForGate || null,
+      messagePreview: String(input.playerMessage || "").slice(0, 60),
+    });
+
+    // ★ 任务模式：用户消息落库后 NOT intercept，让前端走标准链路
+    //   addMessage → /game/orchestration/minigame → /game/streamlines → /game/streamvoice
+    // 4-Agent 编排（Director / Speaker / Completion）由
+    //   /orchestration/minigame 阶段执行，本处不再生成台词。
+  }
 
   if (!hasActiveGame) {
     // #退出 在没有激活小游戏时也要有稳定语义，不能再落到“未识别小游戏”分支。

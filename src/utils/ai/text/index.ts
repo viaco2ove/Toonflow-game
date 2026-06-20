@@ -258,7 +258,10 @@ function isOpenAICompatibleManufacturer(manufacturer?: string): boolean {
 }
 
 const buildOptions = async (input: AIInput<any>, config: AIConfig = {}) => {
-  if (!config || !config?.model || !config?.apiKey || !config?.manufacturer) throw new Error("请检查模型配置是否正确");
+  // 本地模型（lmstudio）不需要 apiKey
+  const isLocalModel = config?.manufacturer === "lmstudio";
+  if (!config || !config?.model || !config?.manufacturer) throw new Error("请检查模型配置是否正确");
+  if (!isLocalModel && !config?.apiKey) throw new Error("请检查模型配置是否正确");
   const { apiKey, baseURL, manufacturer } = { ...config };
   const requestedModel = String(config?.model || "").trim();
   const model = normalizeTextModelName(manufacturer, requestedModel);

@@ -216,6 +216,7 @@ const DEFAULT_PLAYER_ROLE: JsonRecord = {
   name: "用户",
   roleType: "player",
   description: "用户在故事中的主视角角色",
+  avatarImagePrompt: "",
   attributes: {},
 };
 
@@ -1553,6 +1554,7 @@ function normalizeSettingsRoles(input: unknown): JsonRecord[] {
       roleType: String(item.roleType || "npc") || "npc",
       name: String(item.name || `角色${index + 1}`),
       description: String(item.description || ""),
+      avatarImagePrompt: String(item.avatarImagePrompt || ""),
       attributes: {},
     }));
 }
@@ -2003,9 +2005,12 @@ export function readPhaseAwareRuntimeCurrentEventDigestState(chapter: any, state
     ? phases.findIndex((item) => item.id === progress.phaseId)
     : -1;
   const phaseDerivedEventIndex = phaseIndex >= 0 ? phaseIndex + 1 : 0;
-  const effectiveEventIndex = phaseDerivedEventIndex
-    || Number(currentEvent.index || progress.eventIndex || currentDigest.eventIndex || 1)
-    || 1;
+  // 优先用 phaseId 推导的 index（静态事件）
+  // 如果 phaseId 为空，用 progress.eventIndex（动态事件的正确索引）
+  // 不要用 currentDigest.eventIndex 作为 fallback，它可能是旧数据
+  const effectiveEventIndex = phaseDerivedEventIndex > 0
+    ? phaseDerivedEventIndex
+    : (Number(progress.eventIndex) || Number(currentEvent.index) || 1);
   const exactDigest = readRuntimeEventDigestByIndexState(state, effectiveEventIndex);
   if (exactDigest) return exactDigest;
 
@@ -2253,6 +2258,12 @@ export function upsertRuntimeDynamicEventState(
   const currentEvent = readRuntimeCurrentEventState(state);
   const dynamicEvents = normalizeRuntimeDynamicEventList(state.dynamicEvents);
   const matchedIndex = dynamicEvents.findIndex((item) => item.eventIndex === eventIndex);
+  console.log("[upsertRuntimeDynamicEventState]", {
+    eventIndex,
+    matchedIndex,
+    patchStatus: patch.status,
+    hasStatusInPatch: patch.status !== undefined,
+  });
   // 新建事件时优先继承当前 chapterProgress 指向的 phase/kind/summary，
   // 这样调用方只传少数字段也能得到完整事件对象。
   const base = matchedIndex >= 0

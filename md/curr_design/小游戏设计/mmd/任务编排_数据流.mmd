@@ -1,0 +1,70 @@
+flowchart LR
+    subgraph INPUT["输入数据"]
+        USER_MSG["用户消息"]
+        RECENT_MSG["最近对话"]
+        TASK_BLUEPRINT["任务蓝图"]
+        PLAYER_CARD["玩家参数卡"]
+    end
+
+    subgraph AGENTS["Agent 处理"]
+        INTENT["TaskIntentAgent"]
+        PROGRESS["TaskProgressAgent"]
+        SPEAKER["TaskSpeakerAgent"]
+    end
+
+    subgraph OUTPUT["输出数据"]
+        NARRATIVE["NarrativePlan"]
+        STATE_DELTA["状态变更"]
+        REWARD["奖励"]
+    end
+
+    subgraph STATE["状态存储"]
+        subgraph MINI_GAME["state.miniGame"]
+            RULEBOOK["rulebook.gameType"]
+            SESSION["session.game_type"]
+            PUBLIC_STATE["public_state"]
+            UI["ui.state_items"]
+        end
+
+        subgraph PARAM_CARD["state.player.parameterCardJson"]
+            EXEC_TASK["executing_task"]
+            TASK_LIST["taskList"]
+            ACTIVE_TASK["activeTaskId"]
+        end
+
+        subgraph VARS["state.vars"]
+            ACTIVE_FREE_TASK["activeFreeTask"]
+        end
+    end
+
+    %% 输入到 Agent
+    USER_MSG --> INTENT
+    RECENT_MSG --> INTENT
+    TASK_BLUEPRINT --> PROGRESS
+    USER_MSG --> PROGRESS
+    PLAYER_CARD --> PROGRESS
+    RECENT_MSG --> SPEAKER
+
+    %% Agent 内部流转
+    INTENT --> PROGRESS
+    PROGRESS --> SPEAKER
+
+    %% Agent 输出
+    INTENT --> STATE_DELTA
+    PROGRESS --> STATE_DELTA
+    PROGRESS --> REWARD
+    SPEAKER --> NARRATIVE
+
+    %% 状态更新
+    STATE_DELTA --> MINI_GAME
+    STATE_DELTA --> PARAM_CARD
+    STATE_DELTA --> VARS
+    REWARD --> PARAM_CARD
+
+    %% 样式
+    style INTENT fill:#e1f5fe
+    style PROGRESS fill:#fff3e0
+    style SPEAKER fill:#e8f5e9
+    style MINI_GAME fill:#f3e5f5
+    style PARAM_CARD fill:#e0f7fa
+    style VARS fill:#fff8e1

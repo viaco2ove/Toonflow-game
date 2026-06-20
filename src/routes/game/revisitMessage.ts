@@ -49,10 +49,17 @@ export default router.post(
       const restoredStatus = revisitData.s;
       const restoredRound = revisitData.r;
 
+      // ★ 根据被回溯消息的角色类型决定删除策略：
+      //   - 用户消息（player）：连同自己一起删除（"回到说这句话之前"），让用户重新输入
+      //   - 旁白/NPC 消息（narrator/npc）：保留自己，只删之后的
+      const targetRoleType = String(targetMessage.roleType || "").trim();
+      const isPlayerMessage = targetRoleType === "player";
+      const deleteOperator = isPlayerMessage ? ">=" : ">";
+
       await db.transaction(async (trx: any) => {
         await trx("t_sessionMessage")
           .where({ sessionId })
-          .andWhere("id", ">", messageId)
+          .andWhere("id", deleteOperator, messageId)
           .delete();
 
         await trx("t_sessionStateSnapshot")
@@ -69,7 +76,9 @@ export default router.post(
         await trx("t_entityStateDelta")
           .where({ sessionId })
           .andWhereRaw(
-            "CAST(CASE WHEN eventId LIKE 'message:%' THEN substr(eventId, 9) ELSE '0' END AS INTEGER) > ?",
+            isPlayerMessage
+              ? "CAST(CASE WHEN eventId LIKE 'message:%' THEN substr(eventId, 9) ELSE '0' END AS INTEGER) >= ?"
+              : "CAST(CASE WHEN eventId LIKE 'message:%' THEN substr(eventId, 9) ELSE '0' END AS INTEGER) > ?",
             [messageId],
           )
           .delete();
@@ -91,16 +100,19 @@ export default router.post(
           createTime: now,
         });
 
-        await trx("t_sessionMessage")
-          .where({ sessionId, id: messageId })
-          .update({
-            revisitData: toJsonText(buildSessionMessageRevisitData({
-              state: restoredState,
-              chapterId: restoredChapterId,
-              status: restoredStatus,
-              capturedAt: now,
+        // ★ 用户消息已被删除，不需要更新 revisitData；只在保留消息时才更新
+        if (!isPlayerMessage) {
+          await trx("t_sessionMessage")
+            .where({ sessionId, id: messageId })
+            .update({
+              revisitData: toJsonText(buildSessionMessageRevisitData({
+                state: restoredState,
+                chapterId: restoredChapterId,
+                status: restoredStatus,
+                capturedAt: now,
             }), {}),
           });
+        }
       });
 
       // 检测是否处于小游戏模式
@@ -120,6 +132,9 @@ export default router.post(
         success: true,
         isMiniGameMode: Boolean(isMiniGameMode),
         miniGameType: restoredRulebook?.gameType || null,
+        // ★ 回溯到用户消息时，把原内容回填到输入框，方便用户直接修改/重发
+        revisitedRoleType: targetRoleType,
+        revisitedContent: isPlayerMessage ? String(targetMessage.content || "") : "",
       }));
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err || "回溯失败");

@@ -7,6 +7,7 @@ import {
   JsonRecord,
   parseJsonSafe,
   normalizeRuntimeDynamicEventState,
+  normalizeRuntimeDynamicEventList,
   normalizeChapterRuntimeOutline,
   readChapterProgressState,
   readRuntimeCurrentEventState,
@@ -578,6 +579,17 @@ function ensureFreeChapterDynamicEventState(
 ) {
   if (!isFreeChapterRuntimeMode(chapter)) return;
   const current = readChapterProgressState(state);
+  console.log("[ensureFreeChapterDynamicEventState] entry", {
+    requestedEventIndex,
+    currentEventIndex: current.eventIndex,
+    currentPhaseId: current.phaseId,
+    currentEventStatus: current.eventStatus,
+    extraPatchEventStatus: extraPatch.eventStatus,
+    extraPatchEventSummary: extraPatch.eventSummary,
+    normalizedEventIndex: Number.isFinite(Number(requestedEventIndex))
+      ? Math.max(1, Number(requestedEventIndex))
+      : null,
+  });
   const runtimeEvent = readRuntimeCurrentEventState(state);
   const outline = readRuntimeOutline(chapter);
   const minimumEventIndex = outline.phases.length > 0 ? outline.phases.length + 1 : 1;
@@ -585,6 +597,12 @@ function ensureFreeChapterDynamicEventState(
     ? Math.max(minimumEventIndex, Number(requestedEventIndex))
     : Math.max(minimumEventIndex, Number(runtimeEvent.index || current.eventIndex || 1));
   const rawEventStatus = String(extraPatch.eventStatus || current.eventStatus || "active").trim().toLowerCase();
+  console.log("[ensureFreeChapterDynamicEventState] status decision", {
+    extraPatchEventStatus: extraPatch.eventStatus,
+    currentEventStatus: current.eventStatus,
+    rawEventStatus,
+    willBe: rawEventStatus === "completed" ? "completed" : rawEventStatus === "waiting_input" ? "waiting_input" : "active",
+  });
   // 自由章节切入动态事件时要保留 waiting_input / completed 状态，
   // 不能一律重置成 active，否则 UI 会继续显示"处理中"，并触发多余自动编排。
   const eventStatus: "idle" | "active" | "waiting_input" | "completed" = rawEventStatus === "completed"
@@ -595,11 +613,25 @@ function ensureFreeChapterDynamicEventState(
         ? "idle"
         : "active";
   const eventSummary = String(
-    extraPatch.eventSummary
-    || runtimeEvent.summary
-    || current.eventSummary
-    || (eventStatus === "waiting_input" ? "自由剧情已开启，等待用户输入下一步行动" : ""),
+    extraPatch.eventSummary !== undefined && extraPatch.eventSummary !== null
+      ? extraPatch.eventSummary
+      : (eventStatus === "waiting_input" ? "自由剧情已开启，等待用户输入下一步行动" : ""),
   ).trim();
+  // 关键：切换到新事件时，先把旧事件标记为 completed
+  if (normalizedEventIndex > current.eventIndex && current.eventIndex > 0) {
+    const dynamicEvents = normalizeRuntimeDynamicEventList(state.dynamicEvents);
+    const existingOldEvent = dynamicEvents.find((item) => item.eventIndex === current.eventIndex);
+    if (existingOldEvent && existingOldEvent.status !== "completed") {
+      // 直接修改 dynamicEvents 数组中的旧事件状态，避免被后续 sync 覆盖
+      existingOldEvent.status = "completed";
+      setRuntimeDynamicEventList(state, dynamicEvents);
+      // 同步更新 chapterProgress 和 currentEvent 中的旧事件状态
+      upsertRuntimeEventDigestState(state, {
+        eventIndex: current.eventIndex,
+        eventStatus: "completed",
+      });
+    }
+  }
   setChapterProgressState(state, {
     phaseId: "",
     phaseIndex: -1,
@@ -676,6 +708,10 @@ function getPhaseCandidateNextIds(outline: ChapterRuntimeOutline, phaseId: strin
 
 /**
  * 按图结构解析当前 phase 完成后应进入的下一个 phase。
+ *
+ * 修复鬼打墙问题：当 currentPhaseId 是最后一个静态 phase 且已完成时，
+ * 不要回退到 resolveCurrentOrInitialPhase（它会再次返回最后一个 phase），
+ * 而应返回 { phase: null, phaseIndex: -1 }，让调用方知道"所有静态 phase 已完成"。
  */
 function resolveNextPhaseFromGraph(
   outline: ChapterRuntimeOutline,
@@ -700,6 +736,14 @@ function resolveNextPhaseFromGraph(
       continue;
     }
     return { phase, phaseIndex };
+  }
+  // 如果 currentPhaseId 是最后一个静态 phase 的 ID，不要回退到 resolveCurrentOrInitialPhase，
+  // 否则 completedEvents 包含最后一个 phase 的完成标记，resolveCurrentOrInitialPhase 会再次返回它自己，
+  // 导致鬼打墙——事件完成后又回到同一个事件。
+  const normalizedCurrentPhaseId = String(currentPhaseId || "").trim();
+  const lastPhaseId = outline.phases.length > 0 ? String(outline.phases[outline.phases.length - 1].id || "").trim() : "";
+  if (normalizedCurrentPhaseId && normalizedCurrentPhaseId === lastPhaseId) {
+    return { phase: null, phaseIndex: -1 };
   }
   return resolveCurrentOrInitialPhase(outline, "", completedEvents);
 }
@@ -1224,25 +1268,45 @@ export function initializeChapterProgressForState(chapter: any, state: JsonRecor
 export function syncChapterProgressWithRuntime(chapter: any, state: JsonRecord): void {
   const outline = readRuntimeOutline(chapter);
   const current = readChapterProgressState(state);
+  // 检查当前事件是否已在 dynamicEvents 中被标记为 completed
+  const dynamicEvents = normalizeRuntimeDynamicEventList(state.dynamicEvents);
+  const currentDynamicEvent = dynamicEvents.find((item) => item.eventIndex === current.eventIndex);
+  const isCurrentEventEffectivelyDone = current.eventStatus === "completed"
+    || (currentDynamicEvent?.status === "completed");
   if (isFreeChapterRuntimeMode(chapter)) {
     if (!outline.phases.length) {
+      if (isCurrentEventEffectivelyDone) {
+        // 事件已完成，先把旧事件标记为 completed 再创建新事件
+        upsertRuntimeEventDigestState(state, {
+          eventIndex: current.eventIndex,
+          eventStatus: "completed",
+        });
+      }
       ensureFreeChapterDynamicEventState(
         chapter,
         state,
-        current.eventStatus === "completed" ? current.eventIndex + 1 : current.eventIndex || 1,
+        isCurrentEventEffectivelyDone ? current.eventIndex + 1 : current.eventIndex || 1,
         {
           completedEvents: normalizeCompletedEvents(Array.isArray(current.completedEvents) ? current.completedEvents : []),
+          eventStatus: isCurrentEventEffectivelyDone ? "waiting_input" : current.eventStatus,
         },
       );
       return;
     }
     if (current.eventIndex > outline.phases.length) {
+      if (isCurrentEventEffectivelyDone) {
+        upsertRuntimeEventDigestState(state, {
+          eventIndex: current.eventIndex,
+          eventStatus: "completed",
+        });
+      }
       ensureFreeChapterDynamicEventState(
         chapter,
         state,
-        current.eventStatus === "completed" ? current.eventIndex + 1 : current.eventIndex,
+        isCurrentEventEffectivelyDone ? current.eventIndex + 1 : current.eventIndex,
         {
           completedEvents: normalizeCompletedEvents(Array.isArray(current.completedEvents) ? current.completedEvents : []),
+          eventStatus: isCurrentEventEffectivelyDone ? "waiting_input" : current.eventStatus,
         },
       );
       return;
@@ -1253,14 +1317,21 @@ export function syncChapterProgressWithRuntime(chapter: any, state: JsonRecord):
   if (isFreeChapterRuntimeMode(chapter)
     && !nextUserNode
     && areAllFreeChapterStaticPhasesCompleted(outline, completedEvents)) {
+    if (isCurrentEventEffectivelyDone) {
+      upsertRuntimeEventDigestState(state, {
+        eventIndex: current.eventIndex,
+        eventStatus: "completed",
+      });
+    }
     ensureFreeChapterDynamicEventState(
       chapter,
       state,
-      current.eventStatus === "completed"
+      isCurrentEventEffectivelyDone
         ? Math.max(outline.phases.length + 1, current.eventIndex + 1)
         : Math.max(outline.phases.length + 1, current.eventIndex || 1),
       {
         completedEvents,
+        eventStatus: isCurrentEventEffectivelyDone ? "waiting_input" : current.eventStatus,
       },
     );
     return;
@@ -1279,14 +1350,21 @@ export function syncChapterProgressWithRuntime(chapter: any, state: JsonRecord):
   }
   if (!activePhaseInfo.phase && !nextUserNode) {
     if (isFreeChapterRuntimeMode(chapter)) {
+      if (isCurrentEventEffectivelyDone) {
+        upsertRuntimeEventDigestState(state, {
+          eventIndex: current.eventIndex,
+          eventStatus: "completed",
+        });
+      }
       ensureFreeChapterDynamicEventState(
         chapter,
         state,
-        current.eventStatus === "completed"
+        isCurrentEventEffectivelyDone
           ? Math.max(outline.phases.length + 1, current.eventIndex + 1)
           : Math.max(outline.phases.length + 1, current.eventIndex || 1),
         {
           completedEvents,
+          eventStatus: isCurrentEventEffectivelyDone ? "waiting_input" : current.eventStatus,
         },
       );
       return;
@@ -1861,6 +1939,12 @@ export function applyAiEventProgressResolution(input: {
     summarySource: "ai",
   });
 
+  console.log("[story:event_progress:runtime] upserted event status", {
+    eventIndex: current.eventIndex,
+    ended: input.resolution.ended,
+    newStatus: input.resolution.ended ? "completed" : input.resolution.eventStatus,
+  });
+
   // 检查当前 phase 是否有 stages
   const currentPhaseIndex = outline.phases.findIndex((item) => item.id === current.phaseId);
   const currentPhase = currentPhaseIndex >= 0 ? outline.phases[currentPhaseIndex] : null;
@@ -1882,6 +1966,7 @@ export function applyAiEventProgressResolution(input: {
   // 打印 stage 状态日志
   console.log("[story:event_progress:runtime][stage]", JSON.stringify({
     phaseId: current.phaseId,
+    phaseIdEmpty: !current.phaseId,
     stageIndex: currentStageIndex,
     totalStages: currentPhase?.stages?.length || 0,
     isCurrentStageCompleted,
@@ -1890,6 +1975,8 @@ export function applyAiEventProgressResolution(input: {
     userSpeakCount,
     userSpeakRequired,
     userSpeakCompleted,
+    eventIndex: current.eventIndex,
+    eventKind: current.eventKind,
   }));
 
   // 如果当前 phase 有 stages，且当前 stage 已完成，尝试推进
@@ -1958,14 +2045,23 @@ export function applyAiEventProgressResolution(input: {
   }
 
   // 标记当前 phase 完成
-  const completedEvents = markPhaseCompleted(
-    normalizeCompletedEvents(Array.isArray(current.completedEvents) ? current.completedEvents : []),
-    current.phaseId,
-  );
+  // 注意：自由章节进入动态事件后 phaseId 为空，此时不应尝试标记 phase 完成
+  // 否则 completedEvents 无法正确记录事件进度，导致回退到事件1
+  const completedEvents = current.phaseId
+    ? markPhaseCompleted(
+        normalizeCompletedEvents(Array.isArray(current.completedEvents) ? current.completedEvents : []),
+        current.phaseId,
+      )
+    : normalizeCompletedEvents(Array.isArray(current.completedEvents) ? current.completedEvents : []);
   const nextPhaseInfo = resolveNextPhaseFromGraph(outline, current.phaseId, completedEvents, currentPhaseIndex);
   const nextPhase = nextPhaseInfo.phase;
   if (!nextPhase) {
     if (isFreeChapterRuntimeMode(input.chapter)) {
+      // 重要：在创建新动态事件之前，先把当前事件的 status 标记为 completed
+      upsertRuntimeEventDigestState(input.state, {
+        eventIndex: current.eventIndex,
+        eventStatus: "completed",
+      });
       ensureFreeChapterDynamicEventState(
         input.chapter,
         input.state,
@@ -1973,7 +2069,7 @@ export function applyAiEventProgressResolution(input: {
         {
           completedEvents,
           eventStatus: "waiting_input",
-          eventSummary: progressSummary || currentEvent.summary || "自由剧情已开启，等待用户输入下一步行动",
+          eventSummary: "自由剧情进行中，等待用户输入下一步行动",
         },
       );
       return {

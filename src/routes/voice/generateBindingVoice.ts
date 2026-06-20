@@ -5,6 +5,7 @@ import { error, success } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
 import {
   getRuntimeStoryVoiceConfig,
+  isDirectAliyunManufacturer,
   normalizePersistedVoiceConfig,
   normalizeVoiceBaseUrl,
   resolveUnsupportedVoiceModeReason,
@@ -15,13 +16,17 @@ import {
   ensureBusinessVoicePresets,
   findBusinessVoicePreset,
 } from "@/lib/businessVoicePresets";
-import { getStoryVoiceDesignConfig } from "@/lib/voiceDesign";
+import { getStoryVoiceCloneConfig, getStoryVoiceDesignConfig } from "@/lib/voiceDesign";
 import {
   buildProxyAudioUrl,
+  createDirectAliyunCustomVoice,
   loadReferenceAudioBuffer,
+  readGeneratedReferenceMeta,
   synthesizeReferenceAudioFromMode,
+  writeGeneratedReferenceMeta,
   type VoiceMode,
 } from "./preview";
+import {DebugLogUtil} from "@/utils/debugLogUtil";
 
 const router = express.Router();
 
@@ -148,6 +153,10 @@ export default router.post(
   }),
   async (req, res) => {
     try {
+      if (!req.body || typeof req.body !== "object") {
+        console.error("[generateBindingVoice] invalid body", { body: req.body });
+        return res.status(400).send(error("请求参数错误"));
+      }
       const {
         configId,
         roleId,
@@ -170,9 +179,24 @@ export default router.post(
         sampleRate?: number | null;
       };
 
+      // prompt_voice 模式必须有 promptText
+      if (mode === "prompt_voice" && !trimText(promptText)) {
+        return res.status(400).send(error("提示词模式需要填写提示词"));
+      }
       const userId = Number((req as any)?.user?.id || 0);
+      console.log("[generateBindingVoice] 收到请求", {
+        configId,
+        mode,
+        roleId,
+        voiceId,
+        hasReferenceAudioPath: !!trimText(referenceAudioPath),
+        hasReferenceText: !!trimText(referenceText),
+        hasPromptText: !!trimText(promptText),
+        mixVoiceCount: Array.isArray(mixVoices) ? mixVoices.length : 0,
+      });
       const persistedConfig = await getRuntimeStoryVoiceConfig(userId, configId);
       if (!persistedConfig) {
+        console.error("[generateBindingVoice] 找不到 TTS 模型配置", { configId, userId });
         return res.status(400).send(error("语音模型配置不存在"));
       }
 
@@ -184,14 +208,47 @@ export default router.post(
       });
       const config = { ...persistedConfig, ...normalizedConfig };
       const manufacturer = trimText(config.manufacturer);
+      // 不同模式应该用对应的模型槽位来判断兼容性：
+      // - prompt_voice → 用 语音设计模型
+      // - clone → 用 语音克隆模型
+      // - text / mix → 用 语音合成 TTS (config)
+      const voiceDesignConfigEarly = mode === "prompt_voice" ? await getStoryVoiceDesignConfig(userId) : null;
+      const voiceCloneConfigEarly = mode === "clone" ? await getStoryVoiceCloneConfig(userId) : null;
+      const compatibilityConfig = mode === "prompt_voice"
+        ? voiceDesignConfigEarly
+        : mode === "clone"
+          ? voiceCloneConfigEarly
+          : null;
       const unsupportedReason = resolveUnsupportedVoiceModeReason({
-        manufacturer,
-        modelType: config.modelType,
-        model: config.model,
+        manufacturer: compatibilityConfig
+          ? trimText(compatibilityConfig.manufacturer)
+          : manufacturer,
+        modelType: compatibilityConfig
+          ? trimText((compatibilityConfig as any)?.modelType)
+          : trimText(config.modelType),
+        model: compatibilityConfig
+          ? trimText(compatibilityConfig.model)
+          : trimText(config.model),
         mode,
       });
       if (unsupportedReason) {
+        console.error("[generateBindingVoice] 模式不支持", {
+          unsupportedReason,
+          manufacturer: compatibilityConfig ? compatibilityConfig.manufacturer : manufacturer,
+          modelType: compatibilityConfig ? (compatibilityConfig as any)?.modelType : trimText(config.modelType),
+          model: compatibilityConfig ? compatibilityConfig.model : trimText(config.model),
+        });
         return res.status(400).send(error(unsupportedReason));
+      }
+      if (mode === "clone" && !voiceCloneConfigEarly) {
+        return res.status(400).send(error("请先在设置里配置语音克隆模型"));
+      }
+      // clone 模式下，用 语音克隆模型的 config 覆盖当前 TTS config，确保下游合成使用正确的模型/密钥
+      if (mode === "clone" && voiceCloneConfigEarly) {
+        config.model = voiceCloneConfigEarly.model;
+        config.apiKey = voiceCloneConfigEarly.apiKey;
+        config.baseUrl = voiceCloneConfigEarly.baseURL;
+        config.manufacturer = voiceCloneConfigEarly.manufacturer;
       }
 
       const headers: Record<string, string> = {};
@@ -203,7 +260,8 @@ export default router.post(
       const normalizedReferenceText = trimText(referenceText);
       const normalizedPromptText = trimText(promptText);
       const normalizedMixVoices = normalizeMixVoices(mixVoices);
-      const voiceDesignConfig = mode === "prompt_voice" ? await getStoryVoiceDesignConfig(userId) : null;
+      const voiceDesignConfig = voiceDesignConfigEarly;
+      const voiceCloneConfig = voiceCloneConfigEarly;
 
       if (mode === "prompt_voice" && !voiceDesignConfig) {
         return res.status(400).send(error("请先在设置里配置语音设计模型"));
@@ -219,15 +277,47 @@ export default router.post(
       }
 
       if (mode === "clone") {
+        // 如果选的是业务预设（standard男声/女声等），用预设的 referencePath，忽略前端传入的
+        const businessPreset = findBusinessVoicePreset(normalizedVoiceId);
+        const effectiveRefPath = businessPreset
+          ? businessPreset.referencePath
+          : trimText(referenceAudioPath);
+        const effectiveRefText = businessPreset
+          ? businessPreset.referenceText
+          : normalizedReferenceText;
         const generatedPath = await generateCloneReferenceAudio({
           manufacturer,
           configId: Number(config.id || 0),
           voiceId: normalizedVoiceId,
           roleId: trimText(roleId),
-          referenceAudioPath: trimText(referenceAudioPath),
-          referenceText: normalizedReferenceText,
+          referenceAudioPath: effectiveRefPath,
+          referenceText: effectiveRefText,
         });
-        return res.status(200).send(success(buildGeneratedVoiceResult(req, generatedPath, normalizedReferenceText)));
+        // 如果是阿里直连，需要预先创建音色并写入元数据，这样 preview 时可以复用
+        let customVoiceId = "";
+        if (isDirectAliyunManufacturer(manufacturer)) {
+          try {
+            const customVoice = await createDirectAliyunCustomVoice({
+              config,
+              mode: "clone",
+              referenceAudioSource: generatedPath,
+              sampleRate: 24000,
+            });
+            customVoiceId = customVoice.voiceId;
+            await writeGeneratedReferenceMeta(generatedPath, {
+              customVoiceId,
+              targetModel: config.model,
+              generatedBy: "clone",
+              roleId: trimText(roleId) || undefined,
+              createdAt: Date.now(),
+            });
+          } catch (err) {
+            console.warn("[voice:generateBindingVoice] aliyun direct custom voice create failed:", err instanceof Error ? err.message : String(err));
+          }
+        }
+        return res.status(200).send(success(buildGeneratedVoiceResult(req, generatedPath, normalizedReferenceText, {
+          customVoiceId,
+        })));
       }
 
       if (mode === "text") {
@@ -238,7 +328,33 @@ export default router.post(
           voiceId: normalizedVoiceId,
           roleId: trimText(roleId),
         });
+        if (DebugLogUtil.isDebugLogEnabled()) {
+          console.log("[Voice][uploadSiliconFlowVoice][businessPresetPath]", JSON.stringify({"businessPresetPath": businessPresetPath}));
+        }
         if (businessPresetPath) {
+          // SiliconFlow 克隆：business preset 已有参考音频，需要上传到 SiliconFlow 获取 URI
+          if (manufacturer === "siliconflow") {
+            const { uploadSiliconFlowVoice } = await import("@/lib/siliconflowVoice");
+            const refBuffer = await loadReferenceAudioBuffer(businessPresetPath);
+            const refExt = businessPresetPath.split(".").pop() || "wav";
+            const customName = `clone_${Date.now().toString(36)}_${(userId || 0).toString(36)}`;
+            const uri = await uploadSiliconFlowVoice({
+              apiKey: trimText(config.apiKey),
+              model: String(config.model || "").trim(),
+              audioBuffer: refBuffer,
+              filename: `clone.${refExt}`,
+              customName,
+            });
+            await writeGeneratedReferenceMeta(businessPresetPath, {
+              customVoiceId: uri,
+              targetModel: config.model,
+              generatedBy: "siliconflow_clone",
+              createdAt: Date.now(),
+            });
+            return res.status(200).send(success(buildGeneratedVoiceResult(req, businessPresetPath, BUSINESS_VOICE_PRESET_SEED_TEXT, {
+              customVoiceId: uri,
+            })));
+          }
           return res.status(200).send(success(buildGeneratedVoiceResult(req, businessPresetPath, BUSINESS_VOICE_PRESET_SEED_TEXT)));
         }
       }
@@ -271,7 +387,28 @@ export default router.post(
         },
       )));
     } catch (err) {
-      return res.status(500).send(error((err as Error).message || "生成音色失败"));
+      const axiosErr = err as any;
+      const msg = axiosErr?.message || "生成音色失败";
+      const reqMode = req.body && (req.body as any).mode;
+      const reqVoiceId = req.body && (req.body as any).voiceId;
+      const reqRoleId = req.body && (req.body as any).roleId;
+      const reqPromptText = req.body && (req.body as any).promptText;
+      const axiosResponse = axiosErr?.response;
+      const axiosResponseData = axiosResponse?.data;
+      console.error("[generateBindingVoice] failed", {
+        userId: Number((req as any)?.user?.id || 0),
+        mode: reqMode,
+        voiceId: reqVoiceId,
+        roleId: reqRoleId,
+        promptText: reqPromptText,
+        error: msg,
+        httpStatus: axiosResponse?.status,
+        responseBody: typeof axiosResponseData === "string"
+          ? axiosResponseData.slice(0, 500)
+          : JSON.stringify(axiosResponseData)?.slice(0, 500),
+        stack: (err as Error).stack,
+      });
+      return res.status(500).send(error(msg));
     }
   },
 );

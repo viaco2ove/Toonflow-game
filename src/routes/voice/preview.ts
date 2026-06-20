@@ -16,6 +16,7 @@ import {
   isAliyunDirectQwenVoiceCloneModel,
   isAliyunDirectQwenVoiceDesignModel,
   isDirectAliyunManufacturer,
+  isMiniMaxVoiceManufacturer,
   normalizeAliyunDirectTtsModel,
   normalizePersistedVoiceConfig,
   normalizeVoiceBaseUrl,
@@ -32,7 +33,7 @@ import {
   inferVoiceGenderHint,
 } from "@/lib/businessVoicePresets";
 import { ensureBundledVoicePresetSeed } from "@/lib/voicePresetSeeds";
-import { getStoryVoiceDesignConfig, synthesizeVoiceDesignBuffer, type VoiceDesignConfig } from "@/lib/voiceDesign";
+import { getStoryVoiceCloneConfig, getStoryVoiceDesignConfig, synthesizeVoiceDesignBuffer, type VoiceDesignConfig } from "@/lib/voiceDesign";
 import FormData from "form-data";
 import { synthesizeAliyunDirectCosyVoiceBuffer } from "@/lib/aliyunCosyVoice";
 import { mixPcmWavBuffers } from "@/lib/wavMix";
@@ -251,6 +252,8 @@ function isVoiceIdCompatibleWithModel(voiceId: string, targetModel: string): boo
   const model = targetModel.toLowerCase();
   const id = voiceId.toLowerCase();
   if (isAliyunDirectCosyVoiceModel(model)) {
+    // MiniMax voice_id 格式（如 sv_mpttpwds）不能用于阿里 CosyVoice
+    if (id.startsWith("sv_")) return false;
     return !id.startsWith("qwen-tts-vd-") && !id.startsWith("qwen-tts-enrollment-");
   }
   if (isAliyunDirectQwenVoiceCloneModel(model) || isAliyunDirectQwenVoiceDesignModel(model)) {
@@ -297,7 +300,7 @@ export function buildProxyAudioUrl(req: express.Request, configId: number | null
 
 /**
  * 混合音色只有本地/代理语音网关才需要通过 `/voices` 推断 provider。
- * 阿里云直连没有这个预设列表接口，不能再去请求 `${baseUrl}/voices`。
+ * 阿里百炼没有这个预设列表接口，不能再去请求 `${baseUrl}/voices`。
  */
 async function resolveMixProviderForPreview(options: {
   directAliyun: boolean;
@@ -311,7 +314,7 @@ async function resolveMixProviderForPreview(options: {
   }
   const mixProviders = Array.from(
     new Set(
-      filterVoicePresetsByManufacturer(await fetchVoicePresets(options.baseUrl, options.headers), options.manufacturer)
+      filterVoicePresetsByManufacturer(await fetchVoicePresets(options.baseUrl, options.headers, options.manufacturer), options.manufacturer)
         .filter((item: { voiceId: string; provider: string }) => options.mixVoiceIds.includes(item.voiceId) && item.provider)
         .map((item: { provider: string }) => item.provider),
     ),
@@ -553,6 +556,149 @@ async function synthesizeWithLocalClone(
   };
 }
 
+async function synthesizeWithMiniMaxClone(
+  req: express.Request,
+  config: any,
+  userId: number,
+  text: string,
+  referenceAudioPath: string,
+  referenceText: string,
+  format: string,
+  speed: number | null,
+  voiceId?: string,
+): Promise<{ sourceUrl: string; data: Record<string, any> }> {
+  const { cloneMiniMaxVoice } = await import("@/lib/miniMaxVoice");
+  const baseUrl = normalizeVoiceBaseUrl(config.baseUrl);
+  const apiKey = String(config.apiKey || "").trim();
+  const model = String(config.model || "speech-02-hd").trim();
+
+  // 1. 上传参考音频到 minimax
+  // 如果是 business_preset（如 story_std_male），用预设的 referencePath
+  const { findBusinessVoicePreset } = await import("@/lib/businessVoicePresets");
+  const bizPreset = findBusinessVoicePreset(trimText(voiceId));
+  const actualRefPath = bizPreset?.referencePath || referenceAudioPath;
+  const audioBuffer = await loadReferenceAudioBuffer(actualRefPath);
+  const fileExt = inferAudioExt(actualRefPath) || "wav";
+  const formData = new FormData();
+  formData.append("file", audioBuffer, `clone_${Date.now()}.${fileExt}`);
+  formData.append("purpose", "voice_clone");
+
+  const uploadResponse = await axios.post(`${baseUrl}/v1/files/upload`, formData, {
+    headers: { Authorization: `Bearer ${apiKey}` },
+    maxContentLength: Infinity,
+    maxBodyLength: Infinity,
+    timeout: 60000,
+  });
+  const fileId = Number(uploadResponse.data?.file?.file_id);
+  if (!fileId) {
+    throw new Error("minimax 克隆：上传参考音频失败");
+  }
+
+  // 2. 调 voice_clone 创建克隆音色（file_id 已含参考音频，clone_prompt 留空）
+  // voice_id 必须以英文字母开头（不能以数字开头）
+  const timestamp = String(Date.now()).slice(-10);
+  const preferredName = `cv_${timestamp}_u${userId || 0}`;
+  const cloneResult = await cloneMiniMaxVoice({
+    apiKey,
+    fileId,
+    voiceId: preferredName,
+    clonePrompt: undefined,
+    text: BUSINESS_VOICE_PRESET_SEED_TEXT,
+    model,
+    needNoiseReduction: true,
+    needVolumeNormalization: true,
+  });
+
+  // 3. 用克隆出来的 voiceId 调 TTS 合成试听文本
+  const { synthesizeMiniMaxTtsBuffer, MINIMAX_VOICE_ID_MALE } = await import("@/lib/miniMaxVoice");
+  const ttsBuffer = await synthesizeMiniMaxTtsBuffer({
+    apiKey,
+    model,
+    voiceId: cloneResult.voiceId || preferredName,
+    text: String(text || "").trim(),
+    speed: speed || 1.0,
+  });
+
+  const outFormat = String(format || "mp3").trim().toLowerCase() || "mp3";
+  const sourceUrl = await persistPreviewAudioBuffer(userId, ttsBuffer.buffer, outFormat);
+  return {
+    sourceUrl,
+    data: {
+      localGenerated: true,
+      mode: "minimax_clone",
+      voice: cloneResult.voiceId,
+      model,
+    },
+  };
+}
+
+async function synthesizeWithMossTtsClone(
+  req: express.Request,
+  userId: number,
+  text: string,
+  referenceAudioPath: string,
+  referenceText: string,
+  format: string,
+  speed: number | null,
+): Promise<{ audioUrl: string; data: Record<string, any> }> {
+  const { synthesizeMossTts } = await import("@/lib/localMossTts");
+  const outFormat = String(format || "wav").trim().toLowerCase() || "wav";
+  const savePath = `/user/${userId}/game/voice-preview/${uuidv4()}.${outFormat}`;
+  await synthesizeMossTts({
+    text: String(text || "").trim(),
+    outputPath: savePath,
+    promptSpeech: referenceAudioPath,
+    speed: speed || 1.0,
+  });
+  const audioUrl = buildProxyAudioUrl(req, null, savePath);
+  return {
+    audioUrl,
+    data: {
+      localGenerated: true,
+      mode: "moss_tts_nano_clone",
+      model: "moss-tts-nano-100m",
+    },
+  };
+}
+
+async function synthesizeWithSiliconFlowClone(
+  req: express.Request,
+  config: any,
+  userId: number,
+  text: string,
+  referenceAudioPath: string,
+  referenceText: string,
+  format: string,
+  speed: number | null,
+): Promise<{ audioUrl: string; data: Record<string, any> }> {
+  const { synthesizeSiliconFlowCloneBuffer } = await import("@/lib/siliconflowVoice");
+  const apiKey = String(config.apiKey || "").trim();
+  const model = String(config.model || "").trim();
+  const audioBuffer = await loadReferenceAudioBuffer(referenceAudioPath);
+  const fileExt = inferAudioExt(referenceAudioPath) || "wav";
+
+  const result = await synthesizeSiliconFlowCloneBuffer({
+    apiKey,
+    model,
+    uploadModel: "nlp/MOSS-TTSD-v0.5",
+    text: String(text || "").trim(),
+    referenceAudioBuffer: audioBuffer,
+    referenceAudioFilename: `clone_${Date.now()}.${fileExt}`,
+    responseFormat: String(format || "mp3").trim().toLowerCase() || "mp3",
+  });
+
+  const outFormat = String(format || "mp3").trim().toLowerCase() || "mp3";
+  const sourceUrl = await persistPreviewAudioBuffer(userId, result.buffer, outFormat);
+  return {
+    audioUrl: buildProxyAudioUrl(req, config?.id, sourceUrl),
+    data: {
+      localGenerated: true,
+      mode: "siliconflow_clone",
+      model,
+    },
+  };
+}
+
 async function persistDerivedReferenceAudio(
   savePath: string,
   sourceUrl: string,
@@ -703,7 +849,7 @@ function buildReferenceAudioCacheSeed(options: {
 
 /**
  * 为生成参考音频构造 sidecar 元数据路径。
- * 这份元数据主要记录阿里第一次“创建专属音色”时返回的 voice_id，后续同模型试听时可直接复用。
+ * 这份元数据主要记录阿里第一次"创建专属音色"时返回的 voice_id，后续同模型试听时可直接复用。
  */
 function buildGeneratedReferenceMetaPath(audioPath: string): string {
   const rawPath = trimText(audioPath);
@@ -715,7 +861,7 @@ function buildGeneratedReferenceMetaPath(audioPath: string): string {
  * 读取参考音频 sidecar 元数据。
  * sidecar 仅用于优化试听链路；读不到时直接回退旧 clone 路径，不阻塞主流程。
  */
-async function readGeneratedReferenceMeta(audioPath: string): Promise<GeneratedReferenceMeta | null> {
+export async function readGeneratedReferenceMeta(audioPath: string): Promise<GeneratedReferenceMeta | null> {
   const metaPath = buildGeneratedReferenceMetaPath(audioPath);
   if (!metaPath || !(await u.oss.fileExists(metaPath))) return null;
   try {
@@ -729,9 +875,9 @@ async function readGeneratedReferenceMeta(audioPath: string): Promise<GeneratedR
 
 /**
  * 写入参考音频 sidecar 元数据。
- * 这里把“第一次创建专属音色”的结果和参考音频文件绑定起来，避免后续又拿这份音频去二次复刻。
+ * 这里把"第一次创建专属音色"的结果和参考音频文件绑定起来，避免后续又拿这份音频去二次复刻。
  */
-async function writeGeneratedReferenceMeta(audioPath: string, meta: GeneratedReferenceMeta): Promise<void> {
+export async function writeGeneratedReferenceMeta(audioPath: string, meta: GeneratedReferenceMeta): Promise<void> {
   const metaPath = buildGeneratedReferenceMetaPath(audioPath);
   if (!metaPath) return;
   try {
@@ -772,10 +918,10 @@ function buildDirectAliyunCustomVoiceCacheKey(options: {
 }
 
 /**
- * 创建或复用阿里云直连专属音色。
+ * 创建或复用阿里百炼专属音色。
  * 这里统一封装 prompt_voice / clone / mix 三类入口，必要时允许显式跳过缓存重建 voice_id。
  */
-async function createDirectAliyunCustomVoice(options: {
+export async function createDirectAliyunCustomVoice(options: {
   config: any;
   mode: DirectAliyunCustomVoiceMode;
   referenceAudioSource?: string;
@@ -881,10 +1027,10 @@ async function createDirectAliyunCustomVoice(options: {
   }
 
   if (!payload) {
-    throw new Error("当前阿里云直连模型不支持该绑定模式");
+    throw new Error("当前阿里百炼模型不支持该绑定模式");
   }
   if (!apiKey) {
-    throw new Error("当前阿里云直连模型缺少 API Key");
+    throw new Error("当前阿里百炼模型缺少 API Key");
   }
 
   if (isVoicePreviewDebugEnabled()) {
@@ -1000,7 +1146,7 @@ async function synthesizeDirectAliyunPreviewAudio(options: {
   const responseData = response.data && typeof response.data === "object" ? response.data : {};
   const sourceUrl = trimText(responseData?.output?.audio?.url);
   if (!sourceUrl) {
-    throw new Error("阿里云直连语音合成未返回可用音频地址");
+    throw new Error("阿里百炼语音合成未返回可用音频地址");
   }
   return {
     sourceUrl,
@@ -1035,7 +1181,7 @@ async function synthesizeDirectAliyunPreviewAudioWithRetry(options: {
       await sleep(DIRECT_ALIYUN_CUSTOM_VOICE_READY_RETRY_DELAYS_MS[attempt] || 1000);
     }
   }
-  throw lastError instanceof Error ? lastError : new Error("阿里云直连语音合成失败");
+  throw lastError instanceof Error ? lastError : new Error("阿里百炼语音合成失败");
 }
 
 async function synthesizeDirectAliyunReferenceBuffer(options: {
@@ -1084,7 +1230,7 @@ async function synthesizeDirectAliyunReferenceBuffer(options: {
 }
 
 /**
- * 按当前绑定模式生成“可复用参考音频文件”。
+ * 按当前绑定模式生成"可复用参考音频文件"。
  * text/mix/prompt_voice 最终都会落成一个 wav 文件，供后续统一走 clone 通道。
  */
 export async function synthesizeReferenceAudioFromMode(options: {
@@ -1240,6 +1386,50 @@ export async function synthesizeReferenceAudioFromMode(options: {
       sampleRate,
     });
     return { audioPath: await writeCloneReadyReference(buffer, "wav") };
+  } else if (isMiniMaxVoiceManufacturer(manufacturer)) {
+    // MiniMax TTS
+    const { synthesizeMiniMaxTtsBuffer } = await import("@/lib/miniMaxVoice");
+    const minimaxVoiceId = String(voiceId || "Chinese_Male_Qn").trim();
+    const minimaxSpeed = Number(options.config?.speed || 1.0);
+    const minimaxEmotion = String(options.config?.emotion || "happy").trim();
+    const result = await synthesizeMiniMaxTtsBuffer({
+      apiKey: String(config.apiKey || "").trim(),
+      model: String(config.model || "speech-02-hd").trim(),
+      text: textSeed,
+      voiceId: minimaxVoiceId,
+      speed: minimaxSpeed,
+      emotion: minimaxEmotion,
+      outputFormat: "hex",
+      sampleRate: sampleRate || 32000,
+    });
+    return { audioPath: await writeCloneReadyReference(result.buffer, "mp3") };
+  } else if (manufacturer === "moss_tts_nano") {
+    // MOSS-TTS-Nano 本地推理（text / clone 模式）
+    const { synthesizeMossTts, getMossTtsInstallStatus } = await import("@/lib/localMossTts");
+    const status = await getMossTtsInstallStatus();
+    if (status.status !== "installed") {
+      throw new Error(`MOSS-TTS-Nano 未安装: ${status.message}`);
+    }
+    // 对于 text 模式：用 voiceId 作为 base voice 生成
+    // 对于 clone 模式：需要在外部先通过 referenceAudioPath 指定参考音频
+    // 这里只负责把 textSeed 转成 wav 存档（实际合成在 preview 处理函数里调用 synthesizeMossTts）
+    // synthesizeReferenceAudioFromMode 仅生成 seed wav 存档，供 clone 通道复用
+    const seedAudioPath = await synthesizeMossTts({
+      text: textSeed,
+      outputPath: cachePath,
+    });
+    return { audioPath: seedAudioPath.audioPath };
+  } else if (manufacturer === "xiaomimimo") {
+    const { synthesizeXiaomiMimoTtsBuffer } = await import("@/lib/xiaomiMimoVoice");
+    const result = await synthesizeXiaomiMimoTtsBuffer({
+      apiKey: String(config.apiKey || "").trim(),
+      baseUrl: String(config.baseUrl || "").trim(),
+      model: String(config.model || "mimo-v2.5-tts").trim(),
+      text: textSeed,
+      voice: String(voiceId || "").trim() || "mimo_default",
+      format: "wav",
+    });
+    return { audioPath: await writeCloneReadyReference(result.buffer, "wav") };
   } else {
     const payload: Record<string, any> = {
       text: textSeed,
@@ -1273,7 +1463,7 @@ export async function synthesizeReferenceAudioFromMode(options: {
 }
 
 // 语音预览
-export default router.post(
+router.post(
   "/",
   validateFields({
     configId: z.number().optional().nullable(),
@@ -1357,20 +1547,59 @@ export default router.post(
       debugContext.requestedConfigId = configId ?? null;
       debugContext.resolvedConfigId = Number(config.id || 0);
 
-      const baseUrl = normalizeVoiceBaseUrl(config.baseUrl);
-      const manufacturer = String(config.manufacturer || "").trim();
+      let baseUrl = normalizeVoiceBaseUrl(config.baseUrl);
+      let manufacturer = String(config.manufacturer || "").trim();
       const voiceDesignConfig = mode === "prompt_voice" ? await getStoryVoiceDesignConfig(userId) : null;
+      const voiceCloneConfig = mode === "clone" ? await getStoryVoiceCloneConfig(userId) : null;
+      // 不同模式应该用对应的模型槽位来判断兼容性：
+      // - prompt_voice → 用 语音设计模型 (voiceDesignConfig)
+      // - clone → 用 语音克隆模型 (voiceCloneConfig)
+      // - text / mix → 用 语音合成 TTS (config)
+      const compatibilityConfig = mode === "prompt_voice"
+        ? voiceDesignConfig
+        : mode === "clone"
+          ? voiceCloneConfig
+          : null;
       const unsupportedModeReason = resolveUnsupportedVoiceModeReason({
-        manufacturer,
-        modelType: config.modelType,
-        model: config.model,
+        manufacturer: compatibilityConfig
+          ? String(compatibilityConfig.manufacturer || "").trim()
+          : manufacturer,
+        modelType: compatibilityConfig
+          ? String((compatibilityConfig as any)?.modelType || "").trim()
+          : config.modelType,
+        model: compatibilityConfig
+          ? String(compatibilityConfig.model || "").trim()
+          : config.model,
         mode,
       });
       if (unsupportedModeReason) {
+        console.error("[preview] 模式不支持", {
+          unsupportedModeReason,
+          mode,
+          manufacturer: compatibilityConfig
+            ? compatibilityConfig.manufacturer
+            : manufacturer,
+          model: compatibilityConfig
+            ? compatibilityConfig.model
+            : config.model,
+        });
         return res.status(400).send(error(unsupportedModeReason));
       }
       if (mode === "prompt_voice" && !voiceDesignConfig) {
         return res.status(400).send(error("请先在设置里配置语音设计模型"));
+      }
+      if (mode === "clone" && !voiceCloneConfig) {
+        return res.status(400).send(error("请先在设置里配置语音克隆模型"));
+      }
+      // clone 模式下，用 语音克隆模型的 config 覆盖当前 TTS config，确保下游合成使用正确的模型/密钥
+      if (mode === "clone" && voiceCloneConfig) {
+        config.model = voiceCloneConfig.model;
+        config.apiKey = voiceCloneConfig.apiKey;
+        config.baseUrl = voiceCloneConfig.baseURL;
+        config.manufacturer = voiceCloneConfig.manufacturer;
+        // 重新计算 baseUrl/manufacturer 等派生变量
+        baseUrl = normalizeVoiceBaseUrl(config.baseUrl);
+        manufacturer = String(config.manufacturer || "").trim();
       }
       const suppliers = voiceSupplierFromManufacturer(manufacturer);
       const directAliyun = isDirectAliyunManufacturer(manufacturer);
@@ -1398,9 +1627,23 @@ export default router.post(
 
       let resolvedProvider = "";
       const businessPresets = await ensureBusinessVoicePresets(userId);
-      const providerPresetPool = directAliyun
-        ? directAliyunVoicePresets(String(config.model || "").trim())
-        : filterVoicePresetsByManufacturer(await fetchVoicePresets(baseUrl, headers), manufacturer);
+      const isMossLocal = manufacturer === "moss_tts_nano";
+      const isSiliconFlow = manufacturer === "siliconflow";
+      const isXiaomiMimo = manufacturer === "xiaomimimo";
+      let providerPresetPool: any[] = [];
+      if (isMossLocal || isSiliconFlow || isXiaomiMimo) {
+        // 这些厂商没有 /voices 系统音色接口（或只支持业务预设/克隆），直接跳过远程拉取
+        providerPresetPool = [];
+      } else if (directAliyun) {
+        providerPresetPool = directAliyunVoicePresets(String(config.model || "").trim());
+      } else {
+        try {
+          providerPresetPool = filterVoicePresetsByManufacturer(await fetchVoicePresets(baseUrl, headers, manufacturer), manufacturer);
+        } catch (err) {
+          console.warn(`[preview] fetch voice presets failed, fallback to business presets only: manufacturer=${manufacturer} baseUrl=${baseUrl} error=${(err as Error)?.message || String(err)}`);
+          providerPresetPool = [];
+        }
+      }
       const mergedPresetPool = [...businessPresets, ...providerPresetPool].filter(
         (item, index, list) => list.findIndex((row) => row.voiceId === item.voiceId) === index,
       );
@@ -1503,20 +1746,116 @@ export default router.post(
               compatibilityPreset: businessPreset.voiceId,
             },
           }));
-        } else {
-          // 非 direct Aliyun 厂商走本地克隆网关
-          const effectiveRefPath = resolvedReferenceAudioSource || businessPreset.referencePath;
-          const effectiveRefText = String(referenceText || "").trim() || businessPreset.referenceText;
-          const cloned = await synthesizeWithLocalClone(
-            req,
-            userId,
-            text,
-            effectiveRefPath,
-            effectiveRefText,
-            payload.format,
+        } else if (isMiniMaxVoiceManufacturer(manufacturer)) {
+          // MiniMax 厂商走自己的 TTS 接口
+          // 业务预设的 voiceId 不是 minimax 的系统音色，需要 fallback
+          const { synthesizeMiniMaxTtsBuffer, MINIMAX_VOICE_ID_MALE, MINIMAX_VOICE_ID_FEMALE } = await import("@/lib/miniMaxVoice");
+          const minimaxVoiceId = businessPreset.fallbackGender === "female"
+            ? MINIMAX_VOICE_ID_FEMALE
+            : MINIMAX_VOICE_ID_MALE;
+          const result = await synthesizeMiniMaxTtsBuffer({
+            apiKey: String(config.apiKey || "").trim(),
+            model: String(config.model || "speech-02-hd").trim(),
+            voiceId: minimaxVoiceId,
+            text: String(text || "").trim(),
             speed,
-          );
-          return res.status(200).send(success({ audioUrl: cloned.audioUrl, data: { ...cloned.data, compatibilityPreset: businessPreset.voiceId } }));
+          });
+          const format = String(payload.format || "mp3").trim().toLowerCase() || "mp3";
+          const sourceUrl = await persistPreviewAudioBuffer(userId, result.buffer, format);
+          const audioUrl = buildProxyAudioUrl(req, config?.id, sourceUrl);
+          return res.status(200).send(success({
+            audioUrl,
+            data: {
+              localGenerated: true,
+              model: String(config.model || "speech-02-hd").trim(),
+              voice: businessPreset.voiceId,
+              compatibilityPreset: businessPreset.voiceId,
+            },
+          }));
+        } else if (manufacturer === "siliconflow") {
+          const { synthesizeSiliconFlowCloneBuffer, SILICONFLOW_DEFAULT_VOICE } = await import("@/lib/siliconflowVoice");
+          const apiKey = String(config.apiKey || "").trim();
+          const model = String(config.model || "").trim();
+          const refPath = resolvedReferenceAudioSource || businessPreset.referencePath;
+          const refBuffer = await loadReferenceAudioBuffer(refPath);
+          const refExt = inferAudioExt(refPath) || "wav";
+          const sfCloneResult = await synthesizeSiliconFlowCloneBuffer({
+            apiKey,
+            model,
+            uploadModel: "nlp/MOSS-TTSD-v0.5",
+            text: String(text || "").trim(),
+            referenceAudioBuffer: refBuffer,
+            referenceAudioFilename: `clone_${Date.now()}.${refExt}`,
+            responseFormat: String(payload.format || "mp3").trim().toLowerCase() || "mp3",
+          });
+          const sfFormat = String(payload.format || "mp3").trim().toLowerCase() || "mp3";
+          const sfSourceUrl = await persistPreviewAudioBuffer(userId, sfCloneResult.buffer, sfFormat);
+          return res.status(200).send(success({
+            audioUrl: buildProxyAudioUrl(req, config?.id, sfSourceUrl),
+            data: {
+              localGenerated: true,
+              model,
+              voice: effectiveVoiceId || SILICONFLOW_DEFAULT_VOICE,
+              compatibilityPreset: businessPreset.voiceId,
+            },
+          }));
+        } else if (manufacturer === "moss_tts_nano") {
+          // MOSS-TTS-Nano 本地克隆模式
+          const { synthesizeMossTts } = await import("@/lib/localMossTts");
+          const outFormat = String(payload.format || "wav").trim().toLowerCase() || "wav";
+          const cloneSavePath = `/user/${userId}/game/voice-preview/${uuidv4()}.${outFormat}`;
+          await synthesizeMossTts({
+            text: String(text || "").trim(),
+            outputPath: cloneSavePath,
+            promptSpeech: resolvedReferenceAudioSource || businessPreset.referencePath,
+            speed: speed || 1.0,
+          });
+          return res.status(200).send(success({
+            audioUrl: buildProxyAudioUrl(req, config?.id, cloneSavePath),
+            data: {
+              localGenerated: true,
+              model: "moss-tts-nano-100m",
+              voice: effectiveVoiceId || "default",
+            },
+          }));
+        } else if (manufacturer === "xiaomimimo") {
+          // xiaomimimo 克隆模式
+          const { synthesizeXiaomiMimoVoiceCloneBuffer } = await import("@/lib/xiaomiMimoVoice");
+          const outFormat = String(payload.format || "mp3").trim().toLowerCase() || "mp3";
+          const refPath = resolvedReferenceAudioSource || businessPreset.referencePath;
+          const refBuffer = await loadReferenceAudioBuffer(refPath);
+          const result = await synthesizeXiaomiMimoVoiceCloneBuffer({
+            apiKey: String(config.apiKey || "").trim(),
+            baseUrl: String(config.baseUrl || "").trim(),
+            model: String(config.model || "mimo-v2.5-tts-voiceclone").trim(),
+            text: String(text || "").trim(),
+            referenceAudioBuffer: refBuffer,
+            referenceAudioMime: "audio/mpeg",
+            format: outFormat,
+          });
+          const sourceUrl = await persistPreviewAudioBuffer(userId, result.buffer, outFormat);
+          console.log("[voice-preview] xiaomimimo clone path", {
+            sourceUrl,
+            bufferBytes: result.buffer?.length || 0,
+            model: String(config.model || "mimo-v2.5-tts-voiceclone").trim(),
+            configId: config?.id,
+            configManufacturer: String(config.manufacturer || "").trim(),
+            configBaseUrl: String(config.baseUrl || "").trim(),
+            textLength: String(text || "").length,
+            refPath: refPath,
+          });
+          return res.status(200).send(success({
+            audioUrl: buildProxyAudioUrl(req, config?.id, sourceUrl),
+            data: {
+              localGenerated: true,
+              model: String(config.model || "mimo-v2.5-tts-voiceclone").trim(),
+              voice: effectiveVoiceId || "mimo_default",
+              compatibilityPreset: businessPreset.voiceId,
+            },
+          }));
+        } else {
+          // 没有匹配的克隆通道，不再兜底走 local CosyVoice (127.0.0.1:8000)。
+          return res.status(400).send(error(`当前 TTS 厂商 "${manufacturer || "unknown"}" 不支持克隆通道。请在设置里配置"语音克隆模型"槽位。`));
         }
       }
 
@@ -1527,34 +1866,50 @@ export default router.post(
         if (DebugLogUtil.isDebugLogEnabled()) { console.log("[voice-preview] clone mode", JSON.stringify({ refSource: resolvedReferenceAudioSource, directAliyun })); }
         if (resolvedReferenceAudioSource) {
           if (directAliyun) {
+            console.log("[voice-preview] aliyun clone path", { refSource: resolvedReferenceAudioSource, model: config.model });
             const explicitCustomVoiceId = trimText(effectiveVoiceId);
             const generatedMeta = !/^https?:\/\//i.test(resolvedReferenceAudioSource) && !/^data:/i.test(resolvedReferenceAudioSource)
               ? await readGeneratedReferenceMeta(resolvedReferenceAudioSource)
               : null;
-            // 如果这份参考音频本身就是阿里“提示词设计/官方设计”第一次返回的结果，
+            console.log("[voice-preview] generatedMeta", { path: resolvedReferenceAudioSource, meta: generatedMeta });
+            // 如果这份参考音频本身就是阿里"提示词设计/官方设计"第一次返回的结果，
             // 并且目标模型一致，就直接复用当时返回的专属 voice_id，不再把同一份音频拿去二次复刻。
+            // 但如果是 MiniMax 等第三方厂商的 voice_design 生成的参考音频，不能跨厂商复用。
             const reusableCustomVoiceId = trimText(generatedMeta?.customVoiceId);
             const reusableTargetModel = normalizeAliyunDirectTtsModel(trimText(generatedMeta?.targetModel));
             const currentTargetModel = normalizeAliyunDirectTtsModel(String(config.model || "").trim());
             const explicitVoiceIdMatchesCurrentModel = isVoiceIdCompatibleWithModel(explicitCustomVoiceId, currentTargetModel);
-            const customVoice = explicitCustomVoiceId && explicitVoiceIdMatchesCurrentModel
-              ? {
-                  voiceId: explicitCustomVoiceId,
-                  fresh: false,
-                  responseData: null,
-                }
-              : reusableCustomVoiceId && reusableTargetModel === currentTargetModel
-              ? {
-                  voiceId: reusableCustomVoiceId,
-                  fresh: false,
-                  responseData: null,
-                }
-              : await createDirectAliyunCustomVoice({
-                  config,
-                  mode,
-                  referenceAudioSource: resolvedReferenceAudioSource,
-                  sampleRate: normalizedSampleRate,
+            // MiniMax 等第三方 voice_design 生成的参考音频，generatedBy === "prompt_voice"
+            // 不能复用跨厂商的 voice_id，必须基于参考音频重新创建当前厂商的 clone voice
+            const generatedByPromptVoice = trimText(generatedMeta?.generatedBy) === "prompt_voice";
+            let customVoice: { voiceId: string; fresh: boolean; responseData: Record<string, any> | null };
+            if (explicitVoiceIdMatchesCurrentModel && !generatedByPromptVoice && explicitCustomVoiceId) {
+              customVoice = { voiceId: explicitCustomVoiceId, fresh: false, responseData: null };
+            } else if (reusableCustomVoiceId && reusableTargetModel === currentTargetModel && !generatedByPromptVoice) {
+              customVoice = { voiceId: reusableCustomVoiceId, fresh: false, responseData: null };
+            } else {
+              // 绕过缓存，确保拿到有效的 voiceId
+              customVoice = await createDirectAliyunCustomVoice({
+                config,
+                mode,
+                referenceAudioSource: resolvedReferenceAudioSource,
+                sampleRate: normalizedSampleRate,
+                bypassCache: true,
+              });
+              // 写入元数据，方便后续复用
+              if (customVoice.voiceId) {
+                await writeGeneratedReferenceMeta(resolvedReferenceAudioSource, {
+                  customVoiceId: customVoice.voiceId,
+                  targetModel: currentTargetModel,
+                  generatedBy: "clone",
+                  createdAt: Date.now(),
                 });
+              }
+            }
+            // 最终防御：确保 voiceId 有效
+            if (!trimText(customVoice.voiceId)) {
+              throw new Error("阿里云克隆音色创建失败：未返回有效的音色ID");
+            }
             const synthesized = await synthesizeDirectAliyunPreviewAudioWithRetry({
               config,
               headers,
@@ -1576,15 +1931,51 @@ export default router.post(
               },
             }));
           }
-          const cloned = await synthesizeWithLocalClone(
-            req,
-            userId,
-            text,
-            resolvedReferenceAudioSource,
-            String(referenceText || "").trim(),
-            payload.format,
-            speed,
-          );
+          let cloned;
+          if (isMiniMaxVoiceManufacturer(manufacturer)) {
+            cloned = await synthesizeWithMiniMaxClone(
+              req,
+              config,
+              userId,
+              text,
+              resolvedReferenceAudioSource,
+              String(referenceText || "").trim(),
+              payload.format,
+              speed,
+              effectiveVoiceId,
+            );
+          } else if (manufacturer === "siliconflow") {
+            cloned = await synthesizeWithSiliconFlowClone(req, config, userId, text, resolvedReferenceAudioSource, String(referenceText || "").trim(), payload.format, speed);
+          } else if (manufacturer === "moss_tts_nano") {
+            cloned = await synthesizeWithMossTtsClone(req, userId, text, resolvedReferenceAudioSource, String(referenceText || "").trim(), payload.format, speed);
+          } else if (manufacturer === "xiaomimimo") {
+            const { synthesizeXiaomiMimoVoiceCloneBuffer } = await import("@/lib/xiaomiMimoVoice");
+            const outFormat = String(payload.format || "mp3").trim().toLowerCase() || "mp3";
+            const refBuffer = await loadReferenceAudioBuffer(resolvedReferenceAudioSource);
+            const result = await synthesizeXiaomiMimoVoiceCloneBuffer({
+              apiKey: String(config.apiKey || "").trim(),
+              baseUrl: String(config.baseUrl || "").trim(),
+              model: String(config.model || "mimo-v2.5-tts-voiceclone").trim(),
+              text: String(text || "").trim(),
+              referenceAudioBuffer: refBuffer,
+              referenceAudioMime: "audio/mpeg",
+              format: outFormat,
+            });
+            const sourceUrl = await persistPreviewAudioBuffer(userId, result.buffer, outFormat);
+            cloned = {
+              audioUrl: buildProxyAudioUrl(req, config?.id, sourceUrl),
+              data: {
+                localGenerated: true,
+                model: String(config.model || "mimo-v2.5-tts-voiceclone").trim(),
+                voice: effectiveVoiceId || "mimo_default",
+                mode: "xiaomimimo_clone",
+              },
+            };
+          } else {
+            // 没有匹配的克隆通道，不再兜底走 local CosyVoice (127.0.0.1:8000)。
+            // 直接报错，让用户在设置里配置正确的"语音克隆模型"。
+            return res.status(400).send(error(`当前 TTS 厂商 "${manufacturer || "unknown"}" 不支持克隆通道。请在设置里配置"语音克隆模型"槽位，或换用支持 clone 的 TTS 模型（如 xiaomimimo / minimax / siliconflow / aliyun_direct / moss_tts_nano）。`));
+          }
           return res.status(200).send(success({ audioUrl: cloned.audioUrl, data: cloned.data }));
         }
         return res.status(400).send(error("克隆模式需要参考音频"));
@@ -1666,6 +2057,18 @@ export default router.post(
         if (!promptText) {
           return res.status(400).send(error("提示词模式需要填写提示词"));
         }
+        // 诊断日志
+        console.log("[voice-preview:prompt_voice] 诊断日志", {
+          userId,
+          voiceDesignConfig: voiceDesignConfig
+            ? {
+                manufacturer: String(voiceDesignConfig.manufacturer || "").trim(),
+                model: String(voiceDesignConfig.model || "").trim(),
+                baseURL: String(voiceDesignConfig.baseURL || "").trim(),
+                hasApiKey: Boolean(voiceDesignConfig.apiKey),
+              }
+            : null,
+        });
         const normalizedRoleId = String(roleId || "").trim();
         const generatedReference = await synthesizeReferenceAudioFromMode({
           config,
@@ -1819,6 +2222,104 @@ export default router.post(
           data = response.data || {};
           sourceUrl = String(data?.output?.audio?.url || "").trim();
         }
+      } else if (isMiniMaxVoiceManufacturer(manufacturer)) {
+        const { synthesizeMiniMaxTtsBuffer, MINIMAX_VOICE_ID_MALE, MINIMAX_VOICE_ID_FEMALE,MINIMAX_VOICE_ID_DEF } = await import("@/lib/miniMaxVoice");
+        const minimaxVoiceId = effectiveVoiceId || MINIMAX_VOICE_ID_DEF;
+        const minimaxBuffer = await synthesizeMiniMaxTtsBuffer({
+          apiKey: String(config.apiKey || "").trim(),
+          model: String(config.model || "speech-02-hd").trim(),
+          voiceId: minimaxVoiceId,
+          text: String(text || "").trim(),
+          speed,
+        });
+        sourceUrl = await persistPreviewAudioBuffer(userId, minimaxBuffer.buffer, String(payload.format || "mp3"));
+        data = {
+          localGenerated: true,
+          model: String(config.model || "speech-02-hd").trim(),
+          voice: minimaxVoiceId,
+        };
+      } else if (manufacturer === "moss_tts_nano") {
+        // MOSS-TTS-Nano 本地合成（text 模式预览）
+        const { synthesizeMossTts } = await import("@/lib/localMossTts");
+        const outFormat = String(payload.format || "wav").trim().toLowerCase() || "wav";
+        sourceUrl = `/user/${userId}/game/voice-preview/${uuidv4()}.${outFormat}`;
+        await synthesizeMossTts({
+          text: String(text || "").trim(),
+          outputPath: sourceUrl,
+        });
+        data = {
+          localGenerated: true,
+          model: "moss-tts-nano-100m",
+          voice: effectiveVoiceId || "default",
+        };
+      } else if (manufacturer === "xiaomimimo") {
+        const { synthesizeXiaomiMimoTtsBuffer, synthesizeXiaomiMimoVoiceCloneBuffer } = await import("@/lib/xiaomiMimoVoice");
+        const outFormat = String(payload.format || "mp3").trim().toLowerCase() || "mp3";
+        if (mode === "clone") {
+          const refBuffer = await loadReferenceAudioBuffer(resolvedReferenceAudioSource);
+          const result = await synthesizeXiaomiMimoVoiceCloneBuffer({
+            apiKey: String(config.apiKey || "").trim(),
+            baseUrl: String(config.baseUrl || "").trim(),
+            model: String(config.model || "mimo-v2.5-tts-voiceclone").trim(),
+            text: String(text || "").trim(),
+            referenceAudioBuffer: refBuffer,
+            referenceAudioMime: "audio/mpeg",
+            format: outFormat,
+          });
+          sourceUrl = await persistPreviewAudioBuffer(userId, result.buffer, outFormat);
+        } else {
+          const result = await synthesizeXiaomiMimoTtsBuffer({
+            apiKey: String(config.apiKey || "").trim(),
+            baseUrl: String(config.baseUrl || "").trim(),
+            model: String(config.model || "mimo-v2.5-tts").trim(),
+            text: String(text || "").trim(),
+            voice: effectiveVoiceId || "mimo_default",
+            format: outFormat,
+          });
+          sourceUrl = await persistPreviewAudioBuffer(userId, result.buffer, outFormat);
+        }
+        data = { localGenerated: true, model: String(config.model || "").trim(), voice: effectiveVoiceId || "mimo_default", mode: "xiaomimimo" };
+      } else if (manufacturer === "siliconflow") {
+        // 区分 SiliconFlow 内置音色 vs business preset（克隆参考预设）
+        const sfBp = findBusinessVoicePreset(effectiveVoiceId);
+        if (sfBp) {
+          // business preset → 用预设的参考音频走克隆合成
+          const { synthesizeSiliconFlowCloneBuffer } = await import("@/lib/siliconflowVoice");
+          const refPath = resolvedReferenceAudioSource || sfBp.referencePath;
+          const refBuffer = await loadReferenceAudioBuffer(refPath);
+          const sfCloneResult = await synthesizeSiliconFlowCloneBuffer({
+            apiKey: String(config.apiKey || "").trim(),
+            model: String(config.model || "").trim(),
+            uploadModel: "nlp/MOSS-TTSD-v0.5",
+            text: String(text || "").trim(),
+            referenceAudioBuffer: refBuffer,
+            referenceAudioFilename: `clone_${Date.now()}.wav`,
+            responseFormat: String(payload.format || "mp3").trim().toLowerCase() || "mp3",
+          });
+          sourceUrl = await persistPreviewAudioBuffer(userId, sfCloneResult.buffer, String(payload.format || "mp3"));
+          data = {
+            localGenerated: true,
+            model: String(config.model || "").trim(),
+            voice: effectiveVoiceId,
+            mode: "siliconflow_clone",
+          };
+        } else {
+          // SiliconFlow 内置/克隆音色 → 直接 TTS 合成
+          const { synthesizeSiliconFlowTtsBuffer } = await import("@/lib/siliconflowVoice");
+          const sfResult = await synthesizeSiliconFlowTtsBuffer({
+            apiKey: String(config.apiKey || "").trim(),
+            model: String(config.model || "").trim(),
+            text: String(text || "").trim(),
+            voice: effectiveVoiceId || "",
+            responseFormat: String(payload.format || "mp3").trim().toLowerCase() || "mp3",
+          });
+          sourceUrl = await persistPreviewAudioBuffer(userId, sfResult.buffer, String(payload.format || "mp3"));
+          data = {
+            localGenerated: true,
+            model: String(config.model || "").trim(),
+            voice: effectiveVoiceId,
+          };
+        }
       } else {
         const response = await axios.post(`${baseUrl}/v1/tts`, payload, { headers });
         data = response.data || {};
@@ -1858,7 +2359,7 @@ export default router.post(
         responseStatus = 400;
         responseMessage = "参考音频无法被阿里云解码，请使用采样率大于 16kHz 的 16bit WAV/MP3/M4A/AAC 音频，并确保音频中有清晰有效的人声";
       } else if (
-        /当前语音设计模型与所选故事语音模型不兼容|请先在设置里配置语音设计模型|当前语音模型不支持该绑定模式|克隆模式需要参考音频|提示词模式需要填写提示词|混合模式需要选择音色|语音模型配置不存在|当前阿里云直连模型不支持该绑定模式|当前阿里云直连模型缺少 API Key|参考音频需要提供公网可访问的 http|CosyVoice 不支持仅标点、编号或空白的短文本/i.test(responseMessage)
+        /当前语音设计模型与所选故事语音模型不兼容|请先在设置里配置语音设计模型|当前语音模型不支持该绑定模式|克隆模式需要参考音频|提示词模式需要填写提示词|混合模式需要选择音色|语音模型配置不存在|当前阿里百炼模型不支持该绑定模式|当前阿里百炼模型缺少 API Key|参考音频需要提供公网可访问的 http|CosyVoice 不支持仅标点、编号或空白的短文本/i.test(responseMessage)
       ) {
         responseStatus = 400;
       } else if (axiosErr?.response?.status && axiosErr.response.status >= 400 && axiosErr.response.status < 500) {
@@ -1887,3 +2388,58 @@ export default router.post(
     }
   },
 );
+
+// 语音模型测试接口（只接受 configId，用安全的测试文本）
+router.post(
+  "/preview_test",
+  validateFields({
+    configId: z.number(),
+  }),
+  async (req, res) => {
+    try {
+      const userId = Number((req as any)?.user?.id || 0);
+      const { configId } = req.body;
+      const config = await getRuntimeStoryVoiceConfig(userId, configId);
+      if (!config) {
+        return res.status(400).send(error("语音模型配置不存在"));
+      }
+
+      // 直接调当前 router 的 / 路由，用安全的测试参数
+      const previewResponse = await new Promise<any>((resolve, reject) => {
+        const http = require("http");
+        const testReq = http.request({
+          hostname: "127.0.0.1",
+          port: process.env.PORT || 60002,
+          path: "/voice/preview",
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: req.headers.authorization || "",
+          },
+          timeout: 30000,
+        }, (testRes: any) => {
+          let data = "";
+          testRes.on("data", (chunk: Buffer) => { data += chunk; });
+          testRes.on("end", () => {
+            try { resolve(JSON.parse(data)); }
+            catch { reject(new Error("测试返回数据解析失败")); }
+          });
+        });
+        testReq.on("error", reject);
+        testReq.write(JSON.stringify({
+          configId,
+          mode: "text",
+          text: "这是语音模型测试。",
+          voiceId: "",
+        }));
+        testReq.end();
+      });
+      return res.status(200).send(previewResponse);
+    } catch (err) {
+      const msg = (err as any)?.response?.data?.message || (err as any)?.message || "语音测试失败";
+      return res.status(500).send(error(msg));
+    }
+  },
+);
+
+export default router;

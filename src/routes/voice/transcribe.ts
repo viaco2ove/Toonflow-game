@@ -213,6 +213,13 @@ async function getVoiceConfig(userId: number, configId?: number | null, preferre
         model: normalizeAliyunDirectAsrModel(null),
       };
     }
+    if (String(selected.manufacturer || "").trim().toLowerCase() === "siliconflow") {
+      return {
+        ...selected,
+        modelType: "asr",
+        model: String(selected.model || "FunAudioLLM/SenseVoiceSmall").trim(),
+      };
+    }
     return null;
   }
   if (preferredModelType === "asr") {
@@ -236,6 +243,13 @@ async function getVoiceConfig(userId: number, configId?: number | null, preferre
           model: normalizeAliyunDirectAsrModel(null),
         };
       }
+      if (String(selected.manufacturer || "").trim().toLowerCase() === "siliconflow") {
+        return {
+          ...selected,
+          modelType: "asr",
+          model: String(selected.model || "FunAudioLLM/SenseVoiceSmall").trim(),
+        };
+      }
       return null;
     }
     const latestDirectAliyun = await u.db("t_config")
@@ -247,6 +261,17 @@ async function getVoiceConfig(userId: number, configId?: number | null, preferre
         ...latestDirectAliyun,
         modelType: "asr",
         model: normalizeAliyunDirectAsrModel(null),
+      };
+    }
+    const latestSiliconFlow = await u.db("t_config")
+      .where({ type: "voice", userId, manufacturer: "siliconflow" })
+      .orderBy("id", "desc")
+      .first();
+    if (latestSiliconFlow) {
+      return {
+        ...latestSiliconFlow,
+        modelType: "asr",
+        model: String(latestSiliconFlow.model || "FunAudioLLM/SenseVoiceSmall").trim(),
       };
     }
     return null;
@@ -389,6 +414,19 @@ export default router.post(
       audio = await normalizeAsrAudio(audio);
       if (!audio.buffer.length) {
         return res.status(400).send(error("录音内容为空"));
+      }
+
+      if (String(manufacturer || "").trim().toLowerCase() === "xiaomimimo") {
+        const { transcribeXiaomiMimoAudio } = await import("@/lib/xiaomiMimoVoice");
+        const text = await transcribeXiaomiMimoAudio({
+          apiKey: String(config.apiKey || "").trim(),
+          baseUrl: String(config.baseUrl || "").trim(),
+          model: modelName || "mimo-v2.5-asr",
+          audioBuffer: audio.buffer,
+          mime: audio.mime,
+          language: lang,
+        });
+        return res.send(success({ text, provider: "xiaomimimo", model: modelName || "mimo-v2.5-asr" }));
       }
 
       const compatibleBaseUrl = normalizeAliyunCompatibleBaseUrl(config.baseUrl);

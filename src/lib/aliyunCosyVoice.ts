@@ -37,10 +37,10 @@ function normalizePlayableCosyVoiceText(input: string): string {
 export async function synthesizeAliyunDirectCosyVoiceBuffer(options: CosyVoiceOptions): Promise<Buffer> {
   const { apiKey, baseUrl, model, voiceId, text } = options;
   if (!String(apiKey || "").trim()) {
-    throw new Error("阿里云直连缺少 API Key");
+    throw new Error("阿里百炼缺少 API Key");
   }
   if (!String(model || "").trim()) {
-    throw new Error("阿里云直连缺少 TTS 模型");
+    throw new Error("阿里百炼缺少 TTS 模型");
   }
   if (!String(voiceId || "").trim()) {
     throw new Error("CosyVoice 直连缺少音色 ID");

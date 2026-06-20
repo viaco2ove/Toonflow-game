@@ -1,0 +1,101 @@
+flowchart TD
+    %% 入口
+    START([业务模块发起 AI 调用]) --> WHICH{用途}
+
+    WHICH -->|意图分析| INTENT_KEY[key=intentClassifierModel]
+    WHICH -->|编排| ORCH_KEY[key=storyOrchestratorModel]
+    WHICH -->|任务蓝图| TASK_KEY[key=storyOrchestratorModel<br/>复用编排师]
+    WHICH -->|角色发言| SPEAKER_KEY[key=storySpeakerModel]
+    WHICH -->|记忆| MEM_KEY[key=storyMemoryModel]
+    WHICH -->|章节判定| JUDGE_KEY[key=storyChapterJudgeModel]
+    WHICH -->|事件进度| PROGRESS_KEY[key=storyEventProgressModel]
+    WHICH -->|小游戏| MINI_KEY[key=storyMiniGameModel]
+
+    INTENT_KEY --> GET_PROMPT[getPromptAi key, userId<br/>utils/getPromptAi.ts]
+    ORCH_KEY --> GET_PROMPT
+    TASK_KEY --> GET_PROMPT
+    SPEAKER_KEY --> GET_PROMPT
+    MEM_KEY --> GET_PROMPT
+    JUDGE_KEY --> GET_PROMPT
+    PROGRESS_KEY --> GET_PROMPT
+    MINI_KEY --> GET_PROMPT
+
+    %% 配置查询
+    GET_PROMPT --> T_AI_MAP[(t_aiModelMap<br/>查 configId)]
+    T_AI_MAP --> T_CONFIG[(t_config<br/>查 model/apiKey/baseURL/manufacturer)]
+    T_CONFIG --> CONFIG_OK{配置完整?}
+
+    CONFIG_OK -->|否| FALLBACK[返回 null<br/>调用方降级]
+    CONFIG_OK -->|是| MFR{manufacturer 类型}
+
+    %% 本地模型（绕过 ai-sdk）
+    MFR -->|qwen060| LOCAL_PATH[localQwen060.ts<br/>node-llama-cpp]
+    LOCAL_PATH --> LOCAL_MODEL{安装状态}
+    LOCAL_MODEL -->|installed| LOCAL_INFER[chatWithQwen060<br/>本地推理]
+    LOCAL_MODEL -->|not_installed| LOCAL_ERR[抛错: 未安装]
+    LOCAL_INFER --> LOCAL_PARSE[输出: 纯文本<br/>extractJsonObject 解析]
+    LOCAL_PARSE --> LOCAL_OK[返回结构化结果]
+
+    %% 线上模型（走 ai-sdk）
+    MFR -->|线上| SDK_PATH[utils/ai/text/index.ts<br/>buildOptions]
+    SDK_PATH --> MODEL_LIST[查 modelList<br/>判断 manufacturer 兼容性]
+    MODEL_LIST --> PROVIDER{Provider}
+
+    PROVIDER -->|volcengine/doubao| DOUBAO[createOpenAI<br/>火山方舟接口]
+    PROVIDER -->|deepseek| DEEPSEEK[createDeepSeek]
+    PROVIDER -->|openai| OPENAI[createOpenAI]
+    PROVIDER -->|gemini| GEMINI[createGoogleGenerativeAI]
+    PROVIDER -->|t8star| T8STAR[createOpenAI<br/>t8star 兼容接口]
+    PROVIDER -->|anthropic| ANTHROPIC[createAnthropic]
+    PROVIDER -->|zhipu| ZHIPU[createZhipu]
+    PROVIDER -->|qwen 阿里云| QWEN_API[createQwen]
+    PROVIDER -->|lmstudio| LMSTUDIO[createOpenAICompatible]
+    PROVIDER -->|autodl/其他| OTHERS[OpenAI Compatible]
+
+    DOUBAO --> AI_INVOKE[generateText<br/>ai-sdk core]
+    DEEPSEEK --> AI_INVOKE
+    OPENAI --> AI_INVOKE
+    GEMINI --> AI_INVOKE
+    T8STAR --> AI_INVOKE
+    ANTHROPIC --> AI_INVOKE
+    ZHIPU --> AI_INVOKE
+    QWEN_API --> AI_INVOKE
+    LMSTUDIO --> AI_INVOKE
+    OTHERS --> AI_INVOKE
+
+    %% 输出处理
+    AI_INVOKE --> RESP_FORMAT{responseFormat}
+    RESP_FORMAT -->|schema| SCHEMA_OUT[Output.object zod schema]
+    RESP_FORMAT -->|object| TEXT_OUT[纯文本 → JSON.parse]
+    SCHEMA_OUT --> SDK_OK[返回结构化对象]
+    TEXT_OUT --> SDK_OK
+
+    %% 通用处理
+    SDK_OK --> USAGE_LOG[writeAiTokenUsageLog<br/>token 计量入库]
+    LOCAL_OK --> USAGE_LOG_LOCAL[本地推理无 token 计量]
+
+    USAGE_LOG --> END([返回结果])
+    USAGE_LOG_LOCAL --> END
+    LOCAL_ERR --> FALLBACK
+    FALLBACK --> END
+
+    %% 错误处理
+    AI_INVOKE -->|失败| RETRY{重试}
+    RETRY -->|maxRetries 内| AI_INVOKE
+    RETRY -->|超出| THROW[抛错]
+    THROW --> END
+
+    %% 样式
+    classDef entry fill:#e3f2fd,stroke:#1565c0,stroke-width:2px
+    classDef config fill:#fff3e0,stroke:#e65100,stroke-width:2px
+    classDef provider fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px
+    classDef local fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
+    classDef storage fill:#fce4ec,stroke:#c2185b,stroke-width:2px
+    classDef error fill:#ffebee,stroke:#c62828,stroke-width:2px
+
+    class START,END entry
+    class GET_PROMPT,SDK_PATH,MODEL_LIST,RESP_FORMAT,CONFIG_OK,MFR config
+    class DOUBAO,DEEPSEEK,OPENAI,GEMINI,T8STAR,ANTHROPIC,ZHIPU,QWEN_API,LMSTUDIO,OTHERS provider
+    class LOCAL_PATH,LOCAL_INFER,LOCAL_PARSE local
+    class T_AI_MAP,T_CONFIG storage
+    class FALLBACK,LOCAL_ERR,THROW error

@@ -15,6 +15,15 @@ function normalizeText(input: unknown): string {
 }
 
 function asRecord(input: unknown): JsonRecord {
+  if (typeof input === "string") {
+    try {
+      const parsed = JSON.parse(input);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        return { ...(parsed as JsonRecord) };
+      }
+    } catch { /* not valid JSON */ }
+    return {};
+  }
   if (!input || typeof input !== "object" || Array.isArray(input)) {
     return {};
   }
@@ -244,7 +253,8 @@ async function generateRoleParameterCardWithAi(input: {
 }
 
 async function enrichRole(userId: number, worldName: string, worldIntro: string, role: unknown): Promise<JsonRecord> {
-  const raw = asRecord(role);
+  // role 可能是 JSON string（从 DB 读出的 playerRole），需要先 parse
+  const raw = typeof role === "string" ? parseJsonSafe<JsonRecord>(role, {}) : asRecord(role);
   if (!Object.keys(raw).length) return raw;
   const generated = await generateRoleParameterCardWithAi({
     userId,

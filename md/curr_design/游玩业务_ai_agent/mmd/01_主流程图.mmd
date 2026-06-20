@@ -1,0 +1,82 @@
+flowchart TD
+    %% 入口节点
+    START([用户发送消息]) --> PRE[消息预处理<br/>ScenePlay.vue]
+
+    %% 前端两阶段调用
+    PRE --> CMD{命令解析<br/>isMiniGameCommand}
+    CMD -->|是| CMD_PROC[解析命令类型]
+    CMD -->|否| OPT{选项解析<br/>isOptionPrefix}
+    OPT -->|是| OPT_PROC[解析选项编号]
+    OPT -->|否| NORMAL[普通消息清理]
+
+    CMD_PROC --> ROUTE[/game/addMessage]
+    OPT_PROC --> ROUTE
+    NORMAL --> ROUTE
+
+    %% addMessage 阶段：先入库再触发意图分析
+    ROUTE --> SS_ADD[SessionService<br/>addSessionMessage]
+    SS_ADD --> SS_INSERT[(t_sessionMessage<br/>消息入库)]
+    SS_INSERT --> MINI_TURN[handleMiniGameTurn<br/>MiniGameController]
+
+    %% 意图分析双通道
+    MINI_TURN --> INTENT_FAST{Fast Path<br/>命令以 # 开头?}
+
+    INTENT_FAST -->|是| FAST_DETECT[detectCommand<br/>正则匹配]
+    FAST_DETECT --> FAST_HIT{命中?}
+    FAST_HIT -->|create_task| FAST_CREATE[handleCreateTaskFromCommand]
+    FAST_HIT -->|exit/query/list/switch| FAST_OTHER[T4.x 待实现<br/>暂 fall through]
+    FAST_HIT -->|未命中| INTENT_SLOW
+
+    INTENT_FAST -->|否| INTENT_SLOW[Slow Path<br/>analyzeIntentWithAiFallback]
+
+    INTENT_SLOW --> CLASSIFIER[IntentClassifier<br/>调用用户配置模型]
+    CLASSIFIER --> MODEL_CHECK{模型类型}
+    MODEL_CHECK -->|qwen060| QWEN[chatWithQwen060<br/>node-llama-cpp 本地]
+    MODEL_CHECK -->|线上模型| AI_SDK[ai-sdk text invoke<br/>doubao/openai/gemini/...]
+
+    QWEN --> JSON_PARSE[extractJsonObject<br/>括号配平算法]
+    AI_SDK --> SCHEMA[Schema 校验]
+    JSON_PARSE --> CONFIDENCE{置信度 ≥ 0.7?}
+    SCHEMA --> CONFIDENCE
+
+    CONFIDENCE -->|create_task| AI_CREATE[handleCreateTaskFromCommand]
+    CONFIDENCE -->|exit_task| AI_EXIT[T4.x 待实现]
+    CONFIDENCE -->|query_progress| AI_QUERY[T4.x 待实现]
+    CONFIDENCE -->|game_action| AI_FALL[fall through 到主流]
+    CONFIDENCE -->|< 0.7 / normal_dialog| AI_FALL
+
+    %% 任务创建流程
+    FAST_CREATE --> TASK_GEN[createTaskFromUserRequest<br/>FreeChapterTaskService]
+    AI_CREATE --> TASK_GEN
+    TASK_GEN --> AI_BLUEPRINT[generateFreeChapterTaskBlueprintByAi<br/>storyOrchestratorModel]
+    AI_BLUEPRINT --> APPLY_STATE[applyFreeChapterTaskBlueprintToState<br/>写 executing_task + taskList]
+    APPLY_STATE --> TASK_RESULT[on_mini_game_start<br/>消息]
+
+    %% addMessage 主流（小游戏未拦截）
+    AI_FALL --> SS_TRIGGER[runTriggerEngine]
+    SS_TRIGGER --> SS_TASK_PROGRESS[runTaskProgressEngine]
+    SS_TASK_PROGRESS --> SS_RESOLVE[maybeResolveActiveFreeChapterTaskEvent<br/>结算已有任务]
+    SS_RESOLVE --> SS_DONE([addMessage 返回])
+    FAST_OTHER --> SS_TRIGGER
+
+    %% 第二阶段：编排
+    SS_DONE --> ORCH_CALL[/game/orchestration]
+    ORCH_CALL --> ORCH_TURN[orchestrateSessionTurn<br/>SessionService]
+    ORCH_TURN --> NARRATIVE[runNarrativeOrchestrator<br/>编排师 AI]
+    NARRATIVE --> SPEAK[runNarrativePlan<br/>角色发言生成]
+    SPEAK --> RESPONSE([返回剧情])
+
+    TASK_RESULT --> RESPONSE
+
+    %% 样式
+    classDef route fill:#bbdefb,stroke:#1565c0,stroke-width:2px
+    classDef intent fill:#f3e5f5,stroke:#4a148c,stroke-width:2px
+    classDef task fill:#fff3e0,stroke:#e65100,stroke-width:2px
+    classDef ai fill:#e8f5e9,stroke:#1b5e20,stroke-width:2px
+    classDef storage fill:#fce4ec,stroke:#c2185b,stroke-width:2px
+
+    class ROUTE,ORCH_CALL route
+    class INTENT_FAST,INTENT_SLOW,FAST_DETECT,CLASSIFIER,JSON_PARSE,SCHEMA,CONFIDENCE intent
+    class FAST_CREATE,AI_CREATE,TASK_GEN,AI_BLUEPRINT,APPLY_STATE,TASK_RESULT task
+    class QWEN,AI_SDK,NARRATIVE,SPEAK ai
+    class SS_INSERT storage

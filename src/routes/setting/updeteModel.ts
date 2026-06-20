@@ -10,7 +10,7 @@ export default router.post(
   "/",
   validateFields({
     id: z.number(),
-    type: z.enum(["text", "video", "image", "voice", "voice_design"]),
+    type: z.enum(["text", "video", "image", "voice", "voice_design", "voice_clone"]),
     model: z.string(),
     baseUrl: z.string(),
     modelType: z.string(),

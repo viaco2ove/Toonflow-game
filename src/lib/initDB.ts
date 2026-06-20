@@ -652,6 +652,7 @@ export default async (knex: Knex, forceInit: boolean = false): Promise<void> => 
 - 每轮只推进一小步
 - 返回结果要快速
 - 偏向于角色说话直接推动剧情而不是旁白
+- 优先度权重：一般角色》万能角色》旁白。尽量用npc 去推进而不是旁白
 
 ## 输入参数说明：
 ### 已生成台词:
@@ -821,16 +822,13 @@ event_facts:`,
 - 严格逐行输出字段
 - 不得输出 JSON / markdown / 解释
 
-你是剧情编排师（极简版）。
-
-只做一件事：决定本轮由谁发言，以及剧情推进一小步。
-
 ## 要求：
 - 不写台词、不写剧情正文
 - 不复述章节或背景
 - 每轮只推进一小步
 - 返回结果要快速
 - 偏向于角色说话直接推动剧情而不是旁白
+- 优先度权重：一般角色》万能角色》旁白。尽量用npc 去推进而不是旁白
 
 ## 输入参数说明：
 ### 已生成台词:
@@ -988,6 +986,9 @@ event_facts:`,
             "“@其他角色名: xxx” 代表其他角色要说这个台词\n"+
             "例如motive 引导发展之类的，那么summary中@角色名：xxx ,你应该描述情况后，接下来@角色名 采取行动\n"+
             "## 如果存在万能角色如万能角色，某男子，某女子你应该让他们说话而不是帮他们说话。\n" +
+            "- 如果存在万能角色如万能角色，某男子，某女子你应该让他们说话而不是帮他们说话。\n" +
+              "例如旁白：“@{npcName} 表情凝重欲要发言”\n" +
+             "- 不存在万能角色。那么旁白可以自己充当万能角色说：“（饰演xxx）台词”如 “(饰演树妖)哈哈哈，来了就别走了”" +
             "## 如果是需要引导剧情，描述一下角色的神态和场景就好，绝对不允许替角色说话\n" +
             "## 你可以根据当前对话内容，判断是否给予用户经验值\n" +
             "战胜敌人=敌人等级*50 经验值\n" +
@@ -1011,7 +1012,7 @@ event_facts:`,
             "已生成台词:\n " +
              " - [新增对话(JSON数组)] 按前后顺序记录了角色说了什么台词\n" +
              " - 如果最后一句是问用户事情如“还请你告知姓名、性别与年龄” 那么就应该轮到用户发言\n" +
-             " - 如果最后一句是用户发言，那么就应该安排其他角色发言" +
+             " - 如果最后一句是用户发言，那么就应该安排其他角色发言\n" +
 
             "## 规则：\n" +
             "### 血量和蓝的恢复（hp 和mp）：" +
@@ -1028,7 +1029,16 @@ event_facts:`,
                 "level + 1，exp 扣除旧 next_level_exp，next_level_exp = 新 level * 100，hp/mp 按满血满蓝公式恢复。\n" +
                 "大量经验可连续升级。模糊成长不改 exp，只写入 other。\n" +
              "### 等级与等级称号：\n" +
-               "在[原始全局背景]里看看有没有等级称号和等级的对应关系\n" +
+               "在[原始全局背景]里看看有没有等级称号和等级的对应关系，" +
+               "例如『1级=初入世界；5级=觉醒者；10级=逆天改命…』\n" +
+               "等级用 `level` 字段（数字），等级称号用 `level_desc` 字段（中文描述）。\n" +
+               "升级流程：发现 exp >= next_level_exp 时：\n" +
+               "  1) level + 1\n" +
+               "  2) exp -= 旧 next_level_exp（保留溢出经验）\n" +
+               "  3) next_level_exp = 新 level * 100\n" +
+               "  4) 在[原始全局背景]里找新等级对应的称号，写入 level_desc\n" +
+               "  5) hp/mp 按满血满蓝公式恢复\n" +
+               "模糊成长（如"实力提升"）不升级，只把变化写到 other\n" +
             "### 当用户最新输入以 `@记忆管理` 开头时，该输入视为对长期记忆和角色参数卡的直接管理指令，不需要等待旁白确认。\n" +
             "`@记忆管理` 指令优先级高于普通剧情对话、旁白确认和当前事件推进。\n" +
             "如果 `@记忆管理` 后面包含明确状态变化、物品变化、技能变化、身份变化、数值变化，则记忆管理器必须直接更新 summary、facts、tags 和对应参数卡 patch。\n" +
@@ -1317,6 +1327,7 @@ result=continue:
           { id: 14, configId: null, name: "AI故事-语音生成", key: "storyVoiceModel" },
           { id: 15, configId: null, name: "AI故事-语音识别", key: "storyAsrModel" },
           { id: 16, configId: null, name: "AI故事-语音设计", key: "storyVoiceDesignModel" },
+          { id: 21, configId: null, name: "AI故事-语音克隆", key: "storyVoiceCloneModel" },
           { id: 19, configId: null, name: "AI故事-事件进度检测", key: "storyEventProgressModel" },
           { id: 20, configId: null, name: "AI故事-小游戏动作解析", key: "storyMiniGameModel" },
         ]);
@@ -1366,12 +1377,12 @@ result=continue:
           // { manufacturer: "zhipu", model: "glm-4.5-flash", responseFormat: "object", image: 0, think: 1, tool: 1 },
           // { manufacturer: "zhipu", model: "glm-4-flash-250414", responseFormat: "object", image: 0, think: 0, tool: 1 },
           { manufacturer: "zhipu", model: "glm-4.6v", responseFormat: "object", image: 1, think: 1, tool: 1 },
-          { manufacturer: "qwen", model: "qwen-vl-max", responseFormat: "schema", image: 1, think: 0, tool: 1 },
-          { manufacturer: "qwen", model: "qwen-plus-latest", responseFormat: "schema", image: 0, think: 0, tool: 1 },
-          { manufacturer: "qwen", model: "qwen-max", responseFormat: "schema", image: 0, think: 0, tool: 1 },
-          // { manufacturer: "qwen", model: "qwen2.5-72b-instruct", responseFormat: "schema", image: 0, think: 0, tool: 1 },
-          // { manufacturer: "qwen", model: "qwen2.5-14b-instruct-1m", responseFormat: "schema", image: 0, think: 0, tool: 1 },
-          // { manufacturer: "qwen", model: "qwen2.5-vl-72b-instruct", responseFormat: "schema", image: 1, think: 0, tool: 1 },
+          { manufacturer: "aliyun_direct", model: "qwen-vl-max", responseFormat: "schema", image: 1, think: 0, tool: 1 },
+          { manufacturer: "aliyun_direct", model: "qwen-plus-latest", responseFormat: "schema", image: 0, think: 0, tool: 1 },
+          { manufacturer: "aliyun_direct", model: "qwen-max", responseFormat: "schema", image: 0, think: 0, tool: 1 },
+          // { manufacturer: "aliyun_direct", model: "qwen2.5-72b-instruct", responseFormat: "schema", image: 0, think: 0, tool: 1 },
+          // { manufacturer: "aliyun_direct", model: "qwen2.5-14b-instruct-1m", responseFormat: "schema", image: 0, think: 0, tool: 1 },
+          // { manufacturer: "aliyun_direct", model: "qwen2.5-vl-72b-instruct", responseFormat: "schema", image: 1, think: 0, tool: 1 },
           // { manufacturer: "openai", model: "gpt-4o", responseFormat: "schema", image: 1, think: 0, tool: 1 },
           // { manufacturer: "openai", model: "gpt-4o-mini", responseFormat: "schema", image: 1, think: 0, tool: 1 },
           { manufacturer: "openai", model: "gpt-4.1", responseFormat: "schema", image: 1, think: 0, tool: 1 },
@@ -2253,6 +2264,8 @@ result=continue:
       initData: async (knex) => {
         await knex("t_voiceModel").insert([
           { manufacturer: "ai_voice_tts", model: "ai_voice_tts", mode: JSON.stringify(["text", "clone", "mix", "prompt_voice"]) },
+          { manufacturer: "moss_tts_nano", model: "moss-tts-nano-100m", mode: JSON.stringify(["text", "clone"]) },
+          { manufacturer: "siliconflow", model: "FunAudioLLM/CosyVoice2-0.5B", mode: JSON.stringify(["text", "clone"]) },
         ]);
       },
     },

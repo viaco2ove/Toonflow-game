@@ -9,9 +9,12 @@ import {
   GatewayVoicePreset,
   getRuntimeStoryVoiceConfig,
   isDirectAliyunManufacturer,
+  isMiniMaxVoiceManufacturer,
   normalizeVoiceBaseUrl,
 } from "@/lib/voiceGateway";
 import { ensureBusinessVoicePresets } from "@/lib/businessVoicePresets";
+import { MINIMAX_BUILTIN_VOICES } from "@/lib/miniMaxVoice";
+import { SILICONFLOW_BUILTIN_VOICES, fetchSiliconFlowVoiceList, isSiliconFlowManufacturer } from "@/lib/siliconflowVoice";
 
 const router = express.Router();
 
@@ -38,11 +41,47 @@ export default router.post(
 
       const businessPresets = await ensureBusinessVoicePresets(userId);
       let presets: GatewayVoicePreset[] = [];
-      if (isDirectAliyunManufacturer(config.manufacturer)) {
+      if (isMiniMaxVoiceManufacturer(config.manufacturer)) {
+        // MiniMax 使用内置音色列表
+        presets = MINIMAX_BUILTIN_VOICES.map((v) => ({
+          voiceId: v.voiceId,
+          name: v.name,
+          provider: "minimax",
+          modes: ["text"],
+          description: `${v.language} ${v.gender} voice`,
+        }));
+      } else if (isSiliconFlowManufacturer(config.manufacturer)) {
+        // SiliconFlow 内置音色 + 用户已创建的克隆音色
+        const builtinPresets: GatewayVoicePreset[] = SILICONFLOW_BUILTIN_VOICES.map((v) => ({
+          voiceId: v.voiceId,
+          name: v.name,
+          provider: "siliconflow",
+          modes: ["text"],
+          description: `${v.language} ${v.gender} voice`,
+        }));
+        try {
+          const apiKey = String(config.apiKey || "").trim();
+          if (apiKey) {
+            const customVoices = await fetchSiliconFlowVoiceList(apiKey);
+            for (const cv of customVoices) {
+              builtinPresets.push({
+                voiceId: cv.uri,
+                name: cv.customName || cv.uri,
+                provider: "siliconflow",
+                modes: ["clone"],
+                description: cv.text ? `克隆音色: ${cv.text.slice(0, 30)}...` : "克隆音色",
+              });
+            }
+          }
+        } catch (err) {
+          console.warn("[voice] fetch siliconflow voice list failed:", (err as Error)?.message || String(err));
+        }
+        presets = builtinPresets;
+      } else if (isDirectAliyunManufacturer(config.manufacturer)) {
         presets = directAliyunVoicePresets(String(config.model || "").trim());
       } else {
         try {
-          presets = filterVoicePresetsByManufacturer(await fetchVoicePresets(baseUrl, headers), config.manufacturer);
+          presets = filterVoicePresetsByManufacturer(await fetchVoicePresets(baseUrl, headers, config.manufacturer), config.manufacturer);
         } catch (err) {
           console.warn(
             `[voice] fetch presets fallback to business presets only: manufacturer=${String(config.manufacturer || "").trim()} baseUrl=${baseUrl} error=${(err as Error)?.message || String(err)}`,
