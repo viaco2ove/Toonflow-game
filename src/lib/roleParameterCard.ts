@@ -190,7 +190,8 @@ async function generateRoleParameterCardWithAi(input: {
     {
       world: {
         name: input.worldName,
-        intro: input.worldGlobalBackground,
+        intro: input.intro,
+        worldGlobalBackground: input.worldGlobalBackground,
       },
       role: {
         id: normalizeText(role.id),

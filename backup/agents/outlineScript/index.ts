@@ -136,7 +136,8 @@ export default class OutlineScript {
     if (asString) {
       const fields = [
         `小说名称: ${info.name}`,
-        `小说简介: ${info.intro}`,
+         `小说简介: ${info.intro}`,
+        `小说全局背景: ${info.worldGlobalBackground}`,
         `小说类型: ${info.type}`,
         `目标短剧类型: ${info.artStyle}`,
         `短剧画幅: ${info.videoRatio}`,

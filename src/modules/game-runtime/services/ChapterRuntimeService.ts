@@ -332,7 +332,8 @@ function buildChapterJudgeInputSnapshot({
       ending_rules: endingRules,
       content: chapterContent,
     },
-    world_intro: worldGlobalBackground,
+    world_intro: worldIntro,
+    world_global_background: worldGlobalBackground,
     current_event: {
       index: Number(normalizeScalarText(currentEvent.eventIndex) || "0"),
       kind: normalizeScalarText(currentEvent.eventKind) || "scene",

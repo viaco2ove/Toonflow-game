@@ -232,6 +232,8 @@ type SpeakerPromptPayload = {
   currentStageSummary?: string | null;
   // ★ P4: 任务模式上下文（来自 state.executing_task）
   taskContext?: TaskContextPayload | null;
+  /** 记忆管理器维护的动态全局背景（用于角色发言器区分初始设定和当前状态） */
+  dynamicWorldGlobalBackground?: string;
 };
 
 type RecentDialogueTurn = {
@@ -1559,7 +1561,8 @@ function buildOrchestratorPromptStats(payload: OrchestratorPromptPayload, compac
   const orchestratorCurrentEventIndexLine = payload.currentEventIndex != null ? `index:${payload.currentEventIndex}` : "";
   const orchestratorWorldContent = [
     payload.worldName ? `名称:${payload.worldName}` : "",
-    payload.worldGlobalBackground ? `简介:${payload.worldGlobalBackground}` : "",
+    payload.worldIntro ? `简介:${payload.worldIntro}` : "",
+    payload.worldGlobalBackground ? `全局背景:${payload.worldGlobalBackground}` : "",
   ].filter(Boolean).join("\n") || "无";
   const orchestratorChapterContent = [
     payload.chapterTitle ? `标题:${payload.chapterTitle}` : "",
@@ -1625,7 +1628,8 @@ function buildSpeakerPromptStats(payload: SpeakerPromptPayload, compactMode: boo
   ].filter(Boolean).join("\n") || "无";
   const speakerWorldContent = [
     payload.worldName ? `名称:${payload.worldName}` : "",
-    payload.worldGlobalBackground ? `简介:${payload.worldGlobalBackground}` : "",
+    payload.worldIntro ? `简介:${payload.worldIntro}` : "",
+    payload.worldGlobalBackground ? `全局背景:${payload.worldGlobalBackground}` : "",
   ].filter(Boolean).join("\n") || "无";
   const speakerChapterContent = [
     payload.chapterTitle ? `标题:${payload.chapterTitle}` : "",
@@ -2102,7 +2106,8 @@ function buildOrchestratorInputSnapshot(payload: OrchestratorPromptPayload, comp
   const snapshot: JsonRecord = {
     world: {
       name: payload.worldName || "未命名世界",
-      intro: payload.worldGlobalBackground || "",
+      intro: payload.worldintro || "",
+      worldGlobalBackground: payload.worldGlobalBackground || "",
     },
     chapter: {
       title: payload.chapterTitle || "未命名章节",
@@ -2219,7 +2224,7 @@ function buildSpeakerWorldLines(payload: {
   return [
     "[世界]",
     `名称: ${payload.worldName || "未命名世界"}`,
-    payload.worldGlobalBackground ? `简介: ${payload.worldGlobalBackground}` : "",
+    payload.worldGlobalBackground ? `全局背景: ${payload.worldGlobalBackground}` : "",
   ];
 }
 
@@ -2346,7 +2351,7 @@ function buildMemoryWorldChapterLines(payload: {
   return [
     "[世界]",
     `名称: ${payload.worldName || "未命名世界"}`,
-    payload.worldGlobalBackground ? `简介: ${payload.worldGlobalBackground}` : "",
+    payload.worldGlobalBackground ? `全局背景: ${payload.worldGlobalBackground}` : "",
     "",
     "[章节]",
     `标题: ${payload.chapterTitle || "未命名章节"}`,
@@ -2434,8 +2439,17 @@ function buildMemorySystemPrompt(promptFromDb: unknown): string {
   ].join("\n");
 }
 
+// 构造记忆管理器维护的动态全局背景。
+// 由 memorySummary + memoryFacts 组成，反映世界当前演变状态。
+function buildDynamicWorldBackground(state: JsonRecord): string {
+  const summary = String(state?.memorySummary || "").trim();
+  const facts = Array.isArray(state?.memoryFacts) ? state.memoryFacts : [];
+  const factsText = facts.slice(0, 6).join("；");
+  return [summary, factsText].filter(Boolean).join("；");
+}
+
 // 把当前说话人和上下文拼成角色发言提示词。
-// [原始全局背景] 和 [现在全局背景] 用于让角色发言模型区分世界观设定的初始状态和当前演变状态。
+// [原始全局背景] 和 [动态全局背景] 用于让角色发言模型区分世界观设定的初始状态和当前演变状态。
 function buildSpeakerUserPrompt(payload: {
   worldName: string;
   worldGlobalBackground: string;
@@ -2484,7 +2498,7 @@ function buildSpeakerUserPrompt(payload: {
   if (DebugLogUtil.isDebugLogEnabled()) {
     console.log("[story:memory:runtime] buildSpeakerUserPrompt", JSON.stringify({
       worldGlobalBackground: payload.worldGlobalBackground || "无",
-      currWorldGlobalBackground: payload.worldGlobalBackground || "无",
+      dynamicWorldGlobalBackground: payload.dynamicWorldGlobalBackground || "无",
       hasTaskContext: !!payload.taskContext,
     }));
   }
@@ -2494,8 +2508,8 @@ function buildSpeakerUserPrompt(payload: {
     "[原始全局背景]",
     payload.worldGlobalBackground || "无",
     "",
-    "[现在全局背景]",
-    payload.worldGlobalBackground || "无",
+    "[动态全局背景]",
+    payload.dynamicWorldGlobalBackground || "无",
     "",
     ...chapterLines,
     "",
@@ -2631,10 +2645,12 @@ function buildTaskContextLines(task: TaskContextPayload): string[] {
 }
 
 // 把最近对话和现有记忆拼成记忆管理提示词。
-// [原始全局背景] 和 [现在全局背景] 用于让记忆管理模型区分世界观设定的初始状态和当前演变状态。
+// [原始全局背景] 和 [动态全局背景] 用于让记忆管理模型区分世界观设定的初始状态和当前演变状态。
 function buildMemoryUserPrompt(payload: {
   worldName: string;
   worldGlobalBackground: string;
+  /** 记忆管理器维护的动态全局背景 */
+  dynamicWorldGlobalBackground?: string;
   chapterTitle: string;
   currentEventIndex: number;
   currentEventKind: string;
@@ -2658,7 +2674,7 @@ function buildMemoryUserPrompt(payload: {
     if (DebugLogUtil.isDebugLogEnabled()) {
       console.log("[story:memory:runtime] buildSpeakerUserPrompt", JSON.stringify({
         worldGlobalBackground: payload.worldGlobalBackground || "无",
-        currWorldGlobalBackground: payload.worldGlobalBackground || "无",
+        dynamicWorldGlobalBackground: payload.dynamicWorldGlobalBackground || "无",
       }));
     }
     return [
@@ -2668,8 +2684,8 @@ function buildMemoryUserPrompt(payload: {
       "[原始全局背景]",
       payload.worldGlobalBackground || "无",
       "",
-      "[现在全局背景]",
-      payload.worldGlobalBackground || "无",
+      "[动态全局背景]",
+      payload.dynamicWorldGlobalBackground || "无",
       "",
       "[章节]",
       `标题: ${payload.chapterTitle || "未命名章节"}`,
@@ -2707,7 +2723,7 @@ function buildMemoryUserPrompt(payload: {
   if (DebugLogUtil.isDebugLogEnabled()) {
     console.log("[story:memory:runtime] buildSpeakerUserPrompt", JSON.stringify({
       worldGlobalBackground: payload.worldGlobalBackground || "无",
-      currWorldGlobalBackground: payload.worldGlobalBackground || "无",
+      dynamicWorldGlobalBackground: payload.dynamicWorldGlobalBackground || "无",
     }));
   }
   return [
@@ -2716,8 +2732,8 @@ function buildMemoryUserPrompt(payload: {
     "[原始全局背景]",
     payload.worldGlobalBackground || "无",
     "",
-    "[现在全局背景]",
-    payload.worldGlobalBackground || "无",
+    "[动态全局背景]",
+    payload.dynamicWorldGlobalBackground || "无",
     "",
     ...currentEventLines,
     "",
@@ -4078,6 +4094,7 @@ export async function runStorySpeakerContent(input: {
   const payload: SpeakerPromptPayload = {
     worldName: normalizeScalarText(input.world?.name),
     worldGlobalBackground: useFastSpeakerPrompt ? "" : shortText(resolveWorldGlobalBackground(input.world), speakerWorldGlobalBackgroundLimit),
+    dynamicWorldGlobalBackground: shortText(buildDynamicWorldBackground(input.state), compactMode ? 600 : 1200),
     chapterTitle: currentChapter.title,
     chapterContentHint,
     chapterEndingConditionHint,
@@ -4651,6 +4668,7 @@ export async function runStoryMemoryManager(input: {
     // 记忆管理同样需要看到世界级背景，否则它只能根据局部章节和最近对话压缩记忆，
     // 很容易漏掉“当前事件为何重要”以及长期标签该如何贴合世界设定。
     worldGlobalBackground: shortText(resolveWorldGlobalBackground(input.world), compactMode ? 2400 : 4800),
+    dynamicWorldGlobalBackground: shortText(buildDynamicWorldBackground(input.state), compactMode ? 600 : 1200),
     chapterTitle: normalizeScalarText(input.chapter?.title),
     ...buildPromptEventContextTextPayload(currentEvent, compactMode),
     eventDeltaText: buildMemoryEventDeltaText(memoryInputs.eventDeltaMessages, compactMode),
