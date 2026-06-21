@@ -1019,9 +1019,12 @@ async function generateFreeChapterTaskBlueprintByAi(input: {
   }
   const taskTitle = buildTaskTitle(input.option);
   const playerCard = parseJsonSafe<JsonRecord>(input.state?.player?.parameterCardJson, {});
+  // world 可能是直接来自数据库的原始行，settings 可能是字符串
+  const w = (input.world || {}) as Record<string, any>;
+  const wSettings = typeof w.settings === "string" ? parseJsonSafe(w.settings, {}) : (w.settings || {});
   const prompt = JSON.stringify({
-    worldName: scalarText(input.world?.name),
-    worldIntro: scalarText(input.world?.globalBackground || input.world?.intro),
+    worldName: scalarText(w.name),
+    worldGlobalBackground: scalarText(wSettings.globalBackground || w.globalBackground || w.intro),
     chapterTitle: scalarText(input.chapter?.title),
     chapterDirective: scalarText(input.chapter?.content),
     memorySummary: scalarText(input.state?.memorySummary),

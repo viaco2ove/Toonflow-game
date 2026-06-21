@@ -295,12 +295,15 @@ function buildChapterJudgeInputSnapshot({
         .filter((item) => item.content)
     : [];
 
-  // 获取故事全局背景：优先 world.globalBackground（前端"全局背景"长描述），
-  // 然后 world.intro（短简介），最后 state 的 worldIntro / globalBackground 作为兜底
-  const worldIntro = normalizeScalarText(
-    world?.globalBackground
-    || world?.intro
-    || state?.worldIntro
+  // 获取故事全局背景：优先 world.settings.globalBackground（前端"全局背景"长描述），
+  // world 可能是原始数据库行（settings 是字符串）或已解析对象，intro 是兜底
+  const w = (world || {}) as Record<string, any>;
+  const wSettings = typeof w.settings === "string" ? parseJsonSafe(w.settings, {}) : (w.settings || {});
+  const worldGlobalBackground = normalizeScalarText(
+    wSettings.globalBackground
+    || w.globalBackground
+    || w.intro
+    || state?.worldGlobalBackground
     || state?.globalBackground
     || ""
   );
@@ -320,7 +323,7 @@ function buildChapterJudgeInputSnapshot({
     : null;
 
   if (DebugLogUtil.isDebugLogEnabled()) {
-    console.log(`[story:memory:runtime] buildChapterJudgeInputSnapshot worldIntro=${worldIntro} nextEvent=${nextEventInfo ? JSON.stringify({ index: nextEventInfo.index, label: nextEventInfo.label }) : "null"}`);
+    console.log(`[story:memory:runtime] buildChapterJudgeInputSnapshot worldGlobalBackground=${worldGlobalBackground} nextEvent=${nextEventInfo ? JSON.stringify({ index: nextEventInfo.index, label: nextEventInfo.label }) : "null"}`);
   }
   return {
     chapter: {
@@ -329,7 +332,7 @@ function buildChapterJudgeInputSnapshot({
       ending_rules: endingRules,
       content: chapterContent,
     },
-    world_intro: worldIntro,
+    world_intro: worldGlobalBackground,
     current_event: {
       index: Number(normalizeScalarText(currentEvent.eventIndex) || "0"),
       kind: normalizeScalarText(currentEvent.eventKind) || "scene",

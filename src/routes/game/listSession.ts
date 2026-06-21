@@ -145,7 +145,7 @@ export default router.post(
           sessionId,
           worldId: worldIdValue,
           worldName: String(worldRow?.name || ""),
-          worldIntro: String(worldRow?.intro || ""),
+          worldGlobalBackground: String(worldRow?.intro || ""),
           worldCoverPath: String(worldRow?.coverPath || worldSettings?.coverPath || worldSettings?.coverBgPath || ""),
           chapterId: chapterIdValue > 0 ? chapterIdValue : null,
           chapterTitle: resolvedChapterTitle,

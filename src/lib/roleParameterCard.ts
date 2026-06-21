@@ -161,7 +161,7 @@ async function resolveRoleCardModel(userId: number) {
 async function generateRoleParameterCardWithAi(input: {
   userId: number;
   worldName: string;
-  worldIntro: string;
+  worldGlobalBackground: string;
   role: JsonRecord;
 }): Promise<JsonRecord | null> {
   const config = await resolveRoleCardModel(input.userId);
@@ -190,7 +190,7 @@ async function generateRoleParameterCardWithAi(input: {
     {
       world: {
         name: input.worldName,
-        intro: input.worldIntro,
+        intro: input.worldGlobalBackground,
       },
       role: {
         id: normalizeText(role.id),
@@ -252,14 +252,14 @@ async function generateRoleParameterCardWithAi(input: {
   }
 }
 
-async function enrichRole(userId: number, worldName: string, worldIntro: string, role: unknown): Promise<JsonRecord> {
+async function enrichRole(userId: number, worldName: string, worldGlobalBackground: string, role: unknown): Promise<JsonRecord> {
   // role 可能是 JSON string（从 DB 读出的 playerRole），需要先 parse
   const raw = typeof role === "string" ? parseJsonSafe<JsonRecord>(role, {}) : asRecord(role);
   if (!Object.keys(raw).length) return raw;
   const generated = await generateRoleParameterCardWithAi({
     userId,
     worldName,
-    worldIntro,
+    worldGlobalBackground,
     role: raw,
   });
   if (!generated) return raw;
@@ -272,7 +272,7 @@ async function enrichRole(userId: number, worldName: string, worldIntro: string,
 export async function enrichWorldRolesWithAiParameterCards(input: {
   userId: number;
   worldName: string;
-  worldIntro: string;
+  worldGlobalBackground: string;
   playerRole: unknown;
   narratorRole: unknown;
   settings: unknown;
@@ -285,17 +285,17 @@ export async function enrichWorldRolesWithAiParameterCards(input: {
   const rawRoles = Array.isArray(rawSettings.roles) ? rawSettings.roles : [];
   const nextPlayerRole = hasUsableParameterCard(asRecord(input.playerRole)?.parameterCardJson)
     ? asRecord(input.playerRole)
-    : await enrichRole(input.userId, input.worldName, input.worldIntro, input.playerRole);
+    : await enrichRole(input.userId, input.worldName, input.worldGlobalBackground, input.playerRole);
   const nextNarratorRole = hasUsableParameterCard(asRecord(input.narratorRole)?.parameterCardJson)
     ? asRecord(input.narratorRole)
-    : await enrichRole(input.userId, input.worldName, input.worldIntro, input.narratorRole);
+    : await enrichRole(input.userId, input.worldName, input.worldGlobalBackground, input.narratorRole);
   const nextNpcRoles = await Promise.all(
     rawRoles.map((role) => {
       const rawRole = asRecord(role);
       if (hasUsableParameterCard(rawRole.parameterCardJson)) {
         return rawRole;
       }
-      return enrichRole(input.userId, input.worldName, input.worldIntro, rawRole);
+      return enrichRole(input.userId, input.worldName, input.worldGlobalBackground, rawRole);
     }),
   );
 
@@ -335,10 +335,13 @@ export async function ensureWorldRolesWithAiParameterCards(input: {
     };
   }
 
+  // world 可能是原始数据库行，settings 可能是字符串
+  const w = (world || {}) as Record<string, any>;
+  const wSettings = typeof w.settings === "string" ? parseJsonSafe(w.settings, {}) : (w.settings || {});
   const enriched = await enrichWorldRolesWithAiParameterCards({
     userId: Number(input.userId || 0),
-    worldName: normalizeText(world.name),
-    worldIntro: normalizeText((world as any).globalBackground || world.intro),
+    worldName: normalizeText(w.name),
+    worldGlobalBackground: normalizeText(wSettings.globalBackground || w.globalBackground || w.intro),
     playerRole: world.playerRole,
     narratorRole: world.narratorRole,
     settings,

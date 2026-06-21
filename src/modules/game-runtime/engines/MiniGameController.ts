@@ -934,10 +934,12 @@ function buildMiniGameRecentDialogue(ctx: MiniGameControllerInput): JsonRecord[]
  * - 将世界介绍、章节内容和记忆摘要发给模型；
  * - 让角色发言贴合当前世界观和章节环境。
  */
-function buildMiniGameGlobalContext(ctx: MiniGameControllerInput): JsonRecord {
+// world 可能是直接来自数据库的原始行，settings 可能是字符串
+  const w = (ctx.world || {}) as Record<string, any>;
+  const wSettings = typeof w.settings === "string" ? parseJsonSafe(w.settings, {}) : (w.settings || {});
   return {
-    worldName: scalarText(ctx.world?.name || ctx.world?.title || ctx.world?.worldName),
-    worldIntro: limitText(ctx.world?.globalBackground || ctx.world?.intro || ctx.world?.description || ctx.world?.worldIntro, 1200),
+    worldName: scalarText(w.name || w.title || w.worldName),
+    worldGlobalBackground: limitText(wSettings.globalBackground || w.globalBackground || w.intro || w.description || w.worldGlobalBackground, 1200),
     chapterTitle: scalarText(ctx.chapter?.title || ctx.chapter?.chapterTitle),
     chapterContent: limitText(ctx.chapter?.content, 1600),
     memorySummary: limitText(ctx.state.memorySummary, 900),

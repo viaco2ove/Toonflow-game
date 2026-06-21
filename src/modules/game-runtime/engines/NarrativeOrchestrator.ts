@@ -159,7 +159,7 @@ export interface MemoryManagerResult {
 
 type OrchestratorPromptPayload = {
   worldName: string;
-  worldIntro: string;
+  worldGlobalBackground: string;
   chapterTitle: string;
   chapterDirective: string;
   chapterUserTurns: string;
@@ -197,7 +197,7 @@ type OrchestratorPromptPayload = {
 
 type SpeakerPromptPayload = {
   worldName: string;
-  worldIntro: string;
+  worldGlobalBackground: string;
   chapterTitle: string;
   chapterContentHint?: string;
   chapterEndingConditionHint?: string;
@@ -563,7 +563,7 @@ function shortText(input: unknown, limit = 120): string {
 
 /**
  * 解析"世界全局背景"字段。
- * 优先级：world.globalBackground > world.intro > world.background
+ * 优先级：world.settings.globalBackground > world.globalBackground > world.intro > world.background
  * 说明：
  *   - world.intro 对应前端"故事简介"（短描述）
  *   - world.globalBackground 对应前端"全局背景"（长描述，含等级体系、世界规则等）
@@ -572,7 +572,8 @@ function shortText(input: unknown, limit = 120): string {
 function resolveWorldGlobalBackground(world: any): string {
   if (!world || typeof world !== "object") return "";
   const w = world as Record<string, any>;
-  return String(w.globalBackground || w.intro || w.background || "").trim();
+  const wSettings = typeof w.settings === "string" ? parseJsonSafe(w.settings, {}) : (w.settings || {});
+  return String(wSettings.globalBackground || w.globalBackground || w.intro || w.background || "").trim();
 }
 
 // 将对象或数组压缩成短摘要，便于塞进 prompt。
@@ -1558,7 +1559,7 @@ function buildOrchestratorPromptStats(payload: OrchestratorPromptPayload, compac
   const orchestratorCurrentEventIndexLine = payload.currentEventIndex != null ? `index:${payload.currentEventIndex}` : "";
   const orchestratorWorldContent = [
     payload.worldName ? `名称:${payload.worldName}` : "",
-    payload.worldIntro ? `简介:${payload.worldIntro}` : "",
+    payload.worldGlobalBackground ? `简介:${payload.worldGlobalBackground}` : "",
   ].filter(Boolean).join("\n") || "无";
   const orchestratorChapterContent = [
     payload.chapterTitle ? `标题:${payload.chapterTitle}` : "",
@@ -1624,7 +1625,7 @@ function buildSpeakerPromptStats(payload: SpeakerPromptPayload, compactMode: boo
   ].filter(Boolean).join("\n") || "无";
   const speakerWorldContent = [
     payload.worldName ? `名称:${payload.worldName}` : "",
-    payload.worldIntro ? `简介:${payload.worldIntro}` : "",
+    payload.worldGlobalBackground ? `简介:${payload.worldGlobalBackground}` : "",
   ].filter(Boolean).join("\n") || "无";
   const speakerChapterContent = [
     payload.chapterTitle ? `标题:${payload.chapterTitle}` : "",
@@ -2101,7 +2102,7 @@ function buildOrchestratorInputSnapshot(payload: OrchestratorPromptPayload, comp
   const snapshot: JsonRecord = {
     world: {
       name: payload.worldName || "未命名世界",
-      intro: payload.worldIntro || "",
+      intro: payload.worldGlobalBackground || "",
     },
     chapter: {
       title: payload.chapterTitle || "未命名章节",
@@ -2213,12 +2214,12 @@ function buildSpeakerNextEventLines(payload: {
 // 构造角色发言提示词里的世界区块，避免主函数里堆叠基础元信息。
 function buildSpeakerWorldLines(payload: {
   worldName: string;
-  worldIntro: string;
+  worldGlobalBackground: string;
 }): string[] {
   return [
     "[世界]",
     `名称: ${payload.worldName || "未命名世界"}`,
-    payload.worldIntro ? `简介: ${payload.worldIntro}` : "",
+    payload.worldGlobalBackground ? `简介: ${payload.worldGlobalBackground}` : "",
   ];
 }
 
@@ -2339,13 +2340,13 @@ function buildCompactMemoryOutputExampleLines(): string[] {
 // 构造 full 记忆管理提示词的世界与章节区块，减少主函数里的基础上下文拼接。
 function buildMemoryWorldChapterLines(payload: {
   worldName: string;
-  worldIntro: string;
+  worldGlobalBackground: string;
   chapterTitle: string;
 }): string[] {
   return [
     "[世界]",
     `名称: ${payload.worldName || "未命名世界"}`,
-    payload.worldIntro ? `简介: ${payload.worldIntro}` : "",
+    payload.worldGlobalBackground ? `简介: ${payload.worldGlobalBackground}` : "",
     "",
     "[章节]",
     `标题: ${payload.chapterTitle || "未命名章节"}`,
@@ -2437,7 +2438,7 @@ function buildMemorySystemPrompt(promptFromDb: unknown): string {
 // [原始全局背景] 和 [现在全局背景] 用于让角色发言模型区分世界观设定的初始状态和当前演变状态。
 function buildSpeakerUserPrompt(payload: {
   worldName: string;
-  worldIntro: string;
+  worldGlobalBackground: string;
   chapterTitle: string;
   chapterContentHint?: string;
   chapterEndingConditionHint?: string;
@@ -2482,8 +2483,8 @@ function buildSpeakerUserPrompt(payload: {
 
   if (DebugLogUtil.isDebugLogEnabled()) {
     console.log("[story:memory:runtime] buildSpeakerUserPrompt", JSON.stringify({
-      worldIntro: payload.worldIntro || "无",
-      currWorldIntro: payload.worldIntro || "无",
+      worldGlobalBackground: payload.worldGlobalBackground || "无",
+      currWorldGlobalBackground: payload.worldGlobalBackground || "无",
       hasTaskContext: !!payload.taskContext,
     }));
   }
@@ -2491,10 +2492,10 @@ function buildSpeakerUserPrompt(payload: {
     ...worldLines,
     "",
     "[原始全局背景]",
-    payload.worldIntro || "无",
+    payload.worldGlobalBackground || "无",
     "",
     "[现在全局背景]",
-    payload.worldIntro || "无",
+    payload.worldGlobalBackground || "无",
     "",
     ...chapterLines,
     "",
@@ -2633,7 +2634,7 @@ function buildTaskContextLines(task: TaskContextPayload): string[] {
 // [原始全局背景] 和 [现在全局背景] 用于让记忆管理模型区分世界观设定的初始状态和当前演变状态。
 function buildMemoryUserPrompt(payload: {
   worldName: string;
-  worldIntro: string;
+  worldGlobalBackground: string;
   chapterTitle: string;
   currentEventIndex: number;
   currentEventKind: string;
@@ -2656,8 +2657,8 @@ function buildMemoryUserPrompt(payload: {
     const outputExampleLines = buildCompactMemoryOutputExampleLines();
     if (DebugLogUtil.isDebugLogEnabled()) {
       console.log("[story:memory:runtime] buildSpeakerUserPrompt", JSON.stringify({
-        worldIntro: payload.worldIntro || "无",
-        currWorldIntro: payload.worldIntro || "无",
+        worldGlobalBackground: payload.worldGlobalBackground || "无",
+        currWorldGlobalBackground: payload.worldGlobalBackground || "无",
       }));
     }
     return [
@@ -2665,10 +2666,10 @@ function buildMemoryUserPrompt(payload: {
       `名称: ${payload.worldName || "未命名世界"}`,
       "",
       "[原始全局背景]",
-      payload.worldIntro || "无",
+      payload.worldGlobalBackground || "无",
       "",
       "[现在全局背景]",
-      payload.worldIntro || "无",
+      payload.worldGlobalBackground || "无",
       "",
       "[章节]",
       `标题: ${payload.chapterTitle || "未命名章节"}`,
@@ -2705,18 +2706,18 @@ function buildMemoryUserPrompt(payload: {
 
   if (DebugLogUtil.isDebugLogEnabled()) {
     console.log("[story:memory:runtime] buildSpeakerUserPrompt", JSON.stringify({
-      worldIntro: payload.worldIntro || "无",
-      currWorldIntro: payload.worldIntro || "无",
+      worldGlobalBackground: payload.worldGlobalBackground || "无",
+      currWorldGlobalBackground: payload.worldGlobalBackground || "无",
     }));
   }
   return [
     ...worldChapterLines,
     "",
     "[原始全局背景]",
-    payload.worldIntro || "无",
+    payload.worldGlobalBackground || "无",
     "",
     "[现在全局背景]",
-    payload.worldIntro || "无",
+    payload.worldGlobalBackground || "无",
     "",
     ...currentEventLines,
     "",
@@ -3612,7 +3613,7 @@ function buildOrchestratorPromptPayload(input: {
   // 目的就是让模型只盯住当前事件，不要被完整大纲带偏。
   const payload: OrchestratorPromptPayload = {
     worldName: normalizeScalarText(input.world?.name),
-    worldIntro: shortText(resolveWorldGlobalBackground(input.world), input.compactMode ? 600 : 1200),
+    worldGlobalBackground: shortText(resolveWorldGlobalBackground(input.world), input.compactMode ? 600 : 1200),
     chapterTitle: input.currentChapter.title,
     chapterDirective: shouldSuppressCompletedGuide
       ? ""
@@ -4012,7 +4013,7 @@ export async function runStorySpeakerContent(input: {
   };
   const speakerSummaryLimit = useFastSpeakerPrompt ? 56 : (compactMode ? 72 : 96);
   const speakerFactsLimit = useFastSpeakerPrompt ? 2 : (compactMode ? 3 : 4);
-  const speakerWorldIntroLimit = compactMode ? 48 : 72;
+  const speakerWorldGlobalBackgroundLimit = compactMode ? 48 : 72;
   const speakerMotiveLimit = useFastSpeakerPrompt ? 64 : (compactMode ? 80 : 120);
   const speakerStoryStateLimit = compactMode ? 160 : 260;
   const speakerNextEventFactsLimit = compactMode ? 2 : 3;
@@ -4076,7 +4077,7 @@ export async function runStorySpeakerContent(input: {
     : promptEventFacts;
   const payload: SpeakerPromptPayload = {
     worldName: normalizeScalarText(input.world?.name),
-    worldIntro: useFastSpeakerPrompt ? "" : shortText(resolveWorldGlobalBackground(input.world), speakerWorldIntroLimit),
+    worldGlobalBackground: useFastSpeakerPrompt ? "" : shortText(resolveWorldGlobalBackground(input.world), speakerWorldGlobalBackgroundLimit),
     chapterTitle: currentChapter.title,
     chapterContentHint,
     chapterEndingConditionHint,
@@ -4649,7 +4650,7 @@ export async function runStoryMemoryManager(input: {
     worldName: normalizeScalarText(input.world?.name),
     // 记忆管理同样需要看到世界级背景，否则它只能根据局部章节和最近对话压缩记忆，
     // 很容易漏掉“当前事件为何重要”以及长期标签该如何贴合世界设定。
-    worldIntro: shortText(resolveWorldGlobalBackground(input.world), compactMode ? 2400 : 4800),
+    worldGlobalBackground: shortText(resolveWorldGlobalBackground(input.world), compactMode ? 2400 : 4800),
     chapterTitle: normalizeScalarText(input.chapter?.title),
     ...buildPromptEventContextTextPayload(currentEvent, compactMode),
     eventDeltaText: buildMemoryEventDeltaText(memoryInputs.eventDeltaMessages, compactMode),
