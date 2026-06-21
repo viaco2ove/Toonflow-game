@@ -1021,7 +1021,7 @@ async function generateFreeChapterTaskBlueprintByAi(input: {
   const playerCard = parseJsonSafe<JsonRecord>(input.state?.player?.parameterCardJson, {});
   const prompt = JSON.stringify({
     worldName: scalarText(input.world?.name),
-    worldIntro: scalarText(input.world?.intro),
+    worldIntro: scalarText(input.world?.globalBackground || input.world?.intro),
     chapterTitle: scalarText(input.chapter?.title),
     chapterDirective: scalarText(input.chapter?.content),
     memorySummary: scalarText(input.state?.memorySummary),

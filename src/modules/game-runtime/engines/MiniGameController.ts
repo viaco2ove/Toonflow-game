@@ -937,7 +937,7 @@ function buildMiniGameRecentDialogue(ctx: MiniGameControllerInput): JsonRecord[]
 function buildMiniGameGlobalContext(ctx: MiniGameControllerInput): JsonRecord {
   return {
     worldName: scalarText(ctx.world?.name || ctx.world?.title || ctx.world?.worldName),
-    worldIntro: limitText(ctx.world?.intro || ctx.world?.description || ctx.world?.worldIntro, 1200),
+    worldIntro: limitText(ctx.world?.globalBackground || ctx.world?.intro || ctx.world?.description || ctx.world?.worldIntro, 1200),
     chapterTitle: scalarText(ctx.chapter?.title || ctx.chapter?.chapterTitle),
     chapterContent: limitText(ctx.chapter?.content, 1600),
     memorySummary: limitText(ctx.state.memorySummary, 900),

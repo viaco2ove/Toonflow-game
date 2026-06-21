@@ -295,9 +295,11 @@ function buildChapterJudgeInputSnapshot({
         .filter((item) => item.content)
     : [];
 
-  // 获取故事全局背景：优先从 world.intro 读取，state 的 worldIntro/globalBackground 作为兜底
+  // 获取故事全局背景：优先 world.globalBackground（前端"全局背景"长描述），
+  // 然后 world.intro（短简介），最后 state 的 worldIntro / globalBackground 作为兜底
   const worldIntro = normalizeScalarText(
-    world?.intro
+    world?.globalBackground
+    || world?.intro
     || state?.worldIntro
     || state?.globalBackground
     || ""

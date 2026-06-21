@@ -1295,9 +1295,27 @@ async function tryBuildTaskModePlan(input: {
   const memoryDigest = readStableMemoryEventDigest(input.state);
   const npcList = collectTaskNpcList(input.world, input.state);
   const npcCards = npcList.map(n => `- ${n.name}（${n.roleType || "npc"}）：${n.card || "无描述"}`).join("\n") || "（无可用NPC）";
-  // 故事初始全局背景：world.intro（与记忆管理器保持一致）
-  const worldIntro = String(input.world?.intro || "").trim();
-  const originalGlobalBg = worldIntro || "（无）";
+  // 故事初始全局背景：优先 globalBackground（前端"全局背景"长描述），回退到 intro / background
+  // normalizeWorldOutput 把 settings 解析成对象后，globalBackground 实际在 settings.globalBackground
+  const worldRecord = (input.world || {}) as Record<string, any>;
+  if (DebugLogUtil.isDebugLogEnabled()) {
+    console.log("[story:session:runtime] settings:", JSON.stringify({"settings":worldRecord.settings}));
+    console.log("[story:session:runtime] globalBackground?:", JSON.stringify({"globalBackground":worldRecord.settings?.globalBackground}));
+        // 先把数据库字符串转成对象，兜底空对象防止报错
+    const settingsObj = parseJsonSafe(worldRecord.settings, {});
+    console.log("[story:session:runtime] raw settings string:", worldRecord.settings);
+    console.log("[story:session:runtime] parsed settings obj:", JSON.stringify(settingsObj));
+    console.log("[story:session:runtime] parsed globalBackground?:", JSON.stringify(settingsObj.globalBackground));
+  }
+  const settingsObj = parseJsonSafe(worldRecord.settings, {});
+  const worldGlobalBackground = String(
+     settingsObj.globalBackground
+    || worldRecord.globalBackground  // 兼容旧路径（如果曾直接挂载）
+    || worldRecord.intro
+    || worldRecord.background
+    || ""
+  ).trim();
+  const originalGlobalBg = worldGlobalBackground || "（无）";
   // 故事动态全局背景：当前的 stableMemorySummary + 最新事实
   const memorySummary = String(memoryDigest.stableMemorySummary || "").trim();
   const dynamicFacts = memoryDigest.stableMemoryFacts.slice(0, 6).join("；");

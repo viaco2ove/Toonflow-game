@@ -338,7 +338,7 @@ export async function ensureWorldRolesWithAiParameterCards(input: {
   const enriched = await enrichWorldRolesWithAiParameterCards({
     userId: Number(input.userId || 0),
     worldName: normalizeText(world.name),
-    worldIntro: normalizeText(world.intro),
+    worldIntro: normalizeText((world as any).globalBackground || world.intro),
     playerRole: world.playerRole,
     narratorRole: world.narratorRole,
     settings,
