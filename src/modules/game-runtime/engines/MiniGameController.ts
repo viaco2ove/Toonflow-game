@@ -934,7 +934,8 @@ function buildMiniGameRecentDialogue(ctx: MiniGameControllerInput): JsonRecord[]
  * - 将世界介绍、章节内容和记忆摘要发给模型；
  * - 让角色发言贴合当前世界观和章节环境。
  */
-// world 可能是直接来自数据库的原始行，settings 可能是字符串
+function buildMiniGameGlobalContext(ctx: MiniGameControllerInput): JsonRecord {
+  // world 可能是直接来自数据库的原始行，settings 可能是字符串
   const w = (ctx.world || {}) as Record<string, any>;
   const wSettings = typeof w.settings === "string" ? parseJsonSafe(w.settings, {}) : (w.settings || {});
   return {

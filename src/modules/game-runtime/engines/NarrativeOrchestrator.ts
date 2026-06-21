@@ -2440,12 +2440,10 @@ function buildMemorySystemPrompt(promptFromDb: unknown): string {
 }
 
 // 构造记忆管理器维护的动态全局背景。
-// 由 memorySummary + memoryFacts 组成，反映世界当前演变状态。
+// state.memorySummary 是记忆管理器 AI 通过 applyMemoryResultToState 写入的最新 summary，
+// 反映世界当前演变状态。这里只读 summary，不再混入 memoryFacts，避免和"事实列表"重复。
 function buildDynamicWorldBackground(state: JsonRecord): string {
-  const summary = String(state?.memorySummary || "").trim();
-  const facts = Array.isArray(state?.memoryFacts) ? state.memoryFacts : [];
-  const factsText = facts.slice(0, 6).join("；");
-  return [summary, factsText].filter(Boolean).join("；");
+  return String(state?.memorySummary || "").trim();
 }
 
 // 把当前说话人和上下文拼成角色发言提示词。
