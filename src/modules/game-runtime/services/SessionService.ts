@@ -1296,21 +1296,14 @@ async function tryBuildTaskModePlan(input: {
   const npcList = collectTaskNpcList(input.world, input.state);
   const npcCards = npcList.map(n => `- ${n.name}（${n.roleType || "npc"}）：${n.card || "无描述"}`).join("\n") || "（无可用NPC）";
   // 故事初始全局背景：优先 globalBackground（前端"全局背景"长描述），回退到 intro / background
-  // normalizeWorldOutput 把 settings 解析成对象后，globalBackground 实际在 settings.globalBackground
+  // settings 可能是字符串（直接从数据库来的旧数据）或已解析的对象
   const worldRecord = (input.world || {}) as Record<string, any>;
-  if (DebugLogUtil.isDebugLogEnabled()) {
-    console.log("[story:session:runtime] settings:", JSON.stringify({"settings":worldRecord.settings}));
-    console.log("[story:session:runtime] globalBackground?:", JSON.stringify({"globalBackground":worldRecord.settings?.globalBackground}));
-        // 先把数据库字符串转成对象，兜底空对象防止报错
-    const settingsObj = parseJsonSafe(worldRecord.settings, {});
-    console.log("[story:session:runtime] raw settings string:", worldRecord.settings);
-    console.log("[story:session:runtime] parsed settings obj:", JSON.stringify(settingsObj));
-    console.log("[story:session:runtime] parsed globalBackground?:", JSON.stringify(settingsObj.globalBackground));
-  }
-  const settingsObj = parseJsonSafe(worldRecord.settings, {});
+  const settingsObj = typeof worldRecord.settings === "string"
+    ? parseJsonSafe(worldRecord.settings, {})
+    : (worldRecord.settings || {});
   const worldGlobalBackground = String(
-     settingsObj.globalBackground
-    || worldRecord.globalBackground  // 兼容旧路径（如果曾直接挂载）
+    settingsObj.globalBackground
+    || worldRecord.globalBackground
     || worldRecord.intro
     || worldRecord.background
     || ""
@@ -2931,8 +2924,12 @@ export async function generatePlayTips(sessionIdInput: string): Promise<{ tips: 
     : "（无可用 NPC）";
 
   // 全局背景：优先 globalBackground，回退 intro / background
+  // world 直接从数据库加载（loadSessionWorld），settings 可能是字符串或对象
   const w = (world || {}) as Record<string, any>;
-  const globalBackground = String(w.globalBackground || w.intro || w.background || "").trim();
+  const wSettings = typeof w.settings === "string" ? parseJsonSafe(w.settings, {}) : (w.settings || {});
+  const globalBackground = String(
+    wSettings.globalBackground || w.globalBackground || w.intro || w.background || ""
+  ).trim();
 
   // 玩家身份卡
   const player = (state.player || {}) as Record<string, any>;
