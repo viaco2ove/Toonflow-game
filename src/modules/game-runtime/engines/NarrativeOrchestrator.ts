@@ -2224,6 +2224,7 @@ function buildSpeakerWorldLines(payload: {
   return [
     "[世界]",
     `名称: ${payload.worldName || "未命名世界"}`,
+   payload.worldIntro ? `简介: ${payload.worldIntro}` : "",
     payload.worldGlobalBackground ? `全局背景: ${payload.worldGlobalBackground}` : "",
   ];
 }
@@ -2351,6 +2352,7 @@ function buildMemoryWorldChapterLines(payload: {
   return [
     "[世界]",
     `名称: ${payload.worldName || "未命名世界"}`,
+      payload.worldIntro ? `简介: ${payload.worldIntro}` : "",
     payload.worldGlobalBackground ? `全局背景: ${payload.worldGlobalBackground}` : "",
     "",
     "[章节]",
