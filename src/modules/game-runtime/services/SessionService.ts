@@ -1241,7 +1241,7 @@ async function tryBuildTaskModePlan(input: {
   const memoryDigest = readStableMemoryEventDigest(input.state);
   const npcList = collectTaskNpcList(input.world, input.state);
   const npcCards = npcList.map(n => `- ${n.name}（${n.roleType || "npc"}）：${n.card || "无描述"}`).join("\n") || "（无可用NPC）";
-  // 故事初始全局背景：优先 settings.globalBackground（前端"全局背景"长描述），回退到 intro / background
+  // 故事初始全局背景：优先 settings.globalBackground（前端"全局背景"长描述），回退到  background
   // settings 可能是字符串（直接从数据库来的旧数据）或已解析的对象
   const worldRecord = (input.world || {}) as Record<string, any>;
   const settingsObj = typeof worldRecord.settings === "string"
