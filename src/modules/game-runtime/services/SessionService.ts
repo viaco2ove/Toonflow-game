@@ -1235,6 +1235,30 @@ async function tryBuildTaskModePlan(input: {
     content: String((m as any).content || ""),
   }));
 
+  // 提前准备 NPC 列表 + 原始/动态全局背景
+  // 为什么提前：早期"用户主动放弃"分支也会调 evaluateTaskCompletion，
+  // 之前那里只传了 userId 后就没传上下文，AI 缺少世界观和 NPC 提示，输出质量很差。
+  const memoryDigest = readStableMemoryEventDigest(input.state);
+  const npcList = collectTaskNpcList(input.world, input.state);
+  const npcCards = npcList.map(n => `- ${n.name}（${n.roleType || "npc"}）：${n.card || "无描述"}`).join("\n") || "（无可用NPC）";
+  // 故事初始全局背景：优先 settings.globalBackground（前端"全局背景"长描述），回退到 intro / background
+  // settings 可能是字符串（直接从数据库来的旧数据）或已解析的对象
+  const worldRecord = (input.world || {}) as Record<string, any>;
+  const settingsObj = typeof worldRecord.settings === "string"
+    ? parseJsonSafe(worldRecord.settings, {})
+    : (worldRecord.settings || {});
+  const worldGlobalBackground = String(
+    settingsObj.globalBackground
+    || worldRecord.globalBackground
+    || worldRecord.intro
+    || worldRecord.background
+    || ""
+  ).trim();
+  const originalGlobalBg = worldGlobalBackground || "（无）";
+  // 故事动态全局背景：来自记忆管理器维护的 memorySummary
+  const memorySummary = String(memoryDigest.stableMemorySummary || "").trim();
+  const dynamicGlobalBg = memorySummary || "（无动态事实）";
+
   // 1. Intent
   const intentResult = await analyzeTaskIntent({
     userId: input.userId,
@@ -1251,8 +1275,12 @@ async function tryBuildTaskModePlan(input: {
       taskState,
       dialogue,
       playerMessage,
-      intentResult.reasoning || "用户主动放弃",
+      // progressLevel：用户主动放弃没有真正的进展等级，传 "abandon" 作为占位标记
+      "abandon",
       input.userId,
+      npcCards,
+      originalGlobalBg,
+      dynamicGlobalBg,
     );
     console.log("[task-mode-plan] 任务放弃，生成完成评估");
     return buildTaskNarrativePlan({
@@ -1290,30 +1318,7 @@ async function tryBuildTaskModePlan(input: {
     }
   }
 
-  // 2. Progress
-  // 收集三个额外上下文字段
-  const memoryDigest = readStableMemoryEventDigest(input.state);
-  const npcList = collectTaskNpcList(input.world, input.state);
-  const npcCards = npcList.map(n => `- ${n.name}（${n.roleType || "npc"}）：${n.card || "无描述"}`).join("\n") || "（无可用NPC）";
-  // 故事初始全局背景：优先 globalBackground（前端"全局背景"长描述），回退到 intro / background
-  // settings 可能是字符串（直接从数据库来的旧数据）或已解析的对象
-  const worldRecord = (input.world || {}) as Record<string, any>;
-  const settingsObj = typeof worldRecord.settings === "string"
-    ? parseJsonSafe(worldRecord.settings, {})
-    : (worldRecord.settings || {});
-  const worldGlobalBackground = String(
-    settingsObj.globalBackground
-    || worldRecord.globalBackground
-    || worldRecord.intro
-    || worldRecord.background
-    || ""
-  ).trim();
-  const originalGlobalBg = worldGlobalBackground || "（无）";
-  // 故事动态全局背景：当前的 stableMemorySummary + 最新事实
-  const memorySummary = String(memoryDigest.stableMemorySummary || "").trim();
-  const dynamicFacts = memoryDigest.stableMemoryFacts.slice(0, 6).join("；");
-  const dynamicGlobalBg = [memorySummary, dynamicFacts].filter(Boolean).join("\n") || "（无动态事实）";
-
+  // 2. Progress（全局背景/NPC 上下文在前面已准备）
   console.log("[task-mode-plan] context_summary", JSON.stringify({
     npcCount: npcList.length,
     npcCardsChars: npcCards.length,
