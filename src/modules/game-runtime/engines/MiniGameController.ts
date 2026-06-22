@@ -940,6 +940,7 @@ function buildMiniGameGlobalContext(ctx: MiniGameControllerInput): JsonRecord {
   const wSettings = typeof w.settings === "string" ? parseJsonSafe(w.settings, {}) : (w.settings || {});
   return {
     worldName: scalarText(w.name || w.title || w.worldName),
+    worldIntro: w.intro || "",
     worldGlobalBackground: limitText(wSettings.globalBackground || w.globalBackground || w.intro || w.description || w.worldGlobalBackground, 1200),
     chapterTitle: scalarText(ctx.chapter?.title || ctx.chapter?.chapterTitle),
     chapterContent: limitText(ctx.chapter?.content, 1600),

@@ -342,6 +342,7 @@ export async function ensureWorldRolesWithAiParameterCards(input: {
   const enriched = await enrichWorldRolesWithAiParameterCards({
     userId: Number(input.userId || 0),
     worldName: normalizeText(w.name),
+    worldIntro: world.intro || "",
     worldGlobalBackground: normalizeText(wSettings.globalBackground || w.globalBackground || w.intro),
     playerRole: world.playerRole,
     narratorRole: world.narratorRole,

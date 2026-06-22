@@ -1250,7 +1250,6 @@ async function tryBuildTaskModePlan(input: {
   const worldGlobalBackground = String(
     settingsObj.globalBackground
     || worldRecord.globalBackground
-    || worldRecord.intro
     || worldRecord.background
     || ""
   ).trim();

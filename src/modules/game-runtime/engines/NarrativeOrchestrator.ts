@@ -575,7 +575,7 @@ function resolveWorldGlobalBackground(world: any): string {
   if (!world || typeof world !== "object") return "";
   const w = world as Record<string, any>;
   const wSettings = typeof w.settings === "string" ? parseJsonSafe(w.settings, {}) : (w.settings || {});
-  return String(wSettings.globalBackground || w.globalBackground || w.intro || w.background || "").trim();
+  return String(wSettings.globalBackground || w.globalBackground || w.background || "").trim();
 }
 
 // 将对象或数组压缩成短摘要，便于塞进 prompt。

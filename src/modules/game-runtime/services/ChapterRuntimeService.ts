@@ -302,7 +302,6 @@ function buildChapterJudgeInputSnapshot({
   const worldGlobalBackground = normalizeScalarText(
     wSettings.globalBackground
     || w.globalBackground
-    || w.intro
     || state?.worldGlobalBackground
     || state?.globalBackground
     || ""

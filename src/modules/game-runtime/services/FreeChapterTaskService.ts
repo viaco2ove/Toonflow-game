@@ -1024,7 +1024,8 @@ async function generateFreeChapterTaskBlueprintByAi(input: {
   const wSettings = typeof w.settings === "string" ? parseJsonSafe(w.settings, {}) : (w.settings || {});
   const prompt = JSON.stringify({
     worldName: scalarText(w.name),
-    worldGlobalBackground: scalarText(wSettings.globalBackground || w.globalBackground || w.intro),
+    worldIntro: scalarText( w.intro),
+    worldGlobalBackground: scalarText(wSettings.globalBackground || w.globalBackground ),
     chapterTitle: scalarText(input.chapter?.title),
     chapterDirective: scalarText(input.chapter?.content),
     memorySummary: scalarText(input.state?.memorySummary),

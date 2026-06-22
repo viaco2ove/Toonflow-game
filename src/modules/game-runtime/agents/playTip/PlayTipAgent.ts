@@ -82,7 +82,8 @@ export async function generatePlayerTips(ctx: PlayTipContext): Promise<PlayTipRe
 
   const userPrompt = `世界名：${ctx.worldName || "未命名世界"}
 章节标题：${ctx.chapterTitle || "未命名章节"}
-
+故事简介：
+${ctx.intro || "（无）"}
 故事全局背景：
 ${ctx.globalBackground || "（无）"}
 
