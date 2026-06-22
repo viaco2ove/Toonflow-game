@@ -1022,10 +1022,13 @@ async function generateFreeChapterTaskBlueprintByAi(input: {
   // world 可能是直接来自数据库的原始行，settings 可能是字符串
   const w = (input.world || {}) as Record<string, any>;
   const wSettings = typeof w.settings === "string" ? parseJsonSafe(w.settings, {}) : (w.settings || {});
+  const dynamicGlobalBackground = scalarText(input.state?.memorySummary);
   const prompt = JSON.stringify({
     worldName: scalarText(w.name),
     worldIntro: scalarText( w.intro),
     worldGlobalBackground: scalarText(wSettings.globalBackground || w.globalBackground ),
+    // 统一字段：记忆管理器维护的动态背景（与 NarrativeOrchestrator buildDynamicWorldBackground 同源）
+    dynamicWorldGlobalBackground: dynamicGlobalBackground,
     chapterTitle: scalarText(input.chapter?.title),
     chapterDirective: scalarText(input.chapter?.content),
     memorySummary: scalarText(input.state?.memorySummary),

@@ -51,7 +51,10 @@ export interface PlayTipContext {
   userId: number;
   worldName: string;
   chapterTitle: string;
+  /** 世界初始全局背景（来自 t_storyWorld.settings.globalBackground） */
   globalBackground: string;
+  /** 记忆管理器维护的动态全局背景（state.memorySummary） */
+  dynamicGlobalBackground?: string;
   taskTitle?: string;
   taskObjective?: string;
   taskProcess?: string;
@@ -86,6 +89,9 @@ export async function generatePlayerTips(ctx: PlayTipContext): Promise<PlayTipRe
 ${ctx.intro || "（无）"}
 故事全局背景：
 ${ctx.globalBackground || "（无）"}
+
+故事当前动态背景（记忆管理器维护）：
+${ctx.dynamicGlobalBackground || "（无）"}
 
 当前任务：
 ${ctx.taskTitle ? `- 标题：${ctx.taskTitle}` : "- （当前没有进行中的任务）"}

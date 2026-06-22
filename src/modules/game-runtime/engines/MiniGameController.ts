@@ -942,6 +942,8 @@ function buildMiniGameGlobalContext(ctx: MiniGameControllerInput): JsonRecord {
     worldName: scalarText(w.name || w.title || w.worldName),
     worldIntro: w.intro || "",
     worldGlobalBackground: limitText(wSettings.globalBackground || w.globalBackground || w.intro || w.description || w.worldGlobalBackground, 1200),
+    // 统一字段：记忆管理器维护的动态背景
+    dynamicWorldGlobalBackground: limitText(ctx.state?.memorySummary || "", 1200),
     chapterTitle: scalarText(ctx.chapter?.title || ctx.chapter?.chapterTitle),
     chapterContent: limitText(ctx.chapter?.content, 1600),
     memorySummary: limitText(ctx.state.memorySummary, 900),

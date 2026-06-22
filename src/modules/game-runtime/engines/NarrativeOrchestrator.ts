@@ -160,6 +160,8 @@ export interface MemoryManagerResult {
 type OrchestratorPromptPayload = {
   worldName: string;
   worldGlobalBackground: string;
+  /** 记忆管理器维护的动态全局背景（state.memorySummary） */
+  dynamicWorldGlobalBackground?: string;
   chapterTitle: string;
   chapterDirective: string;
   chapterUserTurns: string;
@@ -1561,8 +1563,8 @@ function buildOrchestratorPromptStats(payload: OrchestratorPromptPayload, compac
   const orchestratorCurrentEventIndexLine = payload.currentEventIndex != null ? `index:${payload.currentEventIndex}` : "";
   const orchestratorWorldContent = [
     payload.worldName ? `名称:${payload.worldName}` : "",
-    payload.worldIntro ? `简介:${payload.worldIntro}` : "",
-    payload.worldGlobalBackground ? `全局背景:${payload.worldGlobalBackground}` : "",
+    payload.worldGlobalBackground ? `原始全局背景:${payload.worldGlobalBackground}` : "",
+    payload.dynamicWorldGlobalBackground ? `动态全局背景:${payload.dynamicWorldGlobalBackground}` : "",
   ].filter(Boolean).join("\n") || "无";
   const orchestratorChapterContent = [
     payload.chapterTitle ? `标题:${payload.chapterTitle}` : "",
@@ -1628,8 +1630,8 @@ function buildSpeakerPromptStats(payload: SpeakerPromptPayload, compactMode: boo
   ].filter(Boolean).join("\n") || "无";
   const speakerWorldContent = [
     payload.worldName ? `名称:${payload.worldName}` : "",
-    payload.worldIntro ? `简介:${payload.worldIntro}` : "",
-    payload.worldGlobalBackground ? `全局背景:${payload.worldGlobalBackground}` : "",
+    payload.worldGlobalBackground ? `原始全局背景:${payload.worldGlobalBackground}` : "",
+    payload.dynamicWorldGlobalBackground ? `动态全局背景:${payload.dynamicWorldGlobalBackground}` : "",
   ].filter(Boolean).join("\n") || "无";
   const speakerChapterContent = [
     payload.chapterTitle ? `标题:${payload.chapterTitle}` : "",
@@ -2106,8 +2108,8 @@ function buildOrchestratorInputSnapshot(payload: OrchestratorPromptPayload, comp
   const snapshot: JsonRecord = {
     world: {
       name: payload.worldName || "未命名世界",
-      intro: payload.worldintro || "",
       worldGlobalBackground: payload.worldGlobalBackground || "",
+      dynamicWorldGlobalBackground: payload.dynamicWorldGlobalBackground || "",
     },
     chapter: {
       title: payload.chapterTitle || "未命名章节",
@@ -2221,11 +2223,11 @@ function buildSpeakerWorldLines(payload: {
   worldName: string;
   worldGlobalBackground: string;
 }): string[] {
+  // 全局背景在外层用 [原始全局背景] / [动态全局背景] 两个标签独立输出，
+  // 这里只保留世界名称，避免和外层重复。
   return [
     "[世界]",
     `名称: ${payload.worldName || "未命名世界"}`,
-   payload.worldIntro ? `简介: ${payload.worldIntro}` : "",
-    payload.worldGlobalBackground ? `全局背景: ${payload.worldGlobalBackground}` : "",
   ];
 }
 
@@ -2349,11 +2351,11 @@ function buildMemoryWorldChapterLines(payload: {
   worldGlobalBackground: string;
   chapterTitle: string;
 }): string[] {
+  // 全局背景在外层用 [原始全局背景] / [动态全局背景] 两个标签独立输出，
+  // 这里只保留世界名称，避免和外层重复。
   return [
     "[世界]",
     `名称: ${payload.worldName || "未命名世界"}`,
-      payload.worldIntro ? `简介: ${payload.worldIntro}` : "",
-    payload.worldGlobalBackground ? `全局背景: ${payload.worldGlobalBackground}` : "",
     "",
     "[章节]",
     `标题: ${payload.chapterTitle || "未命名章节"}`,
@@ -3630,6 +3632,7 @@ function buildOrchestratorPromptPayload(input: {
   const payload: OrchestratorPromptPayload = {
     worldName: normalizeScalarText(input.world?.name),
     worldGlobalBackground: shortText(resolveWorldGlobalBackground(input.world), input.compactMode ? 600 : 1200),
+    dynamicWorldGlobalBackground: shortText(buildDynamicWorldBackground(input.state), input.compactMode ? 600 : 1200),
     chapterTitle: input.currentChapter.title,
     chapterDirective: shouldSuppressCompletedGuide
       ? ""
@@ -4029,7 +4032,10 @@ export async function runStorySpeakerContent(input: {
   };
   const speakerSummaryLimit = useFastSpeakerPrompt ? 56 : (compactMode ? 72 : 96);
   const speakerFactsLimit = useFastSpeakerPrompt ? 2 : (compactMode ? 3 : 4);
-  const speakerWorldGlobalBackgroundLimit = compactMode ? 48 : 72;
+  // 全局背景（含等级体系、世界规则等）是角色发言的关键设定，不能被裁太狠。
+  // 历史上为了省 token 给了 48-72，结果模型完全看不到世界观，按你的要求放宽。
+  const speakerWorldGlobalBackgroundLimit = useFastSpeakerPrompt ? 400 : (compactMode ? 800 : 1200);
+  const speakerDynamicWorldGlobalBackgroundLimit = useFastSpeakerPrompt ? 300 : (compactMode ? 600 : 1200);
   const speakerMotiveLimit = useFastSpeakerPrompt ? 64 : (compactMode ? 80 : 120);
   const speakerStoryStateLimit = compactMode ? 160 : 260;
   const speakerNextEventFactsLimit = compactMode ? 2 : 3;
@@ -4093,8 +4099,9 @@ export async function runStorySpeakerContent(input: {
     : promptEventFacts;
   const payload: SpeakerPromptPayload = {
     worldName: normalizeScalarText(input.world?.name),
-    worldGlobalBackground: useFastSpeakerPrompt ? "" : shortText(resolveWorldGlobalBackground(input.world), speakerWorldGlobalBackgroundLimit),
-    dynamicWorldGlobalBackground: shortText(buildDynamicWorldBackground(input.state), compactMode ? 600 : 1200),
+    // 全局背景所有模式都注入，区别只是长度限额（fast/compact/full）
+    worldGlobalBackground: shortText(resolveWorldGlobalBackground(input.world), speakerWorldGlobalBackgroundLimit),
+    dynamicWorldGlobalBackground: shortText(buildDynamicWorldBackground(input.state), speakerDynamicWorldGlobalBackgroundLimit),
     chapterTitle: currentChapter.title,
     chapterContentHint,
     chapterEndingConditionHint,

@@ -2943,11 +2943,14 @@ export async function generatePlayTips(sessionIdInput: string): Promise<{ tips: 
   const playerHandle = `@${String(player.name || "故事角色")}`;
 
   const { generatePlayerTips } = await import("@/modules/game-runtime/agents/playTip/PlayTipAgent");
+  // 动态背景：直接从 state.memorySummary 读取（与 buildDynamicWorldBackground 同源）
+  const dynamicGlobalBackground = String(state.memorySummary || "").trim() || undefined;
   const result = await generatePlayerTips({
     userId: currentUserId,
     worldName: String(w.name || "未命名世界"),
     chapterTitle: String(chapter?.title || state.chapterTitle || "未命名章节"),
     globalBackground,
+    dynamicGlobalBackground,
     taskTitle: taskTitle || undefined,
     taskObjective: taskObjective || undefined,
     taskProcess: taskProcess || undefined,
