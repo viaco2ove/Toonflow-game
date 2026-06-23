@@ -27,13 +27,15 @@ export default router.post(
     intro: z.string().optional().nullable(),
     coverPath: z.string().optional().nullable(),
     publishStatus: z.string().optional().nullable(),
+    /** 前端显式点击"存草稿"按钮时为 true，用于决定是否强制刷新角色参数卡 */
+    forceRefreshRoleCards: z.boolean().optional().nullable(),
     settings: z.any().optional().nullable(),
     playerRole: z.any().optional().nullable(),
     narratorRole: z.any().optional().nullable(),
   }),
   async (req, res) => {
     try {
-      const { worldId, projectId, name, intro, coverPath, publishStatus, settings, playerRole, narratorRole } = req.body;
+      const { worldId, projectId, name, intro, coverPath, publishStatus, forceRefreshRoleCards, settings, playerRole, narratorRole } = req.body;
       console.log("[saveWorld] playerRole.description:", playerRole?.description);
       const db = getGameDb();
       const now = nowTs();
@@ -108,7 +110,7 @@ export default router.post(
         });
         return res.status(200).send(success(publishedWorld, "故事已发布并完成预生成"));
       }
-      // 存草稿时强制刷新参数卡（角色编辑后需要重新生成含 roleType 的卡）；发布时 publishWorldSynchronously 会处理
+      // 前端显式"存草稿"按钮 → forceRefreshRoleCards=true → 强制刷新角色参数卡（含 roleType）
       void ensureWorldRolesWithAiParameterCards({
         userId: currentUserId,
         world: {
@@ -121,7 +123,7 @@ export default router.post(
           settings: normalizedSettings,
         },
         persist: true,
-        forceRefresh: true,
+        forceRefresh: forceRefreshRoleCards === true,
       }).catch((asyncErr) => {
         console.warn("[saveWorld] async role parameter card generation failed", {
           worldId: id,
