@@ -1973,7 +1973,8 @@ function logMemoryPromptStats(input: {
   }
   if (responseText) {
     console.log(`[story:memory:stats] response_chars=${responseText.length}`);
-    console.log(`[story:memory:stats] response_preview=${normalizePromptStatContent(responseText)}`);
+    console.log(`[story:memory:stats] response_preview responseText=${responseText}`);
+    console.log(`[story:memory:stats] response_preview normalizePromptStatContent=${normalizePromptStatContent(responseText)}`);
   }
   if (input.runtimeError) {
     console.log(`[story:memory:stats] request_status=fallback reason=${formatRuntimeErrorMessage(input.runtimeError)}`);
@@ -2341,6 +2342,7 @@ function buildCompactMemoryOutputExampleLines(): string[] {
           },
         },
       ],
+      dynamic_world_global_background:"新的动态全局背景"
     }, null, 2),
     "注意：patch 只允许这些字段：raw_setting, personality, appearance, voice, skills, items, equipment, other, gender, age, level, level_desc, exp, next_level_exp, hp, mp, money。",
     "没有变化就返回空对象 {} 或空数组 []。",
@@ -2401,6 +2403,7 @@ function buildFullMemoryOutputExampleLines(): string[] {
           },
         },
       ],
+      dynamic_world_global_background: "新的动态全局背景"
     }, null, 2),
     "只允许使用这些 patch 字段：raw_setting, personality, appearance, voice, skills, items, equipment, other, gender, age, level, level_desc, exp, next_level_exp, hp, mp, money。",
     "如果没有参数卡变化，player_card_patch 返回 {}，npc_card_patches 返回 []。",
@@ -4732,7 +4735,16 @@ export async function runStoryMemoryManager(input: {
       outputTokens: Number((result as any)?.usage?.outputTokens || 0),
       reasoningTokens: Number((result as any)?.usage?.outputTokenDetails?.reasoningTokens || (result as any)?.usage?.reasoningTokens || 0),
     };
+
+    //  返回 json 格式的控制实际函数是：
+    //  buildFullMemoryOutputExampleLines
+    //  buildCompactMemoryOutputExampleLines
     rawText = unwrapModelText((result as any)?.text || "");
+
+    if (DebugLogUtil.isDebugLogEnabled()) {
+      // console.log("[story:memory:runtime] result：", JSON.stringify(result));
+      console.log("[story:memory:runtime] rawText: ", JSON.stringify(rawText));
+    }
     const objectLike = parseJsonSafe<Record<string, unknown>>(rawText, {});
     const hasObjectLike = hasRecordKeys(asRecord(objectLike));
     const fieldMap = parseFieldMap(rawText);

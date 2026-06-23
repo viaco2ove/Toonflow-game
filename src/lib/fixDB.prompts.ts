@@ -1193,7 +1193,12 @@ const _PROMPT_STORY_SPEAKER = `你是角色发言器。根据当前事件，当�
 钓鱼 随机经验值（小于用户等级*50）
 完成任务 随机经验值（小于用户等级*50）`;
 
-/** story-memory 长期记忆&角色参数卡管理专用提示词 */
+/**
+ * story-memory 长期记忆&角色参数卡管理专用提示词
+ *  返回 json 格式的控制实际函数是：
+ *  buildFullMemoryOutputExampleLines
+ *  buildCompactMemoryOutputExampleLines
+ */
 const _PROMPT_STORY_MEMORY = `
 你是记忆管理器。
 你负责管理整个故事的长期记忆，不只更新剧情摘要，还要维护角色动态参数卡。
@@ -1212,6 +1217,12 @@ const _PROMPT_STORY_MEMORY = `
 - 装备穿戴、替换、损毁、附魔变化
 - 身份、阵营、人际关系、长期buff/debuff状态变更
 - 外貌、性格、人设、背景设定改动
+3. 特别注意
+- 时刻留意用户的等级和等级称号是否一致
+- 特别注意[新增对话(JSON数组)] 最后记录是用户发言
+如果包含@记忆管理 xxxx，@记忆管理器 xxx, 代表用户需要你特别注意要更新的内容
+例如： “@记忆管理 更新我的等级称号。” 那你就必须把 player_card_patch的level_desc字段更新为最新等级称号（参考【全局原始背景】里的等级称号对照信息）。
+
 
 # 二、输入参数释义
 输入内置四段固定上下文，分别为：
@@ -1267,7 +1278,7 @@ const _PROMPT_STORY_MEMORY = `
     - tags：字符串数组，剧情标签、角色标签、场景标签、状态标签，用于快速检索记忆
     - player_card_patch：对象，玩家角色参数更新补丁，无变更传空对象{}
     - npc_card_patches：对象，key为NPC唯一标识名，value为对应NPC参数补丁，无NPC变更传空对象{}
-    - dynamic_world_global_background: 字符串,动态全局背景描述。动态控制整个故事的世界观。
+    - dynamic_world_global_background: 字符串,动态全局背景描述。动态控制整个故事的世界观。 务必每次都返回这个字段值！
 
 3. 角色补丁（player_card_patch / npc_card_patches内单条补丁）仅允许使用以下字段，禁止新增自定义字段：
 raw_setting, personality, appearance, voice, skills, items, equipment, other, gender, age, level, level_desc, exp, next_level_exp, hp, mp, money
