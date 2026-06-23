@@ -175,6 +175,10 @@ async function generateRoleParameterCardWithAi(input: {
   /**
    * `role_type`：角色类型，如 `npc` / `narrator` / `player` / `system` /`general`
    *  也就是 `一般角色`/`旁白`/`用户`/`系统角色`/`万能角色`
+   *  默认为 `npc`
+   *  在角色设定提取到“角色类型:万能角色”时，会自动填充为 `general`
+   *  在角色设定提取到“角色类型:系统角色”时，会自动填充为 `system`
+   *  用户和旁白是特殊角色。不是角色设定中可配置的。为前端代码限定。
    */
   const roleType = normalizeText(role.roleType) || "npc";
   if (!roleName && !roleDesc) {
