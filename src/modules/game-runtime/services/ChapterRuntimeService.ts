@@ -481,6 +481,7 @@ async function evaluateChapterOutcomeByAi(input: EvaluateRuntimeOutcomeInput): P
     return fallback;
   }
  const start = Date.now();
+  /*story-chapter*/
   const prompt = await loadChapterJudgePrompt();
   if (!prompt) {
     buildChapterJudgeStats({

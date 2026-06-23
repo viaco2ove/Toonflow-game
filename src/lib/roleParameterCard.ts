@@ -172,6 +172,10 @@ async function generateRoleParameterCardWithAi(input: {
   const roleName = normalizeText(role.name);
   const roleDesc = normalizeText(role.description);
   const roleVoice = normalizeText(role.voice);
+  /**
+   * `role_type`：角色类型，如 `npc` / `narrator` / `player` / `system` /`general`
+   *  也就是 `一般角色`/`旁白`/`用户`/`系统角色`/`万能角色`
+   */
   const roleType = normalizeText(role.roleType) || "npc";
   if (!roleName && !roleDesc) {
     return null;

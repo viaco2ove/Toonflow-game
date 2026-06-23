@@ -536,6 +536,7 @@ export async function evaluateEventProgressByAi(
 ): Promise<AiEventProgressResolution | null> {
   const totalStartedAt = Date.now();
   const start = Date.now();
+  // story-event-progress
   const systemPrompt = await loadEventProgressPrompt();
   const inputSnapshot = buildEventProgressInputSnapshot(input);
   const userPrompt = JSON.stringify(inputSnapshot, null, 2);
