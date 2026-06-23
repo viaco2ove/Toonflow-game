@@ -315,10 +315,27 @@ async function enrichRole(userId: number, worldName: string, worldGlobalBackgrou
     role: raw,
   });
   if (!generateRole) return raw;
-  return {
+  // raw 是页面配置角色信息,主要是用于回填
+  // parameterCardJson 是角色卡信息. 只要是用于生成游玩时的初始角色卡信息
+  // parameterCardJson 只是用于生成动态数据。而不是动态数据自身
+  if(!checkSpecRoleType(raw.roleType)){
+    raw.roleType = generateRole.roleType;
+  }
+  const enrichedRole = {
     ...raw,
     parameterCardJson: generateRole,
   };
+  if (DebugLogUtil.isDebugLogEnabled()) {
+    console.log("[DEBUG] 角色参数卡 enrichedRole:", JSON.stringify(enrichedRole));
+  }
+  return enrichedRole;
+}
+
+function checkSpecRoleType(roleType:string){
+  if(roleType==="player"|| roleType==="narrator"){
+    return true;
+  }
+  return false;
 }
 
 /**
