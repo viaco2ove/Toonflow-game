@@ -126,6 +126,13 @@ export default router.post(
           chapterId: activeChapterId,
           chapterTitle: String(chapter?.title || activeState.chapterTitle || ""),
           state: activeState,
+          // 记忆管理器维护的动态全局背景（顶层字段，方便前端快速访问）
+          // 优先用 activeState.dynamicWorldGlobalBackground，兼容旧记录回退到 memorySummary
+          dynamicGlobalBackground: String(
+            (activeState as Record<string, any>)?.dynamicWorldGlobalBackground
+            || (activeState as Record<string, any>)?.memorySummary
+            || ""
+          ).trim(),
           world: normalizeWorldOutput(world),
           chapter: normalizeChapterOutput(chapter),
           currentEventDigest: eventView.currentEventDigest,
@@ -217,6 +224,12 @@ export default router.post(
         chapterId: Number(chapter.id || 0),
         chapterTitle: String(chapter.title || activeState.chapterTitle || ""),
         state: snapshot,
+        // 记忆管理器维护的动态全局背景（顶层字段）
+        dynamicGlobalBackground: String(
+          (activeState as Record<string, any>)?.dynamicWorldGlobalBackground
+          || (activeState as Record<string, any>)?.memorySummary
+          || ""
+        ).trim(),
         world: normalizeWorldOutput(world),
         chapter: effectiveChapter,
         // 调试模式下必须用 stageProgressView 的结果，保证每个 digest 有正确的 stageProgress

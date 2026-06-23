@@ -147,6 +147,8 @@ export interface MemoryManagerResult {
   summary: string;
   facts: string[];
   tags: string[];
+  /** 记忆管理器维护的动态全局背景（控制整个故事的世界观演变） */
+  dynamicWorldGlobalBackground: string;
   playerCardPatch: JsonRecord;
   npcCardPatches: Array<{
     roleId: string;
@@ -2444,9 +2446,11 @@ function buildMemorySystemPrompt(promptFromDb: unknown): string {
 }
 
 // 构造记忆管理器维护的动态全局背景。
-// state.memorySummary 是记忆管理器 AI 通过 applyMemoryResultToState 写入的最新 summary，
-// 反映世界当前演变状态。这里只读 summary，不再混入 memoryFacts，避免和"事实列表"重复。
+// 优先读 state.dynamicWorldGlobalBackground（记忆管理器 AI 通过 dynamic_world_global_background 字段写入的专用字段）
+// 旧记录如果没有这个字段，回退到 state.memorySummary 以保证兼容。
 function buildDynamicWorldBackground(state: JsonRecord): string {
+  const dynamic = String(state?.dynamicWorldGlobalBackground || "").trim();
+  if (dynamic) return dynamic;
   return String(state?.memorySummary || "").trim();
 }
 
@@ -4759,6 +4763,11 @@ export async function runStoryMemoryManager(input: {
       tags: Array.isArray(objectLike?.tags)
         ? (objectLike as any).tags.map((item: unknown) => normalizeScalarText(item)).filter(Boolean)
         : parsePlainList(getPlainField(fieldMap, "tags")),
+      // 记忆管理器通过 dynamic_world_global_background 字段返回动态全局背景
+      dynamicWorldGlobalBackground: normalizeScalarText(
+        (hasObjectLike ? objectLike.dynamic_world_global_background ?? objectLike.dynamicWorldGlobalBackground : undefined)
+        || getPlainField(fieldMap, "dynamic_world_global_background", "dynamicworldglobalbackground"),
+      ),
       playerCardPatch,
       npcCardPatches,
       source: "ai",
@@ -5100,6 +5109,11 @@ export function applyMemoryResultToState(state: JsonRecord, memory: MemoryManage
   state.memorySummary = nextSummary;
   state.memoryFacts = mergedFacts;
   state.memoryTags = mergedTags;
+  // 记忆管理器维护的动态全局背景独立维护，不与 memorySummary 混合。
+  // AI 返回空时保留旧值，避免一次失败的解析就把背景清空。
+  const previousDynamicBg = normalizeScalarText(state.dynamicWorldGlobalBackground);
+  const nextDynamicBg = normalizeScalarText(memory.dynamicWorldGlobalBackground) || previousDynamicBg;
+  state.dynamicWorldGlobalBackground = nextDynamicBg;
   applyMemoryPlayerCardPatchToState(state, {
     ...memory,
     summary: nextSummary,
@@ -5203,6 +5217,7 @@ export async function refreshStoryMemoryBestEffort(input: {
       !memory.summary
       && !memory.facts.length
       && !memory.tags.length
+      && !memory.dynamicWorldGlobalBackground
       && !hasRecordKeys(asRecord(memory.playerCardPatch))
       && !memory.npcCardPatches.length
     ) {

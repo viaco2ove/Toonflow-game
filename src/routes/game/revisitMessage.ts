@@ -135,6 +135,13 @@ export default router.post(
         // ★ 回溯到用户消息时，把原内容回填到输入框，方便用户直接修改/重发
         revisitedRoleType: targetRoleType,
         revisitedContent: isPlayerMessage ? String(targetMessage.content || "") : "",
+        // 回溯后 state 里的 dynamicWorldGlobalBackground 单独提取出来返回给前端
+        // （整个 state 已在 restoredState 里都有，但顶层字段方便前端快速访问）
+        dynamicGlobalBackground: String(
+          (restoredState as Record<string, any>)?.dynamicWorldGlobalBackground
+          || (restoredState as Record<string, any>)?.memorySummary
+          || ""
+        ).trim(),
       }));
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err || "回溯失败");
