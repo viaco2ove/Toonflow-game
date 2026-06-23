@@ -121,6 +121,11 @@ yarn bulid
 ### 如何清理
 rm -rf node_modules dist .cache &&
 
+### 项目交互原则
+不是面对记忆开发而是面对注意力开发。
+我发现你把用户的注意力吸住比做让大模型记住超长上下文更有用。
+你就不要让用户问角色：你一个月前做了啥。（也不是完全不检索而是让用户不会把注意力放在记忆上面）
+
 
 ## Toonflow-game
 [![GitHub stars](https://img.shields.io/github/stars/viaco2ove/Toonflow-game.svg?style=social)](https://github.com/viaco2ove/Toonflow-game)
