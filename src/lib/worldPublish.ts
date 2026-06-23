@@ -103,6 +103,7 @@ export async function publishWorldSynchronously(input: {
       userId,
       world,
       persist: false,
+      forceRefresh: true,
     });
     const chapters = (
       await db("t_storyChapter")

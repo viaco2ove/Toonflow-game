@@ -5,6 +5,7 @@ import {
   toJsonText,
 } from "@/lib/gameEngine";
 import u from "@/utils";
+import {DebugLogUtil} from "@/utils/debugLogUtil";
 
 type JsonRecord = Record<string, any>;
 
@@ -101,6 +102,30 @@ function normalizeParameterCard(input: unknown, fallback: {
     return "";
   };
 
+  /**
+   * 严谨检测：必须完整匹配 "角色类型:万能角色" 或 "角色类型:系统角色"
+   * 防止 description 里误包含 "万能角色" / "系统角色" 关键词导致误判。
+   * 只在原始输入是字符串时才用于检测（避免 normalizeText(object) 变成 "[object]"）。
+   */
+  const rawSettingFallback = normalizeText(
+    source.raw_setting || fieldMap["raw_setting"] || fieldMap["rawsetting"] || "",
+  );
+  const rawDescText = typeof input === "string" ? input : "";
+  const combinedText = rawDescText + "\n" + rawSettingFallback;
+
+  let roleType = normalizeText(source.role_type || fieldMap["role_type"] || fieldMap["roletype"] || "");
+  if (!roleType) {
+    if (/角色类型\s*[:：]\s*万能角色/i.test(combinedText)) {
+      roleType = "general";
+    } else if (/角色类型\s*[:：]\s*系统角色/i.test(combinedText)) {
+      roleType = "system";
+    }
+  }
+  // 兜底：合法枚举值
+  if (!["npc", "narrator", "player", "system", "general"].includes(roleType)) {
+    roleType = "npc";
+  }
+
   const age = numberOrNull(source.age ?? fieldMap["age"]);
   const level = numberOrNull(source.level ?? fieldMap["level"]);
   const hp = numberOrNull(source.hp ?? fieldMap["hp"]);
@@ -124,6 +149,7 @@ function normalizeParameterCard(input: unknown, fallback: {
     mp: mp ?? 0,
     money: money ?? 0,
     other: normalizeList(source.other ?? fieldMap["other"]),
+    roleType,
   };
 }
 
@@ -189,7 +215,15 @@ async function generateRoleParameterCardWithAi(input: {
     "你是故事角色参数卡生成器。",
     "你的任务是根据角色设定，生成用于故事编辑保存的静态角色参数卡。",
     "只输出 JSON，不要解释，不要代码块。",
-    "字段固定为：name, raw_setting, gender, age, level, level_desc, personality, appearance, voice, skills, items, equipment, hp, mp, money, other。",
+    "字段固定为：name, raw_setting, gender, age, level, level_desc, personality, appearance, voice, skills, items, equipment, hp, mp, money, other, role_type。",
+    "role_type 角色类型，枚举值：npc / narrator / player / system / general。",
+    "  - 普通 NPC 用 npc",
+    "  - 旁白用 narrator",
+    "  - 用户角色用 player",
+    "  - 万能角色（可扮演任意角色）用 general",
+    "  - 系统角色（引导、自动播报等）用 system",
+    "  用户和旁白是特殊角色，前端代码限定，不在角色设定中配置。",
+    "  如果设定中未明确说明角色类型，默认为 npc。",
     "如果信息不足，字符串填空串，列表填空数组，数值用合理默认值。",
     "这是静态设定卡，不要写剧情正文，不要写当前对话进度。",
   ].join("\n");
@@ -198,7 +232,6 @@ async function generateRoleParameterCardWithAi(input: {
     {
       world: {
         name: input.worldName,
-        intro: input.intro,
         worldGlobalBackground: input.worldGlobalBackground,
       },
       role: {
@@ -237,6 +270,9 @@ async function generateRoleParameterCardWithAi(input: {
       config as any,
     );
     const rawText = unwrapModelText((result as any)?.text || "");
+    if (DebugLogUtil.isDebugLogEnabled()) {
+      console.log("[DEBUG] 角色参数卡", JSON.stringify(rawText));
+    }
     const parsed = parseBestEffortJson(rawText);
     const card = normalizeParameterCard(Object.keys(parsed).length ? parsed : rawText, {
       name: roleName,
@@ -278,6 +314,23 @@ async function enrichRole(userId: number, worldName: string, worldGlobalBackgrou
   };
 }
 
+function buildEnrichRoleChecker(forceRefresh: boolean) {
+  return async function enrichRoleIfNeeded(
+    userId: number,
+    worldName: string,
+    worldGlobalBackground: string,
+    role: unknown,
+  ): Promise<JsonRecord> {
+    if (!forceRefresh) {
+      const raw = typeof role === "string" ? parseJsonSafe<JsonRecord>(role, {}) : asRecord(role);
+      if (hasUsableParameterCard(raw.parameterCardJson)) {
+        return raw;
+      }
+    }
+    return enrichRole(userId, worldName, worldGlobalBackground, role);
+  };
+}
+
 export async function enrichWorldRolesWithAiParameterCards(input: {
   userId: number;
   worldName: string;
@@ -285,28 +338,28 @@ export async function enrichWorldRolesWithAiParameterCards(input: {
   playerRole: unknown;
   narratorRole: unknown;
   settings: unknown;
+  /** 是否强制重新生成参数卡（用于角色编辑后发布场景） */
+  forceRefresh?: boolean;
 }): Promise<{
   playerRole: JsonRecord;
   narratorRole: JsonRecord;
   settings: JsonRecord;
 }> {
+  const forceRefresh = input.forceRefresh ?? false;
+  const checkRole = buildEnrichRoleChecker(forceRefresh);
+
   const rawSettings = asRecord(input.settings);
   const rawRoles = Array.isArray(rawSettings.roles) ? rawSettings.roles : [];
-  const nextPlayerRole = hasUsableParameterCard(asRecord(input.playerRole)?.parameterCardJson)
-    ? asRecord(input.playerRole)
-    : await enrichRole(input.userId, input.worldName, input.worldGlobalBackground, input.playerRole);
-  const nextNarratorRole = hasUsableParameterCard(asRecord(input.narratorRole)?.parameterCardJson)
-    ? asRecord(input.narratorRole)
-    : await enrichRole(input.userId, input.worldName, input.worldGlobalBackground, input.narratorRole);
-  const nextNpcRoles = await Promise.all(
-    rawRoles.map((role) => {
-      const rawRole = asRecord(role);
-      if (hasUsableParameterCard(rawRole.parameterCardJson)) {
-        return rawRole;
-      }
-      return enrichRole(input.userId, input.worldName, input.worldGlobalBackground, rawRole);
-    }),
-  );
+
+  const [nextPlayerRole, nextNarratorRole, ...nextNpcRolesResults] = await Promise.all([
+    checkRole(input.userId, input.worldName, input.worldGlobalBackground, input.playerRole),
+    checkRole(input.userId, input.worldName, input.worldGlobalBackground, input.narratorRole),
+    ...rawRoles.map((role) =>
+      checkRole(input.userId, input.worldName, input.worldGlobalBackground, role),
+    ),
+  ]);
+
+  const nextNpcRoles = nextNpcRolesResults as JsonRecord[];
 
   return {
     playerRole: nextPlayerRole,
@@ -322,26 +375,32 @@ export async function ensureWorldRolesWithAiParameterCards(input: {
   userId: number;
   world: unknown;
   persist?: boolean;
+  /** 是否强制重新生成参数卡（用于角色编辑后发布场景） */
+  forceRefresh?: boolean;
 }): Promise<JsonRecord> {
   const world = asRecord(input.world);
   if (!Object.keys(world).length) return world;
+  const forceRefresh = input.forceRefresh ?? false;
 
   const settings = parseSettingsWithRoles(world.settings);
   const roles = Array.isArray(settings.roles) ? settings.roles : [];
-  const needsCards = [
-    world.playerRole,
-    world.narratorRole,
-    ...roles,
-  ].some((role) => {
-    const rawRole = asRecord(role);
-    return !hasUsableParameterCard(rawRole.parameterCardJson);
-  });
 
-  if (!needsCards) {
-    return {
-      ...world,
-      settings,
-    };
+  // 强制刷新时跳过"已有卡"的检查，直接全部重生成
+  if (!forceRefresh) {
+    const needsCards = [
+      world.playerRole,
+      world.narratorRole,
+      ...roles,
+    ].some((role) => {
+      const rawRole = asRecord(role);
+      return !hasUsableParameterCard(rawRole.parameterCardJson);
+    });
+    if (!needsCards) {
+      return {
+        ...world,
+        settings,
+      };
+    }
   }
 
   // world 可能是原始数据库行，settings 可能是字符串
@@ -350,11 +409,11 @@ export async function ensureWorldRolesWithAiParameterCards(input: {
   const enriched = await enrichWorldRolesWithAiParameterCards({
     userId: Number(input.userId || 0),
     worldName: normalizeText(w.name),
-    worldIntro: world.intro || "",
     worldGlobalBackground: normalizeText(wSettings.globalBackground || w.globalBackground || w.intro),
     playerRole: world.playerRole,
     narratorRole: world.narratorRole,
     settings,
+    forceRefresh,
   });
 
   const nextSettings = {

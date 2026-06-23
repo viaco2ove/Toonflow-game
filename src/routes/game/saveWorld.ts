@@ -108,6 +108,7 @@ export default router.post(
         });
         return res.status(200).send(success(publishedWorld, "故事已发布并完成预生成"));
       }
+      // 存草稿时强制刷新参数卡（角色编辑后需要重新生成含 roleType 的卡）；发布时 publishWorldSynchronously 会处理
       void ensureWorldRolesWithAiParameterCards({
         userId: currentUserId,
         world: {
@@ -120,6 +121,7 @@ export default router.post(
           settings: normalizedSettings,
         },
         persist: true,
+        forceRefresh: true,
       }).catch((asyncErr) => {
         console.warn("[saveWorld] async role parameter card generation failed", {
           worldId: id,

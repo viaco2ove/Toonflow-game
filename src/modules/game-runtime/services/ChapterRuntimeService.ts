@@ -1,7 +1,7 @@
 import u from "@/utils";
 import {
   isFreeChapterRuntimeMode,
-  JsonRecord,
+  JsonRecord, parseJsonSafe,
   readChapterProgressState,
   readPhaseAwareRuntimeCurrentEventDigestState,
 } from "@/lib/gameEngine";
@@ -331,7 +331,7 @@ function buildChapterJudgeInputSnapshot({
       ending_rules: endingRules,
       content: chapterContent,
     },
-    world_intro: worldIntro,
+    world_intro: w.intro,
     world_global_background: worldGlobalBackground,
     current_event: {
       index: Number(normalizeScalarText(currentEvent.eventIndex) || "0"),

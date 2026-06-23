@@ -2,6 +2,7 @@ import express from "express";
 import { z } from "zod";
 import { validateFields } from "@/middleware/middleware";
 import { error, success } from "@/lib/responseFormat";
+import { ensureWorldRolesWithAiParameterCards } from "@/lib/roleParameterCard";
 import {
   getGameDb,
   normalizeChapterOutput,
@@ -58,6 +59,22 @@ export default router.post(
       if (!world) {
         return res.status(404).send(error("未找到故事"));
       }
+
+      // 章节调试前强制刷新角色参数卡（roleType 等新字段）
+      void (async () => {
+        await ensureWorldRolesWithAiParameterCards({
+          userId,
+          world,
+          persist: true,
+          forceRefresh: true,
+        });
+      })().catch((err) => {
+        console.warn("[initDebug] force refresh role cards failed", {
+          worldId,
+          userId,
+          message: (err as any)?.message || String(err),
+        });
+      });
 
       // 2. 获取章节
       let chapter: any = null;
