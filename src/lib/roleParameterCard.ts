@@ -153,6 +153,10 @@ function normalizeParameterCard(input: unknown, fallback: {
   };
 }
 
+/**
+ * 是否有可用的角色参数卡
+ * @param input
+ */
 function hasUsableParameterCard(input: unknown): boolean {
   const card = asRecord(input);
   if (!Object.keys(card).length) return false;
@@ -220,9 +224,10 @@ async function generateRoleParameterCardWithAi(input: {
     "  - 普通 NPC 用 npc",
     "  - 旁白用 narrator",
     "  - 用户角色用 player",
-    "  - 万能角色（可扮演任意角色）用 general",
+    "  - 万能角色（可扮演任意角色）用 general。 例如路人甲，某女子，某男子",
     "  - 系统角色（引导、自动播报等）用 system",
-    "  用户和旁白是特殊角色，前端代码限定，不在角色设定中配置。",
+    "  用户和旁白是特殊角色，前端代码限定角色类型，不在角色设定中配置角色类型。" +
+    "  注意用户依然走ai 分析角色参数卡！只是角色类型这个字段将会由程序自动填充。",
     "  如果设定中未明确说明角色类型，默认为 npc。",
     "如果信息不足，字符串填空串，列表填空数组，数值用合理默认值。",
     "这是静态设定卡，不要写剧情正文，不要写当前对话进度。",
@@ -297,23 +302,29 @@ async function generateRoleParameterCardWithAi(input: {
   }
 }
 
-async function enrichRole(userId: number, worldName: string, worldGlobalBackground: string, role: unknown): Promise<JsonRecord> {
+async function enrichRole(userId: number, worldName: string, worldGlobalBackground: string, role: unknown,forceRefresh: boolean= false): Promise<JsonRecord> {
   // role 可能是 JSON string（从 DB 读出的 playerRole），需要先 parse
   const raw = typeof role === "string" ? parseJsonSafe<JsonRecord>(role, {}) : asRecord(role);
-  if (!Object.keys(raw).length) return raw;
-  const generated = await generateRoleParameterCardWithAi({
+  if (!Object.keys(raw).length && !forceRefresh) {
+    return raw;
+  }
+  const generateRole = await generateRoleParameterCardWithAi({
     userId,
     worldName,
     worldGlobalBackground,
     role: raw,
   });
-  if (!generated) return raw;
+  if (!generateRole) return raw;
   return {
     ...raw,
-    parameterCardJson: generated,
+    parameterCardJson: generateRole,
   };
 }
 
+/**
+ * 构建一个角色参数卡 enricher，可选是否强制刷新
+ * @param forceRefresh
+ */
 function buildEnrichRoleChecker(forceRefresh: boolean) {
   return async function enrichRoleIfNeeded(
     userId: number,
@@ -323,11 +334,17 @@ function buildEnrichRoleChecker(forceRefresh: boolean) {
   ): Promise<JsonRecord> {
     if (!forceRefresh) {
       const raw = typeof role === "string" ? parseJsonSafe<JsonRecord>(role, {}) : asRecord(role);
+      if(raw.roleType==="player"|| raw.roleType==="narrator"){
+        // 玩家角色和旁白角色 没有parameterCardJson，raw 就是parameterCardJson
+        if(hasUsableParameterCard(raw)){
+          return raw;
+        }
+      }
       if (hasUsableParameterCard(raw.parameterCardJson)) {
         return raw;
       }
     }
-    return enrichRole(userId, worldName, worldGlobalBackground, role);
+    return enrichRole(userId, worldName, worldGlobalBackground, role,forceRefresh);
   };
 }
 
