@@ -361,8 +361,16 @@ function formatRuntimeErrorMessage(runtimeError: unknown): string {
 export function worldRoles(world: any): RuntimeStoryRole[] {
   const rolePair = normalizeRolePair(world?.playerRole, world?.narratorRole);
   const settings = asRecord(world?.settings);
+  if (DebugLogUtil.isDebugLogEnabled()) {
+    console.log(`[worldRoles] world=${world?.name} settings.roles count=${settings.roles?.length}, raw roles:`, JSON.stringify((settings.roles || []).map((r: any) => ({ id: r?.id, name: r?.name, roleType: r?.roleType }))));
+  }
   const npcRoles = Array.isArray(settings.roles)
-    ? settings.roles.filter((item) => item && item.roleType === "npc")
+    ? settings.roles.filter((item) => {
+      if (!item) return false;
+      const rt = String(item.roleType || "").trim().toLowerCase();
+      // player 和 narrator 已从 rolePair 单独提取，不再混入
+      return rt !== "player" && rt !== "narrator";
+    })
     : [];
   return [
     {
@@ -383,7 +391,7 @@ export function worldRoles(world: any): RuntimeStoryRole[] {
     },
     ...npcRoles.map((item: any, index: number) => ({
       id: String(item?.id || `npc_${index + 1}`),
-      roleType: "npc",
+      roleType: String(item?.roleType || "npc").trim().toLowerCase() || "npc",
       name: String(item?.name || `角色${index + 1}`),
       description: normalizeScalarText(item?.description),
       sample: normalizeScalarText(item?.sample),
@@ -723,6 +731,7 @@ function collectMemoryRoleCardSnapshots(input: {
 }): {
   playerCard: MemoryRoleCardSnapshot | null;
   npcCards: MemoryRoleCardSnapshot[];
+  narratorCard: MemoryRoleCardSnapshot | null;
 } {
   const allRoles = runtimeStoryRoles(input.world, input.state);
   const messageRoleNames = new Set<string>();
@@ -750,8 +759,22 @@ function collectMemoryRoleCardSnapshots(input: {
     }
     : null;
 
-  const npcCards = allRoles
-    .filter((role) => sanitizeRoleType(role.roleType) === "npc")
+  const narratorRole = allRoles.find((role) => sanitizeRoleType(role.roleType) === "narrator") || null;
+  const narratorCard = narratorRole
+    ? {
+      roleId: normalizeScalarText(narratorRole.id) || "narrator",
+      roleName: normalizeScalarText(narratorRole.name) || "旁白",
+      roleType: sanitizeRoleType(narratorRole.roleType),
+      card: asRecord(narratorRole.parameterCardJson),
+    }
+    : null;
+
+  const otherCards = allRoles
+    .filter((role) => {
+      const rt = sanitizeRoleType(role.roleType);
+      // player 和 narrator 已单独处理，其余全部归入 otherCards（含 npc/system/general）
+      return rt !== "player" && rt !== "narrator";
+    })
     .sort((left, right) => {
       const leftMatched = messageRoleIds.has(normalizeScalarText(left.id)) || messageRoleNames.has(normalizeScalarText(left.name));
       const rightMatched = messageRoleIds.has(normalizeScalarText(right.id)) || messageRoleNames.has(normalizeScalarText(right.name));
@@ -766,7 +789,7 @@ function collectMemoryRoleCardSnapshots(input: {
       card: asRecord(role.parameterCardJson),
     }));
 
-  return { playerCard, npcCards };
+  return { playerCard, narratorCard, npcCards: otherCards };
 }
 
 // 将角色的基础信息、口吻和参数卡压成编排模型可读的短摘要，避免把整份设定直接塞给模型。
@@ -1704,6 +1727,7 @@ function buildCompactMemoryPromptSections(payload: {
   eventDeltaText: string;
   currentTags: string;
   playerCardText: string;
+  narratorCardText: string;
   npcCardsText: string;
   recentDialogueText: string;
 }): Array<{ title: string; content: string }> {
@@ -1714,7 +1738,8 @@ function buildCompactMemoryPromptSections(payload: {
     { title: "事件增量", content: payload.eventDeltaText || "无" },
     { title: "当前标签", content: payload.currentTags || "无" },
     { title: "用户参数卡", content: payload.playerCardText },
-    { title: "相关NPC参数卡", content: payload.npcCardsText },
+    { title: "旁白参数卡", content: payload.narratorCardText },
+    { title: "角色动态参数卡列表", content: payload.npcCardsText },
     { title: "新增对话", content: payload.recentDialogueText },
   ];
 }
@@ -1729,6 +1754,7 @@ function buildFullMemoryPromptSections(payload: {
   eventDeltaText: string;
   currentTags: string;
   playerCardText: string;
+  narratorCardText: string;
   npcCardsText: string;
   recentDialogueText: string;
 }): Array<{ title: string; content: string }> {
@@ -1741,7 +1767,8 @@ function buildFullMemoryPromptSections(payload: {
     { title: "当前事实", content: payload.currentFacts || "无" },
     { title: "当前标签", content: payload.currentTags || "无" },
     { title: "用户参数卡", content: payload.playerCardText },
-    { title: "相关NPC参数卡", content: payload.npcCardsText },
+    { title: "旁白参数卡", content: payload.narratorCardText },
+    { title: "角色动态参数卡列表", content: payload.npcCardsText },
     { title: "新增对话", content: payload.recentDialogueText },
   ];
 }
@@ -1762,10 +1789,12 @@ function buildMemoryPromptStats(payload: {
   recentDialogue: RecentDialogueTurn[];
   currentMemory: string;
   playerCard: JsonRecord | null;
+  narratorCard: JsonRecord | null;
   npcCards: JsonRecord[];
 }, compactMode: boolean): PromptStatRow[] {
   const currentEventContent = buildMemoryCurrentEventContent(payload);
   const playerCardText = payload.playerCard ? JSON.stringify(payload.playerCard, null, 2) : "无";
+  const narratorCardText = payload.narratorCard ? JSON.stringify(payload.narratorCard, null, 2) : "无";
   const npcCardsText = payload.npcCards.length ? JSON.stringify(payload.npcCards, null, 2) : "[]";
   const recentDialogueText = payload.recentDialogue.length ? stringifyRecentDialogue(payload.recentDialogue) : "[]";
   const sections = compactMode
@@ -1776,6 +1805,7 @@ function buildMemoryPromptStats(payload: {
       eventDeltaText: payload.eventDeltaText,
       currentTags: payload.currentTags,
       playerCardText,
+      narratorCardText,
       npcCardsText,
       recentDialogueText,
     })
@@ -1788,6 +1818,7 @@ function buildMemoryPromptStats(payload: {
       eventDeltaText: payload.eventDeltaText,
       currentTags: payload.currentTags,
       playerCardText,
+      narratorCardText,
       npcCardsText,
       recentDialogueText,
     });
@@ -1916,6 +1947,7 @@ function logMemoryPromptStats(input: {
     recentDialogue: RecentDialogueTurn[];
     currentMemory: string;
     playerCard: JsonRecord | null;
+    narratorCard: JsonRecord | null;
     npcCards: JsonRecord[];
   };
   chapterMeta: { id?: unknown; title?: unknown; sort?: unknown } | null;
@@ -2302,7 +2334,7 @@ function buildMemoryCardLines(payload: {
     "[用户当前参数卡(JSON)]",
     payload.playerCard ? JSON.stringify(payload.playerCard, null, 2) : "无",
     "",
-    "[相关NPC参数卡(JSON数组)]",
+    "[角色动态参数卡列表(JSON数组)]",
     payload.npcCards.length ? JSON.stringify(payload.npcCards, null, 2) : "[]",
   ];
 }
@@ -4694,6 +4726,9 @@ export async function runStoryMemoryManager(input: {
     currentTags: buildLimitedMemoryText(input.state.memoryTags, 6, 12, compactMode),
     playerCard: roleCardSnapshots.playerCard
       ? buildMemoryRoleCardSummary(roleCardSnapshots.playerCard, compactMode)
+      : null,
+    narratorCard: roleCardSnapshots.narratorCard
+      ? buildMemoryRoleCardSummary(roleCardSnapshots.narratorCard, compactMode)
       : null,
     npcCards: roleCardSnapshots.npcCards.map((item) => buildMemoryRoleCardSummary(item, compactMode)),
   };
