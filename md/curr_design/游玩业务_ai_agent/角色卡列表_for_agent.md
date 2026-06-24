@@ -1,3 +1,4 @@
+# no_modify
 “角色动态参数卡列表：”，“roles:”, "[角色动态参数卡列表(JSON数组)]"
 # 哪些ai agent 会发送角色卡列表
 
@@ -58,7 +59,7 @@ agent:story-memory
 也可以通过用户:"@记忆管理器  在李明的关键信息里备注一下是我的舍友"
 大概效果是在information 里追加或修改为"用户的舍友"。
 所以要对agent：story-memory 进行改造。让它会返回某个角色的关键信息。 程序根据这个信息对角色卡的”information“ 进行修改。
-information 的长度：
+information 的长度：大概250 字以内。
 
 同时在游玩时，用户可以在前端看见角色的“关键信息” 字段内容
 ![img.png](img.png)

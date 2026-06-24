@@ -1490,7 +1490,8 @@ function normalizeStoryRole(roleRaw: unknown, defaults: JsonRecord): JsonRecord 
   const normalized: JsonRecord = {
     ...defaults,
     ...raw,
-    roleType: String(defaults.roleType || raw.roleType || "").trim() || String(defaults.roleType || ""),
+    // 优先取 raw.roleType，再取 defaults.roleType兜底（raw.roleType 为空时才用 defaults）
+    roleType: String(raw.roleType || defaults.roleType || "").trim() || String(defaults.roleType || ""),
     attributes: {
       ...parseJsonSafe<JsonRecord>(defaults.attributes, {}),
       ...parseJsonSafe<JsonRecord>(raw.attributes, {}),
@@ -1586,9 +1587,13 @@ function findNpcRuntimeOverlay(source: JsonRecord, role: JsonRecord): JsonRecord
 
 // 合并运行时 NPC Map 与世界静态角色列表，
 // 既支持已有静态角色，也兼容运行时新增/补录的 NPC。
+// 注意：不过滤 roleType，所有类型（npc/system/general）都要参与 merge。
 function normalizeRuntimeNpcMap(rawNpcs: unknown, npcRolesRaw: unknown): JsonRecord {
   const source = parseJsonSafe<JsonRecord>(rawNpcs, {});
-  const defaults = normalizeSettingsRoles(npcRolesRaw).filter((item) => item.roleType === "npc");
+  const defaults = normalizeSettingsRoles(npcRolesRaw).filter((item) => {
+    const rt = String(item.roleType || "npc").trim().toLowerCase();
+    return rt !== "player" && rt !== "narrator";
+  });
   const normalized: JsonRecord = {};
   const consumedKeys = new Set<string>();
 

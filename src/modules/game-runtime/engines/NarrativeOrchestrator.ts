@@ -776,12 +776,17 @@ function collectMemoryRoleCardSnapshots(input: {
       return rt !== "player" && rt !== "narrator";
     })
     .sort((left, right) => {
+      // general/system 角色优先（不会被 npc 挤掉）
+      const leftIsSpecial = ["general", "system"].includes(sanitizeRoleType(left.roleType));
+      const rightIsSpecial = ["general", "system"].includes(sanitizeRoleType(right.roleType));
+      if (leftIsSpecial && !rightIsSpecial) return -1;
+      if (!leftIsSpecial && rightIsSpecial) return 1;
       const leftMatched = messageRoleIds.has(normalizeScalarText(left.id)) || messageRoleNames.has(normalizeScalarText(left.name));
       const rightMatched = messageRoleIds.has(normalizeScalarText(right.id)) || messageRoleNames.has(normalizeScalarText(right.name));
       if (leftMatched === rightMatched) return 0;
       return leftMatched ? -1 : 1;
     })
-    .slice(0, 8)
+    .slice(0, 40)
     .map((role) => ({
       roleId: normalizeScalarText(role.id),
       roleName: normalizeScalarText(role.name),
