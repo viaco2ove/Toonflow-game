@@ -1476,6 +1476,8 @@ function createBasicParameterCard(input: {
     mp: mp ?? 0,
     money: money ?? 0,
     other: Array.isArray(existing.other) ? normalizeStringList(existing.other) : [],
+    // information 关键信息：记录角色身份备注、编排限制、发现限制等，由记忆管理器维护
+    information: normalizeEditorText(existing.information) || "",
   };
 
   delete (next as any).rawSetting;

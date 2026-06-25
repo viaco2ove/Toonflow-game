@@ -10,11 +10,13 @@ export default router.post(
   "/",
   validateFields({
     storyOrchestratorPayloadMode: z.enum(["compact", "advanced"]),
+    storyMemoryPayloadMode: z.enum(["compact", "advanced"]).optional(),
   }),
   async (req, res) => {
     const userId = Number((req as any)?.user?.id || 0);
     const result = await saveStoryRuntimeSettings({
       storyOrchestratorPayloadMode: req.body.storyOrchestratorPayloadMode,
+      storyMemoryPayloadMode: req.body.storyMemoryPayloadMode,
     }, userId);
     res.status(200).send(success(result));
   },

@@ -230,6 +230,8 @@ type SpeakerPromptPayload = {
   latestPlayerMessage: string;
   recentDialogue: RecentDialogueTurn[];
   otherRoles: string[];
+  /** 角色动态参数卡列表（含 npc/system/general），用于角色发言统计日志 */
+  npcCards: JsonRecord[];
   traceMeta?: JsonRecord;
   // 当前阶段索引和摘要，用于角色发言器判断当前阶段
   currentStageIndex?: number | null;
@@ -652,7 +654,7 @@ function summarizeParameterCardKeyText(input: unknown): string {
     normalizeScalarText(card.name) ? `角色名:${normalizeScalarText(card.name)}` : "",
     normalizeScalarText(card.gender) ? `性别:${normalizeScalarText(card.gender)}` : "",
     card.age != null && normalizeScalarText(card.age) ? `年龄:${normalizeScalarText(card.age)}` : "",
-    normalizeScalarText(card.personality) ? `性格:${shortText(card.personality, 20)}` : "",
+    normalizeScalarText(card.personality) ? `性格:${card.personality}` : "",
     level ? `等级:${level}` : "",
   ].filter(Boolean);
   return parts.join("|");
@@ -714,6 +716,7 @@ function buildMemoryRoleCardSummary(input: {
     mp: normalizeOptionalCardNumber(card.mp),
     money: normalizeOptionalCardNumber(card.money),
     other: normalizeCardTextList(card.other),
+    information: normalizeScalarText(card.information),
   };
   return {
     role_id: input.roleId,
@@ -808,7 +811,7 @@ function describeRole(role: RuntimeStoryRole | null | undefined, compactMode = f
     `身份:${sanitizeRoleType(role.roleType)}`,
     summarizeParameterCardKeyText(role.parameterCardJson) ? `参数:${summarizeParameterCardKeyText(role.parameterCardJson)}` : "",
     shortText(role.sample, 48) ? `口吻:${shortText(role.sample, 48)}` : "",
-    shortText(role.description, 60) ? `设定:${shortText(role.description, 60)}` : "",
+    shortText(role.description, 48) ? `设定:${role.description}` : "",
   ].filter(Boolean);
   return parts.join("\n");
 }
@@ -819,10 +822,10 @@ function describeRoleLite(role: RuntimeStoryRole | null | undefined): string {
   const card = asRecord(role.parameterCardJson);
   const summary = shortText(
     normalizeScalarText(card.raw_setting || card.rawSetting || role.description),
-    24,
+    120,
   );
-  const personality = shortText(normalizeScalarText(card.personality), 12);
-  const speechStyle = shortText(normalizeScalarText(card.voice || role.sample), 16);
+  const personality = shortText(normalizeScalarText(card.personality), 120);
+  const speechStyle = shortText(normalizeScalarText(card.voice || role.sample), 120);
   return [
     summary ? `设定:${summary}` : "",
     personality ? `性格:${personality}` : "",
@@ -1692,6 +1695,7 @@ function buildSpeakerPromptStats(payload: SpeakerPromptPayload, compactMode: boo
     ...speakerStorySections,
     { title: "最近对话", content: payload.recentDialogue.length ? stringifyRecentDialogue(payload.recentDialogue) : "[]" },
     { title: "用户最近输入", content: payload.latestPlayerMessage || "无" },
+    { title: "角色动态参数卡列表(JSON数组)", content: payload.npcCards.length ? JSON.stringify(payload.npcCards, null, 2) : "[]"},
     ...speakerVisibleRoleSections,
   ];
   return sections.map((section) => {
@@ -2368,6 +2372,7 @@ function buildCompactMemoryOutputExampleLines(): string[] {
         next_level_exp: 200,
         items: ["新获得物品"],
         other: ["新的长期状态"],
+        information: "角色的关键信息，如身份备注、编排限制等",
       },
       npc_card_patches: [
         {
@@ -2375,13 +2380,14 @@ function buildCompactMemoryOutputExampleLines(): string[] {
           role_name: "某角色",
           patch: {
             items: ["新获得物品"],
-            other: ["新的长期状态"],
+            other: ["新状态"],
+            information: "角色的关键信息，如身份备注、编排限制等",
           },
         },
       ],
       dynamic_world_global_background:"新的动态全局背景"
     }, null, 2),
-    "注意：patch 只允许这些字段：raw_setting, personality, appearance, voice, skills, items, equipment, other, gender, age, level, level_desc, exp, next_level_exp, hp, mp, money。",
+    "注意：patch 只允许这些字段：raw_setting, personality, appearance, voice, skills, items, equipment, other, gender, age, level, level_desc, exp, next_level_exp, hp, mp, money, information。",
     "没有变化就返回空对象 {} 或空数组 []。",
   ];
 }
@@ -2429,6 +2435,7 @@ function buildFullMemoryOutputExampleLines(): string[] {
         skills: ["新技能"],
         items: ["新物品"],
         other: ["新的长期状态"],
+        information: "角色的关键信息，如身份备注、编排限制等",
       },
       npc_card_patches: [
         {
@@ -2437,12 +2444,13 @@ function buildFullMemoryOutputExampleLines(): string[] {
           patch: {
             items: ["新物品"],
             other: ["新状态"],
+            information: "角色的关键信息，如身份备注、编排限制等",
           },
         },
       ],
       dynamic_world_global_background: "新的动态全局背景"
     }, null, 2),
-    "只允许使用这些 patch 字段：raw_setting, personality, appearance, voice, skills, items, equipment, other, gender, age, level, level_desc, exp, next_level_exp, hp, mp, money。",
+    "只允许使用这些 patch 字段：raw_setting, personality, appearance, voice, skills, items, equipment, other, gender, age, level, level_desc, exp, next_level_exp, hp, mp, money, information。",
     "如果没有参数卡变化，player_card_patch 返回 {}，npc_card_patches 返回 []。",
   ];
 }
@@ -2527,6 +2535,7 @@ function buildSpeakerUserPrompt(payload: {
   latestPlayerMessage: string;
   recentDialogue: RecentDialogueTurn[];
   otherRoles: string[];
+  npcCards: JsonRecord[];
   currentStageIndex?: number | null;
   currentStageSummary?: string | null;
   /** 任务模式上下文（只有任务激活时才不为空） */
@@ -2808,10 +2817,17 @@ function buildMemoryUserPrompt(payload: {
 
 // 记忆管理使用更强压缩模式，避免把完整上下文塞爆本地小上下文模型。
 function shouldUseCompactMemoryPayload(config: unknown): boolean {
+  const configuredMode = normalizeScalarText((config as Record<string, unknown> | null)?.payloadMode).toLowerCase();
+  if (configuredMode === "advanced") return false;
+  if (configuredMode === "compact") return true;
   const manufacturer = normalizeScalarText((config as Record<string, unknown> | null)?.manufacturer).toLowerCase();
-  if (manufacturer === "lmstudio") return true;
-  return shouldUseCompactOrchestratorPayload(config);
+  const model = normalizeScalarText((config as Record<string, unknown> | null)?.model).toLowerCase();
+  if (!manufacturer || !model) return true;
+  if (manufacturer === "lmstudio" || manufacturer === "autodl_chat") return true;
+  if (manufacturer === "volcengine" || manufacturer === "doubao") return /(lite|mini|flash)/.test(model);
+  return /(lite|mini|flash|r1|minimax|deepseek)/.test(model);
 }
+
 
 // 判断当前模型是否需要走精简版提示词。
 function shouldUseCompactOrchestratorPayload(config: unknown): boolean {
@@ -4050,6 +4066,11 @@ export async function runStorySpeakerContent(input: {
       }
     : readCurrentRuntimeEventContext(input.chapter, input.state);
   const roles = filterRolesForPhase(runtimeStoryRoles(input.world, input.state), currentPhase);
+  const roleCardSnapshots = collectMemoryRoleCardSnapshots({
+    world: input.world,
+    state: input.state,
+    recentMessages: input.recentMessages,
+  });
   if (!isRoleAllowedInPhase(input.currentRole, currentPhase)) {
     throw createRuntimeModelError("speaker", "当前阶段不允许该角色发言");
   }
@@ -4177,7 +4198,7 @@ export async function runStorySpeakerContent(input: {
     nextEventTransitionHint: normalizeScalarText(nextEventHint?.transitionHint),
     speakerName: normalizeScalarText(input.currentRole.name),
     speakerRoleType: sanitizeRoleType(input.currentRole.roleType),
-    speakerProfile: useFastSpeakerPrompt ? describeRoleLite(input.currentRole) : describeRole(input.currentRole, true),
+    speakerProfile: useFastSpeakerPrompt ? describeRoleLite(input.currentRole) : describeRole(input.currentRole, false),
     motive: shortText(input.motive, speakerMotiveLimit),
     storyState: useFastSpeakerPrompt ? "" : shortText(summarizeStoryState(input.state), speakerStoryStateLimit),
     latestPlayerMessage: normalizeScalarText(input.playerMessage),
@@ -4192,6 +4213,7 @@ export async function runStorySpeakerContent(input: {
         .filter((item) => item.name !== input.currentRole.name)
         .map((item) => `${item.name}(${sanitizeRoleType(item.roleType)})`)
         .slice(0, compactMode ? 3 : 4),
+    npcCards: roleCardSnapshots.npcCards,
     // ★ P4: 任务模式上下文注入 —— 任务激活时把 task 上下文喂给角色发言器
     taskContext: extractTaskContext(input.state),
     traceMeta: {
@@ -4979,7 +5001,7 @@ function normalizeParameterCardExperienceProgress(cardInput: JsonRecord): JsonRe
 function sanitizeMemoryParameterCardPatch(input: unknown): JsonRecord {
   const raw = asRecord(input);
   const patch: JsonRecord = {};
-  const scalarKeys = ["raw_setting", "personality", "appearance", "voice", "gender", "level_desc"];
+  const scalarKeys = ["raw_setting", "personality", "appearance", "voice", "gender", "level_desc", "information"];
   scalarKeys.forEach((key) => {
     const camelKey = key.replaceAll(/_([a-z])/g, (_, char) => char.toUpperCase());
     const value = normalizeScalarText(raw[key] ?? raw[camelKey]);

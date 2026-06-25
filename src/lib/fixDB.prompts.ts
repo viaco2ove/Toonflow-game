@@ -1166,11 +1166,20 @@ const _PROMPT_STORY_SPEAKER = `你是角色发言器。根据当前事件，当�
 你只根据既定的 speaker、motive、最近对话和精炼上下文，生成当前这一轮真正展示给用户看的台词或旁白。
 # 规则：
 ## 入参：
-### "@角色名: xxx" 代表角色要说这个台词
-### "@角色名 xxx" 代表角色要做这件事，台词发挥较为自由一点
-### summary为当前事件专属内容大纲
+### 发言指导：用户台词或者意图或者[当前事件]等里的指导性文本
+#### “@角色名: xxx” 代表角色要说这个台词
+#### “@角色名 xxx” 代表角色要做这件事，台词发挥较为自由一点
+
+### [当前事件]
+当前事件 的summary为当前事件专属内容大纲
 分号 ";" 作用 隔开多段连续旁白 / 角色台词，代表同一件事里依次要说的几句话
-### \`roles\` 角色动态参数卡列表数组(简洁版)：
+#### "@角色名: xxx" 代表角色要说这个台词
+#### "@角色名 xxx" 代表角色要做这件事，台词发挥较为自由一点
+
+
+### [剧情摘要]
+是故事的运行时的剧情摘要，不针对当前事件。
+### [角色动态参数卡列表(JSON数组)]
   - 每个角色对象包含角色名和角色类型，如：
     - \`name\`：角色名
     - \`role_type\`：角色类型，如 \`npc\` / \`narrator\` / \`player\` / \`system\` /\`general\`
@@ -1303,7 +1312,7 @@ const _PROMPT_STORY_MEMORY = `
     - dynamic_world_global_background: 字符串,动态全局背景描述。动态控制整个故事的世界观。 务必每次都返回这个字段值！
 
 3. 角色补丁（player_card_patch / npc_card_patches内单条补丁）仅允许使用以下字段，禁止新增自定义字段：
-raw_setting, personality, appearance, voice, skills, items, equipment, other, gender, age, level, level_desc, exp, next_level_exp, hp, mp, money
+raw_setting, personality, appearance, voice, skills, items, equipment, other, gender, age, level, level_desc, exp, next_level_exp, hp, mp, money, information
 
 4. 字段数值强制规范：
 age、level、exp、next_level_exp、hp、mp、money 必须为纯数字类型，禁止字符串数字、中文描述

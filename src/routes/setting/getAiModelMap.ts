@@ -54,7 +54,9 @@ export default router.post("/", async (req, res) => {
       manufacturer: config?.manufacturer || null,
       payloadMode: String(row.key || "") === "storyOrchestratorModel"
         ? runtimeSettings.storyOrchestratorPayloadMode
-        : null,
+        : String(row.key || "") === "storyMemoryModel"
+          ? runtimeSettings.storyMemoryPayloadMode
+          : null,
     };
   });
 

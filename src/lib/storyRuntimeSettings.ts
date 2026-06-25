@@ -5,10 +5,12 @@ export type StoryOrchestratorPayloadMode = "compact" | "advanced";
 
 export interface StoryRuntimeSettings {
   storyOrchestratorPayloadMode: StoryOrchestratorPayloadMode;
+  storyMemoryPayloadMode: StoryOrchestratorPayloadMode;
 }
 
 const DEFAULT_STORY_RUNTIME_SETTINGS: StoryRuntimeSettings = {
   storyOrchestratorPayloadMode: "compact",
+  storyMemoryPayloadMode: "compact",
 };
 
 const STORY_RUNTIME_SETTINGS_KEY = "__storyRuntimeSettings";
@@ -35,6 +37,7 @@ export function parseStoryRuntimeSettingsBlob(input: unknown): StoryRuntimeSetti
     : {};
   return {
     storyOrchestratorPayloadMode: normalizePayloadMode(settings.storyOrchestratorPayloadMode),
+    storyMemoryPayloadMode: normalizePayloadMode(settings.storyMemoryPayloadMode),
   };
 }
 
@@ -51,6 +54,9 @@ export function mergeStoryRuntimeSettingsBlob(input: unknown, patch: Partial<Sto
     storyOrchestratorPayloadMode: normalizePayloadMode(
       patch.storyOrchestratorPayloadMode ?? current.storyOrchestratorPayloadMode,
     ),
+    storyMemoryPayloadMode: normalizePayloadMode(
+      patch.storyMemoryPayloadMode ?? current.storyMemoryPayloadMode,
+    ),
   };
   return JSON.stringify(root);
 }
@@ -61,7 +67,7 @@ export async function getStoryRuntimeSettings(userId?: number): Promise<StoryRun
     return { ...DEFAULT_STORY_RUNTIME_SETTINGS };
   }
   const setting = await db("t_setting").where({ userId: resolvedUserId }).select("languageModel").first();
-  return parseStoryRuntimeSettingsBlob(setting?.languageModel);
+  return parseStoryRuntimeSettingsBlob(setting?.languageModel) ?? { ...DEFAULT_STORY_RUNTIME_SETTINGS };
 }
 
 export async function saveStoryRuntimeSettings(

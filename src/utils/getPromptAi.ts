@@ -58,6 +58,12 @@ export default async function getPromptAi(key: string, userId?: number): Promise
         payloadMode: runtimeSettings.storyOrchestratorPayloadMode,
       };
     }
+    if (key === "storyMemoryModel") {
+      return {
+        ...(input as AiConfig),
+        payloadMode: runtimeSettings.storyMemoryPayloadMode,
+      };
+    }
     return input as AiConfig;
   };
 
