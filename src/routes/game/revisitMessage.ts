@@ -56,6 +56,14 @@ export default router.post(
       const isPlayerMessage = targetRoleType === "player";
       const deleteOperator = isPlayerMessage ? ">=" : ">";
 
+      // ★ 回溯到用户消息时，强制把 turnState.canPlayerSpeak 设为 true（玩家即将重新发言）
+      if (isPlayerMessage && restoredState && typeof restoredState === "object") {
+        if (!restoredState.turnState || typeof restoredState.turnState !== "object") {
+          restoredState.turnState = {};
+        }
+        restoredState.turnState.canPlayerSpeak = true;
+      }
+
       await db.transaction(async (trx: any) => {
         await trx("t_sessionMessage")
           .where({ sessionId })
