@@ -438,15 +438,24 @@ function findRuntimeNpcOverlay(runtimeState: JsonRecord, role: RuntimeStoryRole)
 export function runtimeStoryRoles(world: any, state?: JsonRecord | null): RuntimeStoryRole[] {
   const roles = worldRoles(world);
   const runtimeState = asRecord(state);
-  return roles.map((role) => {
-    if (sanitizeRoleType(role.roleType) === "player") {
+  if (DebugLogUtil.isDebugLogEnabled()) {
+    console.log("[story:orchestrator:runtimeStoryRoles]", JSON.stringify(roles));
+  }
+  const rolesMaped = roles.map((role) => {
+    const rt = sanitizeRoleType(role.roleType);
+    if (rt === "player") {
       return applyRuntimeRoleOverlay(role, runtimeState.player);
     }
-    if (sanitizeRoleType(role.roleType) === "narrator") {
+    if (rt === "narrator") {
       return applyRuntimeRoleOverlay(role, runtimeState.narrator);
     }
+    // npc/system/general 统一用 NPC overlay（按 name/id 匹配）
     return applyRuntimeRoleOverlay(role, findRuntimeNpcOverlay(runtimeState, role));
   });
+  if (DebugLogUtil.isDebugLogEnabled()) {
+    console.log("[story:orchestrator:rolesMaped]", JSON.stringify(rolesMaped));
+  }
+  return rolesMaped;
 }
 
 // 生成章节开场消息，优先使用章节配置的开场白。
@@ -498,10 +507,13 @@ function roleActsAsWildcard(role: RuntimeStoryRole | undefined): boolean {
 }
 
 // 规范化角色类型，防止脏值污染回合状态。
+// 5种角色类型全部保留，不做映射。
 function sanitizeRoleType(input: unknown): string {
   const value = normalizeScalarText(input).toLowerCase();
   if (value === "player") return "player";
   if (value === "npc") return "npc";
+  if (value === "system") return "system";
+  if (value === "general") return "general";
   return "narrator";
 }
 
@@ -2337,14 +2349,21 @@ function buildMemoryCurrentEventLines(payload: {
 // 构造记忆管理提示词里的参数卡区块，避免主函数里重复处理 JSON 序列化和空值回退。
 function buildMemoryCardLines(payload: {
   playerCard: JsonRecord | null;
+  narratorCard: JsonRecord | null;
   npcCards: JsonRecord[];
 }): string[] {
+  // 角色动态参数卡列表：5种类型全部发送（player/narrator/npc/system/general）
+  const allCards = [
+    ...(payload.playerCard ? [payload.playerCard] : []),
+    ...(payload.narratorCard ? [payload.narratorCard] : []),
+    ...payload.npcCards,
+  ];
   return [
     "[用户当前参数卡(JSON)]",
     payload.playerCard ? JSON.stringify(payload.playerCard, null, 2) : "无",
     "",
     "[角色动态参数卡列表(JSON数组)]",
-    payload.npcCards.length ? JSON.stringify(payload.npcCards, null, 2) : "[]",
+    allCards.length ? JSON.stringify(allCards, null, 2) : "[]",
   ];
 }
 
@@ -2719,6 +2738,7 @@ function buildMemoryUserPrompt(payload: {
   recentDialogue: RecentDialogueTurn[];
   currentMemory: string;
   playerCard: JsonRecord | null;
+  narratorCard: JsonRecord | null;
   npcCards: JsonRecord[];
 }, compactMode = false): string {
   if (compactMode) {
@@ -4213,7 +4233,12 @@ export async function runStorySpeakerContent(input: {
         .filter((item) => item.name !== input.currentRole.name)
         .map((item) => `${item.name}(${sanitizeRoleType(item.roleType)})`)
         .slice(0, compactMode ? 3 : 4),
-    npcCards: roleCardSnapshots.npcCards,
+    // 角色动态参数卡列表：5种类型全部发送（player/narrator/npc/system/general），不拆分
+    npcCards: [
+      ...(roleCardSnapshots.playerCard ? [roleCardSnapshots.playerCard] : []),
+      ...(roleCardSnapshots.narratorCard ? [roleCardSnapshots.narratorCard] : []),
+      ...roleCardSnapshots.npcCards,
+    ],
     // ★ P4: 任务模式上下文注入 —— 任务激活时把 task 上下文喂给角色发言器
     taskContext: extractTaskContext(input.state),
     traceMeta: {

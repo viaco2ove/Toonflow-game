@@ -1593,12 +1593,13 @@ function collectTaskNpcList(world: any, state?: Record<string, any>): Array<{ id
   const stateNpcs = (state?.npcs || {}) as Record<string, any>;
   const npcs: Array<{ id: string; name: string; roleType?: string; card?: string }> = [];
 
-  // 1. 先从 world.settings.roles 收集
+  // 1. 先从 world.settings.roles 收集（5种类型全部保留：npc/system/general/narrator/player）
   for (const role of roles) {
     if (!role || typeof role !== "object") continue;
     const r = role as Record<string, any>;
-    const roleType = String(r.roleType || "npc").trim();
-    if (roleType === "player" || roleType === "narrator") continue;
+    // player 和 narrator 是前端限定的特殊角色，narrator 跳过，player 跳过（TaskDirector 由玩家扮演）
+    const rt = String(r.roleType || "npc").trim().toLowerCase();
+    if (rt === "player" || rt === "narrator") continue;
     const name = String(r.name || "").trim();
     if (!name) continue;
     const id = String(r.id || `npc_${name}`).trim();
@@ -1607,7 +1608,7 @@ function collectTaskNpcList(world: any, state?: Record<string, any>): Array<{ id
     const card = stateCard
       ? JSON.stringify(stateCard).slice(0, 800)
       : String(r.description || JSON.stringify(r.parameterCardJson || {})).slice(0, 800);
-    npcs.push({ id, name, roleType, card });
+    npcs.push({ id, name, roleType: rt, card });
   }
 
   // 2. 兜底：state.npcs 里有但 world.settings.roles 里没有的（线上历史数据）

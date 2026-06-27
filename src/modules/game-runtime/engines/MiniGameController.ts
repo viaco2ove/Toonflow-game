@@ -2584,7 +2584,6 @@ function gameTypeChinese(gameType: string): string {
 
 function buildParticipants(ctx: MiniGameControllerInput, count: number): JsonRecord[] {
   const roles = worldRoles(ctx.world)
-    .filter((item) => item.roleType === "player" || item.roleType === "npc")
     .map((item) => ({
       role_id: item.id,
       role_type: item.roleType,

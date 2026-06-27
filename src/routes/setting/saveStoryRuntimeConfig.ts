@@ -9,7 +9,7 @@ const router = express.Router();
 export default router.post(
   "/",
   validateFields({
-    storyOrchestratorPayloadMode: z.enum(["compact", "advanced"]),
+    storyOrchestratorPayloadMode: z.enum(["compact", "advanced"]).optional(),
     storyMemoryPayloadMode: z.enum(["compact", "advanced"]).optional(),
   }),
   async (req, res) => {
