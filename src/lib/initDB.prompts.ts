@@ -5051,7 +5051,7 @@ level + 1，exp 扣除旧 next_level_exp，next_level_exp = 新 level * 100，hp
   - 必须写入 facts 或 player_card_patch.other
   - hp/mp 必须是数值，文字只写入 other参数## 输出必须是一个 JSON 对象，字段固定为：summary, facts, tags, player_card_patch, npc_card_patches。
 player_card_patch 和 npc_card_patches.patch 只允许这些字段：
-raw_setting, personality, appearance, voice, skills, items, equipment, other, gender, age, level, level_desc, exp, next_level_exp, hp, mp, money, information。
+raw_setting, personality, appearance, voice, skills, items, equipment, other, gender, age, level, level_desc, exp, next_level_exp, hp, mp, money, role_key_information。
 其中 age、level、exp、next_level_exp、hp、mp、money 必须是数字；
 如果只是想表达“已恢复”“斗气更凝实”“状态转好”“经验提升”，请写到 other，不要写进 hp/mp/exp。
 `;
@@ -5149,8 +5149,8 @@ const _PROMPT_STORY_MEMORY = `
     - dynamic_world_global_background: 字符串,动态全局背景描述。动态控制整个故事的世界观。 务必每次都返回这个字段值！
 
 3. 角色补丁（player_card_patch / npc_card_patches内单条补丁）仅允许使用以下字段，禁止新增自定义字段：
-raw_setting, personality, appearance, voice, skills, items, equipment, other, gender, age, level, level_desc, exp, next_level_exp, hp, mp, money, information
-
+raw_setting, personality, appearance, voice, skills, items, equipment, other, gender, age, level, level_desc, exp, next_level_exp, hp, mp, money, role_key_information
+其中role_key_information 是角色关键信息
 4. 字段数值强制规范：
 age、level、exp、next_level_exp、hp、mp、money 必须为纯数字类型，禁止字符串数字、中文描述
 所有状态感受、模糊实力变化、剧情备注、临时buff描述统一存入other字段（字符串），禁止写入数值字段

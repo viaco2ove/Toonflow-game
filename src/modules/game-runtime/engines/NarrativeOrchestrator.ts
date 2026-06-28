@@ -636,6 +636,7 @@ function summarizeParameterCardText(input: unknown): string {
     card.age != null && normalizeScalarText(card.age) ? `年龄:${normalizeScalarText(card.age)}` : "",
     card.level != null && normalizeScalarText(card.level) ? `等级:${normalizeScalarText(card.level)}` : "",
     normalizeScalarText(card.level_desc || card.levelDesc) ? `等级称号:${normalizeScalarText(card.level_desc || card.levelDesc)}` : "",
+    normalizeScalarText(card.role_key_information || card.role_key_information) ? `角色关键信息:${normalizeScalarText(card.role_key_information || card.role_key_information)}` : "",
     normalizeScalarText(card.raw_setting || card.rawSetting) ? `设定摘要:${shortText(card.raw_setting || card.rawSetting, 28)}` : "",
     normalizeScalarText(card.personality) ? `性格:${shortText(card.personality, 24)}` : "",
     normalizeScalarText(card.appearance) ? `外貌:${shortText(card.appearance, 24)}` : "",
@@ -716,6 +717,7 @@ function buildMemoryRoleCardSummary(input: {
     age: normalizeOptionalCardNumber(card.age),
     level: normalizeOptionalCardNumber(card.level),
     level_desc: normalizeScalarText(card.level_desc || card.levelDesc),
+    role_key_information: normalizeScalarText(card.role_key_information || card.role_key_information),
     personality: normalizeScalarText(card.personality),
     appearance: normalizeScalarText(card.appearance),
     voice: normalizeScalarText(card.voice),
@@ -2391,7 +2393,7 @@ function buildCompactMemoryOutputExampleLines(): string[] {
         next_level_exp: 200,
         items: ["新获得物品"],
         other: ["新的长期状态"],
-        information: "角色的关键信息，如身份备注、编排限制等",
+        player_card_patch: "角色的关键信息，如身份备注、编排限制等",
       },
       npc_card_patches: [
         {
@@ -2406,7 +2408,7 @@ function buildCompactMemoryOutputExampleLines(): string[] {
       ],
       dynamic_world_global_background:"新的动态全局背景"
     }, null, 2),
-    "注意：patch 只允许这些字段：raw_setting, personality, appearance, voice, skills, items, equipment, other, gender, age, level, level_desc, exp, next_level_exp, hp, mp, money, information。",
+    "注意：patch 只允许这些字段：raw_setting, personality, appearance, voice, skills, items, equipment, other, gender, age, level, level_desc, exp, next_level_exp, hp, mp, money, role_key_information。",
     "没有变化就返回空对象 {} 或空数组 []。",
   ];
 }
@@ -2454,7 +2456,7 @@ function buildFullMemoryOutputExampleLines(): string[] {
         skills: ["新技能"],
         items: ["新物品"],
         other: ["新的长期状态"],
-        information: "角色的关键信息，如身份备注、编排限制等",
+        player_card_patch: "角色的关键信息，如身份备注、编排限制等",
       },
       npc_card_patches: [
         {
@@ -2469,7 +2471,7 @@ function buildFullMemoryOutputExampleLines(): string[] {
       ],
       dynamic_world_global_background: "新的动态全局背景"
     }, null, 2),
-    "只允许使用这些 patch 字段：raw_setting, personality, appearance, voice, skills, items, equipment, other, gender, age, level, level_desc, exp, next_level_exp, hp, mp, money, information。",
+    "只允许使用这些 patch 字段：raw_setting, personality, appearance, voice, skills, items, equipment, other, gender, age, level, level_desc, exp, next_level_exp, hp, mp, money, role_key_information。",
     "如果没有参数卡变化，player_card_patch 返回 {}，npc_card_patches 返回 []。",
   ];
 }
@@ -2507,7 +2509,7 @@ function buildMemorySystemPrompt(promptFromDb: unknown): string {
     "当用户最新输入以 `@记忆管理` 开头时，该输入视为对长期记忆和角色参数卡的直接管理指令，不需要等待旁白确认。",
     "如果 `@记忆管理` 后面包含明确状态变化、物品变化、技能变化、身份变化、数值变化，则必须直接更新 summary、facts、tags 和对应参数卡 patch。",
     "输出必须是一个 JSON 对象，字段固定为：summary, facts, tags, player_card_patch, npc_card_patches。",
-    "player_card_patch 和 npc_card_patches.patch 只允许这些字段：raw_setting, personality, appearance, voice, skills, items, equipment, other, gender, age, level, level_desc, exp, next_level_exp, hp, mp, money。",
+    "player_card_patch 和 npc_card_patches.patch 只允许这些字段：raw_setting, personality, appearance, voice, skills, items, equipment, other, gender, age, level, level_desc, exp, next_level_exp, hp, mp, money,role_key_information。",
     "其中 age、level、exp、next_level_exp、hp、mp、money 必须是数字；如果只是想表达“已恢复”“斗气更凝实”“状态转好”“经验提升”，请写到 other，不要写进 hp/mp/exp。",
   ].join("\n");
 }
@@ -4942,6 +4944,7 @@ function buildDefaultRoleParameterCardForMemory(input: {
     age: Number.isFinite(Number(currentCard.age)) ? Number(currentCard.age) : null,
     level: levelValue,
     level_desc: normalizeScalarText(currentCard.level_desc || currentCard.levelDesc) || "初入此界",
+    role_key_information: normalizeScalarText(currentCard.role_key_information || currentCard.role_key_information),
     personality: normalizeScalarText(currentCard.personality),
     appearance: normalizeScalarText(currentCard.appearance),
     voice: normalizeScalarText(currentCard.voice || role.voice),
@@ -5026,7 +5029,7 @@ function normalizeParameterCardExperienceProgress(cardInput: JsonRecord): JsonRe
 function sanitizeMemoryParameterCardPatch(input: unknown): JsonRecord {
   const raw = asRecord(input);
   const patch: JsonRecord = {};
-  const scalarKeys = ["raw_setting", "personality", "appearance", "voice", "gender", "level_desc", "information"];
+  const scalarKeys = ["raw_setting", "personality", "appearance", "voice", "gender", "level_desc", "role_key_information"];
   scalarKeys.forEach((key) => {
     const camelKey = key.replaceAll(/_([a-z])/g, (_, char) => char.toUpperCase());
     const value = normalizeScalarText(raw[key] ?? raw[camelKey]);

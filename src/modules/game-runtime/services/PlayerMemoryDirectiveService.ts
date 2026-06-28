@@ -91,6 +91,7 @@ function buildDefaultPlayerParameterCard(state: JsonRecord): JsonRecord {
     age: Number.isFinite(Number(current.age)) ? Number(current.age) : null,
     level,
     level_desc: scalarText(current.level_desc || current.levelDesc) || "初入此界",
+    role_key_information: scalarText(current.role_key_information ),
     personality: scalarText(current.personality),
     appearance: scalarText(current.appearance),
     voice: scalarText(current.voice || player.voice),

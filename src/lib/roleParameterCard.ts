@@ -150,8 +150,16 @@ function normalizeParameterCard(input: unknown, fallback: {
     money: money ?? 0,
     other: normalizeList(source.other ?? fieldMap["other"]),
     roleType,
-    // information 关键信息：记录角色身份备注、编排限制、发现限制等，由记忆管理器维护
-    information: normalizeText(source.information ?? fieldMap["information"] ?? fieldMap["info"] ?? ""),
+    // 角色关键信息：记录角色身份备注、编排限制、发现限制等，由记忆管理器维护
+    // 同时保留 information 和 role_key_information 字段，避免前后端字段名不一致
+    information: normalizeText(
+      source.information ?? source.role_key_information
+      ?? fieldMap["information"] ?? fieldMap["role_key_information"] ?? fieldMap["info"] ?? ""
+    ),
+    role_key_information: normalizeText(
+      source.role_key_information ?? source.information
+      ?? fieldMap["role_key_information"] ?? fieldMap["information"] ?? fieldMap["info"] ?? ""
+    ),
   };
 }
 
@@ -221,7 +229,7 @@ async function generateRoleParameterCardWithAi(input: {
     "你是故事角色参数卡生成器。",
     "你的任务是根据角色设定，生成用于故事编辑保存的静态角色参数卡。",
     "只输出 JSON，不要解释，不要代码块。",
-    "字段固定为：name, raw_setting, gender, age, level, level_desc, personality, appearance, voice, skills, items, equipment, hp, mp, money, other, role_type, information。",
+    "字段固定为：name, raw_setting, gender, age, level, level_desc, personality, appearance, voice, skills, items, equipment, hp, mp, money, other, role_type, role_key_information。",
     "role_type 角色类型，枚举值：npc / narrator / player / system / general。",
     "  - 普通 NPC 用 npc",
     "  - 旁白用 narrator",
