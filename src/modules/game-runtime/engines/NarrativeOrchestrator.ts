@@ -669,6 +669,7 @@ function summarizeParameterCardKeyText(input: unknown): string {
     card.age != null && normalizeScalarText(card.age) ? `年龄:${normalizeScalarText(card.age)}` : "",
     normalizeScalarText(card.personality) ? `性格:${card.personality}` : "",
     level ? `等级:${level}` : "",
+    normalizeScalarText(card.role_key_information || card.role_key_information) ? `角色关键信息:${normalizeScalarText(card.role_key_information || card.role_key_information)}` : "",
   ].filter(Boolean);
   return parts.join("|");
 }
