@@ -636,7 +636,7 @@ function summarizeParameterCardText(input: unknown): string {
     card.age != null && normalizeScalarText(card.age) ? `年龄:${normalizeScalarText(card.age)}` : "",
     card.level != null && normalizeScalarText(card.level) ? `等级:${normalizeScalarText(card.level)}` : "",
     normalizeScalarText(card.level_desc || card.levelDesc) ? `等级称号:${normalizeScalarText(card.level_desc || card.levelDesc)}` : "",
-    normalizeScalarText(card.role_key_information || card.role_key_information) ? `角色关键信息:${normalizeScalarText(card.role_key_information || card.role_key_information)}` : "",
+    normalizeScalarText(card.role_key_information || card.information) ? `角色关键信息:${normalizeScalarText(card.role_key_information || card.information)}` : "",
     normalizeScalarText(card.raw_setting || card.rawSetting) ? `设定摘要:${shortText(card.raw_setting || card.rawSetting, 28)}` : "",
     normalizeScalarText(card.personality) ? `性格:${shortText(card.personality, 24)}` : "",
     normalizeScalarText(card.appearance) ? `外貌:${shortText(card.appearance, 24)}` : "",
@@ -669,7 +669,7 @@ function summarizeParameterCardKeyText(input: unknown): string {
     card.age != null && normalizeScalarText(card.age) ? `年龄:${normalizeScalarText(card.age)}` : "",
     normalizeScalarText(card.personality) ? `性格:${card.personality}` : "",
     level ? `等级:${level}` : "",
-    normalizeScalarText(card.role_key_information || card.role_key_information) ? `角色关键信息:${normalizeScalarText(card.role_key_information || card.role_key_information)}` : "",
+    normalizeScalarText(card.role_key_information || card.information) ? `角色关键信息:${normalizeScalarText(card.role_key_information || card.information)}` : "",
   ].filter(Boolean);
   return parts.join("|");
 }
@@ -718,7 +718,7 @@ function buildMemoryRoleCardSummary(input: {
     age: normalizeOptionalCardNumber(card.age),
     level: normalizeOptionalCardNumber(card.level),
     level_desc: normalizeScalarText(card.level_desc || card.levelDesc),
-    role_key_information: normalizeScalarText(card.role_key_information || card.role_key_information),
+    role_key_information: normalizeScalarText(card.role_key_information || card.information),
     personality: normalizeScalarText(card.personality),
     appearance: normalizeScalarText(card.appearance),
     voice: normalizeScalarText(card.voice),
@@ -4945,7 +4945,7 @@ function buildDefaultRoleParameterCardForMemory(input: {
     age: Number.isFinite(Number(currentCard.age)) ? Number(currentCard.age) : null,
     level: levelValue,
     level_desc: normalizeScalarText(currentCard.level_desc || currentCard.levelDesc) || "初入此界",
-    role_key_information: normalizeScalarText(currentCard.role_key_information || currentCard.role_key_information),
+    role_key_information: normalizeScalarText(currentCard.role_key_information || currentCard.information),
     personality: normalizeScalarText(currentCard.personality),
     appearance: normalizeScalarText(currentCard.appearance),
     voice: normalizeScalarText(currentCard.voice || role.voice),
