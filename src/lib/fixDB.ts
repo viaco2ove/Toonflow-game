@@ -45,6 +45,8 @@ import {
   PROMPT_TASK_PROGRESS_AGENT,
   PROMPT_TASK_SPEAKER_AGENT,
   PROMPT_PLAY_TIP_AGENT,
+  PROMPT_STORY_ORCHESTRATOR_OPTIONS,
+  PROMPT_TASK_DIRECTOR_AGENT_OPTIONS,
   PROMPT_VIDEO_TEXT,
 } from "./fixDB.prompts";
 
@@ -985,6 +987,22 @@ export default async (knex: Knex): Promise<void> => {
         parentCode: null,
         defaultValue:
           PROMPT_PLAY_TIP_AGENT,
+      },
+      {
+        code: "story-orchestrator-options",
+        name: "AI Agent-剧情编排选项生成器",
+        type: "aiAgent",
+        parentCode: null,
+        defaultValue:
+          PROMPT_STORY_ORCHESTRATOR_OPTIONS,
+      },
+      {
+        code: "task-director-agent-options",
+        name: "AI Agent-任务编排选项生成器",
+        type: "aiAgent",
+        parentCode: null,
+        defaultValue:
+          PROMPT_TASK_DIRECTOR_AGENT_OPTIONS,
       },
     ];
     const existingRows = await knex("t_prompts").whereIn(

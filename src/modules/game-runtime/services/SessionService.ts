@@ -2964,6 +2964,184 @@ export async function generatePlayTips(sessionIdInput: string): Promise<{ tips: 
   return result;
 }
 
+/**
+ * 生成编排选项（剧情/任务编排选项生成器）
+ * 每次点击 orchestrate-tio-fab 调用一次，refresh=true 为"换一换"。
+ */
+export async function generateOrchestrateOptionsForSession(
+  sessionIdInput: string,
+  refresh: boolean,
+): Promise<{ options: Array<{ role: string; motive: string }>; source: "ai" | "fallback" }> {
+  const sessionId = String(sessionIdInput || "").trim();
+  if (!sessionId) {
+    throw new SessionServiceError(400, "sessionId 不能为空");
+  }
+
+  const db = getGameDb();
+  const sessionRow = await db("t_gameSession").where({ sessionId }).first();
+  if (!sessionRow) {
+    throw new SessionServiceError(404, "会话不存在");
+  }
+  const currentUserId = getCurrentUserId(0);
+  if (currentUserId > 0 && Number(sessionRow.userId || 0) !== currentUserId) {
+    throw new SessionServiceError(403, "无权访问该会话");
+  }
+
+  const currentChapterId = Number(sessionRow.chapterId || 0) || null;
+  const world = await loadSessionWorld(db, Number(sessionRow.worldId || 0));
+  const rolePair = normalizeRolePair(world?.playerRole, world?.narratorRole);
+  const state = normalizeSessionState(
+    sessionRow.stateJson,
+    Number(sessionRow.worldId || 0),
+    currentChapterId,
+    rolePair,
+    world,
+  );
+  const chapter = currentChapterId
+    ? normalizeChapterOutput(await db("t_storyChapter").where({ id: currentChapterId }).first())
+    : null;
+
+  const rawRecentMessages = await db("t_sessionMessage").where({ sessionId }).orderBy("id", "desc").limit(10);
+  const recentMessages = buildRecentMessages(rawRecentMessages, state);
+  const dialogueText = recentMessages
+    .map(m => `${m.role || "?"}：${String((m as any).content || "").slice(0, 80)}`)
+    .join("\n");
+  const latestPlayerMessage = [...recentMessages].reverse().find((m) => String((m as any).roleType || "") === "player");
+
+  // 当前任务（如有）→ 决定走任务版还是剧情版
+  const vars = (state.vars || {}) as Record<string, any>;
+  const activeTask = vars.activeFreeTask as Record<string, any> | null;
+  const taskObjective = String(activeTask?.objective || "").trim();
+  const taskProcess = Array.isArray(activeTask?.process)
+    ? (activeTask?.process as string[]).join("；")
+    : String(activeTask?.process || "").trim();
+  const taskMode = Boolean(taskObjective);
+
+  // 角色列表
+  const npcList = collectTaskNpcList(world, state);
+  const rolesText = npcList.length
+    ? npcList.map(n => `- ${n.name}（${n.roleType || "npc"}）：${String(n.card || "").slice(0, 200)}`).join("\n")
+    : "（无可用角色）";
+
+  // 全局背景
+  const w = (world || {}) as Record<string, any>;
+  const wSettings = typeof w.settings === "string" ? parseJsonSafe(w.settings, {}) : (w.settings || {});
+  const globalBackground = String(
+    wSettings.globalBackground || w.globalBackground || w.intro || w.background || ""
+  ).trim();
+  const dynamicGlobalBackground = String(state.dynamicWorldGlobalBackground || state.memorySummary || "").trim() || undefined;
+
+  // current_event 摘要
+  const currentEvent = (state.currentEvent || {}) as Record<string, any>;
+  const currentEventText = [
+    currentEvent.index != null ? `index:${currentEvent.index}` : "",
+    `status:${currentEvent.status || "active"}`,
+    `summary:${currentEvent.summary || "当前事件未命名"}`,
+    Array.isArray(currentEvent.facts) && currentEvent.facts.length ? `facts:${currentEvent.facts.join("；")}` : "",
+  ].filter(Boolean).join("\n");
+
+  const { generateOrchestrateOptions } = await import("@/modules/game-runtime/agents/orchestrateOptions/OrchestrateOptionsAgent");
+  const result = await generateOrchestrateOptions({
+    userId: currentUserId,
+    taskMode,
+    refresh: Boolean(refresh),
+    worldName: String(w.name || "未命名世界"),
+    chapterTitle: String(chapter?.title || state.chapterTitle || "未命名章节"),
+    globalBackground,
+    dynamicGlobalBackground,
+    roles: rolesText,
+    recentDialogue: dialogueText,
+    latestPlayerMessage: latestPlayerMessage ? String((latestPlayerMessage as any).content || "") : undefined,
+    currentEvent: currentEventText,
+    taskObjective: taskObjective || undefined,
+    taskProcess: taskProcess || undefined,
+  });
+
+  return { options: result.options, source: result.source };
+}
+
+/**
+ * 应用编排选项：把 { role, motive } 直接构造成 pending narrative plan，
+ * 跳过编排师，前端随后走 /streamlines 调角色发言器生成台词。
+ */
+export async function applyOrchestrateOptionForSession(
+  sessionIdInput: string,
+  role: string,
+  motive: string,
+): Promise<SessionNarrativePlanResult | null> {
+  const sessionId = String(sessionIdInput || "").trim();
+  const pickedRole = String(role || "").trim();
+  const pickedMotive = String(motive || "").trim();
+  if (!sessionId) {
+    throw new SessionServiceError(400, "sessionId 不能为空");
+  }
+  if (!pickedRole || !pickedMotive) {
+    throw new SessionServiceError(400, "role 和 motive 不能为空");
+  }
+
+  return withSessionLock(sessionId, async () => {
+    const db = getGameDb();
+    const sessionRow = await db("t_gameSession").where({ sessionId }).first();
+    if (!sessionRow) {
+      throw new SessionServiceError(404, "会话不存在");
+    }
+    const currentUserId = getCurrentUserId(0);
+    if (currentUserId > 0 && Number(sessionRow.userId || 0) !== currentUserId) {
+      throw new SessionServiceError(403, "无权访问该会话");
+    }
+
+    const currentChapterId = Number(sessionRow.chapterId || 0) || null;
+    const sessionStatus = String(sessionRow.status || "active");
+    const world = await loadSessionWorld(db, Number(sessionRow.worldId || 0));
+    const rolePair = normalizeRolePair(world?.playerRole, world?.narratorRole);
+    const state = normalizeSessionState(
+      sessionRow.stateJson,
+      Number(sessionRow.worldId || 0),
+      currentChapterId,
+      rolePair,
+      world,
+    );
+
+    // 解析选中角色的类型：narrator / npc（system/general 也归到 npc 走发言器）
+    const npcList = collectTaskNpcList(world, state);
+    const matched = npcList.find((n) => n.name === pickedRole);
+    const narratorName = String(state.narrator?.name || "旁白").trim();
+    const roleType: "narrator" | "npc" = (pickedRole === narratorName || pickedRole === "旁白")
+      ? "narrator"
+      : "npc";
+
+    // 构造 plan：直接指定 role + motive，由 streamlines 调发言器落地台词
+    const plan = buildTaskNarrativePlan({
+      state,
+      role: pickedRole,
+      roleType,
+      motive: pickedMotive,
+      eventType: "on_orchestrated_reply",
+      presetContent: null,
+      taskMeta: { source: "orchestrate-option", matchedRoleId: matched?.id || "" },
+    });
+
+    // 设置 turnState：本轮由选中角色发言，不轮到用户
+    setRuntimeTurnState(state, world, {
+      canPlayerSpeak: false,
+      expectedRoleType: roleType,
+      expectedRole: pickedRole,
+      lastSpeakerRoleType: String(runtimeTurnStateFromState(state).lastSpeakerRoleType || "player"),
+      lastSpeaker: String(runtimeTurnStateFromState(state).lastSpeaker || state.player?.name || "用户"),
+    });
+    setPendingSessionNarrativePlan(state, plan);
+
+    await db("t_gameSession").where({ sessionId }).update({
+      stateJson: toJsonText(state, {}),
+      chapterId: currentChapterId,
+      status: sessionStatus,
+      updateTime: nowTs(),
+    });
+
+    return buildPublicSessionPlanResult(plan);
+  });
+}
+
 export async function continueSessionNarrative(sessionIdInput: string): Promise<ContinueSessionNarrativeResult> {
   const db = getGameDb();
   const now = nowTs();
