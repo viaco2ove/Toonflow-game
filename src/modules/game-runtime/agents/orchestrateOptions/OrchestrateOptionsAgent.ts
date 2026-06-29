@@ -70,7 +70,7 @@ const OPTION_SCHEMA = z.array(
     role: z.string(),
     motive: z.string(),
   }),
-).min(1).max(5);
+).min(3).max(5);
 
 export interface OrchestrateOptionsContext {
   userId: number;
@@ -106,10 +106,22 @@ export interface OrchestrateOptionsResult {
 }
 
 function buildFallbackOptions(ctx: OrchestrateOptionsContext): OrchestrateOption[] {
+  const isTask = ctx.taskMode;
+  if (isTask) {
+    return [
+      { role: "旁白", motive: "线索逐渐浮现，引导用户行动" },
+      { role: "旁白", motive: "现场出现新的诡异痕迹" },
+      { role: "旁白", motive: "时间悄然流逝，任务推进中" },
+      { role: "旁白", motive: "任务进度推进：目标位置已锁定" },
+      { role: "旁白", motive: "任务阶段切换：从搜索升级到对峙" },
+    ];
+  }
   return [
     { role: "旁白", motive: "描述当前场景的细节变化，制造氛围" },
     { role: "旁白", motive: "一个意外的声响打破了当前的沉默" },
-    { role: "旁白", motive: "时间悄然流逝，等待用户下一步行动" },
+    { role: "旁白", motive: "暗示接下来剧情的关键信息" },
+    { role: "旁白", motive: "过了几天，远处传来打斗声，打破小镇的宁静" },
+    { role: "旁白", motive: "突然，乌云密布，天空中出现诡异的纹路" },
   ];
 }
 
@@ -217,7 +229,7 @@ export async function generateOrchestrateOptions(ctx: OrchestrateOptionsContext)
         motive: String(item.motive || "").trim(),
       }))
       .filter((item) => item.role && item.motive)
-      .slice(0, 3);
+      .slice(0, 5);
 
     if (!cleaned.length) {
       return { options: buildFallbackOptions(ctx), source: "fallback", latencyMs };
