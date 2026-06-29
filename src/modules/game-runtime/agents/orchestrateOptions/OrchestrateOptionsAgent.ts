@@ -167,9 +167,9 @@ export async function generateOrchestrateOptions(ctx: OrchestrateOptionsContext)
     ctx.recentDialogue || "（暂无对话）",
     "",
     `玩家本轮输入：${ctx.latestPlayerMessage || "（无）"}`,
-    "",
-    "请根据以上上下文，生成 5 条下一步编排方向。",
-    "第 1-3 条偏角色推进；第 4-5 条按当前模式生成：剧情模式=场景切换/新事件，任务模式=进度推进。",
+    "已说话的角色的编排几率应该变低而不是变高！！！",
+    "已说话的角色的编排几率应该变低而不是变高！！！",
+    "已说话的角色的编排几率应该变低而不是变高！！！",
     "请严格输出 JSON 数组，长度必须正好为 5：",
     `[{"role":"...","motive":"..."},{"role":"...","motive":"..."},{"role":"...","motive":"..."},{"role":"...","motive":"..."},{"role":"...","motive":"..."}]`,
   );
