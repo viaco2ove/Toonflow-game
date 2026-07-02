@@ -368,7 +368,7 @@ function discoverFfmpegPath(): string {
 
   const syncLookup = process.platform === "win32"
     ? spawnSync("where", ["ffmpeg"], { encoding: "utf8", windowsHide: true })
-    : spawnSync("cmd.exe", ["/c", "where", "ffmpeg"], { encoding: "utf8", windowsHide: true });
+    : spawnSync("sh", ["-lc", "command -v ffmpeg"], { encoding: "utf8" });
   const stdout = String(syncLookup.stdout || "").trim();
   const firstLine = stdout.split(/\r?\n/).map((line) => line.trim()).find(Boolean) || "";
   if (firstLine) {

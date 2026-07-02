@@ -301,6 +301,10 @@ def force_sync_all_current_branches() -> str:
     return f"[APP 同步+构建+重启]\n{app_output}\n\n[WEB 同步+构建+发布]\n{web_output}"
 
 
+def install_ffmpeg() -> str:
+    return run("sudo apt update && sudo apt install ffmpeg -y")
+
+
 # ====================== 以下代码无需修改 ======================
 def shell_text(text: str) -> str:
     return html.escape(text or "").replace("\n", "<br>")
@@ -460,6 +464,7 @@ def home() -> str:
         <div class="layout">
           <div class="panel">
             <h2>服务操作</h2>
+            <a class="action dark" href="/tools/install-ffmpeg">📦 安装 ffmpeg</a>
             <a class="action danger" href="/git/force-sync-all">🔥 强制全量更新&重启（推荐）</a>
             <a class="action danger" href="/git/force-sync">强制更新后端</a>
             <a class="action danger" href="/git/force-sync-web">强制更新Web</a>
@@ -658,3 +663,11 @@ def clear_pm2_logs_handler():
     output = clear_pm2_logs()
     set_last_action_log("清空PM2日志", output)
     return RedirectResponse("/app/pm2-logs", status_code=303)
+
+
+@app.get("/tools/install-ffmpeg")
+def tools_install_ffmpeg():
+    """安装 ffmpeg"""
+    output = install_ffmpeg()
+    set_last_action_log("安装 ffmpeg", output)
+    return RedirectResponse("/")
