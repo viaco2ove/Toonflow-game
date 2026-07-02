@@ -801,6 +801,7 @@ export async function runLocalBiRefNetMatting(input: Buffer, model?: string | nu
         timeoutMs: 900000,
       });
     }
+    console.log(`[runLocalBiRefNetMatting] Python script done. input=${workToken} model=${resolvedModel}`);
     return await fs.readFile(outputPath);
   } finally {
     await Promise.allSettled([

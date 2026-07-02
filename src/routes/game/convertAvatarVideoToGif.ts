@@ -42,8 +42,10 @@ const DEFAULT_GIF_FPS = 10;
 // 先把抽帧压到头像目标尺寸附近，减少本地抠图模型的单帧推理成本。512/256/128/64
 const DEFAULT_FRAME_OUTPUT_SIDE = 512;
 // 逐帧抠图最消耗时间，允许通过环境变量提高同时处理的帧数。
+// 注意：ONNX 推理内存消耗大，服务器内存不足时并发过高会被 OOM kill。
+// 生产环境建议先设为 1，内存充足时再逐步调高。
 const DEFAULT_VIDEO_MATTING_CONCURRENCY = 1;
-const MAX_VIDEO_MATTING_CONCURRENCY = 6;
+const MAX_VIDEO_MATTING_CONCURRENCY = 3;
 const MIN_VIDEO_DURATION_SECONDS = 1;
 const MAX_VIDEO_DURATION_SECONDS = 12;
 const MIN_VIDEO_FPS = 1;
