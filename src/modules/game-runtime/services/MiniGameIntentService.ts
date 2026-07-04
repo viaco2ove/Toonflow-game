@@ -252,17 +252,15 @@ export async function resolveMiniGameIntentByAi(input: ResolveMiniGameIntentInpu
       timing: logMeta.timing,
       runtimeError: null,
     });
-    if (DebugLogUtil.isDebugLogEnabled()) {
-      console.log(`[story:mini_game:agent] ${JSON.stringify({
-        gameType: input.gameType,
-        phase: input.phase,
-        status: input.status,
-        input: input.userInput,
-        actionId: normalized?.actionId || "",
-        targetName: normalized?.targetName || "",
-        reason: normalized?.reason || "",
-      })}`);
-    }
+    DebugLogUtil.log("story:mini_game:agent", JSON.stringify({
+      gameType: input.gameType,
+      phase: input.phase,
+      status: input.status,
+      input: input.userInput,
+      actionId: normalized?.actionId || "",
+      targetName: normalized?.targetName || "",
+      reason: normalized?.reason || "",
+    }));
     return normalized;
   } catch (error) {
     DebugLogUtil.logMiniGamePromptStats("story:mini_game:stats", {
@@ -280,9 +278,7 @@ export async function resolveMiniGameIntentByAi(input: ResolveMiniGameIntentInpu
       },
       runtimeError: error,
     });
-    if (DebugLogUtil.isDebugLogEnabled()) {
-      console.log(`[story:mini_game:agent:error] ${String((error as Error)?.message || error || "")}`);
-    }
+    DebugLogUtil.log("story:mini_game:agent:error", String((error as Error)?.message || error || ""));
     return null;
   }
 }

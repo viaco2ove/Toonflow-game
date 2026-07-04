@@ -1925,27 +1925,22 @@ DebugLogUtil.log("story:orchestrator:runtime", JSON.stringify(runtimeLog));
     DebugLogUtil.log("story:orchestrator:stats", "request_status=success");
   }
     console.log("[story:orchestrator:stats] 以下为 prompt 体积估算，不等于模型真实 usage。");
-    console.log("[story:orchestrator:stats] | 区块 | 实际内容 | 字符数 | 估算 Prompt Tokens |");
-    console.log("[story:orchestrator:stats] |---|---|---:|---:|");
-    rows.forEach((row) => {
-      console.log(`[story:orchestrator:stats] | ${row.block} | ${normalizePromptStatContent(row.content)} | ${row.chars} | ${row.estimatedTokens} |`);
-    });
+DebugLogUtil.log("story:orchestrator:stats", "| 区块 | 实际内容 | 字符数 | 估算 Prompt Tokens |");
+  DebugLogUtil.log("story:orchestrator:stats", "|---|---|---:|---:|");
+  rows.forEach((row) => {
+    DebugLogUtil.log("story:orchestrator:stats", `| ${row.block} | ${normalizePromptStatContent(row.content)} | ${row.chars} | ${row.estimatedTokens} |`);
+  });
 
-    if (responseText) {
-      console.log(`[story:orchestrator:stats] | 返回内容 | ${normalizePromptStatContent(responseText)} | ${responseText.length} | - |`);
-    }
-    if (tokenUsage) {
-      console.log(`[story:orchestrator:stats] | 实际推理消耗 | input=${tokenUsage.inputTokens || 0}, output=${tokenUsage.outputTokens || 0}, reasoning=${tokenUsage.reasoningTokens || 0} | - | - |`);
-    }
-    console.log(`[story:orchestrator:stats] System Prompt`);
-    console.log(systemPrompt +"\n \n userPrompt:\n"+userPrompt);
-
-    console.log(`[story:orchestrator:stats] 耗时: ${Number(timing?.totalMs || 0)}ms`);
-
-
-
-
+  if (responseText) {
+    DebugLogUtil.log("story:orchestrator:stats", `| 返回内容 | ${normalizePromptStatContent(responseText)} | ${responseText.length} | - |`);
   }
+  if (tokenUsage) {
+    DebugLogUtil.log("story:orchestrator:stats", `| 实际推理消耗 | input=${tokenUsage.inputTokens || 0}, output=${tokenUsage.outputTokens || 0}, reasoning=${tokenUsage.reasoningTokens || 0} | - | - |`);
+  }
+  DebugLogUtil.log("story:orchestrator:stats", `System Prompt`);
+  DebugLogUtil.log("story:orchestrator:stats", systemPrompt +"\n \n userPrompt:\n"+userPrompt);
+
+  DebugLogUtil.log("story:orchestrator:stats", `耗时: ${Number(timing?.totalMs || 0)}ms`);
 }
 
 // 统一输出记忆管理器的 runtime/stats 日志，便于核对请求是否正确、返回是否为空、以及是否覆盖了旧记忆。

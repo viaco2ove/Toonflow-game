@@ -964,12 +964,10 @@ async function evaluateFreeTaskResolutionByAi(input: {
       },
     };
   } catch (error) {
-    if (DebugLogUtil.isDebugLogEnabled()) {
-      console.log("[story:free_task:resolution:error]", JSON.stringify({
-        taskTitle: scalarText(input.activeTask.title),
-        message: String((error as Error)?.message || error || ""),
-      }));
-    }
+    DebugLogUtil.log("story:free_task:resolution:error", JSON.stringify({
+      taskTitle: scalarText(input.activeTask.title),
+      message: String((error as Error)?.message || error || ""),
+    }));
     return null;
   }
 }
@@ -1120,12 +1118,10 @@ async function generateFreeChapterTaskBlueprintByAi(input: {
     }
     return blueprint;
   } catch (error) {
-    if (DebugLogUtil.isDebugLogEnabled()) {
-      console.log("[story:free_task:blueprint:error]", JSON.stringify({
-        taskTitle,
-        message: String((error as Error)?.message || error || ""),
-      }));
-    }
+    DebugLogUtil.log("story:free_task:blueprint:error", JSON.stringify({
+      taskTitle,
+      message: String((error as Error)?.message || error || ""),
+    }));
     return null;
   }
 }
@@ -1561,14 +1557,12 @@ export async function maybeActivateFreeChapterTaskEvent(input: {
     option: selected,
     blueprint,
   });
-  if (DebugLogUtil.isDebugLogEnabled()) {
-    console.log("[story:free_task:activated]", JSON.stringify({
-      title: blueprint.taskTitle,
-      objective: blueprint.objective,
-      source: blueprint.source,
-      eventIndex: readChapterProgressState(input.state).eventIndex,
-    }));
-  }
+  DebugLogUtil.log("story:free_task:activated", JSON.stringify({
+    title: blueprint.taskTitle,
+    objective: blueprint.objective,
+    source: blueprint.source,
+    eventIndex: readChapterProgressState(input.state).eventIndex,
+  }));
   return true;
 }
 
