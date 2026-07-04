@@ -1900,7 +1900,7 @@ function logOrchestratorPromptStats(
     runtimeLog.error = formatRuntimeErrorMessage(runtimeError);
   }
 
-DebugLogUtil.log("story:orchestrator:runtime", JSON.stringify(runtimeLog));
+  DebugLogUtil.log("story:orchestrator:runtime", JSON.stringify(runtimeLog));
   // [story:chapter_ending_check:stats] current_chapter
   DebugLogUtil.logCurrentChapter("story:orchestrator:stats", {
     id: payload.traceMeta?.chapterId,
@@ -1924,8 +1924,8 @@ DebugLogUtil.log("story:orchestrator:runtime", JSON.stringify(runtimeLog));
   } else {
     DebugLogUtil.log("story:orchestrator:stats", "request_status=success");
   }
-    console.log("[story:orchestrator:stats] 以下为 prompt 体积估算，不等于模型真实 usage。");
-DebugLogUtil.log("story:orchestrator:stats", "| 区块 | 实际内容 | 字符数 | 估算 Prompt Tokens |");
+  DebugLogUtil.log("story:orchestrator:stats", "以下为 prompt 体积估算，不等于模型真实 usage。");
+  DebugLogUtil.log("story:orchestrator:stats", "| 区块 | 实际内容 | 字符数 | 估算 Prompt Tokens |");
   DebugLogUtil.log("story:orchestrator:stats", "|---|---|---:|---:|");
   rows.forEach((row) => {
     DebugLogUtil.log("story:orchestrator:stats", `| ${row.block} | ${normalizePromptStatContent(row.content)} | ${row.chars} | ${row.estimatedTokens} |`);
@@ -2009,38 +2009,37 @@ function logMemoryPromptStats(input: {
   if (input.runtimeError) {
     runtimeLog.error = formatRuntimeErrorMessage(input.runtimeError);
   }
-  if (!DebugLogUtil.isDebugLogEnabled()) return;
-  console.log("[story:memory:runtime]", JSON.stringify(runtimeLog));
+  DebugLogUtil.log("story:memory:runtime", JSON.stringify(runtimeLog));
   DebugLogUtil.logCurrentChapter("story:memory:stats", input.chapterMeta);
-  console.log(`[story:memory:stats] request_chars=${totalPromptChars} estimated_tokens=${totalPromptTokens} system_chars=${input.systemPrompt.length} user_chars=${input.userPrompt.length} build_ms=${Number(input.timing?.buildMs || 0)} invoke_ms=${Number(input.timing?.invokeMs || 0)} total_ms=${Number(input.timing?.totalMs || 0)}`);
+  DebugLogUtil.log("story:memory:stats", `request_chars=${totalPromptChars} estimated_tokens=${totalPromptTokens} system_chars=${input.systemPrompt.length} user_chars=${input.userPrompt.length} build_ms=${Number(input.timing?.buildMs || 0)} invoke_ms=${Number(input.timing?.invokeMs || 0)} total_ms=${Number(input.timing?.totalMs || 0)}`);
   if (input.tokenUsage) {
-    console.log(`[story:memory:stats] actual_input_tokens=${input.tokenUsage.inputTokens || 0} actual_output_tokens=${input.tokenUsage.outputTokens || 0} actual_reasoning_tokens=${input.tokenUsage.reasoningTokens || 0}`);
+    DebugLogUtil.log("story:memory:stats", `actual_input_tokens=${input.tokenUsage.inputTokens || 0} actual_output_tokens=${input.tokenUsage.outputTokens || 0} actual_reasoning_tokens=${input.tokenUsage.reasoningTokens || 0}`);
   }
   if (responseText) {
-    console.log(`[story:memory:stats] response_chars=${responseText.length}`);
-    console.log(`[story:memory:stats] response_preview responseText=${responseText}`);
-    console.log(`[story:memory:stats] response_preview normalizePromptStatContent=${normalizePromptStatContent(responseText)}`);
+    DebugLogUtil.log("story:memory:stats", `response_chars=${responseText.length}`);
+    DebugLogUtil.log("story:memory:stats", `response_preview responseText=${responseText}`);
+    DebugLogUtil.log("story:memory:stats", `response_preview normalizePromptStatContent=${normalizePromptStatContent(responseText)}`);
   }
   if (input.runtimeError) {
-    console.log(`[story:memory:stats] request_status=fallback reason=${formatRuntimeErrorMessage(input.runtimeError)}`);
+    DebugLogUtil.log("story:memory:stats", `request_status=fallback reason=${formatRuntimeErrorMessage(input.runtimeError)}`);
   } else {
-    console.log("[story:memory:stats] request_status=success");
+    DebugLogUtil.log("story:memory:stats", "request_status=success");
   }
-  console.log("[story:memory:stats] 以下为 prompt 体积估算，不等于模型真实 usage。");
-  console.log("[story:memory:stats] | 区块 | 实际内容 | 字符数 | 估算 Prompt Tokens |");
-  console.log("[story:memory:stats] |---|---|---:|---:|");
+  DebugLogUtil.log("story:memory:stats", "以下为 prompt 体积估算，不等于模型真实 usage。");
+  DebugLogUtil.log("story:memory:stats", "| 区块 | 实际内容 | 字符数 | 估算 Prompt Tokens |");
+  DebugLogUtil.log("story:memory:stats", "|---|---|---:|---:|");
   rows.forEach((row) => {
-    console.log(`[story:memory:stats] | ${row.block} | ${normalizePromptStatContent(row.content)} | ${row.chars} | ${row.estimatedTokens} |`);
+    DebugLogUtil.log("story:memory:stats", `| ${row.block} | ${normalizePromptStatContent(row.content)} | ${row.chars} | ${row.estimatedTokens} |`);
   });
   if (responseText) {
-    console.log(`[story:memory:stats] | 返回内容 | ${normalizePromptStatContent(responseText)} | ${responseText.length} | - |`);
+    DebugLogUtil.log("story:memory:stats", `| 返回内容 | ${normalizePromptStatContent(responseText)} | ${responseText.length} | - |`);
   }
   if (input.tokenUsage) {
-    console.log(`[story:memory:stats] | 实际推理消耗 | input=${input.tokenUsage.inputTokens || 0}, output=${input.tokenUsage.outputTokens || 0}, reasoning=${input.tokenUsage.reasoningTokens || 0} | - | - |`);
+    DebugLogUtil.log("story:memory:stats", `| 实际推理消耗 | input=${input.tokenUsage.inputTokens || 0}, output=${input.tokenUsage.outputTokens || 0}, reasoning=${input.tokenUsage.reasoningTokens || 0} | - | - |`);
   }
-  console.log("[story:memory:stats] System Prompt");
-  console.log(`${input.systemPrompt}\n \n userPrompt:\n${input.userPrompt}`);
-  console.log(`[story:memory:stats] 耗时: ${Number(input.timing?.totalMs || 0)}ms`);
+  DebugLogUtil.log("story:memory:stats", "System Prompt");
+  DebugLogUtil.log("story:memory:stats", `${input.systemPrompt}\n \n userPrompt:\n${input.userPrompt}`);
+  DebugLogUtil.log("story:memory:stats", `耗时: ${Number(input.timing?.totalMs || 0)}ms`);
 }
 
 // 统一输出角色发言器的 runtime/stats 日志，避免后续排查时还要反查到底走了哪条 speaker 路由。
@@ -2093,39 +2092,36 @@ function logSpeakerPromptStats(input: {
   if (input.runtimeError) {
     runtimeLog.error = formatRuntimeErrorMessage(input.runtimeError);
   }
-  if (!DebugLogUtil.isDebugLogEnabled()) {
-    return;
-  }
-  console.log("[story:streamlines:runtime]", JSON.stringify(runtimeLog));
-  console.log(`[story:streamlines:stats] speaker_mode=${input.speakerMode} speaker_model_key=${input.speakerModelKey} request_chars=${totalPromptChars} estimated_tokens=${totalPromptTokens} system_chars=${input.systemPrompt.length} user_chars=${input.userPrompt.length} build_ms=${Number(input.timing?.buildMs || 0)} invoke_ms=${Number(input.timing?.invokeMs || 0)} total_ms=${Number(input.timing?.totalMs || 0)}`);
+  DebugLogUtil.log("story:streamlines:runtime", JSON.stringify(runtimeLog));
+  DebugLogUtil.log("story:streamlines:stats", `speaker_mode=${input.speakerMode} speaker_model_key=${input.speakerModelKey} request_chars=${totalPromptChars} estimated_tokens=${totalPromptTokens} system_chars=${input.systemPrompt.length} user_chars=${input.userPrompt.length} build_ms=${Number(input.timing?.buildMs || 0)} invoke_ms=${Number(input.timing?.invokeMs || 0)} total_ms=${Number(input.timing?.totalMs || 0)}`);
   if (input.tokenUsage) {
-    console.log(`[story:streamlines:stats] actual_input_tokens=${input.tokenUsage.inputTokens || 0} actual_output_tokens=${input.tokenUsage.outputTokens || 0} actual_reasoning_tokens=${input.tokenUsage.reasoningTokens || 0}`);
+    DebugLogUtil.log("story:streamlines:stats", `actual_input_tokens=${input.tokenUsage.inputTokens || 0} actual_output_tokens=${input.tokenUsage.outputTokens || 0} actual_reasoning_tokens=${input.tokenUsage.reasoningTokens || 0}`);
   }
   const responseText = String(input.rawResponse || "").trim();
   if (responseText) {
-    console.log(`[story:streamlines:stats] response_chars=${responseText.length}`);
-    console.log(`[story:streamlines:stats] response_preview=${normalizePromptStatContent(responseText)}`);
+    DebugLogUtil.log("story:streamlines:stats", `response_chars=${responseText.length}`);
+    DebugLogUtil.log("story:streamlines:stats", `response_preview=${normalizePromptStatContent(responseText)}`);
   }
   if (input.runtimeError) {
-    console.log(`[story:streamlines:stats] request_status=fallback reason=${formatRuntimeErrorMessage(input.runtimeError)}`);
+    DebugLogUtil.log("story:streamlines:stats", `request_status=fallback reason=${formatRuntimeErrorMessage(input.runtimeError)}`);
   } else {
-    console.log("[story:streamlines:stats] request_status=success");
+    DebugLogUtil.log("story:streamlines:stats", "request_status=success");
   }
-  console.log("[story:streamlines:stats] 以下为 prompt 体积估算，不等于模型真实 usage。");
-  console.log("[story:streamlines:stats] | 区块 | 实际内容 | 字符数 | 估算 Prompt Tokens |");
-  console.log("[story:streamlines:stats] |---|---|---:|---:|");
+  DebugLogUtil.log("story:streamlines:stats", "以下为 prompt 体积估算，不等于模型真实 usage。");
+  DebugLogUtil.log("story:streamlines:stats", "| 区块 | 实际内容 | 字符数 | 估算 Prompt Tokens |");
+  DebugLogUtil.log("story:streamlines:stats", "|---|---|---:|---:|");
   rows.forEach((row) => {
-    console.log(`[story:streamlines:stats] | ${row.block} | ${normalizePromptStatContent(row.content)} | ${row.chars} | ${row.estimatedTokens} |`);
+    DebugLogUtil.log("story:streamlines:stats", `| ${row.block} | ${normalizePromptStatContent(row.content)} | ${row.chars} | ${row.estimatedTokens} |`);
   });
   if (responseText) {
-    console.log(`[story:streamlines:stats] | 返回内容 | ${normalizePromptStatContent(responseText)} | ${responseText.length} | - |`);
+    DebugLogUtil.log("story:streamlines:stats", `| 返回内容 | ${normalizePromptStatContent(responseText)} | ${responseText.length} | - |`);
   }
   if (input.tokenUsage) {
-    console.log(`[story:streamlines:stats] | 实际推理消耗 | input=${input.tokenUsage.inputTokens || 0}, output=${input.tokenUsage.outputTokens || 0}, reasoning=${input.tokenUsage.reasoningTokens || 0} | - | - |`);
+    DebugLogUtil.log("story:streamlines:stats", `| 实际推理消耗 | input=${input.tokenUsage.inputTokens || 0}, output=${input.tokenUsage.outputTokens || 0}, reasoning=${input.tokenUsage.reasoningTokens || 0} | - | - |`);
   }
 
-  console.log(`[story:streamlines:stats] System Prompt`);
-  console.log(input.systemPrompt +"\n \n userPrompt:\n"+input.userPrompt);
+  DebugLogUtil.log("story:streamlines:stats", `System Prompt`);
+  DebugLogUtil.log("story:streamlines:stats", input.systemPrompt +"\n \n userPrompt:\n"+input.userPrompt);
 }
 
 // 统一构造编排器事件种子，避免 compact 模式下重复写章节提纲拼接逻辑。
