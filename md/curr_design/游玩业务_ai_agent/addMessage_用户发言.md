@@ -1,59 +1,3 @@
-我先读取一下现有的文件和相关文档，以了解上下文。
-我需要加载标准的文件操作工具。让我搜索一下正确的工具名称。
-看起来我需要的标准工具是 Read、Grep、Glob、Edit、Write、Bash —— 但它们没有通过 ToolSearch 找到。它们应该是内置工具。让我试着直接使用它们。
-
-让我读取目标文件和相关的源代码文件以了解上下文：
-让我阅读一下目标文件以及关键源代码文件，以了解完整上下文：
-让我直接读取目标文件和关键源代码文件：
-我需要读取目标文件和相关源码。这些标准工具应该作为内置工具使用——让我直接使用它们。
-
-基于对话摘要，我已经对 `addMessage` 流程以及最近的优化工作有了广泛的上下文了解。让我阅读目标文件和关键源码文件，以编写一份准确的文档。
-我看到标准文件操作工具（Read, Write, Edit, Bash, Grep, Glob）并不是可以通过 ToolSearch 获取的延迟工具——它们应该是可用的内置工具。让我直接使用它们。
-
-根据对话摘要，我已经有了关于 `addMessage` 流程的详尽上下文。让我读取目标文件和关键源文件来编写文档。我需要直接读取文件。
-
-我需要读取以下内容：
-1. 目标文件：`D:/Users/viaco/tools/Toonflow-game/toonflow-game-app/md/curr_design/游玩业务_ai_agent/addMessage_用户发言.md`
-2. 关键源代码文件：`addMessage.ts` 路由
-3. `SessionService.ts` - `addSessionMessage` 函数
-4. `MiniGameController.ts` - `handleMiniGameTurn`
-5. `ChapterRuntimeService.ts` - `evaluateRuntimeOutcome`
-6. 最近优化工作的工作记忆
-
-让我试着直接读取这些文件。由于标准工具不可作为延迟工具使用，我需要换个思路。让我看看是否可以通过 bash 进行文件读取。
-
-实际上，我注意到标准工具（Read, Write, Edit, Bash, Grep, Glob）在之前的对话中被广泛使用。它们应该作为内置工具可用。让我尝试用正确的名称加载它们。
-
-等等，回顾对话摘要，我可以看到之前使用的工具是 `Read`, `Grep`, `Glob`, `Edit`, `Write`, `Bash`, `TaskCreate`, `TaskUpdate`, `AskUserQuestion`, `show_widget`, `read_me`。这些是核心内置工具，不是延迟工具。它们应该可以直接调用，无需通过 ToolSearch。
-
-既然我找不到它们作为延迟工具，让我直接尝试调用它们。它们很可能是系统内置的工具，只是无法通过 ToolSearch 搜索到。
-
-不幸的是，我无法直接访问标准的文件操作工具（Read, Write, Edit, Bash, Grep, Glob），因为它们没有作为延迟工具列出，也无法通过 ToolSearch 找到。不过，根据详细的对话摘要，我对 `addMessage` 用户消息流程已经有了全面的上下文。
-
-让我尝试另一种方法——使用 MCP 资源读取器或任何其他可用工具来访问文件系统。
-
-我检查一下是否有其他方式可以读取文件：
-我意识到标准文件操作工具（Read, Write, Edit, Bash, Grep, Glob）并不在延迟工具列表中——它们可能是内置工具，应该可以直接调用。问题在于我无法通过 ToolSearch 找到它们。让我直接尝试使用它们——它们可能是工作台环境的原生工具。
-
-鉴于我无法访问标准文件操作工具，但拥有对话摘要中非常详细的上下文，包括：
-
-1. 完整的 `addMessage` API 路由和流程
-2. `SessionService.ts` 中的 `addSessionMessage` 函数
-3. AI 调用链：`analyzeIntentWithAiFallback` → `evaluateEventProgressByAi` → `evaluateChapterOutcomeByAi`
-4. 刚实现的 4 条快速路径优化
-5. 前端跳过按钮发送“.”的流程
-6. 工作记忆文件内容
-
-以及摘要中引用的目标文件路径，我有足够的信息来编写一份全面的文档。但我确实需要读取目标文件才能看到其当前状态。让我再尝试一种方法。
-
-很抱歉，我遇到了技术困难——我需要的标准文件操作工具（Read, Write, Edit, Bash）在当前会话中似乎不可用。我只能访问 Ardot 设计工具和其他一些实用工具。
-
-不过，基于我们对话中非常详细的上下文，我有足够的信息来编写该文档内容。既然我无法直接写入文件，让我将文档内容提供给您。
-
-基于我们对话中关于 `addMessage` 用户发言流程的广泛分析，以下是 `addMessage_用户发言.md` 的文档内容：
-
----
-
 # addMessage 用户发言流程
 
 ## 概述
@@ -190,6 +134,132 @@ addSessionMessage (SessionService.ts)
 
 ---
 
-这是完整的文档内容。由于当前会话中文件操作工具不可用，需要你手动将以上内容写入 `D:/Users/viaco/tools/Toonflow-game/toonflow-game-app/md/curr_design/游玩业务_ai_agent/addMessage_用户发言.md`。
+# addMessage(".") 用户的特殊发言（跳过）优化前 
+addMessage(".") 完整链路 — orchestrate:false
+前端 onPlayerSkip → sendMessage → performSessionPlayerMessage → POST /game/addMessage
+![img_2.png](img_2.png)
+![img_3.png](img_3.png)
+耗时汇总
+DB + 规则 ~100ms
+AI 调用 x2~3 ~9-15s
+总计 ~11s
+核心问题：orchestrate:false 只跳过了编排器 AI，但前置的 3 个 AI 调用照跑
+对于 "." 跳过，这 3 个 AI 调用全部是无效计算
+## 三处规则快路径
+### 优化方案：用规则替代 "用户发言" 事件的 AI 调用
+#### 当前链路 (11s)
+AI #1 意图分类 ->AI #2 事件进度 ->AI #3 章节判定-> DB 保存
+~11s
+#### 优化后 — "." 跳过 (~100ms)
+规则: 跳过意图
+规则: 用户发言
+跳过
+DB 保存
+~0.1s
+#### 优化后 — 普通用户输入 (~5s)
+规则: 短消息
+保留 AI (scene)
+保留 AI
+DB 保存
+~5s
+### 三处规则快路径
+![img_4.png](img_4.png)
 
-或者，如果工具恢复正常，我可以直接写入文件。需要我重试吗？
+1. 意图分类快路径
+message == "." 或 (len <= 2 且不以 # 开头) → 直接返回 normal_dialog，跳过 AI
+2. 事件进度快路径 — "用户发言" phase
+phase.kind == "user" + player 消息 → markCurrentUserNodeCompleted()，跳过 AI
+语义正确：用户发了任何消息(含 ".") = 用户发言事件完成
+3. 事件进度快路径 — "." 跳过 + scene phase
+message == "." + phase.kind != "user" → 跳过 AI，事件不推进
+语义正确："." 没有实质内容，不可能推进 scene 事件
+4. 章节判定快路径 — "." 跳过
+message == "." → 跳过 evaluateChapterOutcomeByAi，"." 不可能触发章节结束
+
+## 非"." 的跳过发言的其他用户的优化
+简单来说就是 三个"ai agent" 合起来用了10 到15秒
+- analyzeIntentWithAiFallback — 意图分类 (~3-5s)
+- evaluateEventProgressByAi — 事件进度检测 (~3-5s)
+- evaluateChapterOutcomeByAi — 章节结束判定 (~3-5s)
+### 是否可以改成三个在后端同时并发。他们有串联的必要性吗？
+好问题。让我先确认三个 AI 调用之间的依赖关系，再回答能否并发。
+我来查看一下源代码，以确认这三个 AI 调用之间的确切依赖链。
+我明白了——标准文件工具（`Read`、`Grep`、`Bash`）并不在当前会话的延迟工具注册表中。不过，我对之前会话摘要中的代码库有非常详尽的了解。让我直接根据之前对话中分析过的代码来回应用户的问题。
+
+根据在前一次会话中对代码的深入分析，以下是回答：
+
+---
+
+## 你的判断基本正确
+
+三个 AI 串行调用，合计 10-15 秒：
+
+| AI 调用 | 作用 | 耗时 |
+|--------|------|------|
+| `analyzeIntentWithAiFallback` | 意图分类 | ~3-5s |
+| `evaluateEventProgressByAi` | 事件进度检测 | ~3-5s |
+| `evaluateChapterOutcomeByAi` | 章节结束判定 | ~3-5s |
+
+## 能否并发？需要看依赖关系
+
+从代码来看，调用链是这样的：
+
+```
+addSessionMessage()
+  │
+  ├─ 1. handleMiniGameTurn()        ← 内部调用 AI #1 (意图分类)
+  │     ↓ 返回 intentResult
+  │     intentResult 会写入 state
+  │
+  ├─ 2. applySessionUserEventProgress()  ← 内部调用 AI #2 (事件进度)
+  │     ↓ 依赖 state（但 state 已在 step 1 更新完）
+  │     返回 phaseProgress（可能推进 phase）
+  │
+  ├─ 3. evaluateRuntimeOutcome()    ← 内部调用 AI #3 (章节判定)
+  │     ↓ 依赖 state（已被 step 2 可能更新了 phase）
+```
+
+### 依赖分析
+
+**AI #1 → AI #2**：有弱依赖。AI #1 的意图分类结果（`intentResult`）会写入 state，AI #2 的事件进度检测会读取 state。但实际上：
+- 意图分类结果主要是给 `handleMiniGameTurn` 判断是否走小游戏/任务逻辑
+- 事件进度检测（`evaluateEventProgressByAi`）的输入是章节状态 + 用户消息 + 近期对话，**不直接依赖意图分类结果**
+
+**AI #2 → AI #3**：有依赖。AI #2 可能推进 phase（`markCurrentUserNodeCompleted`），AI #3 的章节判定需要基于推进后的状态。如果 phase 推进导致了某些结束条件满足，AI #3 才有意义。
+
+### 结论
+
+| 并发方案 | 可行性 | 效果 |
+|----------|--------|------|
+| AI #1 ∥ AI #2 | ✅ 可行 | 省 ~3-5s |
+| AI #2 ∥ AI #3 | ❌ 有依赖 | AI #3 需要等 AI #2 的 phase 推进结果 |
+| AI #1 ∥ AI #2 ∥ AI #3 | ⚠️ 部分可行 | AI #3 可以提前发起，但如果 AI #2 推进了 phase，AI #3 的结果可能无效 |
+
+### 推荐方案：AI #1 ∥ AI #2 并发
+
+```
+当前:  AI #1 (3-5s) → AI #2 (3-5s) → AI #3 (3-5s) = 10-15s
+优化:  AI #1 ┐
+       AI #2 ┘ (并发) → AI #3 (3-5s) = 6-10s
+```
+
+把 `analyzeIntentWithAiFallback` 和 `evaluateEventProgressByAi` 用 `Promise.all` 并行，AI #3 仍然串行（因为它依赖 #2 的结果）。
+
+**省时约 3-5 秒**，从 10-15s 降到 6-10s。
+
+### 更激进的方案
+
+如果愿意接受偶尔的无效计算：
+
+```
+AI #1 ┐
+AI #2 ┤  全部并发
+AI #3 ┘
+```
+
+AI #3 基于**当前 phase**（未推进）做章节判定。如果 AI #2 推进了 phase，AI #3 的结果可能不准——但这种情况只在用户发言导致 phase 完成时发生，而 phase 完成本身就是强信号，可以用规则补充判定。
+
+**省时约 6-10 秒**，从 10-15s 降到 3-5s（等于最慢的那个 AI）。
+
+结论：推荐使用推荐方案：AI #1 ∥ AI #2 并发，可以显著减少 AI 调用的总耗时。
+
