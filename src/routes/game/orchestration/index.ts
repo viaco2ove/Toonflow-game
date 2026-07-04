@@ -958,7 +958,11 @@ export default router.post(
     messages: z.array(debugMessageSchema).optional().nullable(),
   }),
   async (req, res) => {
+    const startTime = Date.now();
     try {
+      if (DebugLogUtil.isDebugLogEnabled()) {
+        console.log("[story:orchestrator:runtime] start ：", startTime);
+      }
       // 路由本体只保留异常收口，真正的调试流程交给拆分后的主分发函数。
       return await handleDebugOrchestrationRequest(req, res);
     } catch (err) {
@@ -966,6 +970,10 @@ export default router.post(
         return res.status(err.status).send(error(err.message));
       }
       res.status(500).send(error(u.error(err).message));
+    }finally {
+      if (DebugLogUtil.isDebugLogEnabled()) {
+        console.log("[story:orchestrator:runtime] ended ms：", Date.now() - startTime);
+      }
     }
   },
 );

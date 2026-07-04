@@ -968,16 +968,19 @@ const _PROMPT_STORY_ORCHESTRATOR_COMPACT = `
 - 用户输入了"@记忆管理 xxx"  → trigger_memory_agent=true
 - 旁白输入了"@记忆管理 xxx"  → trigger_memory_agent=true
 
-## 输出（逐行）：
-role_type:
-speaker:
-motive:
-await_user:
-trigger_memory_agent:
-event_adjust_mode:
-event_status:
-event_summary:
-event_facts:
+## 输出（JSON）：
+直接输出 JSON，不要任何前缀注释和后缀：
+{
+  "speaker": "旁白",
+  "role_type": "narrator",
+  "motive": "引导用户完成身份绑定流程",
+  "await_user": false,
+  "trigger_memory_agent": false,
+  "event_adjust_mode": "keep",
+  "event_status": "waiting_input",
+  "event_summary": "@旁白：请输入你的姓名，性别，年龄进行绑定",
+  "event_facts": ["当前处于斗破苍穹乌坦城时间线的空间戒指绑定环节"]
+}
 `;
 
 /** story-orchestrator-advanced */
@@ -1154,16 +1157,19 @@ const _PROMPT_STORY_ORCHESTRATOR_ADVANCED = `
 - 用户输入了"@记忆管理 xxx"  → trigger_memory_agent=true
 - 旁白输入了"@记忆管理 xxx"  → trigger_memory_agent=true
 
-## 输出（逐行）：
-role_type:
-speaker:
-motive:
-await_user:
-trigger_memory_agent:
-event_adjust_mode:
-event_status:
-event_summary:
-event_facts:
+## 输出（JSON）：
+直接输出 JSON，不要任何前缀注释和后缀：
+{
+  "speaker": "旁白",
+  "role_type": "narrator",
+  "motive": "引导用户完成身份绑定流程",
+  "await_user": false,
+  "trigger_memory_agent": false,
+  "event_adjust_mode": "keep",
+  "event_status": "waiting_input",
+  "event_summary": "@旁白：请输入你的姓名，性别，年龄进行绑定",
+  "event_facts": ["当前处于斗破苍穹乌坦城时间线的空间戒指绑定环节"]
+}
 
 ## 输出字段：
 role_type:
