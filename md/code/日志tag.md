@@ -21,6 +21,7 @@ if (DebugLogUtil.isDebugLogEnabled()) {
 [DEBUG] 通用debug 日志
 [story:orchestrator:runtime] :编排师日志
 [story:orchestrator:stats]: 编排师日志 token 统计 
+[story:orchestrator:runtime] ended ms： 编排请求耗时
 
 
 [tag_api]:请求日志
@@ -162,3 +163,12 @@ yarn debug:mini-game:task logs/app-2026-06-18.log
 
 ## @记忆管理 日志
 如 @记忆管理 睡觉恢复
+
+
+## 前端 debug 日志
+import { WebDebugLogUtil } from "../../utils/WebDebugLogUtil";
+WebDebugLogUtil.log("resolveRuntimeVoiceUrl cached", cached);
+or
+if (WebDebugLogUtil.isEnabled()) {
+  console.log("resolveRuntimeVoiceUrl");
+}

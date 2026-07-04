@@ -964,15 +964,23 @@ export default router.post(
         console.log("[story:orchestrator:runtime] start ：", startTime);
       }
       // 路由本体只保留异常收口，真正的调试流程交给拆分后的主分发函数。
-      return await handleDebugOrchestrationRequest(req, res);
+      const result = await handleDebugOrchestrationRequest(req, res);
+      if (DebugLogUtil.isDebugLogEnabled()) {
+          console.log("[story:orchestrator:runtime] ended result：",JSON.stringify(result));
+          console.log("[story:orchestrator:runtime] ended ms：", Date.now() - startTime);
+      }
+      return result;
     } catch (err) {
       if (isSessionServiceError(err)) {
+        if (DebugLogUtil.isDebugLogEnabled()) {
+          console.log("[story:orchestrator:runtime] ended err ms：", Date.now() - startTime);
+        }
         return res.status(err.status).send(error(err.message));
       }
       res.status(500).send(error(u.error(err).message));
     }finally {
       if (DebugLogUtil.isDebugLogEnabled()) {
-        console.log("[story:orchestrator:runtime] ended ms：", Date.now() - startTime);
+        console.log("[story:orchestrator:runtime] ended finally ms：", Date.now() - startTime);
       }
     }
   },

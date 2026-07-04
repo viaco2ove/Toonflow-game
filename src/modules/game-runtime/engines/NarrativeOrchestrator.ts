@@ -1495,7 +1495,7 @@ function parseFieldMap(rawText: string): Record<string, string> {
   const result: Record<string, string> = {};
   let pendingKey = "";
   for (const line of lines) {
-    const matched = line.match(/^[-*]?\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*[:：=]\s*(.*)$/);
+    const matched = line.match(/^[-*]?\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*[:：=][ \t]*(.*)$/);
     if (matched) {
       const key = matched[1].toLowerCase();
       const value = matched[2].trim();
@@ -4578,7 +4578,7 @@ async function doRunNarrativePlan(input: OrchestratorInput): Promise<NarrativePl
     });
     const result = await u.ai.text.invoke(
       {
-        plainTextOutput: true,
+        plainTextOutput: false,
         usageType: "编排师",
         usageRemark: `${currentChapter.title || "未知章节"} / ${normalizeScalarText(input.world?.name)}`,
         usageMeta: {
