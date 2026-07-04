@@ -39,6 +39,7 @@ import {
 } from "@/modules/game-runtime/engines/NarrativeOrchestrator";
 import {
   applyAiEventProgressResolution,
+  AiEventProgressResolution,
   recordChapterProgressSignals,
   initializeChapterProgressForState,
   markCurrentUserNodeCompleted,
@@ -534,6 +535,62 @@ function buildRecentMessages(rows: any[], state?: any): RuntimeMessageInput[] {
 }
 
 /**
+ * 检查是否需要调用 AI #2 (evaluateEventProgressByAi)。
+ *
+ * 这个函数从 applySessionUserEventProgress 的 fast path 检查逻辑中提取，
+ * 用于在 addSessionMessage 中预判断是否需要预计算 AI #2。
+ *
+ * Fast path:
+ * - 如果 chapter 为 null，不需要 AI
+ * - 如果是 user phase，不需要 AI（直接 markCurrentUserNodeCompleted）
+ * - 如果消息内容是 "."，不需要 AI（没有实质内容）
+ *
+ * @returns true 表示需要调用 AI #2，false 表示走 fast path
+ */
+function checkEventProgressAiNeeded(
+  chapter: any,
+  state: Record<string, any>,
+  messageContent: string
+): boolean {
+  if (!chapter) return false;
+
+  initializeChapterProgressForState(chapter, state);
+  syncChapterProgressWithRuntime(chapter, state);
+
+  const currentProgress = readChapterProgressState(state);
+  const outline = normalizeChapterRuntimeOutline(chapter?.runtimeOutline);
+  const currentPhase = outline.phases.find((p) => p.id === currentProgress.phaseId) || null;
+  const currentStage = currentPhase?.stages?.[currentProgress.stageIndex || 0] || null;
+  const isUserPhase = currentPhase?.kind === "user" || currentStage?.kind === "user";
+  const trimmedContent = String(messageContent || "").trim();
+
+  DebugLogUtil.log("story:ai_parallel", "[checkEventProgressAiNeeded] 开始检查", {
+    phaseId: currentProgress.phaseId,
+    stageIndex: currentProgress.stageIndex || 0,
+    phaseKind: currentPhase?.kind || "unknown",
+    stageKind: currentStage?.kind || "unknown",
+    isUserPhase,
+    trimmedContentLength: trimmedContent.length,
+    messagePreview: trimmedContent.slice(0, 60),
+  });
+
+  // Fast path 1: user phase + player 消息，不需要 AI
+  if (isUserPhase) {
+    DebugLogUtil.log("story:ai_parallel", "[checkEventProgressAiNeeded] fast path: user phase，跳过 AI");
+    return false;
+  }
+
+  // Fast path 2: "." 跳过 + 非 user phase，不需要 AI
+  if (trimmedContent === ".") {
+    DebugLogUtil.log("story:ai_parallel", "[checkEventProgressAiNeeded] fast path: '.' 跳过消息，跳过 AI");
+    return false;
+  }
+
+  DebugLogUtil.log("story:ai_parallel", "[checkEventProgressAiNeeded] 需要调用 AI #2");
+  return true;
+}
+
+/**
  * 将"正式会话里的用户发言"应用到当前事件进度。
  *
  * 用途：
@@ -553,6 +610,7 @@ async function applySessionUserEventProgress(params: {
   deltas?: AppliedDelta[];
   recentMessages?: RuntimeMessageInput[];
   traceMeta?: Record<string, any>;
+  precomputedAiResolution?: AiEventProgressResolution | null;
 }): Promise<void> {
   if (!params.chapter) {
     return;
@@ -603,22 +661,35 @@ async function applySessionUserEventProgress(params: {
     }
   }
 
-  const resolution = await evaluateEventProgressByAi({
-    userId: params.userId,
-    chapter: params.chapter,
-    state: params.state,
-    messageContent: params.messageContent,
-    messageRole: String(params.state.player?.name || "用户"),
-    messageRoleType: "player",
-    eventType: params.eventType,
-    recentMessages: params.recentMessages,
-    traceMeta: params.traceMeta,
-  });
+  // ★ 新增: 如果已预计算 AI #2，直接使用；否则调用 AI
+  let resolution: AiEventProgressResolution | null = null;
+  const currentPhaseId = readChapterProgressState(params.state)?.phaseId || null;
+  if (params.precomputedAiResolution !== undefined) {
+    resolution = params.precomputedAiResolution;
+    DebugLogUtil.log("story:ai_parallel", "[applySessionUserEventProgress] 使用预计算的 AI #2 结果", {
+      ended: resolution?.ended,
+      eventStatus: resolution?.eventStatus,
+      phaseId: currentPhaseId,
+    });
+  } else {
+    resolution = await evaluateEventProgressByAi({
+      userId: params.userId,
+      chapter: params.chapter,
+      state: params.state,
+      messageContent: params.messageContent,
+      messageRole: String(params.state.player?.name || "用户"),
+      messageRoleType: "player",
+      eventType: params.eventType,
+      recentMessages: params.recentMessages,
+      traceMeta: params.traceMeta,
+    });
+  }
   console.log("[applySessionUserEventProgress] resolution applied", {
     ended: resolution?.ended,
     eventStatus: resolution?.eventStatus,
     phaseId: params.state.chapterProgress?.phaseId,
     eventIndex: params.state.chapterProgress?.eventIndex,
+    isPrecomputed: params.precomputedAiResolution !== undefined,
   });
   if (DebugLogUtil.isDebugLogEnabled()) {
     // [story:event_progress:stats] resolution
@@ -2154,9 +2225,70 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
     applyExplicitMemoryDirectiveToPlayerCard(state, messageContent);
   }
 
+  // ★ AI 并行化优化: 声明 triggerResult 和 taskResult，使其在整个函数范围内可用
+  // 当 player 消息走 AI #1 拦截路径时，这些变量会在 player 块内被设置
+  let triggerResult: Awaited<ReturnType<typeof runTriggerEngine>> | undefined = undefined;
+  let taskResult: Awaited<ReturnType<typeof runTaskProgressEngine>> | undefined = undefined;
+  let ai2Promise: Promise<AiEventProgressResolution | null> | null = null;
+
   if (roleTypeValue === "player" && eventTypeValue === "on_message" && messageContent.trim()) {
     const rawRecentMessages = await db("t_sessionMessage").where({ sessionId }).orderBy("id", "desc").limit(20);
     const recentMessages = buildRecentMessages(rawRecentMessages, state);
+
+    // ★ AI 并行化优化: 将 trigger/task 引擎和 AI #2 预计算移到 AI #1 之前
+    // 1. 先运行 trigger/task 引擎（快速，无 AI）
+    triggerResult = await runTriggerEngine({
+      db,
+      chapterId: prevChapterId,
+      state,
+      messageContent,
+      eventType: eventTypeValue,
+      meta: metaObj,
+      initialStatus: prevStatus,
+    });
+
+    taskResult = await runTaskProgressEngine({
+      db,
+      chapterId: triggerResult.nextChapterId,
+      state,
+      messageContent,
+      eventType: eventTypeValue,
+      meta: metaObj,
+      now,
+      nextChapterId: triggerResult.nextChapterId,
+      currentStatus: triggerResult.sessionStatus,
+    });
+
+    // 2. 检查是否需要 AI #2
+    const needsAi2 = checkEventProgressAiNeeded(currentChapter, state, messageContent);
+
+    // 3. 如果需要 AI #2，预计算（与 AI #1 并发）
+    let precomputedAi2Resolution: AiEventProgressResolution | null = null;
+
+    if (needsAi2) {
+      DebugLogUtil.log("story:ai_parallel", "[addSessionMessage] 开始预计算 AI #2 (evaluateEventProgressByAi)");
+      ai2Promise = evaluateEventProgressByAi({
+        userId: currentUserId,
+        chapter: currentChapter,
+        state,
+        messageContent,
+        messageRole: String(state.player?.name || "用户"),
+        messageRoleType: "player",
+        eventType: eventTypeValue,
+        recentMessages,
+        traceMeta: {
+          route: "/game/addMessage",
+          sessionId,
+          chapterId: Number(currentChapter?.id || 0),
+          userId: currentUserId,
+        },
+      });
+    } else {
+      DebugLogUtil.log("story:ai_parallel", "[addSessionMessage] AI #2 走 fast path，无需预计算");
+    }
+
+    // 4. 并发运行 AI #1 (handleMiniGameTurn)
+    DebugLogUtil.log("story:ai_parallel", "[addSessionMessage] 开始 AI #1 (handleMiniGameTurn)");
     const miniGameResult = await handleMiniGameTurn({
       userId: currentUserId,
       world,
@@ -2392,43 +2524,36 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
     }
   }
 
-  const triggerResult = await runTriggerEngine({
-    db,
-    chapterId: prevChapterId,
-    state,
-    messageContent,
-    eventType: eventTypeValue,
-    meta: metaObj,
-    initialStatus: prevStatus,
-  });
-
-  const taskResult = await runTaskProgressEngine({
-    db,
-    chapterId: triggerResult.nextChapterId,
-    state,
-    messageContent,
-    eventType: eventTypeValue,
-    meta: metaObj,
-    now,
-    nextChapterId: triggerResult.nextChapterId,
-    currentStatus: triggerResult.sessionStatus,
-  });
+  // ★ AI 并行化优化: triggerResult 和 taskResult 已在 player 消息块内预计算
+  // 如果 player 消息未走 AI #1 拦截路径，则它们已经被赋值
 
   const appliedDeltas: AppliedDelta[] = [
     ...attrDeltas,
-    ...triggerResult.appliedDeltas,
-    ...taskResult.appliedDeltas,
+    ...(triggerResult?.appliedDeltas || []),
+    ...(taskResult?.appliedDeltas || []),
   ];
   const triggered: TriggerHit[] = [
-    ...triggerResult.triggerHits,
-    ...(taskResult.triggerHit ? [taskResult.triggerHit] : []),
+    ...(triggerResult?.triggerHits || []),
+    ...(taskResult?.triggerHit ? [taskResult.triggerHit] : []),
   ];
-  let nextChapterId = taskResult.nextChapterId;
-  let sessionStatus = taskResult.sessionStatus;
+  let nextChapterId = taskResult?.nextChapterId ?? prevChapterId ?? 0;
+  let sessionStatus = taskResult?.sessionStatus ?? prevStatus;
   if (currentChapter) {
     if (roleTypeValue === "player" && eventTypeValue === "on_message" && messageContent.trim()) {
       const rawRecentMessagesForProgress = await db("t_sessionMessage").where({ sessionId }).orderBy("id", "desc").limit(20);
       const recentMessagesForProgress = buildRecentMessages(rawRecentMessagesForProgress, state);
+
+      // ★ AI 并行化优化: 等待预计算的 AI #2 结果并传入
+      let precomputedAiResolution: AiEventProgressResolution | null = null;
+      if (ai2Promise) {
+        DebugLogUtil.log("story:ai_parallel", "[addSessionMessage] 等待 AI #2 预计算结果");
+        precomputedAiResolution = await ai2Promise;
+        DebugLogUtil.log("story:ai_parallel", "[addSessionMessage] AI #2 预计算完成", {
+          ended: precomputedAiResolution?.ended,
+          eventStatus: precomputedAiResolution?.eventStatus,
+        });
+      }
+
       await applySessionUserEventProgress({
         userId: currentUserId,
         chapter: currentChapter,
@@ -2437,7 +2562,7 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
         messageContent,
         eventType: eventTypeValue,
         triggered,
-        taskProgress: taskResult.taskProgressChanges,
+        taskProgress: taskResult?.taskProgressChanges,
         deltas: appliedDeltas,
         recentMessages: recentMessagesForProgress,
         traceMeta: {
@@ -2446,6 +2571,7 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
           chapterId: Number(currentChapter.id || 0),
           userId: currentUserId,
         },
+        precomputedAiResolution: precomputedAiResolution,
       });
       /**
        * ★ 旧的"自由章节任务结算"链路（resolveFreeChapterTask）已被禁用。
@@ -2565,7 +2691,7 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
           generatedMessages: taskNarrativeRows,
           narrativePlan: null,
           triggered,
-          taskProgress: taskResult.taskProgressChanges,
+          taskProgress: taskResult?.taskProgressChanges ?? [],
           deltas: appliedDeltas,
           snapshotSaved: snapshotResult.snapshotSaved,
           snapshotReason: snapshotResult.snapshotReason,
@@ -2617,7 +2743,7 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
       recordChapterProgressSignals(currentChapter, state, {
         messageContent,
         triggered,
-        taskProgress: taskResult.taskProgressChanges,
+        taskProgress: taskResult?.taskProgressChanges,
         deltas: appliedDeltas,
       });
       syncChapterProgressWithRuntime(currentChapter, state);
@@ -2746,7 +2872,7 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
       generatedMessages: [],
       narrativePlan: null,
       triggered,
-      taskProgress: taskResult.taskProgressChanges,
+      taskProgress: taskResult?.taskProgressChanges ?? [],
       deltas: appliedDeltas,
       snapshotSaved: snapshotResult.snapshotSaved,
       snapshotReason: snapshotResult.snapshotReason,
@@ -2894,7 +3020,7 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
     generatedMessages,
     narrativePlan,
     triggered,
-    taskProgress: taskResult.taskProgressChanges,
+    taskProgress: taskResult?.taskProgressChanges ?? [],
     deltas: appliedDeltas,
     snapshotSaved: snapshotResult.snapshotSaved,
     snapshotReason: snapshotResult.snapshotReason,

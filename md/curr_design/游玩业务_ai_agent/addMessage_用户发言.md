@@ -262,4 +262,23 @@ AI #3 基于**当前 phase**（未推进）做章节判定。如果 AI #2 推进
 **省时约 6-10 秒**，从 10-15s 降到 3-5s（等于最慢的那个 AI）。
 
 结论：推荐使用推荐方案：AI #1 ∥ AI #2 并发，可以显著减少 AI 调用的总耗时。
+难点是：state 的一致性。
+addSessionMessage()
+  ↓
+┌─ handleMiniGameTurn() — AI #1 (~3-5s)
+└─ evaluateEventProgressByAi() — AI #2 预计算 (~3-5s)
+  ↓ (两者都完成后)
+runTriggerEngine() — 快速
+runTaskProgressEngine() — 快速
+applySessionUserEventProgress() — 使用预计算的 AI #2 结果
+  ↓
+evaluateRuntimeOutcome() — AI #3 (~3-5s)
 
+关键挑战与解决方案
+挑战 1: applySessionUserEventProgress 需要 triggered/taskProgress，它们来自 runTriggerEngine/runTaskProgressEngine
+
+解决: 先运行 runTriggerEngine + runTaskProgressEngine（快速），再预计算 AI #2
+
+挑战 2: evaluateEventProgressByAi 读取的 state 可能与 recordChapterProgressSignals 运行后不同
+
+解决: AI #2 的预计算使用 recordChapterProgressSignals 运行后的状态快照，确保输入一致
