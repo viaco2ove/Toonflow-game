@@ -39,16 +39,14 @@ export default router.post(
     try {
       const result = await orchestrateSessionTurn(sessionId);
 
-      if (DebugLogUtil.isDebugLogEnabled()) {
-        console.log("[story:orchestrator:minigame] 编排结果", JSON.stringify({
-          sessionId,
-          planRole: String(result.plan?.role || ""),
-          planRoleType: String(result.plan?.roleType || ""),
-          planEventType: String(result.plan?.eventType || ""),
-          planAwaitUser: Boolean(result.plan?.awaitUser),
-          planPresetContentLength: String(result.plan?.presetContent || "").length,
-        }));
-      }
+      DebugLogUtil.log("story:orchestrator:minigame", "编排结果", JSON.stringify({
+        sessionId,
+        planRole: String(result.plan?.role || ""),
+        planRoleType: String(result.plan?.roleType || ""),
+        planEventType: String(result.plan?.eventType || ""),
+        planAwaitUser: Boolean(result.plan?.awaitUser),
+        planPresetContentLength: String(result.plan?.presetContent || "").length,
+      }));
 
       // 小游戏编排接口只返回角色和动机，符合前端消费规范。
       // 其他信息（sessionId/status/chapterId 等）通过 storyInfo 接口获取。

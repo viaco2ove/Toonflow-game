@@ -1,5 +1,6 @@
 import fs from "fs";
 import path from "path";
+import { debugLogConfig } from "@/utils/debugLogConfig";
 
 type MiniGamePromptStatRow = {
   block: string;
@@ -13,6 +14,7 @@ type MiniGamePromptStatRow = {
  *
  * 用途：
  * - 统一管理 `LOG_LEVEL=DEBUG` 的开关判断；
+ * - 统一通过 `debugLogConfig` 的黑/白名单约束日志输出；
  * - 避免各个运行时类重复实现相同逻辑，导致后续行为不一致。
  */
 export class DebugLogUtil {
@@ -48,6 +50,45 @@ export class DebugLogUtil {
   }
 
   /**
+   * 判断某个 tag 是否应该被打印（基于 debugLogConfig 的黑/白名单 + 前缀匹配）。
+   *
+   * 规则：
+   * - blacklist 模式：命中任一黑名单前缀即屏蔽，否则放行（黑名单空 = 全放行）；
+   * - whitelist 模式：仅命中某白名单前缀才放行，否则屏蔽（白名单空 = 全屏蔽）；
+   * - 复合 tag（如 `story:event_progress:runtime][stage][buildRecentMessages`）只需匹配基础 tag 前缀。
+   */
+  private static shouldLogTag(tag: string): boolean {
+    const normalizedTag = String(tag || "").trim();
+    if (!normalizedTag) return true; // 无 tag 的裸日志不约束，保持原行为
+    const mode = debugLogConfig.debugLogMode;
+    if (mode === "whitelist") {
+      const list = debugLogConfig.debugLogWhitelist;
+      return list.some((item) => normalizedTag.startsWith(String(item || "").trim()));
+    }
+    // 默认 blacklist
+    const list = debugLogConfig.debugLogBlacklist;
+    return !list.some((item) => normalizedTag.startsWith(String(item || "").trim()));
+  }
+
+  /**
+   * 统一日志入口：同时受 `LOG_LEVEL=DEBUG` 开关与黑/白名单约束。
+   *
+   * 用途：
+   * - 替代散落各处的 `if (isDebugLogEnabled()) { console.log("[tag] ...") }` 写法；
+   * - 统一在入口加 `[tag]` 前缀，保证日志格式一致且可被黑/白名单过滤。
+   */
+  static log(tag: string, ...args: unknown[]): void {
+    if (!DebugLogUtil.isDebugLogEnabled()) return;
+    if (!DebugLogUtil.shouldLogTag(tag)) return;
+    if (args.length === 0) {
+      console.log(`[${tag}]`);
+      return;
+    }
+    // 保持与原有 `console.log("[tag] msg", rest)` 一致的输出形态。
+    console.log(`[${tag}]`, ...args);
+  }
+
+  /**
    * 统一打印“当前章节”调试日志。
    *
    * 用途：
@@ -60,6 +101,7 @@ export class DebugLogUtil {
     sort?: unknown;
   } | null | undefined): void {
     if (!DebugLogUtil.isDebugLogEnabled()) return;
+    if (!DebugLogUtil.shouldLogTag(tag)) return;
     console.log(`[${tag}] current_chapter=${JSON.stringify({
       id: Number(chapter?.id || 0) || 0,
       title: String(chapter?.title || "").trim() || "未知",
@@ -85,6 +127,7 @@ export class DebugLogUtil {
     nextEventSummary?: unknown;
   }): void {
     if (!DebugLogUtil.isDebugLogEnabled()) return;
+    if (!DebugLogUtil.shouldLogTag(tag)) return;
     DebugLogUtil.logCurrentChapter(tag, payload.chapter || null);
     console.log(`[${tag}] resolution=${JSON.stringify({
       currentEventIndex: Number(payload.currentEventIndex || 0) || 0,
@@ -129,6 +172,7 @@ export class DebugLogUtil {
     responsePreview?: string;
   }): void {
     if (!DebugLogUtil.isDebugLogEnabled()) return;
+    if (!DebugLogUtil.shouldLogTag(tag)) return;
     // 第一行：动作命中结果（保持向后兼容）
     console.log(`[${tag}] action=${JSON.stringify({
       gameType: String(payload.gameType || "").trim(),
@@ -205,6 +249,7 @@ export class DebugLogUtil {
     runtimeError?: unknown;
   }): void {
     if (!DebugLogUtil.isDebugLogEnabled()) return;
+    if (!DebugLogUtil.shouldLogTag(tag)) return;
     const rows: MiniGamePromptStatRow[] = [
       {
         block: "系统提示词",
@@ -239,7 +284,8 @@ export class DebugLogUtil {
       totalMs: Number(input.timing?.totalMs || 0),
       error: input.runtimeError ? String((input.runtimeError as Error)?.message || input.runtimeError || "") : "",
     };
-    console.log("[story:mini_game:runtime]", JSON.stringify(runtimeLog));
+    // 这一行用独立的 mini_game:runtime tag，单独受其黑/白名单约束。
+    DebugLogUtil.log("story:mini_game:runtime", JSON.stringify(runtimeLog));
     console.log(
       `[${tag}] game_type=${runtimeLog.gameType} request_chars=${totalPromptChars} estimated_tokens=${totalPromptTokens} `
       + `system_chars=${input.systemPrompt.length} user_chars=${input.userPrompt.length} `
@@ -304,6 +350,7 @@ export class DebugLogUtil {
     addedOther?: unknown;
   }): void {
     if (!DebugLogUtil.isDebugLogEnabled()) return;
+    if (!DebugLogUtil.shouldLogTag(tag)) return;
     console.log(`[${tag}] directive=${JSON.stringify({
       mode: String(payload.mode || "").trim(),
       applied: Boolean(payload.applied),

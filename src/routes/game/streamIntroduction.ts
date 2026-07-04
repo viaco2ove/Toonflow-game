@@ -188,11 +188,9 @@ async function applyDebugIntroductionProgress(input: {
     });
   } else if (outcome.result === "success") {
     const nextChapter = await resolveNextChapter(db, worldId, chapter, outcome.nextChapterId);
-    if (DebugLogUtil.isDebugLogEnabled()) {
-      console.log("[story:chapter_ending_check:stats] sessionStatus: chapter_completed");
-      console.log("[story:chapter_ending_check:stats] outcome: success");
-      console.log(`[story:chapter_ending_check:stats] nextChapterId: ${nextChapter ? String(nextChapter.id || "") : ""}`);
-    }
+    DebugLogUtil.log("story:chapter_ending_check:stats", "sessionStatus: chapter_completed");
+    DebugLogUtil.log("story:chapter_ending_check:stats", "outcome: success");
+    DebugLogUtil.log("story:chapter_ending_check:stats", `nextChapterId: ${nextChapter ? String(nextChapter.id || "") : ""}`);
     if (!nextChapter) {
       (state as any).debugFreePlot = {
         active: true,

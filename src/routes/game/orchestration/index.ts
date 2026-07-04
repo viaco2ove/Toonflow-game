@@ -92,8 +92,7 @@ function buildOrchestrationRequestTrace(params: {
 
 // 用统一 tag 打关键节点，方便把一次编排请求里的章节判定/编排模型调用串起来看。
 function logOrchestrationKeyNode(trace: OrchestrationRequestTrace, node: string, extra?: Record<string, unknown>) {
-  if (!DebugLogUtil.isDebugLogEnabled()) return;
-  console.log("[game:orchestrator:key_nodes]", JSON.stringify({
+  DebugLogUtil.log("game:orchestrator:key_nodes", JSON.stringify({
     requestId: trace.requestId,
     route: trace.route,
     branch: trace.branch,
@@ -749,12 +748,10 @@ async function handleDebugPlayerTurn(params: {
     const nextChapter = normalizeChapterOutput(
       await resolveNextChapter(params.db, params.worldId, params.chapter, outcome.nextChapterId),
     );
-    if (DebugLogUtil.isDebugLogEnabled()) {
-      // 判章模型可能不给 next_chapter_id，这里记录“排序兜底后真正将要进入的下一章”。
-      console.log(`[story:chapter_ending_check:stats] sessionStatus: chapter_completed`);
-      console.log(`[story:chapter_ending_check:stats] outcome: success`);
-      console.log(`[story:chapter_ending_check:stats] nextChapterId: ${nextChapter ? String(nextChapter.id || "") : ""}`);
-    }
+    // 判章模型可能不给 next_chapter_id，这里记录“排序兜底后真正将要进入的下一章”。
+    DebugLogUtil.log("story:chapter_ending_check:stats", `sessionStatus: chapter_completed`);
+    DebugLogUtil.log("story:chapter_ending_check:stats", `outcome: success`);
+    DebugLogUtil.log("story:chapter_ending_check:stats", `nextChapterId: ${nextChapter ? String(nextChapter.id || "") : ""}`);
     if (!nextChapter) {
       // 没有下一章时，调试态自动转入自由剧情，方便继续压编排与角色发言。
       (params.state as any).debugFreePlot = {
@@ -960,28 +957,20 @@ export default router.post(
   async (req, res) => {
     const startTime = Date.now();
     try {
-      if (DebugLogUtil.isDebugLogEnabled()) {
-        console.log("[story:orchestrator:runtime] start ：", startTime);
-      }
+      DebugLogUtil.log("story:orchestrator:runtime", "start ：", startTime);
       // 路由本体只保留异常收口，真正的调试流程交给拆分后的主分发函数。
       const result = await handleDebugOrchestrationRequest(req, res);
-      if (DebugLogUtil.isDebugLogEnabled()) {
-          console.log("[story:orchestrator:runtime] ended result：",JSON.stringify(result));
-          console.log("[story:orchestrator:runtime] ended ms：", Date.now() - startTime);
-      }
+      DebugLogUtil.log("story:orchestrator:runtime", "ended result：",JSON.stringify(result));
+      DebugLogUtil.log("story:orchestrator:runtime", "ended ms：", Date.now() - startTime);
       return result;
     } catch (err) {
       if (isSessionServiceError(err)) {
-        if (DebugLogUtil.isDebugLogEnabled()) {
-          console.log("[story:orchestrator:runtime] ended err ms：", Date.now() - startTime);
-        }
+        DebugLogUtil.log("story:orchestrator:runtime", "ended err ms：", Date.now() - startTime);
         return res.status(err.status).send(error(err.message));
       }
       res.status(500).send(error(u.error(err).message));
     }finally {
-      if (DebugLogUtil.isDebugLogEnabled()) {
-        console.log("[story:orchestrator:runtime] ended finally ms：", Date.now() - startTime);
-      }
+      DebugLogUtil.log("story:orchestrator:runtime", "ended finally ms：", Date.now() - startTime);
     }
   },
 );

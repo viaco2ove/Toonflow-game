@@ -1742,6 +1742,14 @@ async function runConcurrentSessionJudgeAndNarrative(params: {
       reason: `judge_${mergedOutcome.outcome}`,
     });
     discardCandidatePlan();
+    // guide 结局（需要引导用户完成结束条件）等同于等待用户输入：明确告诉前端由用户继续说话，
+    // 否则前端只会拿到空 plan（{role:"",roleType:"",motive:""}），无法渲染任何提示。
+    if (mergedOutcome.outcome === "guide") {
+      return {
+        mergedOutcome,
+        plan: buildWaitingForUserSessionPlan(params.state),
+      };
+    }
     return {
       mergedOutcome,
       plan: null as SessionNarrativePlanResult | null,

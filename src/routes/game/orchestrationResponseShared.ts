@@ -293,18 +293,16 @@ export function buildOrchestrationPayload(params: {
     state: params.state,
   });
 
-  if (DebugLogUtil.isDebugLogEnabled()) {
-    const planSource = asTrimmedText(params.plan?.planSource);
-    const tag = planSource === "opening_preset"
-      ? "story:introduction:plan"
-      : "story:orchestrator:plan";
-    console.log(`[${tag}]`, JSON.stringify({
-      planSource,
-      awaitUser: Boolean(params.plan?.awaitUser),
-      roleType: asTrimmedText(params.plan?.roleType),
-      role: asTrimmedText(params.plan?.role),
-    }));
-  }
+  const planSource = asTrimmedText(params.plan?.planSource);
+  const tag = planSource === "opening_preset"
+    ? "story:introduction:plan"
+    : "story:orchestrator:plan";
+  DebugLogUtil.log(tag, JSON.stringify({
+    planSource,
+    awaitUser: Boolean(params.plan?.awaitUser),
+    roleType: asTrimmedText(params.plan?.roleType),
+    role: asTrimmedText(params.plan?.role),
+  }));
 
   return {
     role: asTrimmedText(params.plan?.role),

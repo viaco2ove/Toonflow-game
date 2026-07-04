@@ -332,11 +332,9 @@ async function applyDebugIntroductionProgress(input: {
     });
   } else if (outcome.result === "success") {
     const nextChapter = await resolveNextChapter(db, worldId, chapter, outcome.nextChapterId);
-    if (DebugLogUtil.isDebugLogEnabled()) {
-      console.log("[story:chapter_ending_check:stats] sessionStatus: chapter_completed");
-      console.log("[story:chapter_ending_check:stats] outcome: success");
-      console.log(`[story:chapter_ending_check:stats] nextChapterId: ${nextChapter ? String(nextChapter.id || "") : ""}`);
-    }
+    DebugLogUtil.log("story:chapter_ending_check:stats", "sessionStatus: chapter_completed");
+    DebugLogUtil.log("story:chapter_ending_check:stats", "outcome: success");
+    DebugLogUtil.log("story:chapter_ending_check:stats", `nextChapterId: ${nextChapter ? String(nextChapter.id || "") : ""}`);
     if (!nextChapter) {
       (state as any).debugFreePlot = {
         active: true,
@@ -781,12 +779,10 @@ router.post(
           });
         } else if (outcome.result === "success") {
           const nextChapter = await resolveNextChapter(db, worldId, chapter, outcome.nextChapterId);
-          if (DebugLogUtil.isDebugLogEnabled()) {
-            // 这里记录当前台词落地后真正解析出来的下一章，避免摘要里只看到模型返回的空 nextChapterId。
-            console.log(`[story:chapter_ending_check:stats] sessionStatus: chapter_completed`);
-            console.log(`[story:chapter_ending_check:stats] outcome: success`);
-            console.log(`[story:chapter_ending_check:stats] nextChapterId: ${nextChapter ? String(nextChapter.id || "") : ""}`);
-          }
+          // 这里记录当前台词落地后真正解析出来的下一章，避免摘要里只看到模型返回的空 nextChapterId。
+          DebugLogUtil.log("story:chapter_ending_check:stats", `sessionStatus: chapter_completed`);
+          DebugLogUtil.log("story:chapter_ending_check:stats", `outcome: success`);
+          DebugLogUtil.log("story:chapter_ending_check:stats", `nextChapterId: ${nextChapter ? String(nextChapter.id || "") : ""}`);
           if (!nextChapter) {
             (state as any).debugFreePlot = {
               active: true,
@@ -844,13 +840,11 @@ router.post(
 
       // 判断是剧情模式还是小游戏模式，用于日志输出
       const isMiniGameMode = miniGameStateManager.isMiniGameMode(state || {});
-      if (DebugLogUtil.isDebugLogEnabled()) {
-        if (isMiniGameMode) {
-          const gameInfo = miniGameStateManager.getMiniGameStateInfo(state || {});
-          console.log(`[story:streamlines:debug] 小游戏模式 - ${gameInfo.displayName || gameInfo.gameType} | ${gameInfo.phaseName || gameInfo.phase || "unknown"} | motive: ${String(plan.motive || "").slice(0, 50)}`);
-        } else {
-          console.log(`[story:streamlines:debug] 剧情模式 - role: ${roleName}, eventType: ${eventType}, contentPreview: ${String(content || "").slice(0, 80)}`);
-        }
+      if (isMiniGameMode) {
+        const gameInfo = miniGameStateManager.getMiniGameStateInfo(state || {});
+        DebugLogUtil.log("story:streamlines:debug", `小游戏模式 - ${gameInfo.displayName || gameInfo.gameType} | ${gameInfo.phaseName || gameInfo.phase || "unknown"} | motive: ${String(plan.motive || "").slice(0, 50)}`);
+      } else {
+        DebugLogUtil.log("story:streamlines:debug", `剧情模式 - role: ${roleName}, eventType: ${eventType}, contentPreview: ${String(content || "").slice(0, 80)}`);
       }
 
       writeStreamLine(res, {

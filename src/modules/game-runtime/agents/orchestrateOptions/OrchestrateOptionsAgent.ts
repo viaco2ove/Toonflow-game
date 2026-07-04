@@ -167,9 +167,6 @@ export async function generateOrchestrateOptions(ctx: OrchestrateOptionsContext)
     ctx.recentDialogue || "（暂无对话）",
     "",
     `玩家本轮输入：${ctx.latestPlayerMessage || "（无）"}`,
-    "已说话的角色的编排几率应该变低而不是变高！！！",
-    "已说话的角色的编排几率应该变低而不是变高！！！",
-    "已说话的角色的编排几率应该变低而不是变高！！！",
     "请严格输出 JSON 数组，长度必须正好为 5：",
     `[{"role":"...","motive":"..."},{"role":"...","motive":"..."},{"role":"...","motive":"..."},{"role":"...","motive":"..."},{"role":"...","motive":"..."}]`,
   );

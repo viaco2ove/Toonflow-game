@@ -127,14 +127,12 @@ export default router.post(
       const restoredRulebook = restoredState?.miniGame?.rulebook;
       const isMiniGameMode = !!(restoredRulebook && Object.keys(restoredRulebook || {}).length);
 
-      if (DebugLogUtil.isDebugLogEnabled()) {
-        console.log(`[story:revisit:debug] 回溯完成`, JSON.stringify({
-          sessionId,
-          messageId,
-          isMiniGameMode: Boolean(isMiniGameMode),
-          hasRulebook: !!(restoredRulebook && Object.keys(restoredRulebook || {}).length),
-        }));
-      }
+      DebugLogUtil.log(`story:revisit:debug`, `回溯完成`, JSON.stringify({
+        sessionId,
+        messageId,
+        isMiniGameMode: Boolean(isMiniGameMode),
+        hasRulebook: !!(restoredRulebook && Object.keys(restoredRulebook || {}).length),
+      }));
 
       return res.status(200).send(success({
         success: true,

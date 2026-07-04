@@ -116,8 +116,7 @@ let nextVideoAvatarTaskId = 1;
  * - 在 pending 时快速判断是抽帧、逐帧抠图、背景生成、编码还是上传阶段变慢。
  */
 function debugAvatarVideoRuntime(step: string, payload?: Record<string, unknown>): void {
-  if (!DebugLogUtil.isDebugLogEnabled()) return;
-  console.log("[game:avatar_video:runtime]", JSON.stringify({
+  DebugLogUtil.log("game:avatar_video:runtime", JSON.stringify({
     step,
     ...payload,
   }));

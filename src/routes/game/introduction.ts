@@ -156,14 +156,12 @@ function buildOrchestrationPayload(params: {
     worldId: params.worldId,
     state: params.state,
   });
-  if (DebugLogUtil.isDebugLogEnabled()) {
-    console.log("[story:introduction:plan]", JSON.stringify({
-      planSource: String(params.plan?.planSource || "").trim(),
-      awaitUser: Boolean(params.plan?.awaitUser),
-      roleType: String(params.plan?.roleType || "").trim(),
-      role: String(params.plan?.role || "").trim(),
-    }));
-  }
+  DebugLogUtil.log("story:introduction:plan", JSON.stringify({
+    planSource: String(params.plan?.planSource || "").trim(),
+    awaitUser: Boolean(params.plan?.awaitUser),
+    roleType: String(params.plan?.roleType || "").trim(),
+    role: String(params.plan?.role || "").trim(),
+  }));
   return {
     // 开场编排与正式编排保持同一最小返回结构，避免前端消费章节/事件大对象。
     role: String(params.plan?.role || "").trim(),

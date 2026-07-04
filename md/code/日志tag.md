@@ -16,7 +16,8 @@ if (DebugLogUtil.isDebugLogEnabled()) {
 ...
 }
 ```
-
+## logtag list
+[logTagList.ts](../../src/utils/logTagList.ts)
 ## LOG_LEVEL=DEBUG 时 输出的日志】
 [DEBUG] 通用debug 日志
 [story:orchestrator:runtime] :编排师日志
@@ -172,3 +173,6 @@ or
 if (WebDebugLogUtil.isEnabled()) {
   console.log("resolveRuntimeVoiceUrl");
 }
+
+## web logtag list
+[logTagList.ts](../../../Toonflow-game-web/src/utils/logTagList.ts)

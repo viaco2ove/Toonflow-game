@@ -1057,9 +1057,7 @@ async function generateMiniGameMentorSpeech(
     const content = limitText((rawObject as JsonRecord | null)?.content, 120);
     if (content) return content;
   } catch (error) {
-    if (DebugLogUtil.isDebugLogEnabled()) {
-      console.log(`[story:mini_game:speech:error] ${String((error as Error)?.message || error || "")}`);
-    }
+    DebugLogUtil.log("story:mini_game:speech:error", String((error as Error)?.message || error || ""));
   }
   return fallbackMentorMiniGameSpeech(request);
 }
@@ -2631,9 +2629,7 @@ function detectGameTrigger(
   };
   for (const rulebook of Object.values(RULEBOOKS)) {
     if (rulebook.triggerTags.some(standaloneTagPattern)) {
-      if (DebugLogUtil.isDebugLogEnabled()) {
-          console.log("[story:mini_game:agent] 识别到小游戏", JSON.stringify(rulebook));
-      }
+      DebugLogUtil.log("story:mini_game:agent", "识别到小游戏", JSON.stringify(rulebook));
       return { gameType: rulebook.gameType, source: "active" };
     }
   }
@@ -2739,7 +2735,7 @@ async function handleSellCommand(
   if (DebugLogUtil.isDebugLogEnabled()) {
     const systemPrompt = (result as any)?._systemPrompt || "";
     const userPrompt = result?.requestPreview || "";
-    console.log("[story:mini_game:stats] System Prompt");
+    DebugLogUtil.log("story:mini_game:stats", "System Prompt");
     console.log(systemPrompt);
     console.log("\n userPrompt:\n" + userPrompt);
   }
@@ -5764,6 +5760,18 @@ export async function handleMiniGameTurn(input: MiniGameControllerInput): Promis
   const activeTaskIdForGate = readActiveTaskIdFromState(state);
   const hasActiveTask = !!activeTaskIdForGate;
   if (!hasActiveGame && !hasActiveTask) {
+    // ★ 快路径：跳过标记 "." 或超短消息(≤2字且不以 # 开头)直接判定为 normal_dialog，
+    //   避免对无实质内容的消息白白浪费一次 AI 意图分类调用（~3-5s）。
+    const trimmedMsg = String(input.playerMessage || "").trim();
+    const isShortNeutralMessage = trimmedMsg === "." || (trimmedMsg.length <= 2 && !trimmedMsg.startsWith("#"));
+    if (isShortNeutralMessage) {
+      console.log("[story:intent:analysis] 快路径跳过 AI 分类", {
+        path: "short_message_fast_path",
+        intent: "normal_dialog",
+        messagePreview: trimmedMsg.slice(0, 60),
+      });
+      // 跳过 AI 分类，继续走原有链路（game_action / normal_dialog 分支）
+    } else {
     console.log("[story:intent:analysis] 进入 AI 分类通道", {
       userId: input.userId,
       messagePreview: String(input.playerMessage || "").slice(0, 60),
@@ -5818,6 +5826,7 @@ export async function handleMiniGameTurn(input: MiniGameControllerInput): Promis
     }
 
     // game_action / normal_dialog：继续走原有链路
+    } // end else (非快路径走 AI 分类)
   } else {
     console.log("[story:intent:analysis] 跳过 AI 分类（任务/小游戏激活中，由小游戏内部消化用户输入）", {
       hasActiveGame,
@@ -5907,9 +5916,7 @@ export async function handleMiniGameTurn(input: MiniGameControllerInput): Promis
       phaseOrder: rulebook.phaseOrder,
       ruleSummary: rulebook.ruleSummary,
     };
-    if (DebugLogUtil.isDebugLogEnabled()) {
-        console.log("[story:mini_game:agent] 识别到小游戏 root.rulebook", JSON.stringify(root.rulebook));
-    }
+    DebugLogUtil.log("story:mini_game:agent", "识别到小游戏 root.rulebook", JSON.stringify(root.rulebook));
     root.session = session;
     root.actionLog = [];
     root.writeback = {};
@@ -6100,9 +6107,7 @@ export async function handleMiniGameTurn(input: MiniGameControllerInput): Promis
   }
 
   if (isForceQuitMiniGameCommand(input.playerMessage)) {
-    if (DebugLogUtil.isDebugLogEnabled()) {
-        console.log("[story:mini_game:agent] #退出 强制结束小游戏");
-    }
+    DebugLogUtil.log("story:mini_game:agent", "#退出 强制结束小游戏");
     logMiniGameAction({
       normalizedInput: normalizeMiniGameActionText(input.playerMessage),
       controlAction: "force_quit",
