@@ -138,8 +138,7 @@ function normalizeResultObject(input: unknown): Record<string, unknown> | null {
  * 同一 orchestration 请求下，记录事件进度检测关键节点，方便核对是否重复调用。
  */
 function logEventProgressKeyNode(node: string, traceMeta: unknown, extra?: Record<string, unknown>) {
-  if (!DebugLogUtil.isDebugLogEnabled()) return;
-  console.log("[game:orchestrator:key_nodes]", JSON.stringify({
+  DebugLogUtil.log("game:orchestrator:key_nodes", JSON.stringify({
     node,
     ...normalizeTraceMeta(traceMeta),
     ...(extra || {}),
@@ -257,8 +256,7 @@ function buildEventProgressInputSnapshot(input: EvaluateEventProgressInput): Jso
         .slice(-10)
         .map((item) => {
           // 打印 map 处理中的每一个 item
-        if (DebugLogUtil.isDebugLogEnabled()) {
-             console.log("[story:event_progress:runtime][stage][buildEventProgressInputSnapshot]", JSON.stringify({
+             DebugLogUtil.log("story:event_progress:runtime", "[stage][buildEventProgressInputSnapshot]", JSON.stringify({
                   role: normalizeScalarText(item?.role) || "未知角色",
                   // 事件/阶段标记，帮助AI判断台词归属
                   event_index: item?.eventIndex ?? null,
@@ -268,7 +266,6 @@ function buildEventProgressInputSnapshot(input: EvaluateEventProgressInput): Jso
                   role_num_speech_curr_stage: item?.roleNumSpeechCurrStage ?? 0,
                 }
             ));
-          }
           return ({
           role: normalizeScalarText(item?.role) || "未知角色",
           role_type: normalizeScalarText(item?.roleType) || "",
@@ -507,18 +504,17 @@ function buildEventProgressStats(input: {
     totalMs: Number(input.totalMs || 0),
   };
   console.log("[story:event_progress:runtime]", JSON.stringify(runtimeLog));
-  if (!DebugLogUtil.isDebugLogEnabled()) return;
-  console.log(`[story:event_progress:stats] request_chars=${runtimeLog.requestChars} system_chars=${runtimeLog.systemChars} user_chars=${runtimeLog.userChars} request_status=${input.requestStatus} build_ms=${runtimeLog.buildMs} invoke_ms=${runtimeLog.invokeMs} total_ms=${runtimeLog.totalMs}`);
-  console.log(`[story:event_progress:stats] | 输入摘要 | current_event=${inputDebugSnapshot.currentEvent?.index || 0}/${inputDebugSnapshot.currentEvent?.status || ""} ↩ phase=${inputDebugSnapshot.currentProgress?.phaseId || ""} ↩ next_event=${inputDebugSnapshot.nextEvent?.index || 0}/${inputDebugSnapshot.nextEvent?.label || ""} ↩ latest_role=${inputDebugSnapshot.latestMessage?.role || ""}/${inputDebugSnapshot.latestMessage?.eventType || ""} ↩ recent_dialogue_count=${inputDebugSnapshot.recentDialogueCount || 0} | - | - |`);
-  console.log(`[story:event_progress:stats] | 解析结果 | ended=${String(input.parsedResolution?.ended ?? "")} ↩ event_status=${normalizeScalarText(input.parsedResolution?.eventStatus)} ↩ progress_summary=${shortText(input.parsedResolution?.progressSummary, 240000)} ↩ reason=${shortText(input.parsedResolution?.reason, 240000)} | - | - |`);
-  console.log(`[story:event_progress:stats] | 区块 | 实际内容 | 字符数 | 估算 Tokens |`);
-  console.log(`[story:event_progress:stats] | System Prompt | ${shortText(input.systemPrompt, 240000) || "无"} | ${input.systemPrompt.length} | ${Math.max(input.systemPrompt ? 1 : 0, Math.ceil(input.systemPrompt.length / 4))} |`);
-  console.log(`[story:event_progress:stats] | 用户提示词 | ${shortText(input.prompt, 240000) || "无"} | ${input.prompt.length} | ${Math.max(input.prompt ? 1 : 0, Math.ceil(input.prompt.length / 4))} |`);
-  console.log(`[story:event_progress:stats] | 返回内容 | ${shortText(input.responseText, 240000) || "无"} | ${input.responseText.length} | ${Math.max(input.responseText ? 1 : 0, Math.ceil(input.responseText.length / 4))} |`);
+  DebugLogUtil.log("story:event_progress:stats", `request_chars=${runtimeLog.requestChars} system_chars=${runtimeLog.systemChars} user_chars=${runtimeLog.userChars} request_status=${input.requestStatus} build_ms=${runtimeLog.buildMs} invoke_ms=${runtimeLog.invokeMs} total_ms=${runtimeLog.totalMs}`);
+  DebugLogUtil.log("story:event_progress:stats", `| 输入摘要 | current_event=${inputDebugSnapshot.currentEvent?.index || 0}/${inputDebugSnapshot.currentEvent?.status || ""} ↩ phase=${inputDebugSnapshot.currentProgress?.phaseId || ""} ↩ next_event=${inputDebugSnapshot.nextEvent?.index || 0}/${inputDebugSnapshot.nextEvent?.label || ""} ↩ latest_role=${inputDebugSnapshot.latestMessage?.role || ""}/${inputDebugSnapshot.latestMessage?.eventType || ""} ↩ recent_dialogue_count=${inputDebugSnapshot.recentDialogueCount || 0} | - | - |`);
+  DebugLogUtil.log("story:event_progress:stats", `| 解析结果 | ended=${String(input.parsedResolution?.ended ?? "")} ↩ event_status=${normalizeScalarText(input.parsedResolution?.eventStatus)} ↩ progress_summary=${shortText(input.parsedResolution?.progressSummary, 240000)} ↩ reason=${shortText(input.parsedResolution?.reason, 240000)} | - | - |`);
+  DebugLogUtil.log("story:event_progress:stats", `| 区块 | 实际内容 | 字符数 | 估算 Tokens |`);
+  DebugLogUtil.log("story:event_progress:stats", `| System Prompt | ${shortText(input.systemPrompt, 240000) || "无"} | ${input.systemPrompt.length} | ${Math.max(input.systemPrompt ? 1 : 0, Math.ceil(input.systemPrompt.length / 4))} |`);
+  DebugLogUtil.log("story:event_progress:stats", `| 用户提示词 | ${shortText(input.prompt, 240000) || "无"} | ${input.prompt.length} | ${Math.max(input.prompt ? 1 : 0, Math.ceil(input.prompt.length / 4))} |`);
+  DebugLogUtil.log("story:event_progress:stats", `| 返回内容 | ${shortText(input.responseText, 240000) || "无"} | ${input.responseText.length} | ${Math.max(input.responseText ? 1 : 0, Math.ceil(input.responseText.length / 4))} |`);
   if (input.tokenUsage) {
-    console.log(`[story:event_progress:stats] | 实际推理消耗 | input=${input.tokenUsage.inputTokens || 0}, output=${input.tokenUsage.outputTokens || 0}, reasoning=${input.tokenUsage.reasoningTokens || 0} | - | - |`);
+    DebugLogUtil.log("story:event_progress:stats", `| 实际推理消耗 | input=${input.tokenUsage.inputTokens || 0}, output=${input.tokenUsage.outputTokens || 0}, reasoning=${input.tokenUsage.reasoningTokens || 0} | - | - |`);
   }
-  console.log(`[story:event_progress:stats] 耗时: ${Date.now() - input.start}ms`);
+  DebugLogUtil.log("story:event_progress:stats", `耗时: ${Date.now() - input.start}ms`);
 }
 
 /**

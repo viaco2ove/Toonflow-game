@@ -280,8 +280,7 @@ function normalizeTraceMeta(input: unknown): JsonRecord {
 
 // 用统一 tag 串起编排请求和模型调用，方便定位同一个请求是否重复触发了 AI。
 function logOrchestratorKeyNode(node: string, traceMeta: unknown, extra?: Record<string, unknown>) {
-  if (!DebugLogUtil.isDebugLogEnabled()) return;
-  console.log("[game:orchestrator:key_nodes]", JSON.stringify({
+  DebugLogUtil.log("game:orchestrator:key_nodes", JSON.stringify({
     node,
     ...normalizeTraceMeta(traceMeta),
     ...(extra || {}),
@@ -438,9 +437,7 @@ function findRuntimeNpcOverlay(runtimeState: JsonRecord, role: RuntimeStoryRole)
 export function runtimeStoryRoles(world: any, state?: JsonRecord | null): RuntimeStoryRole[] {
   const roles = worldRoles(world);
   const runtimeState = asRecord(state);
-  if (DebugLogUtil.isDebugLogEnabled()) {
-    console.log("[story:orchestrator:runtimeStoryRoles]", JSON.stringify(roles));
-  }
+  DebugLogUtil.log("story:orchestrator:runtimeStoryRoles", JSON.stringify(roles));
   const rolesMaped = roles.map((role) => {
     const rt = sanitizeRoleType(role.roleType);
     if (rt === "player") {
@@ -452,9 +449,7 @@ export function runtimeStoryRoles(world: any, state?: JsonRecord | null): Runtim
     // npc/system/general 统一用 NPC overlay（按 name/id 匹配）
     return applyRuntimeRoleOverlay(role, findRuntimeNpcOverlay(runtimeState, role));
   });
-  if (DebugLogUtil.isDebugLogEnabled()) {
-    console.log("[story:orchestrator:rolesMaped]", JSON.stringify(rolesMaped));
-  }
+  DebugLogUtil.log("story:orchestrator:rolesMaped", JSON.stringify(rolesMaped));
   return rolesMaped;
 }
 
@@ -1905,31 +1900,30 @@ function logOrchestratorPromptStats(
     runtimeLog.error = formatRuntimeErrorMessage(runtimeError);
   }
 
-  if (DebugLogUtil.isDebugLogEnabled()) {
-    console.log("[story:orchestrator:runtime]", JSON.stringify(runtimeLog));
-    // [story:chapter_ending_check:stats] current_chapter
-    DebugLogUtil.logCurrentChapter("story:orchestrator:stats", {
-      id: payload.traceMeta?.chapterId,
-      title: payload.chapterTitle || payload.traceMeta?.chapterTitle,
-      sort: payload.traceMeta?.chapterSort,
-    });
-    console.log(`[story:orchestrator:stats] request_chars=${totalPromptChars} estimated_tokens=${totalPromptTokens} system_chars=${systemPrompt.length} user_chars=${userPrompt.length} build_ms=${Number(timing?.buildMs || 0)} invoke_ms=${Number(timing?.invokeMs || 0)} total_ms=${Number(timing?.totalMs || 0)}`);
+DebugLogUtil.log("story:orchestrator:runtime", JSON.stringify(runtimeLog));
+  // [story:chapter_ending_check:stats] current_chapter
+  DebugLogUtil.logCurrentChapter("story:orchestrator:stats", {
+    id: payload.traceMeta?.chapterId,
+    title: payload.chapterTitle || payload.traceMeta?.chapterTitle,
+    sort: payload.traceMeta?.chapterSort,
+  });
+  DebugLogUtil.log("story:orchestrator:stats", `request_chars=${totalPromptChars} estimated_tokens=${totalPromptTokens} system_chars=${systemPrompt.length} user_chars=${userPrompt.length} build_ms=${Number(timing?.buildMs || 0)} invoke_ms=${Number(timing?.invokeMs || 0)} total_ms=${Number(timing?.totalMs || 0)}`);
 
-    if (tokenUsage) {
-      console.log(`[story:orchestrator:stats] actual_input_tokens=${tokenUsage.inputTokens || 0} actual_output_tokens=${tokenUsage.outputTokens || 0} actual_reasoning_tokens=${tokenUsage.reasoningTokens || 0}`);
-    }
+  if (tokenUsage) {
+    DebugLogUtil.log("story:orchestrator:stats", `actual_input_tokens=${tokenUsage.inputTokens || 0} actual_output_tokens=${tokenUsage.outputTokens || 0} actual_reasoning_tokens=${tokenUsage.reasoningTokens || 0}`);
+  }
 
-    const responseText = String(rawResponse || "").trim();
-    if (responseText) {
-      console.log(`[story:orchestrator:stats] response_chars=${responseText.length}`);
-      console.log(`[story:orchestrator:stats] response_preview=${normalizePromptStatContent(responseText)}`);
-    }
+  const responseText = String(rawResponse || "").trim();
+  if (responseText) {
+    DebugLogUtil.log("story:orchestrator:stats", `response_chars=${responseText.length}`);
+    DebugLogUtil.log("story:orchestrator:stats", `response_preview=${normalizePromptStatContent(responseText)}`);
+  }
 
-    if (runtimeError) {
-      console.log(`[story:orchestrator:stats] request_status=fallback reason=${formatRuntimeErrorMessage(runtimeError)}`);
-    } else {
-      console.log("[story:orchestrator:stats] request_status=success");
-    }
+  if (runtimeError) {
+    DebugLogUtil.log("story:orchestrator:stats", `request_status=fallback reason=${formatRuntimeErrorMessage(runtimeError)}`);
+  } else {
+    DebugLogUtil.log("story:orchestrator:stats", "request_status=success");
+  }
     console.log("[story:orchestrator:stats] 以下为 prompt 体积估算，不等于模型真实 usage。");
     console.log("[story:orchestrator:stats] | 区块 | 实际内容 | 字符数 | 估算 Prompt Tokens |");
     console.log("[story:orchestrator:stats] |---|---|---:|---:|");
@@ -2572,13 +2566,11 @@ function buildSpeakerUserPrompt(payload: {
   const visibleRolesText = payload.otherRoles.length ? payload.otherRoles.join("、") : "无";
   const taskContextLines = payload.taskContext ? buildTaskContextLines(payload.taskContext) : [];
 
-  if (DebugLogUtil.isDebugLogEnabled()) {
-    console.log("[story:memory:runtime] buildSpeakerUserPrompt", JSON.stringify({
-      worldGlobalBackground: payload.worldGlobalBackground || "无",
-      dynamicWorldGlobalBackground: payload.dynamicWorldGlobalBackground || "无",
-      hasTaskContext: !!payload.taskContext,
-    }));
-  }
+  DebugLogUtil.log("story:memory:runtime", "buildSpeakerUserPrompt", JSON.stringify({
+    worldGlobalBackground: payload.worldGlobalBackground || "无",
+    dynamicWorldGlobalBackground: payload.dynamicWorldGlobalBackground || "无",
+    hasTaskContext: !!payload.taskContext,
+  }));
   return [
     ...worldLines,
     "",
@@ -2749,12 +2741,10 @@ function buildMemoryUserPrompt(payload: {
     const cardLines = buildMemoryCardLines(payload);
     const taskLines = buildCompactMemoryTaskLines();
     const outputExampleLines = buildCompactMemoryOutputExampleLines();
-    if (DebugLogUtil.isDebugLogEnabled()) {
-      console.log("[story:memory:runtime] buildSpeakerUserPrompt", JSON.stringify({
-        worldGlobalBackground: payload.worldGlobalBackground || "无",
-        dynamicWorldGlobalBackground: payload.dynamicWorldGlobalBackground || "无",
-      }));
-    }
+    DebugLogUtil.log("story:memory:runtime", "buildSpeakerUserPrompt", JSON.stringify({
+      worldGlobalBackground: payload.worldGlobalBackground || "无",
+      dynamicWorldGlobalBackground: payload.dynamicWorldGlobalBackground || "无",
+    }));
     return [
       "[世界]",
       `名称: ${payload.worldName || "未命名世界"}`,
@@ -2798,12 +2788,10 @@ function buildMemoryUserPrompt(payload: {
   const taskLines = buildFullMemoryTaskLines();
   const outputExampleLines = buildFullMemoryOutputExampleLines();
 
-  if (DebugLogUtil.isDebugLogEnabled()) {
-    console.log("[story:memory:runtime] buildSpeakerUserPrompt", JSON.stringify({
-      worldGlobalBackground: payload.worldGlobalBackground || "无",
-      dynamicWorldGlobalBackground: payload.dynamicWorldGlobalBackground || "无",
-    }));
-  }
+  DebugLogUtil.log("story:memory:runtime", "buildSpeakerUserPrompt", JSON.stringify({
+    worldGlobalBackground: payload.worldGlobalBackground || "无",
+    dynamicWorldGlobalBackground: payload.dynamicWorldGlobalBackground || "无",
+  }));
   return [
     ...worldChapterLines,
     "",
@@ -3900,9 +3888,7 @@ function buildAiNarrativePlanResult(input: {
     || getPlainField(fieldMap, "trigger_memory_agent", "triggermemoryagent"),
   ) || memoryHints.length > 0;
 
-  if (DebugLogUtil.isDebugLogEnabled()) {
-    console.log(`[story:memory:runtime] triggerMemoryAgent=${triggerMemoryAgent}`);
-  }
+  DebugLogUtil.log("story:memory:runtime", `triggerMemoryAgent=${triggerMemoryAgent}`);
 
   // eventStatus / eventAdjustMode 决定这轮编排执行完以后，当前事件是保持、更新、等待输入，还是标记完成。
   const rawEventAdjustMode = normalizeScalarText(
@@ -4724,21 +4710,19 @@ export async function runNarrativeOrchestrator(input: OrchestratorInput): Promis
   };
 
   // DEBUG 日志：记录 orchestrator 返回内容
-  if (DebugLogUtil.isDebugLogEnabled()) {
-    console.log("[story:orchestrator:result]", JSON.stringify({
-      role: result.role,
-      roleType: result.roleType,
-      motive: result.motive,
-      content: result.content?.slice(0, 100) || "",
-      contentLength: result.content?.length || 0,
-      awaitUser: result.awaitUser,
-      eventKind: result.eventKind,
-      eventStatus: result.eventStatus,
-      chapterOutcome: result.chapterOutcome,
-      speakerMode: result.speakerMode,
-      orchestratorRuntime: result.orchestratorRuntime,
-    }));
-  }
+  DebugLogUtil.log("story:orchestrator:result", JSON.stringify({
+    role: result.role,
+    roleType: result.roleType,
+    motive: result.motive,
+    content: result.content?.slice(0, 100) || "",
+    contentLength: result.content?.length || 0,
+    awaitUser: result.awaitUser,
+    eventKind: result.eventKind,
+    eventStatus: result.eventStatus,
+    chapterOutcome: result.chapterOutcome,
+    speakerMode: result.speakerMode,
+    orchestratorRuntime: result.orchestratorRuntime,
+  }));
 
   return result;
 }
@@ -4831,10 +4815,8 @@ export async function runStoryMemoryManager(input: {
     //  buildCompactMemoryOutputExampleLines
     rawText = unwrapModelText((result as any)?.text || "");
 
-    if (DebugLogUtil.isDebugLogEnabled()) {
-      // console.log("[story:memory:runtime] result：", JSON.stringify(result));
-      console.log("[story:memory:runtime] rawText: ", JSON.stringify(rawText));
-    }
+    // console.log("[story:memory:runtime] result：", JSON.stringify(result));
+    DebugLogUtil.log("story:memory:runtime", "rawText: ", JSON.stringify(rawText));
     const objectLike = parseJsonSafe<Record<string, unknown>>(rawText, {});
     const hasObjectLike = hasRecordKeys(asRecord(objectLike));
     const fieldMap = parseFieldMap(rawText);
@@ -5324,14 +5306,12 @@ export async function refreshStoryMemoryBestEffort(input: {
       && !hasRecordKeys(asRecord(memory.playerCardPatch))
       && !memory.npcCardPatches.length
     ) {
-      if (DebugLogUtil.isDebugLogEnabled()) {
-        console.log("[story:memory:runtime]", JSON.stringify({
-          action: "skip_apply",
-          reason: "empty_result",
-          chapterId: Number(input.chapter?.id || 0),
-          recentMessageCount: recentMessages.length,
-        }));
-      }
+      DebugLogUtil.log("story:memory:runtime", JSON.stringify({
+        action: "skip_apply",
+        reason: "empty_result",
+        chapterId: Number(input.chapter?.id || 0),
+        recentMessageCount: recentMessages.length,
+      }));
       return null;
     }
     applyMemoryResultToState(input.state, memory);
@@ -5349,28 +5329,26 @@ export async function refreshStoryMemoryBestEffort(input: {
         return matched ? roleId || roleName : "";
       })
       .filter(Boolean);
-    if (DebugLogUtil.isDebugLogEnabled()) {
-      console.log("[story:memory:runtime]", JSON.stringify({
-        action: "apply_result",
-        chapterId: Number(input.chapter?.id || 0),
-        source: memory.source,
-        previousSummaryLength: previousSummary.length,
-        nextSummaryLength: normalizeScalarText(input.state.memorySummary).length,
-        previousFactsCount: previousFacts.length,
-        nextFactsCount: Array.isArray(input.state.memoryFacts) ? input.state.memoryFacts.length : 0,
-        previousTagsCount: previousTags.length,
-        nextTagsCount: Array.isArray(input.state.memoryTags) ? input.state.memoryTags.length : 0,
-        playerCardExistedBefore: hasRecordKeys(previousPlayerCard),
-        playerCardExistsAfter: hasRecordKeys(nextPlayerCard),
-        playerCardOtherCountBefore: Array.isArray(previousPlayerCard.other) ? previousPlayerCard.other.length : 0,
-        playerCardOtherCountAfter: Array.isArray(nextPlayerCard.other) ? nextPlayerCard.other.length : 0,
-        playerCardPatchApplied: hasRecordKeys(asRecord(memory.playerCardPatch)),
-        playerCardPatchKeys: Object.keys(asRecord(memory.playerCardPatch)),
-        npcCardPatchCount: memory.npcCardPatches.length,
-        npcCardAppliedCount: npcCardAppliedTargets.length,
-        npcCardAppliedTargets,
-      }));
-    }
+    DebugLogUtil.log("story:memory:runtime", JSON.stringify({
+      action: "apply_result",
+      chapterId: Number(input.chapter?.id || 0),
+      source: memory.source,
+      previousSummaryLength: previousSummary.length,
+      nextSummaryLength: normalizeScalarText(input.state.memorySummary).length,
+      previousFactsCount: previousFacts.length,
+      nextFactsCount: Array.isArray(input.state.memoryFacts) ? input.state.memoryFacts.length : 0,
+      previousTagsCount: previousTags.length,
+      nextTagsCount: Array.isArray(input.state.memoryTags) ? input.state.memoryTags.length : 0,
+      playerCardExistedBefore: hasRecordKeys(previousPlayerCard),
+      playerCardExistsAfter: hasRecordKeys(nextPlayerCard),
+      playerCardOtherCountBefore: Array.isArray(previousPlayerCard.other) ? previousPlayerCard.other.length : 0,
+      playerCardOtherCountAfter: Array.isArray(nextPlayerCard.other) ? nextPlayerCard.other.length : 0,
+      playerCardPatchApplied: hasRecordKeys(asRecord(memory.playerCardPatch)),
+      playerCardPatchKeys: Object.keys(asRecord(memory.playerCardPatch)),
+      npcCardPatchCount: memory.npcCardPatches.length,
+      npcCardAppliedCount: npcCardAppliedTargets.length,
+      npcCardAppliedTargets,
+    }));
     return memory;
   } catch (err) {
     const message = normalizeScalarText((err as any)?.message || String(err));
@@ -5617,14 +5595,11 @@ export async function advanceNarrativeUntilPlayerTurn(input: OrchestratorInput &
     // 获取当前事件/阶段信息，用于日志和消息标记
     const chapterProgress = readChapterProgressState(input.state);
 
-    if (DebugLogUtil.isDebugLogEnabled()) {
-         console.log("[story:event_progress:runtime][stage][advanceNarrativeUntilPlayerTurn]", JSON.stringify({
-          role: current.role,
-          eventIndex: chapterProgress.eventIndex,
-          stageIndex: chapterProgress.stageIndex || 0,
-          }
-      ));
-    }
+    DebugLogUtil.log("story:event_progress:runtime", "[stage][advanceNarrativeUntilPlayerTurn]", JSON.stringify({
+      role: current.role,
+      eventIndex: chapterProgress.eventIndex,
+      stageIndex: chapterProgress.stageIndex || 0,
+    }));
     if (current.role && current.content) {
       const message: RuntimeMessageInput = {
         role: current.role,

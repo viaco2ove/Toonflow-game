@@ -511,14 +511,11 @@ function buildRecentMessages(rows: any[], state?: any): RuntimeMessageInput[] {
       const roleNumSpeechCurrEvent = Number(roleData.numSpeechCurrEvent || 0);
       const roleNumSpeechCurrStage = Number(roleData.numSpeechCurrStage || 0);
 
-      if (DebugLogUtil.isDebugLogEnabled()) {
-           console.log("[story:event_progress:runtime][stage][buildRecentMessages]", JSON.stringify({
-               role: String(item.role || ""),
-              eventIndex: hasEventIndex ? metaData.eventIndex : (chapterProgress?.eventIndex ?? null),
-              stageIndex: hasStageIndex ? metaData.stageIndex : (chapterProgress?.stageIndex ?? 0),
-            }
-        ));
-      }
+      DebugLogUtil.log("story:event_progress:runtime", "[stage][buildRecentMessages]", JSON.stringify({
+        role: String(item.role || ""),
+        eventIndex: hasEventIndex ? metaData.eventIndex : (chapterProgress?.eventIndex ?? null),
+        stageIndex: hasStageIndex ? metaData.stageIndex : (chapterProgress?.stageIndex ?? 0),
+      }));
 
       return {
         messageId: Number(item.id || 0),
@@ -1109,14 +1106,14 @@ function setPendingSessionNarrativePlan(state: Record<string, any>, plan: Sessio
   if (plan) {
     state.pendingNarrativePlan = plan;
     const isMiniGameMode = miniGameStateManager.isMiniGameMode(state || {});
-    if (DebugLogUtil.isDebugLogEnabled() && isMiniGameMode) {
-     console.log("[story:mini_game:agent] 把小游戏的编排计划存入 state.pendingNarrativePlan ", JSON.stringify(plan));
+    if (isMiniGameMode) {
+     DebugLogUtil.log("story:mini_game:agent", "把小游戏的编排计划存入 state.pendingNarrativePlan ", JSON.stringify(plan));
     }
     return;
   }
   const isMiniGameMode = miniGameStateManager.isMiniGameMode(state || {});
-  if (DebugLogUtil.isDebugLogEnabled() && isMiniGameMode) {
-     console.log("[story:mini_game:agent] 把小游戏的编排计划移出 state.pendingNarrativePlan ", JSON.stringify(plan));
+  if (isMiniGameMode) {
+     DebugLogUtil.log("story:mini_game:agent", "把小游戏的编排计划移出 state.pendingNarrativePlan ", JSON.stringify(plan));
   }
   delete state.pendingNarrativePlan;
 }
@@ -1131,8 +1128,7 @@ function cloneSessionRuntimeValue<T>(input: T): T {
 
 // 正式会话也用统一 tag 串起请求链路，方便和调试态一起比对重复调用。
 function logSessionOrchestrationKeyNode(node: string, traceMeta: Record<string, unknown>, extra?: Record<string, unknown>) {
-  if (!DebugLogUtil.isDebugLogEnabled()) return;
-  console.log("[game:orchestrator:key_nodes]", JSON.stringify({
+  DebugLogUtil.log("game:orchestrator:key_nodes", JSON.stringify({
     node,
     ...traceMeta,
     ...(extra || {}),
@@ -1930,18 +1926,15 @@ async function insertSessionNarrativeMessages(params: {
     // 构建 meta 数据，包含事件/阶段标记和角色发言计数
     const chapterProgress = readChapterProgressState(params.state);
     const metaBase = buildSessionRuntimeMeta(params.state, lineIndex);
-    if (DebugLogUtil.isDebugLogEnabled()) {
-       console.log("[story:event_progress:runtime][stage][insertSessionNarrativeMessages]", JSON.stringify({
-            role: String(item.role || ""),
-            // 事件/阶段标记，帮助AI判断台词归属
-            eventIndex: item.eventIndex ?? chapterProgress.eventIndex ?? null,
-            stageIndex: item.stageIndex ?? chapterProgress.stageIndex ?? 0,
-            // 角色当前事件/阶段的发言计数
-            numSpeechCurrEvent: item.roleNumSpeechCurrEvent ?? 0,
-            numSpeechCurrStage: item.roleNumSpeechCurrStage ?? 0,
-          }
-      ));
-    }
+    DebugLogUtil.log("story:event_progress:runtime", "[stage][insertSessionNarrativeMessages]", JSON.stringify({
+        role: String(item.role || ""),
+        // 事件/阶段标记，帮助AI判断台词归属
+        eventIndex: item.eventIndex ?? chapterProgress.eventIndex ?? null,
+        stageIndex: item.stageIndex ?? chapterProgress.stageIndex ?? 0,
+        // 角色当前事件/阶段的发言计数
+        numSpeechCurrEvent: item.roleNumSpeechCurrEvent ?? 0,
+        numSpeechCurrStage: item.roleNumSpeechCurrStage ?? 0,
+      }));
     const meta = {
       ...metaBase,
       // 事件/阶段标记
@@ -2185,22 +2178,18 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
         || !isMiniGameActiveState(state);
 
       // 输出小游戏拦截日志
-      if (DebugLogUtil.isDebugLogEnabled()) {
-        console.log("[story:mini_game:agent] 小游戏拦截", JSON.stringify({
-          sessionId,
-          intercepted: true,
-          hasPendingPlan: !!pendingPlan,
-          eventType: miniGameEventType,
-          isMiniGameEnded: Boolean(isMiniGameEnded),
-          gameType: pendingPlan?.source === "rule" ? "小游戏编排" : (((state?.miniGame as Record<string, any>)?.rulebook as Record<string, any>)?.gameType || "未知"),
-          motive: String(pendingPlan?.motive || miniGameResult.message?.content || "").trim().slice(0, 100),
-        }));
-      }
+      DebugLogUtil.log("story:mini_game:agent", "小游戏拦截", JSON.stringify({
+        sessionId,
+        intercepted: true,
+        hasPendingPlan: !!pendingPlan,
+        eventType: miniGameEventType,
+        isMiniGameEnded: Boolean(isMiniGameEnded),
+        gameType: pendingPlan?.source === "rule" ? "小游戏编排" : (((state?.miniGame as Record<string, any>)?.rulebook as Record<string, any>)?.gameType || "未知"),
+        motive: String(pendingPlan?.motive || miniGameResult.message?.content || "").trim().slice(0, 100),
+      }));
 
       if (isMiniGameEnded) {
-          if (DebugLogUtil.isDebugLogEnabled()) {
-              console.log("[story:mini_game:agent] 退出状态",isMiniGameEnded);
-          }
+          DebugLogUtil.log("story:mini_game:agent", "退出状态",isMiniGameEnded);
         // 小游戏已结束，清除残留的 pendingNarrativePlan 和 heldNarrativePlan
         if (getPendingSessionNarrativePlan(state)) {
           setPendingSessionNarrativePlan(state, null);
@@ -2648,6 +2637,7 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
       fallbackStatus: sessionStatus,
       fallbackChapterId: nextChapterId || prevChapterId,
       applyToState: true,
+      skipAi: messageContent.trim() === ".",
     });
     sessionStatus = mergedOutcome.sessionStatus;
     nextChapterId = mergedOutcome.nextChapterId;
@@ -3577,14 +3567,12 @@ async function orchestrateSessionTurnInner(sessionId: string): Promise<SessionOr
   const pendingChapterId = getPendingSessionChapterId(state);
   const pendingChapterStart = getPendingSessionChapterStart(state);
   if (pendingChapterId && pendingChapterStart) {
-    if (DebugLogUtil.isDebugLogEnabled()) {
-      console.log("[story:orchestrator:runtime] 判断为不走到模型。原因：pendingChapterId_with_pendingChapterStart", JSON.stringify({
-        sessionId,
-        chapterId: currentChapterId,
-        pendingChapterId,
-        pendingChapterStart,
-      }));
-    }
+    DebugLogUtil.log("story:orchestrator:runtime", "判断为不走到模型。原因：pendingChapterId_with_pendingChapterStart", JSON.stringify({
+      sessionId,
+      chapterId: currentChapterId,
+      pendingChapterId,
+      pendingChapterStart,
+    }));
     const nextChapter = normalizeChapterOutput(await db("t_storyChapter").where({ id: pendingChapterId }).first());
     if (!nextChapter) {
       setPendingSessionChapterId(state, null);
@@ -3602,14 +3590,12 @@ async function orchestrateSessionTurnInner(sessionId: string): Promise<SessionOr
     return buildChapterStartPlan(nextChapter);
   }
   if (pendingChapterId && !pendingChapterStart) {
-    if (DebugLogUtil.isDebugLogEnabled()) {
-      console.log("[story:orchestrator:runtime] 判断为不走到模型。原因：pendingChapterId_without_pendingChapterStart", JSON.stringify({
-        sessionId,
-        chapterId: currentChapterId,
-        pendingChapterId,
-        pendingChapterStart,
-      }));
-    }
+    DebugLogUtil.log("story:orchestrator:runtime", "判断为不走到模型。原因：pendingChapterId_without_pendingChapterStart", JSON.stringify({
+      sessionId,
+      chapterId: currentChapterId,
+      pendingChapterId,
+      pendingChapterStart,
+    }));
     const nextChapter = normalizeChapterOutput(await db("t_storyChapter").where({ id: pendingChapterId }).first());
     if (!nextChapter) {
       setPendingSessionChapterId(state, null);
@@ -3647,13 +3633,11 @@ async function orchestrateSessionTurnInner(sessionId: string): Promise<SessionOr
   // 延迟提升：如果存在 heldNarrativePlan（如陪练回合），在前端主动请求编排时提升为 pendingNarrativePlan。
   // 这确保旁白语音有充足时间播完，陪练回合不会和旁白回合打架。
   if (state.heldNarrativePlan && !state.pendingNarrativePlan) {
-    if (DebugLogUtil.isDebugLogEnabled()) {
-      console.log("[story:orchestrator:runtime] heldNarrativePlan promoted to pendingNarrativePlan", JSON.stringify({
-        sessionId,
-        role: String(state.heldNarrativePlan.role || ""),
-        roleType: String(state.heldNarrativePlan.roleType || ""),
-      }));
-    }
+    DebugLogUtil.log("story:orchestrator:runtime", "heldNarrativePlan promoted to pendingNarrativePlan", JSON.stringify({
+      sessionId,
+      role: String(state.heldNarrativePlan.role || ""),
+      roleType: String(state.heldNarrativePlan.roleType || ""),
+    }));
     setPendingSessionNarrativePlan(state, state.heldNarrativePlan as any);
     delete state.heldNarrativePlan;
   }
@@ -3663,16 +3647,14 @@ async function orchestrateSessionTurnInner(sessionId: string): Promise<SessionOr
     // 小游戏已退出但 pendingNarrativePlan 残留时，说明是小游戏退出不干净，
     // 需要清除过期的 plan，否则编排会一直被它挡住不走大模型。
     if (!isMiniGameActiveState(state)) {
-      if (DebugLogUtil.isDebugLogEnabled()) {
-        console.log("[story:orchestrator:runtime] 清除过期 pendingNarrativePlan，小游戏已不在 active 状态", JSON.stringify({
-          sessionId,
-          chapterId: Number(chapter?.id || 0),
-          planRole: String(pendingNarrativePlan.role || ""),
-          planRoleType: String(pendingNarrativePlan.roleType || ""),
-          planAwaitUser: Boolean(pendingNarrativePlan.awaitUser),
-          planEventType: String(pendingNarrativePlan.eventType || ""),
-        }));
-      }
+      DebugLogUtil.log("story:orchestrator:runtime", "清除过期 pendingNarrativePlan，小游戏已不在 active 状态", JSON.stringify({
+        sessionId,
+        chapterId: Number(chapter?.id || 0),
+        planRole: String(pendingNarrativePlan.role || ""),
+        planRoleType: String(pendingNarrativePlan.roleType || ""),
+        planAwaitUser: Boolean(pendingNarrativePlan.awaitUser),
+        planEventType: String(pendingNarrativePlan.eventType || ""),
+      }));
       setPendingSessionNarrativePlan(state, null);
       if (state.heldNarrativePlan) {
         delete state.heldNarrativePlan;
@@ -3706,16 +3688,14 @@ async function orchestrateSessionTurnInner(sessionId: string): Promise<SessionOr
       } else {
         // 小游戏的旁白播报 / 敌人回合都通过 pendingNarrativePlan 进入正式编排链。
         // 这里必须优先返回，避免再跑普通剧情编排把小游戏回合冲掉。
-        if (DebugLogUtil.isDebugLogEnabled()) {
-          console.log("[story:orchestrator:runtime] 判断为不走到模型。原因：pendingNarrativePlan_exists", JSON.stringify({
-            sessionId,
-            chapterId: Number(chapter?.id || 0),
-            planRole: String(pendingNarrativePlan.role || ""),
-            planRoleType: String(pendingNarrativePlan.roleType || ""),
-            planAwaitUser: Boolean(pendingNarrativePlan.awaitUser),
-            planEventType: String(pendingNarrativePlan.eventType || ""),
-          }));
-        }
+        DebugLogUtil.log("story:orchestrator:runtime", "判断为不走到模型。原因：pendingNarrativePlan_exists", JSON.stringify({
+          sessionId,
+          chapterId: Number(chapter?.id || 0),
+          planRole: String(pendingNarrativePlan.role || ""),
+          planRoleType: String(pendingNarrativePlan.roleType || ""),
+          planAwaitUser: Boolean(pendingNarrativePlan.awaitUser),
+          planEventType: String(pendingNarrativePlan.eventType || ""),
+        }));
         return finalizeOrchestrationResult({
           sessionId,
           status: sessionStatus,
@@ -3730,12 +3710,10 @@ async function orchestrateSessionTurnInner(sessionId: string): Promise<SessionOr
   }
 
   if (!recentMessages.length) {
-    if (DebugLogUtil.isDebugLogEnabled()) {
-      console.log("[story:orchestrator:runtime] 判断为不走到模型。原因：no_recentMessages", JSON.stringify({
-        sessionId,
-        chapterId: Number(chapter?.id || 0),
-      }));
-    }
+    DebugLogUtil.log("story:orchestrator:runtime", "判断为不走到模型。原因：no_recentMessages", JSON.stringify({
+      sessionId,
+      chapterId: Number(chapter?.id || 0),
+    }));
     return buildChapterStartPlan(chapter);
   }
   await applySessionPreOrchestrationEventProgress({
@@ -3750,12 +3728,10 @@ async function orchestrateSessionTurnInner(sessionId: string): Promise<SessionOr
     },
   });
   if (canPlayerSpeakNow(state, world)) {
-    if (DebugLogUtil.isDebugLogEnabled()) {
-      console.log("[story:orchestrator:runtime] 判断为不走到模型。原因：canPlayerSpeakNow", JSON.stringify({
-        sessionId,
-        chapterId: Number(chapter?.id || 0),
-      }));
-    }
+    DebugLogUtil.log("story:orchestrator:runtime", "判断为不走到模型。原因：canPlayerSpeakNow", JSON.stringify({
+      sessionId,
+      chapterId: Number(chapter?.id || 0),
+    }));
     return finalizeOrchestrationResult({
       sessionId,
       status: sessionStatus,
@@ -3886,12 +3862,10 @@ async function orchestrateSessionTurnInner(sessionId: string): Promise<SessionOr
       reason: "opening_is_outside_chapter_event_graph",
       resetEventIndex: Number(state.chapterProgress?.eventIndex || state.currentEvent?.index || 0),
     });
-    if (DebugLogUtil.isDebugLogEnabled()) {
-      console.log("[story:orchestrator:runtime] 判断为不走到模型。原因：opening_is_outside_chapter_event_graph", JSON.stringify({
-        sessionId,
-        chapterId: Number(chapter?.id || 0),
-      }));
-    }
+    DebugLogUtil.log("story:orchestrator:runtime", "判断为不走到模型。原因：opening_is_outside_chapter_event_graph", JSON.stringify({
+      sessionId,
+      chapterId: Number(chapter?.id || 0),
+    }));
     const plan = await runNarrativePlan({
       userId: currentUserId,
       world,
@@ -3926,14 +3900,12 @@ async function orchestrateSessionTurnInner(sessionId: string): Promise<SessionOr
       plan: builtPlan,
     });
   }
-  if (DebugLogUtil.isDebugLogEnabled()) {
-    console.log("[story:orchestrator:runtime] 走大模型编排", JSON.stringify({
-      sessionId,
-      chapterId: Number(chapter?.id || 0),
-      recentMessageCount: recentMessages.length,
-      latestEventType: String(latestRecentMessage?.eventType || ""),
-    }));
-  }
+  DebugLogUtil.log("story:orchestrator:runtime", "走大模型编排", JSON.stringify({
+    sessionId,
+    chapterId: Number(chapter?.id || 0),
+    recentMessageCount: recentMessages.length,
+    latestEventType: String(latestRecentMessage?.eventType || ""),
+  }));
 
   // ★ 任务模式：直接走 4-Agent 编排（Intent → Progress → Director），跳过主线编排
   // Speaker 由 /game/streamlines 调用（任务模式判断在 streamlines 里）
@@ -4182,12 +4154,10 @@ async function commitSessionNarrativeTurnInner(input: CommitSessionNarrativeTurn
   // 这样旁白语音有充足时间播完，等前端下次请求编排时再提升。
   if (pendingPlan?.nextNarrativePlan) {
     state.heldNarrativePlan = pendingPlan.nextNarrativePlan;
-    if (DebugLogUtil.isDebugLogEnabled()) {
-      console.log("[story:next_plan:stats] nextNarrativePlan held (delayed promotion)", {
-        role: (pendingPlan.nextNarrativePlan as any)?.role,
-        roleType: (pendingPlan.nextNarrativePlan as any)?.roleType,
-      });
-    }
+    DebugLogUtil.log("story:next_plan:stats", "nextNarrativePlan held (delayed promotion)", {
+      role: (pendingPlan.nextNarrativePlan as any)?.role,
+      roleType: (pendingPlan.nextNarrativePlan as any)?.roleType,
+    });
     // 打上陪练回合的 log tag
     const heldRoleType = String((pendingPlan.nextNarrativePlan as any)?.roleType || "");
     if (heldRoleType && !["narrator", "player", "narrator_person"].includes(heldRoleType)) {
@@ -4230,13 +4200,11 @@ async function commitSessionNarrativeTurnInner(input: CommitSessionNarrativeTurn
       sessionStatus = mergedOutcome.sessionStatus;
       nextChapterId = mergedOutcome.nextChapterId;
       const outcome = mergedOutcome.outcome;
-      if (DebugLogUtil.isDebugLogEnabled()) {
-        // [story:chapter_ending_check:stats] current_chapter
-        DebugLogUtil.logCurrentChapter("story:chapter_ending_check:stats", chapter);
-        console.log(`[story:chapter_ending_check:stats] sessionStatus: ${sessionStatus}`);
-        console.log(`[story:chapter_ending_check:stats] outcome: ${outcome}`);
-        console.log(`[story:chapter_ending_check:stats] nextChapterId: ${nextChapterId}`);
-      }
+      // [story:chapter_ending_check:stats] current_chapter
+      DebugLogUtil.logCurrentChapter("story:chapter_ending_check:stats", chapter);
+      DebugLogUtil.log("story:chapter_ending_check:stats", `sessionStatus: ${sessionStatus}`);
+      DebugLogUtil.log("story:chapter_ending_check:stats", `outcome: ${outcome}`);
+      DebugLogUtil.log("story:chapter_ending_check:stats", `nextChapterId: ${nextChapterId}`);
       if (sessionStatus === "chapter_completed" && (!nextChapterId || nextChapterId === prevChapterId)) {
         const resolvedNextChapterId = await resolveNextChapterIdByOrder(db, Number(sessionRow.worldId || 0), prevChapterId);
         if (resolvedNextChapterId && resolvedNextChapterId !== prevChapterId) {

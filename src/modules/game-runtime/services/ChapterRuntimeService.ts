@@ -25,6 +25,7 @@ export interface EvaluateRuntimeOutcomeInput {
   fallbackNextChapterId?: number | null;
   applyToState?: boolean;
   traceMeta?: JsonRecord;
+  skipAi?: boolean;
 }
 
 export interface RuntimeOutcomeResolution {
@@ -150,8 +151,7 @@ function normalizeTraceMeta(input: unknown): JsonRecord {
 
 // 用统一 tag 串起章节判定与编排请求，方便确认同一个 orchestration 请求里判章跑了几次。
 function logChapterEndingKeyNode(node: string, traceMeta: unknown, extra?: Record<string, unknown>) {
-  if (!DebugLogUtil.isDebugLogEnabled()) return;
-  console.log("[game:orchestrator:key_nodes]", JSON.stringify({
+  DebugLogUtil.log("game:orchestrator:key_nodes", JSON.stringify({
     node,
     ...normalizeTraceMeta(traceMeta),
     ...(extra || {}),
@@ -321,9 +321,7 @@ function buildChapterJudgeInputSnapshot({
       }
     : null;
 
-  if (DebugLogUtil.isDebugLogEnabled()) {
-    console.log(`[story:memory:runtime] buildChapterJudgeInputSnapshot worldGlobalBackground=${worldGlobalBackground} nextEvent=${nextEventInfo ? JSON.stringify({ index: nextEventInfo.index, label: nextEventInfo.label }) : "null"}`);
-  }
+  DebugLogUtil.log("story:memory:runtime", `buildChapterJudgeInputSnapshot worldGlobalBackground=${worldGlobalBackground} nextEvent=${nextEventInfo ? JSON.stringify({ index: nextEventInfo.index, label: nextEventInfo.label }) : "null"}`);
   return {
     chapter: {
       title: normalizeScalarText(chapter?.title) || "未命名章节",
@@ -433,16 +431,15 @@ function buildChapterJudgeStats(input: {
     totalMs: Number(input.totalMs || 0),
   };
   console.log("[story:chapter_ending_check:runtime]", JSON.stringify(runtimeLog));
-  if (!DebugLogUtil.isDebugLogEnabled()) return;
-  console.log(`[story:chapter_ending_check:stats] request_chars=${totalRequestChars} system_chars=${input.systemPrompt.length} user_chars=${input.prompt.length} request_status=${input.requestStatus} build_ms=${Number(input.buildMs || 0)} invoke_ms=${Number(input.invokeMs || 0)} total_ms=${Number(input.totalMs || 0)}`);
-  console.log(`[story:chapter_ending_check:stats] | 区块 | 实际内容 | 字符数 | 估算 Tokens |`);
-  console.log(`[story:chapter_ending_check:stats] | System Prompt | ${shortText(input.systemPrompt, 240000) || "无"} | ${input.systemPrompt.length} | ${Math.max(input.systemPrompt ? 1 : 0, Math.ceil(input.systemPrompt.length / 4))} |`);
-  console.log(`[story:chapter_ending_check:stats] | 用户提示词 | ${shortText(input.prompt, 240000)} | ${input.prompt.length} | ${Math.max(1, Math.ceil(input.prompt.length / 4))} |`);
-  console.log(`[story:chapter_ending_check:stats] | 返回内容 | ${shortText(input.responseText, 240000) || "无"} | ${input.responseText.length} | ${Math.max(input.responseText ? 1 : 0, Math.ceil(input.responseText.length / 4))} |`);
+  DebugLogUtil.log("story:chapter_ending_check:stats", `request_chars=${totalRequestChars} system_chars=${input.systemPrompt.length} user_chars=${input.prompt.length} request_status=${input.requestStatus} build_ms=${Number(input.buildMs || 0)} invoke_ms=${Number(input.invokeMs || 0)} total_ms=${Number(input.totalMs || 0)}`);
+  DebugLogUtil.log("story:chapter_ending_check:stats", `| 区块 | 实际内容 | 字符数 | 估算 Tokens |`);
+  DebugLogUtil.log("story:chapter_ending_check:stats", `| System Prompt | ${shortText(input.systemPrompt, 240000) || "无"} | ${input.systemPrompt.length} | ${Math.max(input.systemPrompt ? 1 : 0, Math.ceil(input.systemPrompt.length / 4))} |`);
+  DebugLogUtil.log("story:chapter_ending_check:stats", `| 用户提示词 | ${shortText(input.prompt, 240000)} | ${input.prompt.length} | ${Math.max(1, Math.ceil(input.prompt.length / 4))} |`);
+  DebugLogUtil.log("story:chapter_ending_check:stats", `| 返回内容 | ${shortText(input.responseText, 240000) || "无"} | ${input.responseText.length} | ${Math.max(input.responseText ? 1 : 0, Math.ceil(input.responseText.length / 4))} |`);
   if (input.tokenUsage) {
-    console.log(`[story:chapter_ending_check:stats] | 实际推理消耗 | input=${input.tokenUsage.inputTokens || 0}, output=${input.tokenUsage.outputTokens || 0}, reasoning=${input.tokenUsage.reasoningTokens || 0} | - | - |`);
+    DebugLogUtil.log("story:chapter_ending_check:stats", `| 实际推理消耗 | input=${input.tokenUsage.inputTokens || 0}, output=${input.tokenUsage.outputTokens || 0}, reasoning=${input.tokenUsage.reasoningTokens || 0} | - | - |`);
   }
-  console.log(`[story:chapter_ending_check:stats] 耗时: ${cost}ms`);
+  DebugLogUtil.log("story:chapter_ending_check:stats", `耗时: ${cost}ms`);
 }
 
 function normalizeGuideSummary(reason: string, rawGuideSummary: unknown): string {
@@ -668,8 +665,9 @@ function buildRuleBasedChapterOutcome(input: EvaluateRuntimeOutcomeInput): Chapt
 // 正式链和调试链统一使用这一层做章节结果收口。
 export async function evaluateRuntimeOutcome(input: EvaluateRuntimeOutcomeInput): Promise<RuntimeOutcomeResolution> {
   const fallbackEvaluation = buildRuleBasedChapterOutcome(input);
-  // 没有任何结束条件时，不应该触发 AI 章节判定器；否则会产生无意义的模型调用和误导日志。
-  const evaluation = fallbackEvaluation.hasRule
+  // ★ skipAi 时只走规则判定，跳过 AI 章节判定器。
+  //   用于 "." 跳过等无实质内容消息——不可能触发章节结束条件，AI 调用纯属浪费。
+  const evaluation = (fallbackEvaluation.hasRule && !input.skipAi)
     ? (await evaluateChapterOutcomeByAi(input) || fallbackEvaluation)
     : fallbackEvaluation;
 
@@ -680,47 +678,45 @@ export async function evaluateRuntimeOutcome(input: EvaluateRuntimeOutcomeInput)
     ? (evaluation.nextChapterId || input.fallbackChapterId || null)
     : (input.fallbackNextChapterId || input.fallbackChapterId || null);
   const sessionStatus = resolveSessionStatusByOutcome(String(input.fallbackStatus || "active"), outcome);
-  if (DebugLogUtil.isDebugLogEnabled()) {
-    DebugLogUtil.logCurrentChapter("story:chapter_ending_check:stats", input.chapter);
-    console.log(`[story:chapter_ending_check:stats] sessionStatus: ${sessionStatus}`);
-    console.log(`[story:chapter_ending_check:stats] outcome: ${outcome}`);
-    console.log(`[story:chapter_ending_check:stats] nextChapterId: ${nextChapterId == null ? "" : String(nextChapterId)}`);
-  }
+  DebugLogUtil.logCurrentChapter("story:chapter_ending_check:stats", input.chapter);
+  DebugLogUtil.log("story:chapter_ending_check:stats", `sessionStatus: ${sessionStatus}`);
+  DebugLogUtil.log("story:chapter_ending_check:stats", `outcome: ${outcome}`);
+  DebugLogUtil.log("story:chapter_ending_check:stats", `nextChapterId: ${nextChapterId == null ? "" : String(nextChapterId)}`);
   if (DebugLogUtil.isDebugLogEnabled()) {
     console.log("[tag_end_chapter]", JSON.stringify({
-    chapterId: Number(input.chapter?.id || 0),
-    chapterTitle: String(input.chapter?.title || "").trim(),
-    outcome,
-    hasRule: evaluation.hasRule,
-    matchedBy: evaluation.matchedBy,
-    matchedRule: evaluation.matchedRule,
-    nextChapterId,
-    completionCondition: stringifyCondition((input.chapter as any)?.completionCondition),
-    endingRules: (() => {
-      try {
-        return JSON.stringify((input.chapter as any)?.runtimeOutline?.endingRules || null);
-      } catch {
-        return String((input.chapter as any)?.runtimeOutline?.endingRules || "");
-      }
-    })(),
-    eventType: String(input.eventType || "on_message"),
-    messageContent: String(input.messageContent || "").trim(),
-    why: evaluation.hasRule
-      ? (evaluation.result === "continue"
-        ? "章节继续推进事件，未命中结束条件"
-        : evaluation.result === "guide"
-          ? "需要引导用户完成结束条件"
-          : `命中${evaluation.matchedBy === "runtime_outline" ? "运行时事件规则" : "章节判定"}:${evaluation.matchedRule || "未命名规则"}`)
-      : "当前章节没有有效结束条件，跳过AI章节判定并沿用fallbackOutcome",
+      chapterId: Number(input.chapter?.id || 0),
+      chapterTitle: String(input.chapter?.title || "").trim(),
+      outcome,
+      hasRule: evaluation.hasRule,
+      matchedBy: evaluation.matchedBy,
+      matchedRule: evaluation.matchedRule,
+      nextChapterId,
+      completionCondition: stringifyCondition((input.chapter as any)?.completionCondition),
+      endingRules: (() => {
+        try {
+          return JSON.stringify((input.chapter as any)?.runtimeOutline?.endingRules || null);
+        } catch {
+          return String((input.chapter as any)?.runtimeOutline?.endingRules || "");
+        }
+      })(),
+      eventType: String(input.eventType || "on_message"),
+      messageContent: String(input.messageContent || "").trim(),
+      why: evaluation.hasRule
+        ? (evaluation.result === "continue"
+          ? "章节继续推进事件，未命中结束条件"
+          : evaluation.result === "guide"
+            ? "需要引导用户完成结束条件"
+            : `命中${evaluation.matchedBy === "runtime_outline" ? "运行时事件规则" : "章节判定"}:${evaluation.matchedRule || "未命名规则"}`)
+        : "当前章节没有有效结束条件，跳过AI章节判定并沿用fallbackOutcome",
     }));
-    if (!evaluation.hasRule && DebugLogUtil.isDebugLogEnabled()) {
-      console.log("[story:chapter_ending_check:skip]", JSON.stringify({
-        chapterId: Number(input.chapter?.id || 0),
-        chapterTitle: String(input.chapter?.title || "").trim(),
-        reason: "skip_no_rule",
-        traceMeta: normalizeTraceMeta(input.traceMeta),
-      }));
-    }
+  }
+  if (!evaluation.hasRule) {
+    DebugLogUtil.log("story:chapter_ending_check:skip", JSON.stringify({
+      chapterId: Number(input.chapter?.id || 0),
+      chapterTitle: String(input.chapter?.title || "").trim(),
+      reason: "skip_no_rule",
+      traceMeta: normalizeTraceMeta(input.traceMeta),
+    }));
   }
 
 
