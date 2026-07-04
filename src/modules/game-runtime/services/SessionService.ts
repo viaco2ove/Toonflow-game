@@ -9,6 +9,7 @@ import {
   readChapterProgressState,
   readDefaultRuntimeEventViewState,
   readRuntimeCurrentEventDigestState,
+  normalizeChapterRuntimeOutline,
   RuntimeEventDigestState,
   RuntimeEventViewState,
   syncRuntimeCurrentEventFromChapterProgress,
@@ -570,6 +571,41 @@ async function applySessionUserEventProgress(params: {
     deltas: params.deltas,
   });
   syncChapterProgressWithRuntime(params.chapter, params.state);
+
+  // ★ 快路径 1: "用户发言" phase + player 消息 → 直接 markCurrentUserNodeCompleted，跳过 AI
+  //   语义：phase.kind=="user" 表示"等用户说话"，用户发了任何消息(含 ".") = 事件完成。
+  //   原来这一步靠 AI 判断(~3-5s)，但结论永远是 ended:true，用规则替代。
+  {
+    const currentProgress = readChapterProgressState(params.state);
+    const outline = normalizeChapterRuntimeOutline(params.chapter?.runtimeOutline);
+    const currentPhase = outline.phases.find((p) => p.id === currentProgress.phaseId) || null;
+    const currentStage = currentPhase?.stages?.[currentProgress.stageIndex || 0] || null;
+    const isUserPhase = currentPhase?.kind === "user" || currentStage?.kind === "user";
+    const trimmedContent = String(params.messageContent || "").trim();
+
+    if (isUserPhase) {
+      console.log("[applySessionUserEventProgress] 快路径: user phase + player 消息 → markCurrentUserNodeCompleted (跳过 AI)", {
+        phaseId: currentProgress.phaseId,
+        stageIndex: currentProgress.stageIndex || 0,
+        messagePreview: trimmedContent.slice(0, 60),
+      });
+      markCurrentUserNodeCompleted(params.chapter, params.state, params.messageId ?? null);
+      syncChapterProgressWithRuntime(params.chapter, params.state);
+      return;
+    }
+
+    // ★ 快路径 2: "." 跳过 + 非 user phase → 跳过 AI，事件不推进
+    //   语义："." 没有实质内容，不可能推进 scene 事件，AI 评估毫无意义。
+    if (trimmedContent === ".") {
+      console.log("[applySessionUserEventProgress] 快路径: 跳过消息 '.' → 跳过事件进度 AI (非 user phase)", {
+        phaseId: currentProgress.phaseId,
+        phaseKind: currentPhase?.kind || "unknown",
+      });
+      // 不调 AI、不推进事件，直接返回让编排器继续
+      return;
+    }
+  }
+
   const resolution = await evaluateEventProgressByAi({
     userId: params.userId,
     chapter: params.chapter,
