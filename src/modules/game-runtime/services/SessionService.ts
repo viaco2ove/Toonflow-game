@@ -627,9 +627,8 @@ async function applySessionUserEventProgress(params: {
   });
   syncChapterProgressWithRuntime(params.chapter, params.state);
 
-  // ★ 快路径 1: "用户发言" phase + player 消息 → 直接 markCurrentUserNodeCompleted，跳过 AI
-  //   语义：phase.kind=="user" 表示"等用户说话"，用户发了任何消息(含 ".") = 事件完成。
-  //   原来这一步靠 AI 判断(~3-5s)，但结论永远是 ended:true，用规则替代。
+  // ★ 快路径: "." 跳过 + 非 user phase → 跳过 AI，事件不推进
+  //   语义："." 没有实质内容，不可能推进 scene 事件，AI 评估毫无意义。
   {
     const currentProgress = readChapterProgressState(params.state);
     const outline = normalizeChapterRuntimeOutline(params.chapter?.runtimeOutline);
@@ -638,20 +637,7 @@ async function applySessionUserEventProgress(params: {
     const isUserPhase = currentPhase?.kind === "user" || currentStage?.kind === "user";
     const trimmedContent = String(params.messageContent || "").trim();
 
-    if (isUserPhase) {
-      console.log("[applySessionUserEventProgress] 快路径: user phase + player 消息 → markCurrentUserNodeCompleted (跳过 AI)", {
-        phaseId: currentProgress.phaseId,
-        stageIndex: currentProgress.stageIndex || 0,
-        messagePreview: trimmedContent.slice(0, 60),
-      });
-      markCurrentUserNodeCompleted(params.chapter, params.state, params.messageId ?? null);
-      syncChapterProgressWithRuntime(params.chapter, params.state);
-      return;
-    }
-
-    // ★ 快路径 2: "." 跳过 + 非 user phase → 跳过 AI，事件不推进
-    //   语义："." 没有实质内容，不可能推进 scene 事件，AI 评估毫无意义。
-    if (trimmedContent === ".") {
+    if (!isUserPhase && trimmedContent === ".") {
       console.log("[applySessionUserEventProgress] 快路径: 跳过消息 '.' → 跳过事件进度 AI (非 user phase)", {
         phaseId: currentProgress.phaseId,
         phaseKind: currentPhase?.kind || "unknown",
@@ -721,6 +707,17 @@ async function applySessionUserEventProgress(params: {
       currentEventStatus: params.state.currentEvent?.status,
     });
     syncChapterProgressWithRuntime(params.chapter, params.state);
+    // ★ 关键修复: 进入 user phase 时，必须交还输入权给用户
+    //   否则编排器检测到 canPlayerSpeak=false，会继续编排 NPC/旁白，而不是等用户输入
+    if (progressApplied.enteredUserPhase) {
+      allowPlayerTurn(
+        params.state,
+        null as any,
+        "narrator",
+        String(params.state.narrator?.name || "旁白"),
+      );
+      console.log("[applySessionUserEventProgress] 进入 user phase，已调用 allowPlayerTurn");
+    }
     return;
   }
   markCurrentUserNodeCompleted(params.chapter, params.state, params.messageId ?? null);
@@ -2263,9 +2260,11 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
     const needsAi2 = checkEventProgressAiNeeded(currentChapter, state, messageContent);
 
     // 3. 如果需要 AI #2，预计算（与 AI #1 并发）
-    let precomputedAi2Resolution: AiEventProgressResolution | null = null;
-
-    if (needsAi2) {
+    //    如果走 fast path，清空旧的 ai2Promise，避免跨请求复用陈旧结果
+    if (!needsAi2) {
+      ai2Promise = null;
+      DebugLogUtil.log("story:ai_parallel", "[addSessionMessage] AI #2 走 fast path，清空旧预计算结果");
+    } else {
       DebugLogUtil.log("story:ai_parallel", "[addSessionMessage] 开始预计算 AI #2 (evaluateEventProgressByAi)");
       ai2Promise = evaluateEventProgressByAi({
         userId: currentUserId,
@@ -2283,8 +2282,6 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
           userId: currentUserId,
         },
       });
-    } else {
-      DebugLogUtil.log("story:ai_parallel", "[addSessionMessage] AI #2 走 fast path，无需预计算");
     }
 
     // 4. 并发运行 AI #1 (handleMiniGameTurn)
@@ -2544,7 +2541,9 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
       const recentMessagesForProgress = buildRecentMessages(rawRecentMessagesForProgress, state);
 
       // ★ AI 并行化优化: 等待预计算的 AI #2 结果并传入
-      let precomputedAiResolution: AiEventProgressResolution | null = null;
+      //    只有真正预计算了才传入（needsAi2=true 时 ai2Promise 才非 null）
+      //    否则传 undefined，让 applySessionUserEventProgress 自行调用 AI
+      let precomputedAiResolution: AiEventProgressResolution | null | undefined = undefined;
       if (ai2Promise) {
         DebugLogUtil.log("story:ai_parallel", "[addSessionMessage] 等待 AI #2 预计算结果");
         precomputedAiResolution = await ai2Promise;
@@ -2571,7 +2570,7 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
           chapterId: Number(currentChapter.id || 0),
           userId: currentUserId,
         },
-        precomputedAiResolution: precomputedAiResolution,
+        precomputedAiResolution,
       });
       /**
        * ★ 旧的"自由章节任务结算"链路（resolveFreeChapterTask）已被禁用。
