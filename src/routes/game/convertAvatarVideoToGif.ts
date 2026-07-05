@@ -61,6 +61,7 @@ const COMMON_WIN_FFMPEG_PATHS = [
 ];
 
 let cachedFfmpegPath = "";
+let cachedFfprobePath = "";
 
 type VideoAvatarJobStatus = "queued" | "running" | "success" | "failed";
 
@@ -73,6 +74,11 @@ type VideoAvatarJobResult = {
   /** 原始上传视频 OSS 地址 */
   videoPath: string;
   videoFilePath: string;
+  /** 动画第一帧静态图（用于定格显示） */
+  firstFramePath: string;
+  firstFrameFilePath: string;
+  /** 动画时长（毫秒），用于前端控制播放时长 */
+  durationMs: number;
 };
 
 type VideoAvatarJob = {
@@ -293,6 +299,10 @@ function buildVideoAvatarJobResponse(job: VideoAvatarJob): Record<string, unknow
     foregroundExt: job.result?.foregroundExt || "",
     videoPath: job.result?.videoPath || "",
     videoFilePath: job.result?.videoFilePath || "",
+    // 新增：动画时长和第一帧
+    firstFramePath: job.result?.firstFramePath || "",
+    firstFrameFilePath: job.result?.firstFrameFilePath || "",
+    durationMs: job.result?.durationMs || 0,
   };
 }
 
@@ -381,6 +391,93 @@ function discoverFfmpegPath(): string {
   }
 
   throw new Error("未找到 ffmpeg，可先在系统中安装 ffmpeg 后再上传 MP4");
+}
+
+/**
+ * 自动定位 ffprobe 可执行文件（通常与 ffmpeg 同目录）。
+ */
+function discoverFfprobePath(): string {
+  if (cachedFfprobePath) return cachedFfprobePath;
+
+  const envPath = String(process.env.FFPROBE_PATH || "").trim();
+  if (envPath && existsSync(envPath)) {
+    cachedFfprobePath = envPath;
+    return cachedFfprobePath;
+  }
+
+  // 尝试从 ffmpeg 路径推断 ffprobe 路径
+  const ffmpegDir = path.dirname(discoverFfmpegPath());
+  const ffprobeCandidates = [
+    path.join(ffmpegDir, "ffprobe.exe"),
+    path.join(ffmpegDir, "ffprobe"),
+  ];
+  for (const candidate of ffprobeCandidates) {
+    if (existsSync(candidate)) {
+      cachedFfprobePath = candidate;
+      return cachedFfprobePath;
+    }
+  }
+
+  // 尝试系统 PATH
+  const syncLookup = process.platform === "win32"
+    ? spawnSync("where", ["ffprobe"], { encoding: "utf8", windowsHide: true })
+    : spawnSync("sh", ["-lc", "command -v ffprobe"], { encoding: "utf8" });
+  const stdout = String(syncLookup.stdout || "").trim();
+  const firstLine = stdout.split(/\r?\n/).map((line) => line.trim()).find(Boolean) || "";
+  if (firstLine && existsSync(firstLine)) {
+    cachedFfprobePath = firstLine;
+    return cachedFfprobePath;
+  }
+
+  throw new Error("未找到 ffprobe，请确保 ffmpeg 安装目录中包含 ffprobe");
+}
+
+/**
+ * 运行 ffprobe 获取媒体时长（秒）。
+ */
+async function getMediaDuration(ffprobePath: string, inputPath: string): Promise<number> {
+  try {
+    const result = await new Promise<string>((resolve, reject) => {
+      const child = spawn(ffprobePath, [
+        "-v", "error",
+        "-show_entries", "format=duration",
+        "-of", "default=noprint_wrappers=1:nokey=1",
+        inputPath,
+      ], {
+        windowsHide: true,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      let stdout = "";
+      child.stdout.on("data", (chunk) => { stdout += String(chunk || ""); });
+      child.on("error", (err) => reject(err));
+      child.on("close", (code) => {
+        if (code === 0) resolve(stdout.trim());
+        else reject(new Error(`ffprobe 失败，退出码 ${code}`));
+      });
+    });
+    const duration = parseFloat(result);
+    return isNaN(duration) ? 0 : Math.round(duration * 1000); // 转为毫秒
+  } catch {
+    return 0; // 获取失败返回 0，前端使用默认时长
+  }
+}
+
+/**
+ * 从 WebP/GIF 动图提取第一帧为静态 PNG。
+ */
+async function extractFirstFrame(ffmpegPath: string, inputPath: string, outputPath: string): Promise<boolean> {
+  try {
+    await runFfmpeg(ffmpegPath, [
+      "-y",
+      "-i", inputPath,
+      "-vframes", "1",
+      "-f", "image2",
+      outputPath,
+    ]);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -646,7 +743,7 @@ async function renderSemanticAvatarAssets(
   preferGifOutput: boolean,
   config: ImageAiConfig,
   reportProgress?: ProgressReporter,
-): Promise<{ animatedPath: string; animatedExt: string; backgroundPath: string }> {
+): Promise<{ animatedPath: string; animatedExt: string; backgroundPath: string; firstFramePath: string }> {
   const startedAt = Date.now();
   const rawFramesDir = path.join(tempDir, "raw_frames");
   const matteFramesDir = path.join(tempDir, "matte_frames");
@@ -708,6 +805,14 @@ async function renderSemanticAvatarAssets(
   if (!firstNormalizedInput || !firstForegroundRaw) {
     throw new Error("视频抠图失败，未生成首帧结果");
   }
+
+  // 直接保存抠好的第一帧（透明 PNG），不需要再用 ffmpeg 提取
+  const firstFramePath = path.join(tempDir, "first_frame.png");
+  await fs.writeFile(firstFramePath, firstForegroundRaw);
+  debugAvatarVideoRuntime("semantic:first_frame:saved", {
+    firstFramePath,
+    firstFrameBytes: firstForegroundRaw.length,
+  });
 
   const backgroundBuffer = await buildSemanticBackground(config, firstNormalizedInput, firstForegroundRaw);
   await fs.writeFile(backgroundPath, backgroundBuffer);
@@ -803,6 +908,7 @@ async function renderSemanticAvatarAssets(
     animatedPath,
     animatedExt,
     backgroundPath,
+    firstFramePath,
   };
 }
 
@@ -816,7 +922,7 @@ async function renderLegacyAvatarAssets(
   preferGifOutput: boolean,
   config?: ImageAiConfig | null,
   reportProgress?: ProgressReporter,
-): Promise<{ animatedPath: string; animatedExt: string; backgroundPath: string }> {
+): Promise<{ animatedPath: string; animatedExt: string; backgroundPath: string; firstFramePath: string }> {
   const startedAt = Date.now();
   const palettePath = path.join(tempDir, "palette.png");
   const webpPath = path.join(tempDir, "avatar.webp");
@@ -929,6 +1035,24 @@ async function renderLegacyAvatarAssets(
   ]);
   reportProgress?.(92, "背景提取完成，准备上传资源");
 
+  // 用色键方式从原视频提取第一帧（与 semantic 方案统一）
+  const firstFramePath = path.join(tempDir, "first_frame.png");
+  try {
+    await runFfmpeg(ffmpegPath, [
+      "-y",
+      "-ss", "0",
+      "-i", inputPath,
+      "-vframes", "1",
+      "-vf", `scale=${AVATAR_GIF_SIDE}:${AVATAR_GIF_SIDE}:force_original_aspect_ratio=increase:flags=lanczos,crop=${AVATAR_GIF_SIDE}:${AVATAR_GIF_SIDE},colorkey=0x000000:0.08:0.05,format=rgba`,
+      firstFramePath,
+    ]);
+    debugAvatarVideoRuntime("legacy:first_frame:saved", {
+      firstFramePath,
+    });
+  } catch {
+    console.warn("[convertAvatarVideoToGif] legacy first frame extraction failed, will use default");
+  }
+
   debugAvatarVideoRuntime("legacy:assets:done", {
     animatedPath,
     animatedExt,
@@ -939,6 +1063,7 @@ async function renderLegacyAvatarAssets(
     animatedPath,
     animatedExt,
     backgroundPath,
+    firstFramePath,
   };
 }
 
@@ -992,6 +1117,22 @@ async function processVideoAvatarJob(job: VideoAvatarJob): Promise<void> {
       fs.readFile(assetResult.backgroundPath),
       fs.readFile(job.inputPath),
     ]);
+
+    // 获取动画时长（用原始 MP4，WebP 可能是 VP9 编码 ffprobe 不支持）
+    let durationMs = 0;
+    try {
+      const ffprobePath = discoverFfprobePath();
+      durationMs = await getMediaDuration(ffprobePath, job.inputPath);
+    } catch {
+      console.warn("[convertAvatarVideoToGif] 获取动画时长失败，使用默认 3000ms");
+      durationMs = 3000;
+    }
+    debugAvatarVideoRuntime("first_frame:extract", {
+      taskId: job.taskId,
+      durationMs,
+      firstFrameExtracted: existsSync(assetResult.firstFramePath),
+    });
+
     updateVideoAvatarJob(job, 94, "资源生成完成，正在上传");
     debugAvatarVideoRuntime("assets:loaded", {
       taskId: job.taskId,
@@ -1007,16 +1148,22 @@ async function processVideoAvatarJob(job: VideoAvatarJob): Promise<void> {
     const foregroundFilePath = `${basePath}/${uuidv4()}.${assetResult.animatedExt || "gif"}`;
     const backgroundFilePath = `${basePath}/${uuidv4()}.png`;
     const videoFilePath = `${basePath}/${uuidv4()}.${job.inputExt}`;
+    const firstFrameFilePath = `${basePath}/${uuidv4()}.png`;
+
+    // 上传资源（第一帧在 semantic 方案中已保存，legacy 方案可能不存在）
+    const firstFrameBuffer = existsSync(assetResult.firstFramePath) ? await fs.readFile(assetResult.firstFramePath) : null;
     await Promise.all([
       u.oss.writeFile(foregroundFilePath, animatedBuffer),
       u.oss.writeFile(backgroundFilePath, bgBuffer),
       u.oss.writeFile(videoFilePath, videoBuffer),
+      firstFrameBuffer ? u.oss.writeFile(firstFrameFilePath, firstFrameBuffer) : Promise.resolve(),
     ]);
     const [foregroundPath, backgroundUrl, videoUrl] = await Promise.all([
       u.oss.getFileUrl(foregroundFilePath),
       u.oss.getFileUrl(backgroundFilePath),
       u.oss.getFileUrl(videoFilePath),
     ]);
+    const firstFramePathResult = firstFrameBuffer ? await u.oss.getFileUrl(firstFrameFilePath) : "";
 
     job.result = {
       foregroundPath,
@@ -1026,6 +1173,10 @@ async function processVideoAvatarJob(job: VideoAvatarJob): Promise<void> {
       foregroundExt: assetResult.animatedExt || "gif",
       videoPath: videoUrl,
       videoFilePath,
+      // 新增字段
+      firstFramePath: firstFramePathResult,
+      firstFrameFilePath: firstFrameBuffer ? firstFrameFilePath : "",
+      durationMs,
     };
     job.status = "success";
     updateVideoAvatarJob(job, 100, "视频头像生成完成");
