@@ -54,3 +54,7 @@ webDebugLogConfig = {
 ## CSS 控制显隐
 .layered-avatar__fg--png.is-hidden { visibility: hidden; }  // 播放中隐藏 PNG
 .layered-avatar__fg--webp.is-hidden { visibility: hidden; }  // 定格时隐藏 WebP
+
+## 循环播放
+useWebpAvatar options.loopInterval（毫秒）：onAnimationEnd 后等待多久再次播放，0 表示不循环，默认 5000
+  → 播放 playDuration → pause() → onAnimationEnd → 等 loopInterval → play() → ...
