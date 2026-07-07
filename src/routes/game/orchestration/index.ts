@@ -966,10 +966,12 @@ export default router.post(
     } catch (err) {
       if (isSessionServiceError(err)) {
         DebugLogUtil.log("story:orchestrator:runtime", "ended err ms：", Date.now() - startTime);
-        return res.status(err.status).send(error(err.message));
+        if (!res.headersSent) return res.status(err.status).send(error(err.message));
+        return;
       }
-      res.status(500).send(error(u.error(err).message));
-    }finally {
+      DebugLogUtil.log("story:orchestrator:runtime", "ended err ms：", Date.now() - startTime);
+      if (!res.headersSent) res.status(500).send(error(u.error(err).message));
+    } finally {
       DebugLogUtil.log("story:orchestrator:runtime", "ended finally ms：", Date.now() - startTime);
     }
   },

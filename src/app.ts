@@ -139,6 +139,9 @@ export default async function startServe(randomPort: Boolean = false) {
     res.locals.error = err;
     console.error(err);
 
+    // 防止 double-send：若响应头已发出（比如路由里已 res.send() 后异常泄漏到这里），直接跳过。
+    if (res.headersSent) return;
+
     const status = err?.status || err?.statusCode || 500;
     // Express will serialize native Error objects to `{}`; return a stable JSON payload instead.
     if (err instanceof Error) {
