@@ -580,11 +580,8 @@ function checkEventProgressAiNeeded(
     return false;
   }
 
-  // Fast path 2: "." 跳过 + 非 user phase，不需要 AI
-  if (trimmedContent === ".") {
-    DebugLogUtil.log("story:ai_parallel", "[checkEventProgressAiNeeded] fast path: '.' 跳过消息，跳过 AI");
-    return false;
-  }
+  // 注: '.' 等占位消息不应跳过事件进度检测器 - 编排需要 AI 判定剧情是否推进
+  // 原快路径B 已移除，否则 scene 事件下 '.' 会卡住剧情
 
   DebugLogUtil.log("story:ai_parallel", "[checkEventProgressAiNeeded] 需要调用 AI #2");
   return true;
@@ -2762,7 +2759,8 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
       fallbackStatus: sessionStatus,
       fallbackChapterId: nextChapterId || prevChapterId,
       applyToState: true,
-      skipAi: messageContent.trim() === ".",
+      // 注：'.'、≤2字短消息等都不再跳过章节判定器，必须让 AI 判断是否推进
+      skipAi: false,
     });
     sessionStatus = mergedOutcome.sessionStatus;
     nextChapterId = mergedOutcome.nextChapterId;

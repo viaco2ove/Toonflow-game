@@ -144,37 +144,12 @@ DB + 规则 ~100ms
 AI 调用 x2~3 ~9-15s
 总计 ~11s
 核心问题：orchestrate:false 只跳过了编排器 AI，但前置的 3 个 AI 调用照跑
-对于 "." 跳过，这 3 个 AI 调用全部是无效计算
-## 三处规则快路径
+对于 "." 跳过，这 3 个 AI 调用全部是无效计算？这样bug 出现了，变成了无法跳过。改回跟一般发言一致的处理
+## 快路径
 ### 优化方案：用规则替代 "用户发言" 事件的 AI 调用
+结果是问题很大，退回原来的方案。
 #### 当前链路 (11s)
-AI #1 意图分类 ->AI #2 事件进度 ->AI #3 章节判定-> DB 保存
-~11s
-#### 优化后 — "." 跳过 (~100ms)
-规则: 跳过意图
-规则: 用户发言
-跳过
-DB 保存
-~0.1s
-#### 优化后 — 普通用户输入 (~5s)
-规则: 短消息
-保留 AI (scene)
-保留 AI
-DB 保存
-~5s
-### 三处规则快路径
-![img_4.png](img_4.png)
-
-1. 意图分类快路径
-message == "." 或 (len <= 2 且不以 # 开头) → 直接返回 normal_dialog，跳过 AI
-2. 事件进度快路径 — "用户发言" phase
-phase.kind == "user" + player 消息 → markCurrentUserNodeCompleted()，跳过 AI
-语义正确：用户发了任何消息(含 ".") = 用户发言事件完成
-3. 事件进度快路径 — "." 跳过 + scene phase
-message == "." + phase.kind != "user" → 跳过 AI，事件不推进
-语义正确："." 没有实质内容，不可能推进 scene 事件
-4. 章节判定快路径 — "." 跳过
-message == "." → 跳过 evaluateChapterOutcomeByAi，"." 不可能触发章节结束
+AI #1 意图分类 ->AI #2 事件进度 ->AI #3 章节判定-> DB 保存 ~11s
 
 ## 非"." 的跳过发言的其他用户的优化
 简单来说就是 三个"ai agent" 合起来用了10 到15秒
@@ -282,3 +257,9 @@ evaluateRuntimeOutcome() — AI #3 (~3-5s)
 挑战 2: evaluateEventProgressByAi 读取的 state 可能与 recordChapterProgressSignals 运行后不同
 
 解决: AI #2 的预计算使用 recordChapterProgressSignals 运行后的状态快照，确保输入一致
+
+# 复盘
+## ai 的想法对不对？
+对！
+但是它的实现是一坨大便！
+快链路的硬编码方案失败！
