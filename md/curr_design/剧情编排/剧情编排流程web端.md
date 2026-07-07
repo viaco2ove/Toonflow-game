@@ -195,12 +195,36 @@ WebDebugLogUtil.log("[orchestrateSession] [checker] 是否处于停摆中，没�
 **状态变化时额外打印**:
 - 当 `isUserTurn` 或 `isStalled` 变化时，打印 `[orchestrateSession] [checker] 状态变化：` 记录前值 `from` 与新值 `to`。
 
-**停摆判定逻辑**:
+**停摆判定逻辑**（"该消费但没消费"）:
 ```typescript
-isStalled = !isUserTurn && !pendingPrefetch && !isProcessing
-// - !isUserTurn：既不是玩家回合，也没有在等待玩家
-// - !pendingPrefetch：没有预编排在进行
-// - !isProcessing：没有编排请求在进行
+// 旧判定：完全无预编排、无请求、非用户回合
+isStalledNoPrefetch = !isUserTurn && !pendingPrefetch && !isProcessing
+
+// 新判定：应该消费预编排但调度链没消费（你的截图场景）
+shouldHaveConsumedButNot =
+     !isUserTurn                       // NPC 该说话
+  && !isProcessing                     // 没在请求
+  && !!lastPrefetchSnapshot            // 预编排已解析
+  && !lastPrefetchSnapshot.consumed    // 没被消费
+  && isMessageReadyForConsumption      // 最新消息状态允许消费
+  //   ├─ latestStatus !== 'streaming'  （台词流式中，不能消费）
+  //   ├─ latestStatus !== 'generated'  （台词刚生成，等揭示）
+  //   ├─ latestStatus !== 'revealing'  （字幕动画中）
+  //   └─ !runtimeRevealPending         （揭示流程未进行）
+
+isStalled = shouldHaveConsumedButNot || isStalledNoPrefetch
+```
+
+**为什么"按状态判定"优于"按秒数判定"**:
+- 静音模式：台词生成完立刻进 `waiting_next`，不应等 N 秒，应立即消费
+- 语音模式：语音还在播放时是 `waiting_next` 但 reveal 还在进行，不能消费
+- `streaming`/`generated`/`revealing` 各阶段都该消费状态不同，按状态判定才能精确
+- 排队机制（NPC 轮流说话）：上一轮台词未消费时，下一轮预编排不应被立即消费
+
+**你的截图场景识别结果**:
+```
+shouldHaveConsumedButNot = true  ← prefetch 已就绪、reveal 完成、用户未到
+isStalled = true                 ← 触发自动恢复：scheduleContinueSessionNarrative()
 ```
 
 **自动恢复**:
