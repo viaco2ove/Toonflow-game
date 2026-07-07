@@ -59,11 +59,23 @@ export function analyzeIntent(ctx: IntentAnalyzerContext): IntentAnalyzerResult 
 /**
  * T3 阶段实现的 slow path 意图分析（AI 兜底）。
  *
- * 命令未命中 → analyzeIntentWithAi → 用户配置的模型 → normal_dialog 兜底
+ * 命令未命中 → 先检查是否走快路径（"." 或 ≤2 字非 # 开头 → normal_dialog，不调 AI）
+ * → 否则 analyzeIntentWithAi → 用户配置的模型 → normal_dialog 兜底
  */
 export async function analyzeIntentWithAiFallback(
   ctx: IntentAnalyzerContext,
 ): Promise<IntentAnalyzerResult> {
+  const message = String(ctx.playerMessage || "").trim();
+  // ★ 快路径: "." 或 ≤2 字且非 # 开头 → 不可能是游戏/任务指令，直接当普通对话
+  if (!message || (message === ".") || (message.length <= 2 && !message.startsWith("#"))) {
+    return {
+      intent: "normal_dialog",
+      confidence: 1.0,
+      params: {},
+      reasoning: `快路径: 消息 "${message || "(空)"}" 无实质内容，跳过意图分类 AI`,
+      path: "fallback",
+    };
+  }
   const result = await analyzeIntentWithAi(ctx);
   return {
     intent: result.intent as IntentLabel | IntentType,

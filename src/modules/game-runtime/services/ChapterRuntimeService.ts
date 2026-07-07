@@ -665,11 +665,21 @@ function buildRuleBasedChapterOutcome(input: EvaluateRuntimeOutcomeInput): Chapt
 // 正式链和调试链统一使用这一层做章节结果收口。
 export async function evaluateRuntimeOutcome(input: EvaluateRuntimeOutcomeInput): Promise<RuntimeOutcomeResolution> {
   const fallbackEvaluation = buildRuleBasedChapterOutcome(input);
-  // ★ skipAi 时只走规则判定，跳过 AI 章节判定器。
-  //   用于 "." 跳过等无实质内容消息——不可能触发章节结束条件，AI 调用纯属浪费。
-  const evaluation = (fallbackEvaluation.hasRule && !input.skipAi)
+
+  // ★ 规则门控: AI #3 是否跳过
+  // - skipAi=true: 用规则判定，不调 AI
+  // - 规则说 "continue"（无章节结束条件命中）: 不可能触发章节结束，跳过 AI
+  // - 规则说 "success/failed/guide"（有结束条件命中）: 才调用 AI 复核，避免误判
+  const isRuleContinue = fallbackEvaluation.hasRule && fallbackEvaluation.result === "continue";
+  const shouldSkipAi = input.skipAi || isRuleContinue;
+
+  const evaluation = (!shouldSkipAi)
     ? (await evaluateChapterOutcomeByAi(input) || fallbackEvaluation)
     : fallbackEvaluation;
+
+  if (isRuleContinue) {
+    DebugLogUtil.log("story:ai_parallel", "[evaluateRuntimeOutcome] 规则门控: 章节判定 result=continue，跳过 AI #3");
+  }
 
   const outcome = evaluation.hasRule
     ? evaluation.result
