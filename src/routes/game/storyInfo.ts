@@ -151,7 +151,6 @@ export default router.post(
           endDialogDetail = `章节《${chapter?.title || activeState.chapterTitle}》完成，故事已完结。可进入自由模式继续游玩，或返回历史重新开始。`;
         }
         console.log("[storyInfo] 最终endDialog", { sessionEndDialog, endDialogDetail });
-        }
         return res.status(200).send(success({
           worldId: Number(sessionRow.worldId || 0),
           status: sessionStatus,
