@@ -96,6 +96,15 @@ https://github.com/viaco2ove/Toonflow-game-android-h5.git
 [README.V1.md](README.V1.md)
 ---
 
+## web日志
+禁止使用 `console.log`
+只能使用 WebDebugLogUtil.log
+
+## 后端日志
+禁止使用 `console.log`
+只能使用 DebugLogUtil.log
+
+
 ## 本地模型安装
 [本地头像分离模型安装.md](md/modeapi/image/%E6%9C%AC%E5%9C%B0%E5%A4%B4%E5%83%8F%E5%88%86%E7%A6%BB%E6%A8%A1%E5%9E%8B%E5%AE%89%E8%A3%85.md)
 

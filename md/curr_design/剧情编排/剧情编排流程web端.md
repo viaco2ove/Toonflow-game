@@ -149,11 +149,11 @@ break 条件（满足任一即 break）：
 - 是否处于停摆中，没有请求，没有编排，也不是用户输入回合
 
 对应的日志
-WebDebugLogUtil.log("[orchestrateSession] [checker] 最新的的编排结果：",...)
-WebDebugLogUtil.log("[orchestrateSession] [checker] 这个编排是否被消费了：",...)
-WebDebugLogUtil.log("[orchestrateSession] [checker] 是否在请求编排中：",...)
-WebDebugLogUtil.log("[orchestrateSession] [checker] 是否处于用户输入回合：",...)
-WebDebugLogUtil.log("[orchestrateSession] [checker] 是否处于停摆中，没有请求，没有编排，也不是用户输入回合：",...)
+WebDebugLogUtil.log("[orchestrateSessionChecker] 最新的的编排结果：",...)
+WebDebugLogUtil.log("[orchestrateSessionChecker] 这个编排是否被消费了：",...)
+WebDebugLogUtil.log("[orchestrateSessionChecker] 是否在请求编排中：",...)
+WebDebugLogUtil.log("[orchestrateSessionChecker] 是否处于用户输入回合：",...)
+WebDebugLogUtil.log("[orchestrateSessionChecker] 是否处于停摆中，没有请求，没有编排，也不是用户输入回合：",...)
 
 ### 编排检测器线程
 
@@ -169,12 +169,12 @@ WebDebugLogUtil.log("[orchestrateSession] [checker] 是否处于停摆中，没�
 
 | 日志 | 检测内容 |
 |------|-----------|
-| `[orchestrateSession] [checker] 最新的编排结果：` | `prefetchRole` / `prefetchRoleType` / `prefetchMotive` / `hasPrefetch` / `prefetchTriggerId` |
-| `[orchestrateSession] [checker] 这个编排是否被消费了：` | `consumed` / `pendingPrefetchExists` |
-| `[orchestrateSession] [checker] 最新消息状态：` | `latestStatus`、`latestRole`、`latestId` |
-| `[orchestrateSession] [checker] 是否在请求编排中：` | `isProcessing` |
-| `[orchestrateSession] [checker] 是否处于用户输入回合：` | `isUserTurn`、`canPlayerSpeakNow` |
-| `[orchestrateSession] [checker] 是否处于停摆中，没有预编排、没有请求、也不是用户回合：` | `isStalled` |
+| `[orchestrateSessionChecker] 最新的编排结果：` | `prefetchRole` / `prefetchRoleType` / `prefetchMotive` / `hasPrefetch` / `prefetchTriggerId` |
+| `[orchestrateSessionChecker] 这个编排是否被消费了：` | `consumed` / `pendingPrefetchExists` |
+| `[orchestrateSessionChecker] 最新消息状态：` | `latestStatus`、`latestRole`、`latestId` |
+| `[orchestrateSessionChecker] 是否在请求编排中：` | `isProcessing` |
+| `[orchestrateSessionChecker] 是否处于用户输入回合：` | `isUserTurn`、`canPlayerSpeakNow` |
+| `[orchestrateSessionChecker] 是否处于停摆中，没有预编排、没有请求、也不是用户回合：` | `isStalled` |
 
 **关键状态机**：
 
@@ -193,7 +193,7 @@ WebDebugLogUtil.log("[orchestrateSession] [checker] 是否处于停摆中，没�
 对比可看出：编排返回的是"旁白"，但最新消息是"顾子航"——编排结果没和最新消息对齐，需要等 Watch 触发下一轮消费，或者检测到停摆时强制恢复。
 
 **状态变化时额外打印**:
-- 当 `isUserTurn` 或 `isStalled` 变化时，打印 `[orchestrateSession] [checker] 状态变化：` 记录前值 `from` 与新值 `to`。
+- 当 `isUserTurn` 或 `isStalled` 变化时，打印 `[orchestrateSessionChecker] 状态变化：` 记录前值 `from` 与新值 `to`。
 
 **停摆判定逻辑**（"该消费但没消费"）:
 ```typescript
