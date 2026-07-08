@@ -57,7 +57,7 @@ function normalizeScalarText(input: unknown): string {
 }
 
 /**
- * 判断是否要在章节结束检测里屏蔽“已完成的自由章节静态引导事件”。
+ * 判断是否要在章节结束检测里屏蔽"已完成的自由章节静态引导事件"。
  *
  * 作用：
  * - 判章虽然不直接决定发言人，但也会读取 current_event 作为本轮上下文；
@@ -111,7 +111,7 @@ function unwrapModelText(input: unknown): string {
 }
 
 /**
- * 判断当前运行态是否已经进入“结束条件检查”阶段。
+ * 判断当前运行态是否已经进入"结束条件检查"阶段。
  *
  * 用途：
  * - 章节判定返回 continue 时，并不代表一定要立刻把 current_event 切到 ending；
@@ -267,7 +267,7 @@ function buildChapterJudgeInputSnapshot({
       ? (runtimeOutline as any).endingRules ?? null
       : null;
 
-  // 判章时必须读取“按 phaseId 校正后的当前事件”。
+  // 判章时必须读取"按 phaseId 校正后的当前事件"。
   // 否则 chapterProgress 已经切到事件2，但旧 digest 还停在事件1时，
   // 判章 prompt 会错误读到 eventIndex=0/1，和真实运行态脱节。
   const currentEvent = readPhaseAwareRuntimeCurrentEventDigestState(chapter, state);
@@ -536,7 +536,7 @@ async function evaluateChapterOutcomeByAi(input: EvaluateRuntimeOutcomeInput): P
     logChapterEndingKeyNode("storyChapterJudgeModel:invoke:done", input.traceMeta, {
       invokeMs,
     });
-    // normalizeResultObject = 把“看起来像 object 的脏数据”修正成真正的 object
+    // normalizeResultObject = 把"看起来像 object 的脏数据"修正成真正的 object
     const rawObject = (result as any)?.object ?? (typeof result === "object" ? result : null);
 
     const responseObject = normalizeResultObject(rawObject);
@@ -649,8 +649,34 @@ export function resolveSessionStatusByOutcome(
 }
 
 /**
+ * 判断章节结束条件是否为自然语言文本（非结构化规则）。
+ * 自然语言条件无法被规则引擎解析，必须交给 AI 判定。
+ * 规则引擎只能处理：JSON 对象（带 type/op/field 等字段）或包含 success/failure/pass/fail 节点的结构。
+ */
+function isNaturalLanguageCompletionCondition(chapter: any): boolean {
+  const condition = chapter?.completionCondition;
+  if (typeof condition !== "string") return false;
+  const text = condition.trim();
+  if (!text) return false;
+  try {
+    const parsed = JSON.parse(text);
+    if (typeof parsed === "object" && parsed !== null) {
+      const ruleKeys = ["type", "op", "field", "conditions", "success", "failure", "pass", "fail"];
+      if (ruleKeys.some((k) => k in parsed)) {
+        return false;
+      }
+    }
+    return true;
+  } catch {
+    return true;
+  }
+}
+
+/**
  * 先用规则引擎做一次轻量判定。
- * 这里只关心“当前章节是否存在有效结束条件”，避免没有结束条件时仍然触发 AI 章节判定。
+ * 这里只关心"当前章节是否存在有效结束条件"，避免没有结束条件时仍然触发 AI 章节判定。
+ * 注意：自然语言条件无法被规则引擎解析，此时 hasRule=true 但 result=continue，
+ * 需要由 AI 判定接管。
  */
 function buildRuleBasedChapterOutcome(input: EvaluateRuntimeOutcomeInput): ChapterOutcomeResult {
   return evaluateChapterOutcome({
@@ -668,17 +694,27 @@ export async function evaluateRuntimeOutcome(input: EvaluateRuntimeOutcomeInput)
 
   // ★ 规则门控: AI #3 是否跳过
   // - skipAi=true: 用规则判定，不调 AI
+  // - 自然语言条件（如"用户成功抢夺顾子航的房间"）: 无法被规则引擎解析，必须由 AI 判定
   // - 规则说 "continue"（无章节结束条件命中）: 不可能触发章节结束，跳过 AI
   // - 规则说 "success/failed/guide"（有结束条件命中）: 才调用 AI 复核，避免误判
+  // - 自由模式（fallbackStatus=chapter_completed）: 章节已完成，跳过 AI 判定，继续自由剧情
+  const isNaturalLanguage = isNaturalLanguageCompletionCondition(input.chapter);
   const isRuleContinue = fallbackEvaluation.hasRule && fallbackEvaluation.result === "continue";
-  const shouldSkipAi = input.skipAi || isRuleContinue;
+  const isChapterCompletedFreeMode = String(input.fallbackStatus || "").toLowerCase() === "chapter_completed";
+  const shouldSkipAi = input.skipAi || (isRuleContinue && !isNaturalLanguage) || isChapterCompletedFreeMode;
 
   const evaluation = (!shouldSkipAi)
     ? (await evaluateChapterOutcomeByAi(input) || fallbackEvaluation)
     : fallbackEvaluation;
 
   if (isRuleContinue) {
-    DebugLogUtil.log("story:ai_parallel", "[evaluateRuntimeOutcome] 规则门控: 章节判定 result=continue，跳过 AI #3");
+    if (isNaturalLanguage) {
+      DebugLogUtil.log("story:ai_parallel", "[evaluateRuntimeOutcome] 规则门控: 章节判定 result=continue，但条件为自然语言，强制调用 AI 判定");
+    } else {
+      DebugLogUtil.log("story:ai_parallel", "[evaluateRuntimeOutcome] 规则门控: 章节判定 result=continue，跳过 AI #3");
+    }
+  } else if (isChapterCompletedFreeMode) {
+    DebugLogUtil.log("story:ai_parallel", "[evaluateRuntimeOutcome] 规则门控: 会话已进入 chapter_completed（自由模式），跳过 AI 章节判定");
   }
 
   const outcome = evaluation.hasRule

@@ -37,6 +37,23 @@ function buildSessionEndDialog(status: string): string | null {
 }
 
 /**
+ * 判断"chapter_completed"是否已是最后一章完成。
+ * 如果是最后一章，弹框提示"已完结"而非默默切章。
+ */
+async function isLastChapterCompleted(status: string, worldId: number, chapter: any): Promise<boolean> {
+  if (String(status || "").trim().toLowerCase() !== "chapter_completed") return false;
+  if (!chapter || !worldId) return false;
+  // 按 sort 升序找比当前章节更大的章节
+  const db = getGameDb();
+  const nextChapter = await db("t_storyChapter")
+    .where("worldId", worldId)
+    .where("sort", ">", Number(chapter.sort || 0))
+    .orderBy("sort", "asc")
+    .first();
+  return !nextChapter;
+}
+
+/**
  * 根据正式会话状态构造结束弹窗详情。
  *
  * 用途：
@@ -119,7 +136,22 @@ export default router.post(
         }));
         const eventView = readDefaultRuntimeEventViewState(activeState, chapter);
         console.log("[storyInfo] chapter phases count:", chapter?.runtimeOutline?.phases?.length, "allEventStageProgress:", JSON.stringify(eventView.allEventStageProgress || []).slice(0, 500));
-        const sessionEndDialog = buildSessionEndDialog(sessionStatus);
+        let sessionEndDialog = buildSessionEndDialog(sessionStatus);
+        let endDialogDetail = buildSessionEndDialogDetail(sessionStatus, chapter?.title || activeState.chapterTitle);
+        console.log("[storyInfo] endDialog判断", {
+          sessionStatus,
+          chapterId: activeChapterId,
+          chapterTitle: chapter?.title,
+          chapterSort: chapter?.sort,
+          sessionEndDialog_before: sessionEndDialog,
+        });
+        // ★ 检测最后一章完成：没有下一章时弹"已完结"提示
+        if (!sessionEndDialog && chapter && await isLastChapterCompleted(sessionStatus, Number(sessionRow.worldId || 0), chapter)) {
+          sessionEndDialog = "已完结";
+          endDialogDetail = `章节《${chapter?.title || activeState.chapterTitle}》完成，故事已完结。可进入自由模式继续游玩，或返回历史重新开始。`;
+        }
+        console.log("[storyInfo] 最终endDialog", { sessionEndDialog, endDialogDetail });
+        }
         return res.status(200).send(success({
           worldId: Number(sessionRow.worldId || 0),
           status: sessionStatus,
@@ -140,7 +172,7 @@ export default router.post(
           eventDigestWindowText: eventView.eventDigestWindowText,
           allEventStageProgress: eventView.allEventStageProgress,
           endDialog: sessionEndDialog,
-          endDialogDetail: buildSessionEndDialogDetail(sessionStatus, chapter?.title || activeState.chapterTitle),
+          endDialogDetail: endDialogDetail,
           // 小游戏配置：前端根据此配置决定语音等待时间
           // AUDIO_PROXY_MIN_SEC 默认3秒，可通过环境变量配置
           miniGameConfig: {
