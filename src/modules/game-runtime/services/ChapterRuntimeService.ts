@@ -723,6 +723,13 @@ export async function evaluateRuntimeOutcome(input: EvaluateRuntimeOutcomeInput)
   const nextChapterId = evaluation.hasRule
     ? (evaluation.nextChapterId || input.fallbackChapterId || null)
     : (input.fallbackNextChapterId || input.fallbackChapterId || null);
+
+  DebugLogUtil.log("story:chapter_ending_check:stats", JSON.stringify({nextChapterId: nextChapterId,
+    evaluation: evaluation,
+    fallbackNextChapterId: input.fallbackNextChapterId
+  }));
+  DebugLogUtil.log("story:memory:storyInfo",`chapter_ending_check nextChapterId: ${nextChapterId}`);
+
   const sessionStatus = resolveSessionStatusByOutcome(String(input.fallbackStatus || "active"), outcome);
   DebugLogUtil.logCurrentChapter("story:chapter_ending_check:stats", input.chapter);
   DebugLogUtil.log("story:chapter_ending_check:stats", `sessionStatus: ${sessionStatus}`);

@@ -36,6 +36,7 @@ import {
   TriggerHit,
 } from "@/modules/game-runtime/types/runtime";
 import { getTmpDebugRevisitDir } from "@/lib/runtimePaths";
+import {DebugLogUtil} from "@/utils/debugLogUtil";
 
 const router = express.Router();
 
@@ -815,6 +816,7 @@ export async function evaluateDebugRuntimeOutcome(params: {
       hasRule: false,
     };
   }
+
   const resolved = await evaluateRuntimeOutcome({
     userId: params.userId,
     world: params.world,
@@ -827,6 +829,7 @@ export async function evaluateDebugRuntimeOutcome(params: {
     applyToState: true,
     traceMeta: params.traceMeta,
   });
+  DebugLogUtil.log("story:memory:storyInfo",`evaluateDebugRuntimeOutcome nextChapterId: ${resolved.nextChapterId}`);
   if (resolved.outcome !== "continue") {
     syncDebugChapterRuntime(params.chapter, params.state);
   }

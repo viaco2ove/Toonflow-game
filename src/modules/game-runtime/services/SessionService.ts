@@ -1834,6 +1834,7 @@ async function runConcurrentSessionJudgeAndNarrative(params: {
       planMode: "candidate",
     },
   });
+  DebugLogUtil.log("story:memory:storyInfo",`runConcurrentSessionJudgeAndNarrative nextChapterId: ${params.fallbackChapterId}`);
   const mergedOutcome = await evaluateRuntimeOutcome({
     userId: params.userId,
     chapter: params.chapter,
@@ -4162,6 +4163,13 @@ async function orchestrateSessionTurnInner(sessionId: string): Promise<SessionOr
   let nextStatus = mergedOutcome.sessionStatus;
   let nextChapterId = mergedOutcome.nextChapterId;
   let nextChapter = chapter;
+  DebugLogUtil.log("story:orchestrator:chapter_switch]"," 编排结果章节判定", {
+    sessionId,
+    outcome: mergedOutcome.outcome,
+    sessionStatus: mergedOutcome.sessionStatus,
+    nextChapterId_fromJudge: nextChapterId,
+    currentChapterId: Number(chapter.id || 0),
+  });
   if (mergedOutcome.outcome === "success") {
     const resolvedNextChapterId = Number(mergedOutcome.nextChapterId || 0)
       || await resolveNextChapterIdByOrder(db, Number(sessionRow.worldId || 0), Number(chapter.id || 0));
@@ -4384,6 +4392,7 @@ async function commitSessionNarrativeTurnInner(input: CommitSessionNarrativeTurn
     if (isOpeningCommit) {
       resetSessionChapterContentProgressForOpening(chapter, state);
     } else {
+      DebugLogUtil.log("story:memory:storyInfo",`commitSessionNarrativeTurnInner nextChapterId: ${prevChapterId}`);
       const mergedOutcome = await evaluateRuntimeOutcome({
         chapter,
         state,

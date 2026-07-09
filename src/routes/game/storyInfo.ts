@@ -20,6 +20,7 @@ import {
   syncDebugChapterRuntime,
 } from "./debugRuntimeShared";
 import u from "@/utils";
+import {DebugLogUtil} from "@/utils/debugLogUtil";
 
 const router = express.Router();
 
@@ -111,7 +112,7 @@ export default router.post(
           world,
         );
         const activeChapterId = Number(activeState.chapterId || sessionRow.chapterId || 0) || null;
-        console.log("[storyInfo] pendingChapterId检查", {
+        DebugLogUtil.log("story:memory:storyInfo","pendingChapterId检查", {
           sessionId,
           activeChapterId,
           statePendingChapterId: activeState.pendingChapterId,
@@ -126,7 +127,7 @@ export default router.post(
         activeState.chapterTitle = String(chapter?.title || "").trim() || String(activeState.chapterTitle || "").trim();
         // ★ 关键：返回前把 state.currentEvent 同步到"最新且未完成"的事件，
         //   防止前端 / 后端编排师拿到 completed 的旧事件（例如事件 1 被错误显示为 active）。
-        console.log("[story:memory:storyInfo] sync_before", JSON.stringify({
+        DebugLogUtil.log("story:memory:storyInfo","[story:memory:storyInfo] sync_before", JSON.stringify({
           chapterProgress: activeState.chapterProgress,
           currentEventBeforeSync: activeState.currentEvent,
           dynamicEventsSnapshot: (Array.isArray(activeState.dynamicEvents) ? activeState.dynamicEvents : []).map((item: any) => ({
@@ -136,7 +137,7 @@ export default router.post(
           })),
         }));
         syncRuntimeCurrentEventFromChapterProgress(activeState);
-        console.log("[story:memory:storyInfo] sync_after", JSON.stringify({
+        DebugLogUtil.log("story:memory:storyInfo"," sync_after", JSON.stringify({
           currentEventAfterSync: activeState.currentEvent,
         }));
         const eventView = readDefaultRuntimeEventViewState(activeState, chapter);

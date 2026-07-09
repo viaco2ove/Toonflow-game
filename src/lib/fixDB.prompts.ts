@@ -1349,7 +1349,7 @@ age、level、exp、next_level_exp、hp、mp、money 必须为纯数字类型，
 所有状态感受、模糊实力变化、剧情备注、临时buff描述统一存入other字段（字符串），禁止写入数值字段
 `;
 
-/** story-chapter */
+/** story-chapter storyChapterJudgeModel*/
 const _PROMPT_STORY_CHAPTER = `你是章节判定器。你只判断当前章节是否成功、失败或继续，以及是否进入下一章。
 
 ## 任务
