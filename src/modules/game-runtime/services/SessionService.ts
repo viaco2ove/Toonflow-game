@@ -2802,7 +2802,7 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
         forceAi,
       });
     })();
-
+    DebugLogUtil.log("story:memory:storyInfo",`addSessionMessage nextChapterId: ${nextChapterId || prevChapterId}`);
     const ai3Promise = evaluateRuntimeOutcome({
       chapter: currentChapter,
       state,
@@ -3480,6 +3480,7 @@ export async function continueSessionNarrative(sessionIdInput: string): Promise<
   logSessionOrchestrationKeyNode("session_continue:chapter_outcome:start", requestTrace, {
     latestEventType: String(latestGeneratedMessage?.eventType || "on_orchestrated_reply"),
   });
+  DebugLogUtil.log("story:memory:storyInfo",`continueSessionNarrative nextChapterId: ${prevChapterId}`);
   const mergedOutcome = await evaluateRuntimeOutcome({
     chapter,
     state,
@@ -4171,6 +4172,7 @@ async function orchestrateSessionTurnInner(sessionId: string): Promise<SessionOr
     currentChapterId: Number(chapter.id || 0),
   });
   if (mergedOutcome.outcome === "success") {
+    DebugLogUtil.log("story:orchestrator:chapter_switch]"," 编排结果章节判定 outcome", {outcome: mergedOutcome.outcome});
     const resolvedNextChapterId = Number(mergedOutcome.nextChapterId || 0)
       || await resolveNextChapterIdByOrder(db, Number(sessionRow.worldId || 0), Number(chapter.id || 0));
     if (resolvedNextChapterId && resolvedNextChapterId !== Number(chapter.id || 0)) {
@@ -4183,6 +4185,8 @@ async function orchestrateSessionTurnInner(sessionId: string): Promise<SessionOr
           }
           nextChapter = chapter;
           nextChapterId = Number(chapter.id || 0) || currentChapterId;
+
+          DebugLogUtil.log("story:orchestrator:chapter_switch]"," finalizeOrchestrationResult nextChapterId:", {nextChapterId: nextChapterId});
           return finalizeOrchestrationResult({
             sessionId,
             status: nextStatus,
