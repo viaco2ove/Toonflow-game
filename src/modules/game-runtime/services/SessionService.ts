@@ -4153,7 +4153,7 @@ async function orchestrateSessionTurnInner(sessionId: string): Promise<SessionOr
     recentMessages,
     latestRecentMessage,
     sessionStatus,
-    fallbackChapterId: Number(chapter.id || 0) || null,
+    fallbackChapterId: realNextChapterId || null,
     traceMeta: {
       ...requestTrace,
       chapterId: Number(chapter.id || 0),
