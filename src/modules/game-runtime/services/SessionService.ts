@@ -2823,22 +2823,44 @@ export async function addSessionMessage(input: AddSessionMessageInput): Promise<
     sessionStatus = mergedOutcome.sessionStatus;
     nextChapterId = mergedOutcome.nextChapterId;
   }
+  console.log("[story:chapter_switch:addMessage] 章节成功后的 nextChapterId 处理", {
+    sessionId,
+    prevChapterId,
+    sessionStatus,
+    nextChapterId_beforeResolve: nextChapterId,
+    flagsChapterCompleted: state.flags?.chapterCompleted,
+  });
   if (sessionStatus === "chapter_completed" && (!nextChapterId || nextChapterId === prevChapterId)) {
     const resolvedNextChapterId = await resolveNextChapterIdByOrder(db, Number(sessionRow.worldId || 0), prevChapterId);
+    console.log("[story:chapter_switch:addMessage] resolveNextChapterIdByOrder 结果", {
+      sessionId,
+      worldId: Number(sessionRow.worldId || 0),
+      prevChapterId,
+      resolvedNextChapterId,
+    });
     if (resolvedNextChapterId && resolvedNextChapterId !== prevChapterId) {
       nextChapterId = resolvedNextChapterId;
       sessionStatus = "active";
     }
   }
   const hasPendingNextChapter = Boolean(nextChapterId && nextChapterId !== prevChapterId);
+  console.log("[story:chapter_switch:addMessage] 最终 hasPendingNextChapter", {
+    sessionId,
+    prevChapterId,
+    nextChapterId,
+    hasPendingNextChapter,
+    sessionStatus,
+  });
   if (hasPendingNextChapter) {
     setPendingSessionChapterId(state, nextChapterId);
     setPendingSessionChapterStart(state, false);
     state.chapterId = prevChapterId;
+    console.log("[story:chapter_switch:addMessage] 已设置 pendingChapterId", { sessionId, nextChapterId, pendingChapterId: state.pendingChapterId });
   } else {
     setPendingSessionChapterId(state, null);
     setPendingSessionChapterStart(state, false);
     state.chapterId = nextChapterId;
+    console.log("[story:chapter_switch:addMessage] 未设置 pendingChapterId（没有下一章）", { sessionId, nextChapterId, prevChapterId });
   }
 
   if (appliedDeltas.length > 0) {
@@ -3597,6 +3619,7 @@ function readActiveTaskIdFromStateOrch(state: any): string | null {
 
 async function orchestrateSessionTurnInner(sessionId: string): Promise<SessionOrchestrationResult> {
   const db = getGameDb();
+  console.log("[story:orchestrator:entry] orchestrateSessionTurnInner 被调用", { sessionId, timestamp: new Date().toISOString() });
 
   const sessionRow = await db("t_gameSession").where({ sessionId }).first();
   if (!sessionRow) {
@@ -4145,11 +4168,11 @@ async function orchestrateSessionTurnInner(sessionId: string): Promise<SessionOr
     if (resolvedNextChapterId && resolvedNextChapterId !== Number(chapter.id || 0)) {
       const resolvedNextChapter = normalizeChapterOutput(await db("t_storyChapter").where({ id: resolvedNextChapterId }).first());
         if (resolvedNextChapter) {
-          if (String(plan?.role || "").trim()) {
-            setPendingSessionChapterId(state, resolvedNextChapterId);
-            // 当前章的收尾台词还要先落库展示，下一章启动标记延后到下一轮 orchestration 自动消费。
-            setPendingSessionChapterStart(state, false);
-          }
+          // ★ 无论 plan.role 是否有值，都需要设置 pendingChapterId 确保下一轮编排能正确切章
+          // 如果有收尾台词（plan.role 有值），下一章启动标记延后
+          // 如果没有收尾台词（plan.role 为空），下一章立即启动
+          setPendingSessionChapterId(state, resolvedNextChapterId);
+          setPendingSessionChapterStart(state, String(plan?.role || "").trim() ? false : true);
           nextChapter = chapter;
           nextChapterId = Number(chapter.id || 0) || currentChapterId;
           return finalizeOrchestrationResult({

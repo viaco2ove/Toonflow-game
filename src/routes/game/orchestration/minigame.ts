@@ -41,6 +41,8 @@ export default router.post(
 
       DebugLogUtil.log("story:orchestrator:minigame", "编排结果", JSON.stringify({
         sessionId,
+        chapterId: result.chapterId,
+        status: result.status,
         planRole: String(result.plan?.role || ""),
         planRoleType: String(result.plan?.roleType || ""),
         planEventType: String(result.plan?.eventType || ""),
@@ -48,13 +50,15 @@ export default router.post(
         planPresetContentLength: String(result.plan?.presetContent || "").length,
       }));
 
-      // 小游戏编排接口只返回角色和动机，符合前端消费规范。
-      // 其他信息（sessionId/status/chapterId 等）通过 storyInfo 接口获取。
+      // 返回完整响应，包括 chapterId 以支持切章
       return res.status(200).send(success({
         role: result.plan?.role || "",
         roleType: result.plan?.roleType || "",
         motive: result.plan?.motive || "",
         eventType: result.plan?.eventType || "",
+        sessionId: result.sessionId,
+        status: result.status,
+        chapterId: result.chapterId,
       }));
     } catch (err) {
       if (isSessionServiceError(err)) {
