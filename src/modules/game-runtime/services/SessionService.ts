@@ -4187,13 +4187,13 @@ async function orchestrateSessionTurnInner(sessionId: string): Promise<SessionOr
             setPendingSessionChapterStart(state, false);
           }
           nextChapter = chapter;
-          nextChapterId = Number(chapter.id || 0) || currentChapterId;
+          nextChapterId = resolvedNextChapterId;  // ← 设置为真正的下一章 ID
 
           DebugLogUtil.log("story:orchestrator:chapter_switch"," finalizeOrchestrationResult nextChapterId:", {nextChapterId: nextChapterId});
           return finalizeOrchestrationResult({
             sessionId,
-            status: nextStatus,
-            chapterId: nextChapterId,
+            status: "active",  // ← 切换章节后状态改为 active
+            chapterId: nextChapterId,  // 真正的下一章 ID
             expectedRole: "",
             expectedRoleType: "",
             plan,
