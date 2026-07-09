@@ -4143,7 +4143,9 @@ async function orchestrateSessionTurnInner(sessionId: string): Promise<SessionOr
       plan: taskPlan,
     });
   }
-  // fallbackChapterId 的意义是什么？
+  // fallbackChapterId 的意义是什么？-》当章节判定无法确定下一章时的备用值。
+  const hasNextChapter = await resolveNextChapterIdByOrder(db, Number(sessionRow.worldId || 0), currentChapterId);
+  const realNextChapterId = hasNextChapter ? Number(hasNextChapter.id || 0) : null;
   const arbitration = await runConcurrentSessionJudgeAndNarrative({
     userId: currentUserId,
     world,
@@ -4169,7 +4171,9 @@ async function orchestrateSessionTurnInner(sessionId: string): Promise<SessionOr
     outcome: mergedOutcome.outcome,
     sessionStatus: mergedOutcome.sessionStatus,
     nextChapterId_fromJudge: nextChapterId,
-    currentChapterId: Number(chapter.id || 0),
+    currentChapterId:currentChapterId,
+    nextChapterId: nextChapterId,
+    realNextChapterId:realNextChapterId
   });
   if (mergedOutcome.outcome === "success") {
     DebugLogUtil.log("story:orchestrator:chapter_switch"," 编排结果章节判定 outcome", {outcome: mergedOutcome.outcome});
