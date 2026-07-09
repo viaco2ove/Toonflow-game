@@ -4143,7 +4143,7 @@ async function orchestrateSessionTurnInner(sessionId: string): Promise<SessionOr
       plan: taskPlan,
     });
   }
-
+  // fallbackChapterId 的意义是什么？
   const arbitration = await runConcurrentSessionJudgeAndNarrative({
     userId: currentUserId,
     world,
