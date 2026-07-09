@@ -116,9 +116,20 @@ export default router.post(
           sessionId,
           activeChapterId,
           statePendingChapterId: activeState.pendingChapterId,
+          sessionRowChapterId: sessionRow.chapterId,
         });
-        const chapter = activeChapterId
-          ? await db("t_storyChapter").where({ id: activeChapterId }).first()
+        // ★ 如果有 pendingChapterId，应该用 pendingChapterId 而不是 sessionRow.chapterId
+        const effectiveChapterId = activeState.pendingChapterId
+          ? Number(activeState.pendingChapterId)
+          : activeChapterId;
+        DebugLogUtil.log("story:memory:storyInfo","effectiveChapterId计算", {
+          sessionId,
+          pendingChapterId: activeState.pendingChapterId,
+          sessionRowChapterId: sessionRow.chapterId,
+          effectiveChapterId,
+        });
+        const chapter = effectiveChapterId > 0
+          ? await db("t_storyChapter").where({ id: effectiveChapterId }).first()
           : null;
         const sessionStatus = String(sessionRow.status || "active").trim() || "active";
         // storyInfo 是前端故事设定/事件面板的权威来源。
