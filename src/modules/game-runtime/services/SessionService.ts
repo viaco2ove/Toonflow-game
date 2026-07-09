@@ -4144,8 +4144,7 @@ async function orchestrateSessionTurnInner(sessionId: string): Promise<SessionOr
     });
   }
   // fallbackChapterId 的意义是什么？-》当章节判定无法确定下一章时的备用值。
-  const hasNextChapter = await resolveNextChapterIdByOrder(db, Number(sessionRow.worldId || 0), currentChapterId);
-  const realNextChapterId = hasNextChapter ? Number(hasNextChapter.id || 0) : null;
+  const realNextChapterId = await resolveNextChapterIdByOrder(db, Number(sessionRow.worldId || 0), currentChapterId);
   const arbitration = await runConcurrentSessionJudgeAndNarrative({
     userId: currentUserId,
     world,
