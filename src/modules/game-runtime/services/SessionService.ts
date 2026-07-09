@@ -4179,7 +4179,7 @@ async function orchestrateSessionTurnInner(sessionId: string): Promise<SessionOr
 
   let sesionChapterId = currentChapterId;
   let nextChapter = chapter;
-  let realSessionStatus = sessionStatus;
+  let realSessionStatus = nextStatus;
   DebugLogUtil.log("story:orchestrator:chapter_switch"," 编排结果章节判定", {
     sessionId,
     outcome: mergedOutcome.outcome,
