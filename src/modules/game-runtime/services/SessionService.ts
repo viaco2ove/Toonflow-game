@@ -4176,7 +4176,10 @@ async function orchestrateSessionTurnInner(sessionId: string): Promise<SessionOr
 
   let nextStatus = mergedOutcome.sessionStatus;
   let nextChapterId = mergedOutcome.nextChapterId;
+
+  let sesionChapterId = currentChapterId;
   let nextChapter = chapter;
+  let realSessionStatus = sessionStatus;
   DebugLogUtil.log("story:orchestrator:chapter_switch"," 编排结果章节判定", {
     sessionId,
     outcome: mergedOutcome.outcome,
@@ -4200,6 +4203,8 @@ async function orchestrateSessionTurnInner(sessionId: string): Promise<SessionOr
           }
           nextChapter = chapter;
           nextChapterId = resolvedNextChapterId;  // ← 设置为真正的下一章 ID
+          sesionChapterId = nextChapterId;
+          realSessionStatus =nextStatus;
 
           DebugLogUtil.log("story:orchestrator:chapter_switch"," finalizeOrchestrationResult nextChapterId:", {nextChapterId: nextChapterId});
           return finalizeOrchestrationResult({
@@ -4214,10 +4219,18 @@ async function orchestrateSessionTurnInner(sessionId: string): Promise<SessionOr
       }
   }
   const eventView = buildEventView(state);
+  DebugLogUtil.log("story:orchestrator:chapter_switch"," SessionOrchestrationResult chapterId:", {
+     chapterId: nextChapterId,
+     oldChapterId:currentChapterId,
+    sesionChapterId:sesionChapterId,
+    sessionStatus:realSessionStatus,
+    nextStatus:nextStatus,
+    nextChapter:nextChapterId
+  });
   const result: SessionOrchestrationResult = {
     sessionId,
-    status: nextStatus,
-    chapterId: nextChapterId,
+    status: realSessionStatus,
+    chapterId: sesionChapterId,
     expectedRole: "",
     expectedRoleType: "",
     command: null,
