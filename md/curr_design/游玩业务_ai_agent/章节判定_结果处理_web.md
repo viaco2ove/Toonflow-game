@@ -190,24 +190,3 @@ const shouldSkipAi = input.skipAi || (isRuleContinue && !isNaturalLanguage) || i
 
 **修改文件**：
 - `toonflow-game-app/src/modules/game-runtime/services/ChapterRuntimeService.ts`
-
-### 7.4 章节成功但未自动切章
-
-**问题**：第一章节结束后没有进入第二章节，编排返回空 plan。
-
-**根因**：
-1. `orchestrateSessionTurnInner` 中章节成功后的切章逻辑要求 `plan.role` 有值才设置 `pendingChapterId`
-2. 前端编排检测器在 `chapter_completed` 状态时直接停止编排，导致后端设置的 `pendingChapterId` 永远不会被消费
-
-**修复点**：
-1. **后端**：无论 `plan.role` 是否有值，都需要设置 `pendingChapterId` 确保下一轮编排能正确切章
-   - 如果有收尾台词，下一章启动标记设置为 `false`（延后）
-   - 如果没有收尾台词，下一章启动标记设置为 `true`（立即）
-
-2. **前端**：`chapter_completed` 状态时仍需调用编排，让后端有机会返回切章命令
-   - `runOrchestrationChecker`：在 `chapter_completed` 时仍调用编排
-   - `scheduleSessionNarrativeIfSystemTurn`：在 `chapter_completed` 时仍调用编排
-
-**修改文件**：
-- `toonflow-game-app/src/modules/game-runtime/services/SessionService.ts`
-- `Toonflow-game-web/src/composables/useToonflowStore.ts`

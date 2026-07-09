@@ -116,7 +116,7 @@ function cloneDebugRuntimeValue<T>(input: T): T {
   }
 }
 
-// 把编排结果回写到 turn-state，确保"当前轮到谁发言"前后端一致。
+// 把编排结果回写到 turn-state，确保“当前轮到谁发言”前后端一致。
 function applyDebugPlanTurnState(
   state: Record<string, any>,
   world: any,
@@ -129,7 +129,7 @@ function applyDebugPlanTurnState(
     roleType?: string;
   },
 ) {
-  // 调试编排也复用正式会话的 turn-state 规则，保证"该轮到谁说"在前后端一致。
+  // 调试编排也复用正式会话的 turn-state 规则，保证“该轮到谁说”在前后端一致。
   const shouldYieldToUser = Boolean(plan.awaitUser);
   if (shouldYieldToUser) {
     allowPlayerTurn(
@@ -178,7 +178,7 @@ async function applyDebugNarrativePlanToState(params: {
   return buildPlanResult({ ...params.plan, eventType: "on_orchestrated_reply", planSource: "ai_orchestrator" });
 }
 
-// 调试态统一走"编排 -> 回写 state -> 记忆刷新"的完整链路。
+// 调试态统一走“编排 -> 回写 state -> 记忆刷新”的完整链路。
 async function runAndApplyDebugNarrativePlan(params: {
   userId: number;
   world: any;
@@ -225,7 +225,7 @@ async function runAndApplyDebugNarrativePlan(params: {
   });
 }
 
-// 章节开场单独拆出来，统一处理"显式开场白"和"无开场白直接编排"两种情况。
+// 章节开场单独拆出来，统一处理“显式开场白”和“无开场白直接编排”两种情况。
 async function buildDebugChapterStartPlan(params: {
   userId: number;
   world: any;
@@ -368,7 +368,7 @@ function buildDebugRuntimeContext(params: {
   return { rolePair, state, debugFreePlotActive, effectiveChapter, recentMessages };
 }
 
-// 处理"未输入用户消息"的启动分支：首次进入、切下一章、等待用户或继续编排。
+// 处理“未输入用户消息”的启动分支：首次进入、切下一章、等待用户或继续编排。
 async function handleInitialDebugTurn(params: {
   res: express.Response;
   db: ReturnType<typeof getGameDb>;
@@ -488,7 +488,7 @@ async function handleInitialDebugTurn(params: {
   });
 }
 
-// 调试态并发启动"章节判定 + 候选编排"，最后只把裁决后的 finalPlan 落到主运行态。
+// 调试态并发启动“章节判定 + 候选编排”，最后只把裁决后的 finalPlan 落到主运行态。
 async function runConcurrentDebugJudgeAndNarrative(params: {
   userId: number;
   world: any;
@@ -621,7 +621,7 @@ async function runConcurrentDebugJudgeAndNarrative(params: {
   }
 }
 
-// 处理"用户已发言"的分支：小游戏、结束判定、切章与继续编排都从这里统一分发。
+// 处理“用户已发言”的分支：小游戏、结束判定、切章与继续编排都从这里统一分发。
 async function handleDebugPlayerTurn(params: {
   res: express.Response;
   db: ReturnType<typeof getGameDb>;
@@ -748,7 +748,7 @@ async function handleDebugPlayerTurn(params: {
     const nextChapter = normalizeChapterOutput(
       await resolveNextChapter(params.db, params.worldId, params.chapter, outcome.nextChapterId),
     );
-    // 判章模型可能不给 next_chapter_id，这里记录"排序兜底后真正将要进入的下一章"。
+    // 判章模型可能不给 next_chapter_id，这里记录“排序兜底后真正将要进入的下一章”。
     DebugLogUtil.log("story:chapter_ending_check:stats", `sessionStatus: chapter_completed`);
     DebugLogUtil.log("story:chapter_ending_check:stats", `outcome: success`);
     DebugLogUtil.log("story:chapter_ending_check:stats", `nextChapterId: ${nextChapter ? String(nextChapter.id || "") : ""}`);
@@ -779,7 +779,7 @@ async function handleDebugPlayerTurn(params: {
       });
     }
 
-    // 这里只登记"待进入下一章"，但不能在编排接口里直接切下一章。
+    // 这里只登记“待进入下一章”，但不能在编排接口里直接切下一章。
     // 真正的章节切换要等当前确认台词经 /game/streamlines 落地后再发生，
     // 否则前端会在台词还没生成时就拿到下一章的 storyInfo，造成 phase / 下一位 / 事件列表全部串章。
     setPendingDebugChapterId(params.state, Number(nextChapter.id || 0));
@@ -819,30 +819,24 @@ async function handleDebugPlayerTurn(params: {
   });
 }
 
-// 调试路由的主分发函数：负责鉴权、装配上下文，并按"首次进入/用户发言"两条链拆开处理。
+// 调试路由的主分发函数：负责鉴权、装配上下文，并按“首次进入/用户发言”两条链拆开处理。
 async function handleDebugOrchestrationRequest(req: express.Request, res: express.Response) {
   const sessionId = asTrimmedText(req.body.sessionId);
   if (sessionId) {
     const result = await orchestrateSessionTurn(sessionId);
-    console.log("[orchestration/index.ts] orchestrateSessionTurn 返回 result:", JSON.stringify({
-      sessionId: result.sessionId,
-      status: result.status,
-      chapterId: result.chapterId,
-      hasPlan: !!result.plan,
-      planRole: (result.plan as any)?.role,
-      planRoleType: (result.plan as any)?.roleType,
-      planMotive: (result.plan as any)?.motive,
-      planAwaitUser: (result.plan as any)?.awaitUser
-    }));
-    // 返回完整响应，包括 chapterId 以支持切章
-    const responseData = {
-      ...buildMinimalOrchestrationResponse(result.plan || null),
-      sessionId: result.sessionId,
-      status: result.status,
-      chapterId: result.chapterId,
-    };
     if (DebugLogUtil.isDebugLogEnabled()) {
-      console.log("[orchestration/index.ts] 编排响应 data:", JSON.stringify(responseData));
+      console.log("[orchestration/index.ts] orchestrateSessionTurn 返回 result:", JSON.stringify({
+        hasPlan: !!result.plan,
+        planRole: (result.plan as any)?.role,
+        planRoleType: (result.plan as any)?.roleType,
+        planMotive: (result.plan as any)?.motive,
+        planAwaitUser: (result.plan as any)?.awaitUser
+      }));
+    }
+    // data 里只保留 role/roleType/motive；code/message 由标准响应信封承载。
+    const responseData = buildMinimalOrchestrationResponse(result.plan || null);
+    if (DebugLogUtil.isDebugLogEnabled()) {
+      console.log("[orchestration/index.ts] buildMinimalOrchestrationResponse 返回:", JSON.stringify(responseData));
     }
     return res.status(200).send(success(responseData));
   }

@@ -4168,11 +4168,11 @@ async function orchestrateSessionTurnInner(sessionId: string): Promise<SessionOr
     if (resolvedNextChapterId && resolvedNextChapterId !== Number(chapter.id || 0)) {
       const resolvedNextChapter = normalizeChapterOutput(await db("t_storyChapter").where({ id: resolvedNextChapterId }).first());
         if (resolvedNextChapter) {
-          // ★ 无论 plan.role 是否有值，都需要设置 pendingChapterId 确保下一轮编排能正确切章
-          // 如果有收尾台词（plan.role 有值），下一章启动标记延后
-          // 如果没有收尾台词（plan.role 为空），下一章立即启动
-          setPendingSessionChapterId(state, resolvedNextChapterId);
-          setPendingSessionChapterStart(state, String(plan?.role || "").trim() ? false : true);
+          if (String(plan?.role || "").trim()) {
+            setPendingSessionChapterId(state, resolvedNextChapterId);
+            // 当前章的收尾台词还要先落库展示，下一章启动标记延后到下一轮 orchestration 自动消费。
+            setPendingSessionChapterStart(state, false);
+          }
           nextChapter = chapter;
           nextChapterId = Number(chapter.id || 0) || currentChapterId;
           return finalizeOrchestrationResult({
