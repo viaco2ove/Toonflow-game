@@ -4145,6 +4145,14 @@ async function orchestrateSessionTurnInner(sessionId: string): Promise<SessionOr
   }
   // fallbackChapterId 的意义是什么？-》当章节判定无法确定下一章时的备用值。
   const realNextChapterId = await resolveNextChapterIdByOrder(db, Number(sessionRow.worldId || 0), currentChapterId);
+  const hasPendingEndingGuide = state.__pendingEndingGuide;
+  const hasNextChapterId=true;
+  if(realNextChapterId==null || realNextChapterId ==0){
+    hasNextChapterId =false;
+    DebugLogUtil.log("story:orchestrator:chapter_switch","已经没有下一章了");
+    DebugLogUtil.log("story:orchestrator:chapter_switch","如果当前章节是自由章节，没有结束条件的不应该有跳过操作啊",hasPendingEndingGuide);
+    realNextChapterId =currentChapterId;
+  }
   const arbitration = await runConcurrentSessionJudgeAndNarrative({
     userId: currentUserId,
     world,
@@ -4159,6 +4167,10 @@ async function orchestrateSessionTurnInner(sessionId: string): Promise<SessionOr
       chapterId: Number(chapter.id || 0),
     },
   });
+
+  if(!hasNextChapterId){
+    DebugLogUtil.log("story:orchestrator:chapter_switch","如果当前章节是自由章节，没有结束条件的不应该有判定为success啊",{arbitration:arbitration});
+  }
   const mergedOutcome = arbitration.mergedOutcome;
   const plan = arbitration.plan;
 
