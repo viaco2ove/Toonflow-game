@@ -110,7 +110,19 @@ export default router.post(
           rolePair,
           world,
         );
-        const activeChapterId = Number(activeState.chapterId || sessionRow.chapterId || 0) || null;
+        // ★ 正式会话必须优先信 pendingChapterId，与调试路径保持一致
+        // 当上一章刚成功、下一句确认台词已经落地，但前端仍带着旧 chapterId 拉取 storyInfo 时，
+        // 如果继续只信旧 chapterId，就会让标题和事件面板永远停在上一章。
+        const pendingChapterId = Number(activeState?.pendingChapterId || 0) || null;
+        const runtimeChapterId = Number(activeState.chapterId || sessionRow.chapterId || 0) || null;
+        const activeChapterId = pendingChapterId || runtimeChapterId;
+        console.log("[storyInfo] pendingChapterId检查", {
+          sessionId,
+          pendingChapterId,
+          runtimeChapterId,
+          activeChapterId,
+          statePendingChapterId: activeState.pendingChapterId,
+        });
         const chapter = activeChapterId
           ? await db("t_storyChapter").where({ id: activeChapterId }).first()
           : null;

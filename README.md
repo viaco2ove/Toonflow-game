@@ -135,6 +135,11 @@ rm -rf node_modules dist .cache &&
 我发现你把用户的注意力吸住比做让大模型记住超长上下文更有用。
 你就不要让用户问角色：你一个月前做了啥。（也不是完全不检索而是让用户不会把注意力放在记忆上面）
 
+实际上 Toonflow 的问题是故事前期token 消耗大， 速度也慢。  但是玩法更丰富。而且实际上所谓的失忆 多数情况并不是 忘了前面的东西，而是角色设定和世界设定的回归性，我们给ai 发送的都是动态修改的数据。 
+这种真正的高频失忆 的情况根本不会发生。 
+只有真正的低频但是 使用者以为高频甚至大多数开发者误以为的高频。
+实际低频的一个月前的某个细节。
+
 
 ## Toonflow-game
 [![GitHub stars](https://img.shields.io/github/stars/viaco2ove/Toonflow-game.svg?style=social)](https://github.com/viaco2ove/Toonflow-game)
