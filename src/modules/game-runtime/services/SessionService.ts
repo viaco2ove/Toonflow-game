@@ -4144,9 +4144,9 @@ async function orchestrateSessionTurnInner(sessionId: string): Promise<SessionOr
     });
   }
   // fallbackChapterId 的意义是什么？-》当章节判定无法确定下一章时的备用值。
-  const realNextChapterId = await resolveNextChapterIdByOrder(db, Number(sessionRow.worldId || 0), currentChapterId);
-  const hasPendingEndingGuide = state.__pendingEndingGuide;
-  const hasNextChapterId=true;
+  let realNextChapterId = await resolveNextChapterIdByOrder(db, Number(sessionRow.worldId || 0), currentChapterId);
+  let hasPendingEndingGuide = state.__pendingEndingGuide;
+  let hasNextChapterId = true;
   if(realNextChapterId==null || realNextChapterId ==0){
     hasNextChapterId =false;
     DebugLogUtil.log("story:orchestrator:chapter_switch","已经没有下一章了");
