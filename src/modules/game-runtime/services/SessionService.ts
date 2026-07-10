@@ -4179,7 +4179,8 @@ async function orchestrateSessionTurnInner(sessionId: string): Promise<SessionOr
 
   let sesionChapterId = currentChapterId;
   let nextChapter = chapter;
-  let realSessionStatus = nextStatus;
+  // realSessionStatus： active，chapter_completed,failed
+  let realSessionStatus = sessionStatus;
   DebugLogUtil.log("story:orchestrator:chapter_switch"," 编排结果章节判定", {
     sessionId,
     outcome: mergedOutcome.outcome,
@@ -4189,7 +4190,17 @@ async function orchestrateSessionTurnInner(sessionId: string): Promise<SessionOr
     nextChapterId: nextChapterId,
     realNextChapterId:realNextChapterId
   });
-  if (mergedOutcome.outcome === "success") {
+  // 如果ai 判断为 chapter_completed，则不直接改 sessionStatus，要走尝试切换章节的流程
+  if(nextStatus !="chapter_completed"){
+    realSessionStatus =nextStatus;
+  }
+  /**
+   * 如果编排结果是 success 或者章节状态是 chapter_completed，则尝试切换章节
+   */
+  if (mergedOutcome.outcome === "success" || ( nextStatus ==="chapter_completed")) {
+    if (mergedOutcome.outcome != "success" && nextStatus ==="chapter_completed") {
+      DebugLogUtil.log("story:orchestrator:chapter_switch"," 编排结果章节判定 outcome nextStatus 不一致：", {outcome: mergedOutcome.outcome,nextStatus:nextStatus});
+    }
     DebugLogUtil.log("story:orchestrator:chapter_switch"," 编排结果章节判定 outcome", {outcome: mergedOutcome.outcome});
     const resolvedNextChapterId = Number(mergedOutcome.nextChapterId || 0)
       || await resolveNextChapterIdByOrder(db, Number(sessionRow.worldId || 0), Number(chapter.id || 0));
@@ -4206,7 +4217,9 @@ async function orchestrateSessionTurnInner(sessionId: string): Promise<SessionOr
           sesionChapterId = nextChapterId;
           realSessionStatus =nextStatus;
 
-          DebugLogUtil.log("story:orchestrator:chapter_switch"," finalizeOrchestrationResult nextChapterId:", {nextChapterId: nextChapterId});
+          DebugLogUtil.log("story:orchestrator:chapter_switch"," finalizeOrchestrationResult nextChapterId:", {
+          nextChapterId: nextChapterId,realNextChapterId:realNextChapterId,realSessionStatus:realSessionStatus
+          });
           return finalizeOrchestrationResult({
             sessionId,
             status: "active",  // ← 切换章节后状态改为 active
