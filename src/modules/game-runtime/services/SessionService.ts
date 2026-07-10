@@ -2142,14 +2142,21 @@ async function loadSessionWorld(db: any, worldId: number) {
 }
 
 export async function addSessionMessage(input: AddSessionMessageInput): Promise<AddSessionMessageResult> {
-  let narrativeMessageRow: any = null;  // 移到函数开头，避免 used before declaration
-  const narrativeMessageRows: any[] = [];  // 移到函数开头
-  const db = getGameDb();
-  const now = nowTs();
   const sessionId = String(input.sessionId || "").trim();
   if (!sessionId) {
     throw new SessionServiceError(400, "sessionId 不能为空");
   }
+
+  // ★ 并发保护：防止用户快速发消息导致状态覆盖
+  // 注意：这里只锁 addSessionMessage 自身，不影响 orchestrateSessionTurn 等其他操作
+  return withSessionLock(sessionId, async () => addSessionMessageInner(input, sessionId));
+}
+
+async function addSessionMessageInner(input: AddSessionMessageInput, sessionId: string): Promise<AddSessionMessageResult> {
+  let narrativeMessageRow: any = null;  // 移到函数开头，避免 used before declaration
+  const narrativeMessageRows: any[] = [];  // 移到函数开头
+  const db = getGameDb();
+  const now = nowTs();
   if (!DebugLogUtil.isDebugLogEnabled()) {
     console.log(`[story:streamlines:stats] sesionid=${sessionId}`);
   }

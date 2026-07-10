@@ -304,6 +304,24 @@ const modelList: Owned[] = [
     instance: createDeepSeek,
     tool: true,
   },
+    {
+    manufacturer: "deepseek",
+    model: "deepseek-v4-flash",
+    responseFormat: "schema",
+    image: false,
+    think: true,
+    instance: createDeepSeek,
+    tool: true,
+  },
+  {
+    manufacturer: "deepseek",
+    model: "deepseek-v4-pro",
+    responseFormat: "schema",
+    image: true,
+    think: true,
+    instance: createDeepSeek,
+    tool: true,
+  },
   // LM Studio 本地 OpenAI-Compatible 服务，默认模型按 qwen3.5-9b 兜底
   {
     manufacturer: "lmstudio",

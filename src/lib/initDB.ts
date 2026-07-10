@@ -895,6 +895,8 @@ export default async (knex: Knex, forceInit: boolean = false): Promise<void> => 
         await knex("t_textModel").insert([
           { manufacturer: "deepSeek", model: "deepseek-chat", responseFormat: "schema", image: 0, think: 0, tool: 1 },
           { manufacturer: "deepSeek", model: "deepseek-reasoner", responseFormat: "schema", image: 0, think: 1, tool: 1 },
+            { manufacturer: "deepSeek", model: "deepseek-v4-flash", responseFormat: "schema", image: 0, think: 1, tool: 1 },
+            { manufacturer: "deepSeek", model: "deepseek-v4-pro", responseFormat: "schema", image: 1, think: 1, tool: 1 },
           { manufacturer: "lmstudio", model: "qwen3.5-9b", responseFormat: "schema", image: 0, think: 0, tool: 1 },
           { manufacturer: "autodl_chat", model: "DeepSeek-R1-0528", responseFormat: "object", image: 0, think: 1, tool: 1 },
           { manufacturer: "autodl_chat", model: "GLM-5", responseFormat: "object", image: 0, think: 1, tool: 1 },
