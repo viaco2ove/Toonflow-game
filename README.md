@@ -91,6 +91,10 @@ https://github.com/viaco2ove/Toonflow-game-android-h5.git
 - @角色名 xxx
 可以呼叫这个角色
 
+# 结构设计
+[toonflow-architecture.html](md/curr_design/toonflow-architecture.html)
+![Toonflow 多 Agent 叙事引擎架构图.png](md/curr_design/Toonflow%20%E5%A4%9A%20Agent%20%E5%8F%99%E4%BA%8B%E5%BC%95%E6%93%8E%E6%9E%B6%E6%9E%84%E5%9B%BE.png)
+
 
 # 🌟 主要功能(old)
 [README.V1.md](README.V1.md)

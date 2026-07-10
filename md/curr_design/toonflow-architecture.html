@@ -1,0 +1,473 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Toonflow 多 Agent 叙事引擎架构图</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #0f172a;
+    color: #e2e8f0;
+    font-family: 'Microsoft YaHei', 'Segoe UI', Arial, sans-serif;
+    display: flex;
+    justify-content: center;
+    padding: 20px;
+    min-height: 100vh;
+  }
+  .container { width: 100%; max-width: 1100px; }
+  h1 {
+    text-align: center;
+    font-size: 24px;
+    margin-bottom: 6px;
+    background: linear-gradient(135deg, #818cf8, #c084fc);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  .subtitle { text-align: center; font-size: 13px; color: #64748b; margin-bottom: 24px; }
+
+  .pipeline {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    align-items: center;
+  }
+
+  /* 阶段标签 */
+  .stage-label {
+    align-self: flex-start;
+    font-size: 14px;
+    font-weight: bold;
+    padding: 4px 12px;
+    border-radius: 6px;
+    margin-bottom: 8px;
+    margin-top: 16px;
+  }
+
+  /* 通用节点 */
+  .node {
+    border-radius: 10px;
+    padding: 12px 20px;
+    text-align: center;
+    position: relative;
+    min-width: 240px;
+    transition: transform 0.15s;
+  }
+  .node:hover { transform: translateY(-2px); }
+  .node .title { font-size: 15px; font-weight: bold; }
+  .node .desc { font-size: 11px; margin-top: 4px; opacity: 0.8; }
+
+  /* AI 节点 - 紫色 */
+  .ai-node {
+    background: linear-gradient(135deg, #7c3aed, #a855f7);
+    color: white;
+    box-shadow: 0 4px 15px rgba(124,58,237,0.3);
+    border: 1px solid #8b5cf6;
+  }
+
+  /* 引擎节点 - 橙色 */
+  .engine-node {
+    background: linear-gradient(135deg, #d97706, #f59e0b);
+    color: white;
+    box-shadow: 0 4px 15px rgba(217,119,6,0.3);
+    border: 1px solid #f59e0b;
+  }
+
+  /* 数据节点 - 绿色 */
+  .db-node {
+    background: linear-gradient(135deg, #059669, #10b981);
+    color: white;
+    box-shadow: 0 4px 15px rgba(5,150,105,0.3);
+    border: 1px solid #10b981;
+  }
+
+  /* 意图节点 - 粉色 */
+  .intent-node {
+    background: linear-gradient(135deg, #be185d, #ec4899);
+    color: white;
+    box-shadow: 0 4px 15px rgba(190,24,93,0.3);
+    border: 1px solid #ec4899;
+  }
+
+  /* 入口节点 - 蓝色 */
+  .entry-node {
+    background: #1e293b;
+    border: 1.5px solid #3b82f6;
+    color: #e2e8f0;
+  }
+
+  /* 普通节点 */
+  .plain-node {
+    background: #1e293b;
+    border: 1px solid #334155;
+    color: #cbd5e1;
+  }
+
+  /* 箭头 */
+  .arrow {
+    width: 2px;
+    height: 28px;
+    background: #475569;
+    position: relative;
+  }
+  .arrow::after {
+    content: '';
+    position: absolute;
+    bottom: -1px;
+    left: 50%;
+    transform: translateX(-50%);
+    border: 6px solid transparent;
+    border-top-color: #475569;
+    border-bottom: none;
+  }
+  .arrow-ai { background: #8b5cf6; }
+  .arrow-ai::after { border-top-color: #8b5cf6; }
+
+  /* 上下文框 */
+  .context-box {
+    background: #0f172a;
+    border: 1px solid #1e3a5f;
+    border-radius: 8px;
+    padding: 12px 16px;
+    text-align: left;
+    min-width: 260px;
+  }
+  .context-box .ctx-title {
+    font-size: 12px;
+    font-weight: bold;
+    color: #60a5fa;
+    margin-bottom: 6px;
+    text-align: center;
+  }
+  .context-box ul { list-style: none; }
+  .context-box li {
+    font-size: 11px;
+    color: #94a3b8;
+    padding: 2px 0;
+  }
+  .context-box li::before { content: "▸ "; color: #3b82f6; }
+
+  /* 分支行 */
+  .branch-row {
+    display: flex;
+    gap: 40px;
+    align-items: flex-start;
+    justify-content: center;
+    flex-wrap: wrap;
+  }
+
+  /* 分支标签 */
+  .branch-tag {
+    font-size: 12px;
+    color: #64748b;
+    margin-bottom: 6px;
+    text-align: center;
+  }
+
+  /* 小卡片 */
+  .mini-card {
+    background: #1e293b;
+    border: 1px solid #334155;
+    border-radius: 6px;
+    padding: 8px 14px;
+    text-align: center;
+    font-size: 12px;
+    color: #94a3b8;
+    margin: 3px 0;
+  }
+
+  /* 路由分行 */
+  .route-row {
+    display: flex;
+    gap: 30px;
+    align-items: center;
+    justify-content: center;
+  }
+  .route-branch {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+  }
+  .route-label {
+    font-size: 13px;
+    font-weight: bold;
+    padding: 3px 10px;
+    border-radius: 6px;
+  }
+  .route-fast {
+    background: #064e3b;
+    color: #10b981;
+    border: 1px solid #059669;
+  }
+  .route-premium {
+    background: #78350f;
+    color: #f59e0b;
+    border: 1px solid #d97706;
+  }
+
+  /* 图例 */
+  .legend {
+    display: flex;
+    gap: 20px;
+    justify-content: center;
+    flex-wrap: wrap;
+    margin-top: 24px;
+    padding: 16px;
+    background: #1e293b;
+    border-radius: 10px;
+    border: 1px solid #334155;
+  }
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    color: #94a3b8;
+  }
+  .legend-dot {
+    width: 14px;
+    height: 14px;
+    border-radius: 4px;
+  }
+
+  /* 输出框 */
+  .output-box {
+    background: #1e1b4b;
+    border: 1.5px solid #6366f1;
+    border-radius: 8px;
+    padding: 10px 16px;
+    text-align: center;
+    min-width: 200px;
+  }
+  .output-box .title { font-size: 13px; font-weight: bold; color: #c4b5fd; }
+  .output-box .fields { font-size: 10px; color: #a78bfa; margin-top: 4px; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>Toonflow 多 Agent 叙事引擎架构</h1>
+  <p class="subtitle">单次用户请求的完整调用链 · 紫色=AI调用 · 橙色=规则引擎 · 绿色=数据存储</p>
+
+  <div class="pipeline">
+
+    <!-- ① 请求入口 -->
+    <div class="stage-label" style="background:#1e3a5f; color:#60a5fa;">① 请求入口</div>
+    <div class="node entry-node">
+      <div class="title">HTTP 请求 /orchestration</div>
+      <div class="desc">用户发送消息，触发编排</div>
+    </div>
+    <div class="arrow"></div>
+
+    <div class="node plain-node">
+      <div class="title">SessionService 会话服务</div>
+      <div class="desc">加载世界设定 · 章节数据 · 会话状态 · 加锁防并发</div>
+    </div>
+    <div class="arrow"></div>
+
+    <!-- ② 意图分析 -->
+    <div class="stage-label" style="background:#831843; color:#f472b6;">② 意图分析</div>
+    <div class="node intent-node">
+      <div class="title">意图分类 Agent</div>
+      <div class="desc">IntentClassifier · 分析用户意图，决定走哪个模式</div>
+    </div>
+    <div class="arrow"></div>
+
+    <!-- ③ 模式分发 -->
+    <div class="stage-label" style="background:#334155; color:#94a3b8;">③ 模式分发</div>
+    <div class="branch-row">
+      <div class="route-branch">
+        <div class="branch-tag">任务模式</div>
+        <div class="mini-card">任务进度 Agent</div>
+        <div class="mini-card">任务导演 Agent</div>
+        <div class="mini-card">任务完成 Agent</div>
+        <div class="branch-tag" style="margin-top:6px;">共 4 个 AI Agent 协作</div>
+      </div>
+      <div class="route-branch">
+        <div class="branch-tag">叙事模式（主要流程）</div>
+        <div class="arrow" style="height:12px;"></div>
+      </div>
+    </div>
+
+    <!-- ④ 叙事核心引擎 -->
+    <div class="stage-label" style="background:#78350f; color:#fbbf24;">④ 规则兜底引擎</div>
+    <div class="node engine-node">
+      <div class="title">规则编排器 RuleOrchestrator</div>
+      <div class="desc">先检查是否命中预设规则 · 命中则模板直出，跳过 AI 调用</div>
+    </div>
+    <div class="arrow"></div>
+
+    <div class="branch-row" style="gap:60px;">
+      <div class="route-branch">
+        <div class="route-label route-fast">命中 → 模板直出</div>
+        <div class="mini-card">无 AI 调用，速度最快</div>
+      </div>
+      <div class="route-branch">
+        <div class="route-label route-premium">未命中 → 走 AI</div>
+        <div class="arrow arrow-ai" style="height:20px;"></div>
+      </div>
+    </div>
+
+    <!-- ⑤ AI 协作层 - 编排师 -->
+    <div class="stage-label" style="background:#4c1d95; color:#c084fc;">⑤ 编排师 AI（第 1 次 AI 调用）</div>
+    <div class="branch-row" style="align-items:flex-start; gap:24px;">
+      <div class="context-box">
+        <div class="ctx-title">编排师输入上下文</div>
+        <ul>
+          <li>世界设定 + 章节大纲</li>
+          <li>Phase / Event 当前状态</li>
+          <li>对话历史 + 角色设定卡</li>
+          <li>事件摘要 + 事件事实</li>
+          <li>动态世界背景</li>
+          <li>用户最新发言</li>
+          <li>章节进度 + 角色发言计数</li>
+        </ul>
+      </div>
+      <div style="display:flex; flex-direction:column; align-items:center; gap:0;">
+        <div style="font-size:20px; color:#8b5cf6; margin-bottom:4px;">→</div>
+        <div class="node ai-node" style="min-width:260px;">
+          <div class="title">叙事编排师 AI</div>
+          <div class="desc">NarrativeOrchestrator · 第 1 次 AI 调用</div>
+          <div class="desc" style="margin-top:6px; font-weight:bold;">决定：谁来说 + 说什么动机 + 状态变更</div>
+        </div>
+        <div style="font-size:20px; color:#8b5cf6; margin-top:4px;">→</div>
+      </div>
+      <div class="output-box">
+        <div class="title">编排结果输出</div>
+        <div class="fields">
+          role · 当前发言者<br>
+          motive · 发言动机<br>
+          nextRole · 下一个发言者<br>
+          stateDelta · 状态变更<br>
+          eventSummary · 事件摘要<br>
+          eventFacts · 事件事实<br>
+          chapterOutcome · 章节判定
+        </div>
+      </div>
+    </div>
+    <div class="arrow arrow-ai"></div>
+
+    <!-- ⑥ 发言路由 -->
+    <div class="stage-label" style="background:#78350f; color:#fbbf24;">⑥ 发言路由引擎</div>
+    <div class="node engine-node">
+      <div class="title">发言路由引擎 SpeakerRouteEngine</div>
+      <div class="desc">根据发言动机关键词 + 角色类型，决定执行档位（非 AI 调用，纯规则）</div>
+    </div>
+    <div class="arrow"></div>
+
+    <div class="route-row">
+      <div class="route-branch">
+        <div class="route-label route-fast">快速档</div>
+        <div class="mini-card" style="min-width:180px;">低风险短承接轮次</div>
+        <div class="mini-card" style="min-width:180px;">旁白过渡 / 万能角色</div>
+        <div class="mini-card" style="min-width:180px; border-color:#059669; color:#10b981;">→ 模板直出，无 AI 调用</div>
+      </div>
+      <div class="route-branch">
+        <div class="route-label route-premium">高级档</div>
+        <div class="mini-card" style="min-width:180px;">关键角色 / 高风险动机</div>
+        <div class="mini-card" style="min-width:180px;">用户输入后的回应</div>
+        <div class="mini-card" style="min-width:180px; border-color:#d97706; color:#f59e0b;">→ 调用台词 AI 生成</div>
+      </div>
+    </div>
+    <div class="arrow arrow-ai"></div>
+
+    <!-- ⑦ 台词生成 AI -->
+    <div class="stage-label" style="background:#4c1d95; color:#c084fc;">⑦ 台词生成 AI（第 2 次 AI 调用）</div>
+    <div class="branch-row" style="align-items:flex-start; gap:24px;">
+      <div class="context-box" style="min-width:240px;">
+        <div class="ctx-title">台词 AI 输入</div>
+        <ul>
+          <li>角色设定 + 角色卡</li>
+          <li>编排师给出的动机</li>
+          <li>近期对话历史</li>
+          <li>事件摘要</li>
+        </ul>
+      </div>
+      <div style="display:flex; flex-direction:column; align-items:center;">
+        <div style="font-size:20px; color:#8b5cf6; margin-bottom:4px;">→</div>
+        <div class="node ai-node">
+          <div class="title">台词生成 AI</div>
+          <div class="desc">SpeakerPrompt · 第 2 次 AI 调用</div>
+          <div class="desc" style="margin-top:6px; font-weight:bold;">生成具体台词内容</div>
+        </div>
+        <div style="font-size:20px; color:#8b5cf6; margin-top:4px;">→</div>
+      </div>
+      <div class="output-box">
+        <div class="title">最终台词输出</div>
+        <div class="fields">
+          content · 台词文本<br>
+          role · 发言者<br>
+          → 流式返回前端
+        </div>
+      </div>
+    </div>
+    <div class="arrow"></div>
+
+    <!-- ⑧ 进度引擎 -->
+    <div class="stage-label" style="background:#1e3a5f; color:#60a5fa;">⑧ 章节进度引擎</div>
+    <div class="node db-node" style="min-width:320px;">
+      <div class="title">章节进度引擎 ChapterProgressEngine</div>
+      <div class="desc">Phase 流转 · Event 推进 · 章节结果判定（成功/失败/继续）</div>
+      <div class="desc" style="margin-top:6px;">事件进度 AI 检测 → 判定是否进入下一阶段</div>
+    </div>
+    <div class="arrow"></div>
+
+    <!-- ⑨ 状态持久化 -->
+    <div class="stage-label" style="background:#064e3b; color:#10b981;">⑨ 状态持久化</div>
+    <div class="branch-row" style="gap:16px;">
+      <div class="mini-card" style="min-width:200px;">会话状态 JSON<br><span style="color:#10b981;">t_game_session.stateJson</span></div>
+      <div class="mini-card" style="min-width:200px;">对话消息记录<br><span style="color:#10b981;">t_game_message</span></div>
+      <div class="mini-card" style="min-width:200px;">快照存档<br><span style="color:#10b981;">t_game_snapshot</span></div>
+    </div>
+    <div class="arrow"></div>
+    <div class="mini-card" style="min-width:240px; border-color:#10b981; color:#10b981; font-weight:bold;">✓ 完成，返回前端</div>
+
+  </div>
+
+  <!-- 图例 -->
+  <div class="legend">
+    <div class="legend-item">
+      <div class="legend-dot" style="background:linear-gradient(135deg,#7c3aed,#a855f7);"></div>
+      AI 调用节点（需消耗 Token）
+    </div>
+    <div class="legend-item">
+      <div class="legend-dot" style="background:linear-gradient(135deg,#d97706,#f59e0b);"></div>
+      规则引擎（纯逻辑，无 AI）
+    </div>
+    <div class="legend-item">
+      <div class="legend-dot" style="background:linear-gradient(135deg,#059669,#10b981);"></div>
+      数据存储 / 持久化
+    </div>
+    <div class="legend-item">
+      <div class="legend-dot" style="background:linear-gradient(135deg,#be185d,#ec4899);"></div>
+      意图分析 Agent
+    </div>
+    <div class="legend-item">
+      <div class="legend-dot" style="background:#1e293b; border:1px solid #3b82f6;"></div>
+      普通节点 / 入口
+    </div>
+  </div>
+
+  <!-- 关键指标 -->
+  <div style="margin-top:20px; display:flex; gap:16px; justify-content:center; flex-wrap:wrap;">
+    <div class="mini-card" style="min-width:180px; text-align:center;">
+      <div style="color:#c084fc; font-weight:bold; font-size:14px;">最少 0 次</div>
+      <div style="color:#64748b; font-size:11px;">规则命中时，模板直出</div>
+    </div>
+    <div class="mini-card" style="min-width:180px; text-align:center;">
+      <div style="color:#c084fc; font-weight:bold; font-size:14px;">通常 1~2 次</div>
+      <div style="color:#64748b; font-size:11px;">编排师 + 台词生成</div>
+    </div>
+    <div class="mini-card" style="min-width:180px; text-align:center;">
+      <div style="color:#c084fc; font-weight:bold; font-size:14px;">任务模式 3~4 次</div>
+      <div style="color:#64748b; font-size:11px;">多 Agent 协作</div>
+    </div>
+    <div class="mini-card" style="min-width:180px; text-align:center;">
+      <div style="color:#10b981; font-weight:bold; font-size:14px;">fast 档省 1 次</div>
+      <div style="color:#64748b; font-size:11px;">模板替代台词 AI</div>
+    </div>
+  </div>
+
+</div>
+</body>
+</html>
