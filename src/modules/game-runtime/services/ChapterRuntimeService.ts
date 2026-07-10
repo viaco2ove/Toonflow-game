@@ -693,7 +693,7 @@ export async function evaluateRuntimeOutcome(input: EvaluateRuntimeOutcomeInput)
   const fallbackEvaluation = buildRuleBasedChapterOutcome(input);
 
   // ★ 规则门控: AI #3 是否跳过
-  // - skipAi=true: 用规则判定，不调 AI
+  // - skipAi=true: 用规则判定，不调 AI（但自然语言条件除外）
   // - 自然语言条件（如"用户成功抢夺顾子航的房间"）: 无法被规则引擎解析，必须由 AI 判定
   // - 规则说 "continue"（无章节结束条件命中）: 不可能触发章节结束，跳过 AI
   // - 规则说 "success/failed/guide"（有结束条件命中）: 才调用 AI 复核，避免误判
@@ -701,7 +701,9 @@ export async function evaluateRuntimeOutcome(input: EvaluateRuntimeOutcomeInput)
   const isNaturalLanguage = isNaturalLanguageCompletionCondition(input.chapter);
   const isRuleContinue = fallbackEvaluation.hasRule && fallbackEvaluation.result === "continue";
   const isChapterCompletedFreeMode = String(input.fallbackStatus || "").toLowerCase() === "chapter_completed";
-  const shouldSkipAi = input.skipAi || (isRuleContinue && !isNaturalLanguage) || isChapterCompletedFreeMode;
+  // 跳过 AI 的条件：不是自然语言条件时才能跳过
+  // 自然语言条件必须调用 AI，因为规则引擎无法解析
+  const shouldSkipAi = input.skipAi && !isNaturalLanguage || (isRuleContinue && !isNaturalLanguage) || isChapterCompletedFreeMode;
 
   const evaluation = (!shouldSkipAi)
     ? (await evaluateChapterOutcomeByAi(input) || fallbackEvaluation)
