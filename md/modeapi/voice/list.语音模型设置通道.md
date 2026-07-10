@@ -16,8 +16,8 @@ local CosyVoice(ai_voice_tts):vulue=ai_voice_tts
 
 
 ### 阿里百炼
-- voice-enrollment：创建 cosyvoice-v3-* 专属音色
-- qwen-voice-enrollment：创建 qwen3-tts-vc-* 专属音色
+- voice-enrollment：创建 cosyvoice-v3-* 专属音色，CosyVoice 系列合成语音
+- qwen-voice-enrollment：创建 qwen3-tts-vc-* 专属音色，qwen 系列合成语音
 
 ### local CosyVoice(ai_voice_tts)
 https://github.com/viaco2ove/ai_voice_tts.git
