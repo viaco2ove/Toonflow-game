@@ -4202,8 +4202,13 @@ async function orchestrateSessionTurnInner(sessionId: string): Promise<SessionOr
       DebugLogUtil.log("story:orchestrator:chapter_switch"," 编排结果章节判定 outcome nextStatus 不一致：", {outcome: mergedOutcome.outcome,nextStatus:nextStatus});
     }
     DebugLogUtil.log("story:orchestrator:chapter_switch"," 编排结果章节判定 outcome", {outcome: mergedOutcome.outcome});
-    const resolvedNextChapterId = Number(mergedOutcome.nextChapterId || 0)
-      || await resolveNextChapterIdByOrder(db, Number(sessionRow.worldId || 0), Number(chapter.id || 0));
+    let resolvedNextChapterId =realNextChapterId;
+    try {
+       resolvedNextChapterId = Number(mergedOutcome.nextChapterId || 0)
+          || await resolveNextChapterIdByOrder(db, Number(sessionRow.worldId || 0), Number(chapter.id || 0));
+    } catch (e) {
+      console.error(e)
+    }
     DebugLogUtil.log("story:orchestrator:chapter_switch"," 编排结果章节判定resolvedNextChapterId", {resolvedNextChapterId: resolvedNextChapterId});
     if (resolvedNextChapterId && resolvedNextChapterId !== Number(chapter.id || 0)) {
       const resolvedNextChapter = normalizeChapterOutput(await db("t_storyChapter").where({ id: resolvedNextChapterId }).first());
