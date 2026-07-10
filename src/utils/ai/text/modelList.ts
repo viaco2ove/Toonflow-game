@@ -23,6 +23,7 @@ const instanceMap = {
   deepseek: createDeepSeek,
   volcengine: createOpenAI,
   doubao: createOpenAI,
+  minimax: createOpenAICompatible,
   openai: createOpenAI,
   lmstudio: (options: OpenAIProviderSettings) =>
     createOpenAICompatible({
@@ -185,6 +186,37 @@ const DOUBAO_TEXT_MODELS: DefaultOwned[] = [
 
 ];
 
+const MINIMAX_TEXT_MODELS: DefaultOwned[] = [
+  {
+    model: "M2-her",
+    responseFormat: "object",
+    image: false,
+    think: true,
+    tool: true,
+  },
+  {
+    model: "MiniMax-M2.7",
+    responseFormat: "object",
+    image: false,
+    think: true,
+    tool: true,
+  },
+  {
+    model: "MiniMax-M2.7-highspeed",
+    responseFormat: "object",
+    image: false,
+    think: true,
+    tool: true,
+  },
+  {
+    model: "MiniMax-M3",
+    responseFormat: "object",
+    image: false,
+    think: true,
+    tool: true,
+  },
+];
+
 const AUTODL_TEXT_MODELS: DefaultOwned[] = [
   {
     model: "DeepSeek-R1-0528",
@@ -202,20 +234,6 @@ const AUTODL_TEXT_MODELS: DefaultOwned[] = [
   },
   {
     model: "DeepSeek-V3.2",
-    responseFormat: "object",
-    image: false,
-    think: true,
-    tool: true,
-  },
-  {
-    model: "MiniMax-M2.7",
-    responseFormat: "object",
-    image: false,
-    think: true,
-    tool: true,
-  },
-  {
-    model: "MiniMax-M2.5",
     responseFormat: "object",
     image: false,
     think: true,
@@ -342,6 +360,8 @@ const modelList: Owned[] = [
 
   // 豆包
   ...createAliasedModels(["volcengine", "doubao"], DOUBAO_TEXT_MODELS),
+  // MiniMax
+  ...createAliasedModels(["minimax"], MINIMAX_TEXT_MODELS),
   // AutoDL
   ...createAliasedModels(["autodl_chat", "autodl"], AUTODL_TEXT_MODELS),
   // GLM

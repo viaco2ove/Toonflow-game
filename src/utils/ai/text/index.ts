@@ -252,7 +252,7 @@ function createDebugFetch(label: string): typeof fetch {
  */
 function isOpenAICompatibleManufacturer(manufacturer?: string): boolean {
   const normalizedManufacturer = String(manufacturer || "").trim();
-  return ["volcengine", "doubao", "other", "openai", "modelScope", "grsai", "t8star", "lmstudio", "autodl_chat", "autodl"].includes(
+  return ["volcengine", "doubao", "other", "openai", "modelScope", "grsai", "t8star", "lmstudio", "autodl_chat", "autodl", "minimax"].includes(
     normalizedManufacturer,
   );
 }
@@ -316,7 +316,7 @@ const buildOptions = async (input: AIInput<any>, config: AIConfig = {}) => {
   const output = input.output && !input.plainTextOutput
     ? (outputBuilders[owned.responseFormat]?.(input.output) ?? null)
     : null;
-  const chatModelManufacturer = ["volcengine", "doubao", "other", "openai", "modelScope", "grsai", "t8star", "lmstudio", "autodl_chat", "autodl"];
+  const chatModelManufacturer = ["volcengine", "doubao", "other", "openai", "modelScope", "grsai", "t8star", "lmstudio", "autodl_chat", "autodl", "minimax"];
   const modelFactory =
     typeof (modelInstance as any).chatModel === "function"
       ? (modelId: string) => (modelInstance as any).chatModel(modelId)
