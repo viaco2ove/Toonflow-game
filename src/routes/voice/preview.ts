@@ -930,8 +930,12 @@ export async function createDirectAliyunCustomVoice(options: {
   mixVoices?: Array<{ voiceId: string; weight?: number | null }>;
   voiceDesignConfig?: VoiceDesignConfig | null;
   bypassCache?: boolean;
+  /** 指定的 TTS 模型，当 config.model 被克隆 API 模型覆盖时使用（如 config.model="voice-enrollment" 但实际 TTS 模型是 "cosyvoice-v3-flash"） */
+  ttsModel?: string;
 }): Promise<{ voiceId: string; fresh: boolean; responseData: Record<string, any> | null }> {
-  const targetModel = normalizeAliyunDirectTtsModel(trimText(options.config?.model));
+  // 优先使用指定的 ttsModel，否则使用 config.model
+  const rawModel = options.ttsModel || options.config?.model;
+  const targetModel = normalizeAliyunDirectTtsModel(trimText(rawModel));
   const requestedSampleRate = normalizePreviewSampleRate(options.sampleRate) || 24000;
   const cacheKey = buildDirectAliyunCustomVoiceCacheKey({
     configId: Number(options.config?.id || 0),
@@ -993,6 +997,7 @@ export async function createDirectAliyunCustomVoice(options: {
       };
     }
   } else if (isAliyunDirectCosyVoiceModel(targetModel)) {
+    // targetModel 是 cosyvoice 模型，API 用 voice-enrollment 创建音色
     const publicReferenceUrl = await resolveDirectAliyunReferenceAudioUrl(trimText(options.referenceAudioSource));
     payload = {
       model: "voice-enrollment",
@@ -1103,8 +1108,10 @@ async function synthesizeDirectAliyunPreviewAudio(options: {
   format: string;
   sampleRate?: number | null;
   speed?: number | null;
+  /** 指定的 TTS 模型，当 config.model 被克隆 API 模型覆盖时使用 */
+  ttsModel?: string;
 }): Promise<{ sourceUrl: string; data: Record<string, any> }> {
-  const directModel = normalizeAliyunDirectTtsModel(trimText(options.config?.model));
+  const directModel = normalizeAliyunDirectTtsModel(trimText(options.ttsModel || options.config?.model));
   if (isAliyunDirectCosyVoiceModel(directModel)) {
     const buffer = await synthesizeAliyunDirectCosyVoiceBuffer({
       apiKey: trimText(options.config?.apiKey),
@@ -1167,12 +1174,14 @@ async function synthesizeDirectAliyunPreviewAudioWithRetry(options: {
   sampleRate?: number | null;
   speed?: number | null;
   fresh?: boolean;
+  /** 指定的 TTS 模型，当 config.model 被克隆 API 模型覆盖时使用 */
+  ttsModel?: string;
 }): Promise<{ sourceUrl: string; data: Record<string, any> }> {
   let lastError: unknown = null;
   const maxAttempts = options.fresh ? DIRECT_ALIYUN_CUSTOM_VOICE_READY_RETRY_DELAYS_MS.length + 1 : 1;
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     try {
-      return await synthesizeDirectAliyunPreviewAudio(options);
+      return await synthesizeDirectAliyunPreviewAudio(options, options.ttsModel);
     } catch (err) {
       lastError = err;
       if (attempt >= maxAttempts - 1) {
@@ -1592,6 +1601,8 @@ router.post(
         return res.status(400).send(error("请先在设置里配置语音克隆模型"));
       }
       // clone 模式下，用 语音克隆模型的 config 覆盖当前 TTS config，确保下游合成使用正确的模型/密钥
+      // 注意：保存原始 TTS model，用于 createDirectAliyunCustomVoice 的音色创建
+      const originalTtsModel = config.model;
       if (mode === "clone" && voiceCloneConfig) {
         config.model = voiceCloneConfig.model;
         config.apiKey = voiceCloneConfig.apiKey;
@@ -1723,6 +1734,7 @@ router.post(
             mode: "clone",
             referenceAudioSource: effectiveRefPath,
             sampleRate: normalizedSampleRate,
+            ttsModel: originalTtsModel,
           });
           if (DebugLogUtil.isDebugLogEnabled()) { console.log("[voice-preview] customVoice", JSON.stringify({ voiceId: customVoice.voiceId, fresh: customVoice.fresh })); }
           const synthesized = await synthesizeDirectAliyunPreviewAudioWithRetry({
@@ -1735,6 +1747,7 @@ router.post(
             sampleRate: normalizedSampleRate,
             speed,
             fresh: customVoice.fresh,
+            ttsModel: originalTtsModel,
           });
           const audioUrl = buildProxyAudioUrl(req, config?.id, synthesized.sourceUrl);
           return res.status(200).send(success({

@@ -34,7 +34,14 @@ export default router.post(
           throw new Error(`测试音频不存在: ${testAudioPath}`);
         }
         const audioBuffer = fs.readFileSync(testAudioPath);
-        const baseUrl = trimmedBaseUrl || "https://api.minimaxi.com";
+        const rawBaseUrl = trimmedBaseUrl || "https://api.minimaxi.com";
+        let baseUrl = rawBaseUrl;
+        try {
+          const urlObj = new URL(rawBaseUrl);
+          baseUrl = `${urlObj.protocol}//${urlObj.host}`;
+        } catch {
+          baseUrl = rawBaseUrl;
+        }
 
         // 上传参考音频到 MiniMax
         const uploadFormData = new FormData();
@@ -93,7 +100,15 @@ export default router.post(
         }
       } else if (trimmedManufacturer === "aliyun_direct") {
         // 阿里百炼：真正跑克隆接口
-        const baseUrl = trimmedBaseUrl || "https://dashscope.aliyuncs.com";
+        // 提取 baseURL 的 origin 部分，避免用户传入完整路径导致拼接错误
+        const rawBaseUrl = trimmedBaseUrl || "https://dashscope.aliyuncs.com";
+        let baseUrl = rawBaseUrl;
+        try {
+          const urlObj = new URL(rawBaseUrl);
+          baseUrl = `${urlObj.protocol}//${urlObj.host}`;
+        } catch {
+          // 如果无法解析，保持原值
+        }
         const testAudioPath = path.join(process.cwd(), "res", "voice-presets", "can_clone", "prompt_voice_test.wav");
         if (!fs.existsSync(testAudioPath)) {
           throw new Error(`测试音频不存在: ${testAudioPath}`);
@@ -126,7 +141,14 @@ export default router.post(
         res.status(200).send(success(`阿里百炼语音克隆测试通过，voice_id: ${output.voice}`));
       } else if (trimmedManufacturer === "ai_voice_tts") {
         // 本地 CosyVoice：验证服务可达
-        const baseUrl = trimmedBaseUrl || "http://127.0.0.1:8000";
+        const rawBaseUrl = trimmedBaseUrl || "http://127.0.0.1:8000";
+        let baseUrl = rawBaseUrl;
+        try {
+          const urlObj = new URL(rawBaseUrl);
+          baseUrl = `${urlObj.protocol}//${urlObj.host}`;
+        } catch {
+          baseUrl = rawBaseUrl;
+        }
         await axios.get(`${baseUrl}/health`, { timeout: 10000 });
         res.status(200).send(success("本地 CosyVoice 服务连通性测试通过"));
       } else if (trimmedManufacturer === "moss_tts_nano") {

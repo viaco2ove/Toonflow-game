@@ -528,7 +528,8 @@ export function resolveAliyunDirectTtsEndpoint(input: string | null | undefined)
   const normalized = base
     .replace(/\/compatible-mode\/v1$/i, "")
     .replace(/\/compatible-mode$/i, "")
-    .replace(/\/api\/v1$/i, "");
+    .replace(/\/api\/v1$/i, "")
+    .replace(/\/api\/v1\/services\/audio\/tts\/customization$/i, "");  // 兼容 voice clone 的 baseUrl
   return `${normalized}/api/v1/services/aigc/multimodal-generation/generation`;
 }
 
@@ -585,6 +586,11 @@ export function resolveVoiceModelModes(input: {
     if (isAliyunDirectQwenVoiceDesignModel(input.model)) {
       return ["prompt_voice"];
     }
+    // voice-enrollment 模型支持音色克隆
+    const normalizedModel = String(input.model || "").trim().toLowerCase();
+    if (normalizedModel === "voice-enrollment") {
+      return ["clone", "mix", "prompt_voice"];
+    }
     return ["text"];
   }
   if (modelType && modelType !== "tts") {
@@ -626,6 +632,7 @@ export function resolveAliyunDirectCosyVoiceWsEndpoint(input: string | null | un
     .replace(/\/compatible-mode\/v1$/i, "")
     .replace(/\/compatible-mode$/i, "")
     .replace(/\/api\/v1\/services\/aigc\/multimodal-generation\/generation$/i, "")
+    .replace(/\/api\/v1\/services\/audio\/tts\/customization$/i, "")  // 兼容 voice clone/customization 路径
     .replace(/\/api\/v1$/i, "")
     .replace(/\/+$/, "");
   return `wss://${normalized}/api-ws/v1/inference`;
