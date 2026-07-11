@@ -285,7 +285,7 @@ export interface SessionNarrativePlanResult {
     modelKey: string;
     manufacturer: string;
     model: string;
-    reasoningEffort: "minimal" | "low" | "medium" | "high" | "";
+    reasoningEffort: "none" | "minimal" | "low" | "medium" | "high" | "";
     payloadMode: "compact" | "advanced";
     payloadModeSource: "explicit" | "inferred";
   };
@@ -1116,7 +1116,7 @@ function buildSessionPlanResult(plan: ({
         modelKey: String(raw.modelKey || "").trim(),
         manufacturer: String(raw.manufacturer || "").trim(),
         model: String(raw.model || "").trim(),
-        reasoningEffort: reasoningEffort === "minimal" || reasoningEffort === "low" || reasoningEffort === "medium" || reasoningEffort === "high"
+        reasoningEffort: reasoningEffort === "none" || reasoningEffort === "minimal" || reasoningEffort === "low" || reasoningEffort === "medium" || reasoningEffort === "high"
           ? reasoningEffort
           : "",
         payloadMode: String(raw.payloadMode || "").trim().toLowerCase() === "advanced" ? "advanced" : "compact",

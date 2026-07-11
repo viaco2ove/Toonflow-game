@@ -7,7 +7,7 @@ interface AiConfig {
   baseURL?: string;
   manufacturer: string;
   payloadMode?: "compact" | "advanced";
-  reasoningEffort?: "minimal" | "low" | "medium" | "high";
+  reasoningEffort?: "none" | "minimal" | "low" | "medium" | "high";
 }
 
 const STRICT_MODEL_KEYS = new Set([

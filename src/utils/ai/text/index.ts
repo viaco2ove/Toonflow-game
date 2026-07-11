@@ -31,7 +31,7 @@ interface AIConfig {
   outputPricePer1M?: number;
   cacheReadPricePer1M?: number;
   currency?: string;
-  reasoningEffort?: "minimal" | "low" | "medium" | "high";
+  reasoningEffort?: "none" | "minimal" | "low" | "medium" | "high";
 }
 
 const LOG_LEVEL = (process.env.LOG_LEVEL || "").trim().toUpperCase();
@@ -290,10 +290,20 @@ const buildOptions = async (input: AIInput<any>, config: AIConfig = {}) => {
   }
 
   const openAICompatible = isOpenAICompatibleManufacturer(owned.manufacturer);
+  // MiniMax-M3 通过 thinking 字段控制思考开关（仅 disabled / adaptive 两档）
+  // 把系统的 reasoningEffort 映射成 M3 的 thinking：none / minimal = disabled（关闭），其他 = adaptive（开启）
+  const isMinimaxManufacturer = String(owned.manufacturer || "").trim().toLowerCase() === "minimax";
+  const minimaxThinkingDisabled = isMinimaxManufacturer && config?.reasoningEffort
+    ? config.reasoningEffort === "none" || config.reasoningEffort === "minimal"
+    : false;
+  const minimaxThinking = isMinimaxManufacturer && config?.reasoningEffort
+    ? { thinking: { type: minimaxThinkingDisabled ? "disabled" : "adaptive" } as const }
+    : {};
   const modelInstance = owned.instance({
     apiKey,
     baseURL: baseURL!,
     name: "xixixi",
+    ...minimaxThinking,
     ...(TEXT_DEBUG_HTTP && openAICompatible ? { fetch: createDebugFetch(`${owned.manufacturer}:${model}`) } : {}),
   } as any);
 
@@ -362,11 +372,12 @@ const buildOptions = async (input: AIInput<any>, config: AIConfig = {}) => {
       ...(input.maxRetries !== undefined && { maxRetries: input.maxRetries }),
       ...(output && { output }),
       ...(
-        config?.reasoningEffort && openAICompatible
+        config?.reasoningEffort && openAICompatible && !isMinimaxManufacturer
           ? {
             // 这里必须使用 openai 键，而不是自定义的 openaiCompatible。
             // @ai-sdk/openai 的 chat provider 会把 reasoningEffort 映射成请求体里的 reasoning_effort。
             // 之前写成 openaiCompatible 后，SDK 会直接忽略这段配置，最终不会把参数发给火山/豆包。
+            // 注意：MiniMax 不走这条路径，它的思考控制通过 thinking 字段在实例创建时注入。
             providerOptions: {
               openai: {
                 reasoningEffort: config.reasoningEffort,

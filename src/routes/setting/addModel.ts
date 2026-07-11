@@ -19,7 +19,7 @@ export default router.post(
     outputPricePer1M: z.union([z.number(), z.string()]).optional(),
     cacheReadPricePer1M: z.union([z.number(), z.string()]).optional(),
     currency: z.string().optional(),
-    reasoningEffort: z.enum(["minimal", "low", "medium", "high"]).optional(),
+    reasoningEffort: z.enum(["none", "minimal", "low", "medium", "high"]).optional(),
     remark: z.string().optional(),
   }),
   async (req, res) => {

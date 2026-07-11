@@ -138,7 +138,7 @@ export interface NarrativeRuntimeMeta {
   modelKey: string;
   manufacturer: string;
   model: string;
-  reasoningEffort: "minimal" | "low" | "medium" | "high" | "";
+  reasoningEffort: "none" | "minimal" | "low" | "medium" | "high" | "";
   payloadMode: "compact" | "advanced";
   payloadModeSource: "explicit" | "inferred";
 }
@@ -2857,7 +2857,7 @@ function resolveNarrativeRuntimeMeta(
     modelKey: stageKey,
     manufacturer: normalizeScalarText(raw?.manufacturer),
     model: normalizeScalarText(raw?.model),
-    reasoningEffort: reasoningEffort === "minimal" || reasoningEffort === "low" || reasoningEffort === "medium" || reasoningEffort === "high"
+    reasoningEffort: reasoningEffort === "none" || reasoningEffort === "minimal" || reasoningEffort === "low" || reasoningEffort === "medium" || reasoningEffort === "high"
       ? reasoningEffort
       : "",
     payloadMode: compactMode ? "compact" : "advanced",
@@ -4321,7 +4321,7 @@ export async function runStorySpeakerContent(input: {
         model: normalizeScalarText((promptAiConfig as any)?.model),
         reasoningEffort: (() => {
           const value = normalizeScalarText((promptAiConfig as any)?.reasoningEffort).toLowerCase();
-          return value === "minimal" || value === "low" || value === "medium" || value === "high" ? value : "";
+          return value === "none" || value === "minimal" || value === "low" || value === "medium" || value === "high" ? value : "";
         })(),
         payloadMode: useFastSpeakerPrompt || compactMode ? "compact" : "advanced",
         payloadModeSource: useFastSpeakerPrompt ? "explicit" : "inferred",
@@ -4357,7 +4357,7 @@ export async function runStorySpeakerContent(input: {
         model: normalizeScalarText((promptAiConfig as any)?.model),
         reasoningEffort: (() => {
           const value = normalizeScalarText((promptAiConfig as any)?.reasoningEffort).toLowerCase();
-          return value === "minimal" || value === "low" || value === "medium" || value === "high" ? value : "";
+          return value === "none" || value === "minimal" || value === "low" || value === "medium" || value === "high" ? value : "";
         })(),
         payloadMode: useFastSpeakerPrompt || compactMode ? "compact" : "advanced",
         payloadModeSource: useFastSpeakerPrompt ? "explicit" : "inferred",
@@ -5239,7 +5239,7 @@ export function summarizeNarrativePlan(result: OrchestratorResult | null | undef
         model: normalizeScalarText(result.orchestratorRuntime.model),
         reasoningEffort: (() => {
           const value = normalizeScalarText(result.orchestratorRuntime.reasoningEffort).toLowerCase();
-          return value === "minimal" || value === "low" || value === "medium" || value === "high" ? value : "";
+          return value === "none" || value === "minimal" || value === "low" || value === "medium" || value === "high" ? value : "";
         })(),
         payloadMode: result.orchestratorRuntime.payloadMode === "advanced" ? "advanced" : "compact",
         payloadModeSource: result.orchestratorRuntime.payloadModeSource === "explicit" ? "explicit" : "inferred",

@@ -68,7 +68,7 @@ export default router.post(
     apiKey: z.string(),
     baseURL: z.string().optional(),
     manufacturer: z.string(),
-    reasoningEffort: z.enum(["minimal", "low", "medium", "high"]).optional(),
+    reasoningEffort: z.enum(["none", "minimal", "low", "medium", "high"]).optional(),
   }),
   async (req, res) => {
     const { modelName, apiKey, baseURL, manufacturer, reasoningEffort } = req.body;

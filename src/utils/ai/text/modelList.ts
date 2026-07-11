@@ -23,7 +23,21 @@ const instanceMap = {
   deepseek: createDeepSeek,
   volcengine: createOpenAI,
   doubao: createOpenAI,
-  minimax: createOpenAICompatible,
+  minimax: (rawOptions: OpenAIProviderSettings & { thinking?: { type: "disabled" | "adaptive" } }) => {
+    // MiniMax-M3 通过 thinking 字段控制思考开关（chat/completions 接口）
+    // - thinking.type = "disabled"：关闭思考（最快，推荐台词生成）
+    // - thinking.type = "adaptive"：开启自适应思考
+    const thinking = rawOptions.thinking;
+    const { thinking: _omit, ...options } = rawOptions;
+    return createOpenAICompatible({
+      ...options,
+      baseURL: options.baseURL || "",
+      transformRequestBody: (body: Record<string, any>) => {
+        if (!thinking) return body;
+        return { ...body, thinking };
+      },
+    } as any);
+  },
   openai: createOpenAI,
   lmstudio: (options: OpenAIProviderSettings) =>
     createOpenAICompatible({

@@ -3,7 +3,7 @@ import {DebugLogUtil} from "@/utils/debugLogUtil";
 
 export type ExternalModelConfigType = "text" | "image" | "voice" | "voice_design" | "voice_clone" | "video";
 export type PersistedModelConfigType = "text" | "image" | "voice" | "video";
-export type ModelReasoningEffort = "minimal" | "low" | "medium" | "high";
+export type ModelReasoningEffort = "none" | "minimal" | "low" | "medium" | "high";
 
 function trimText(input: unknown): string {
   return String(input || "").trim();
@@ -17,7 +17,7 @@ function normalizeNonNegativeNumber(input: unknown): number {
 
 function normalizeReasoningEffort(input: unknown): ModelReasoningEffort {
   const value = trimText(input).toLowerCase();
-  if (value === "low" || value === "medium" || value === "high") {
+  if (value === "none" || value === "low" || value === "medium" || value === "high") {
     return value;
   }
   return "minimal";
