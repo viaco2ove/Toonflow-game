@@ -23,19 +23,57 @@ const instanceMap = {
   deepseek: createDeepSeek,
   volcengine: createOpenAI,
   doubao: createOpenAI,
-  minimax: (rawOptions: OpenAIProviderSettings & { thinking?: { type: "disabled" | "adaptive" } }) => {
-    // MiniMax-M3 通过 thinking 字段控制思考开关（chat/completions 接口）
-    // - thinking.type = "disabled"：关闭思考（最快，推荐台词生成）
-    // - thinking.type = "adaptive"：开启自适应思考
-    const thinking = rawOptions.thinking;
-    const { thinking: _omit, ...options } = rawOptions;
+  minimax: (rawOptions: OpenAIProviderSettings & { reasoning?: { effort: "none" | "minimal" | "low" | "medium" | "high" } }) => {
+    const reasoning = rawOptions.reasoning;
+    const { reasoning: _omit, fetch: userFetch, ...options } = rawOptions as any;
+    const baseFetch = (userFetch as typeof fetch | undefined) || fetch;
+
+    const customFetch: typeof fetch = async (input, init) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : (input as Request).url;
+      const newUrl = url.replace(/\/v1\/chat\/completions$/, "/v1/responses");
+
+      const body = JSON.parse((init?.body as string) || "{}");
+      const { model, messages, stream, ...rest } = body;
+
+      const systemMsg = (messages as any[])?.find((m: any) => m.role === "system");
+      const userMsgs = (messages as any[])?.filter((m: any) => m.role !== "system") || [];
+
+      const instructions = systemMsg?.content || "";
+      const userContent = userMsgs.map((m: any) => (typeof m.content === "string" ? m.content : JSON.stringify(m.content))).join("\n");
+
+      const newBody: any = { model, instructions, input: userContent, ...(reasoning ? { reasoning } : {}) };
+
+      const newInit = { ...init, body: JSON.stringify(newBody) };
+      const response = await baseFetch(newUrl, newInit);
+
+      if (!response.ok) return response;
+
+      const responseData = await response.clone().json();
+      const outputText = responseData.output_text || "";
+      const usage = responseData.usage || {};
+
+      const chatFormat = {
+        id: responseData.id,
+        choices: [{ finish_reason: "stop", index: 0, message: { content: outputText, role: "assistant" } }],
+        created: responseData.created_at || Math.floor(Date.now() / 1000),
+        model: responseData.model,
+        object: "chat.completion",
+        usage: {
+          total_tokens: usage.total_tokens || 0,
+          prompt_tokens: usage.input_tokens || 0,
+          completion_tokens: usage.output_tokens || 0,
+          prompt_tokens_details: { cached_tokens: usage.input_tokens_details?.cached_tokens || 0 },
+          completion_tokens_details: { reasoning_tokens: usage.output_tokens_details?.reasoning_tokens || 0 },
+        },
+      };
+
+      return new Response(JSON.stringify(chatFormat), { status: response.status, headers: response.headers });
+    };
+
     return createOpenAICompatible({
       ...options,
       baseURL: options.baseURL || "",
-      transformRequestBody: (body: Record<string, any>) => {
-        if (!thinking) return body;
-        return { ...body, thinking };
-      },
+      fetch: customFetch,
     } as any);
   },
   openai: createOpenAI,

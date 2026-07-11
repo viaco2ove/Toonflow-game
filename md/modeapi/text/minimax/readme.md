@@ -124,7 +124,7 @@ curl --location 'https://api.minimaxi.com/v1/chat/completions' \
     }
 }
 ```
-### /responses
+### /v1/responses
 "reasoning": {"effort": "none"}      // 关闭思考（推荐，台词生成不需要）
 "reasoning": {"effort": "minimal"}   // 开启 adaptive（=low=medium=high，不调深度）
 "reasoning": {"effort": "low"}       // 同上

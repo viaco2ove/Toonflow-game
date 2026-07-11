@@ -290,20 +290,17 @@ const buildOptions = async (input: AIInput<any>, config: AIConfig = {}) => {
   }
 
   const openAICompatible = isOpenAICompatibleManufacturer(owned.manufacturer);
-  // MiniMax-M3 通过 thinking 字段控制思考开关（仅 disabled / adaptive 两档）
-  // 把系统的 reasoningEffort 映射成 M3 的 thinking：none / minimal = disabled（关闭），其他 = adaptive（开启）
+  // MiniMax-M3 走 /v1/responses 接口，通过 reasoning.effort 控制思考
+  // none / minimal = effort:none（关闭），low / medium / high = 对应 effort 值
   const isMinimaxManufacturer = String(owned.manufacturer || "").trim().toLowerCase() === "minimax";
-  const minimaxThinkingDisabled = isMinimaxManufacturer && config?.reasoningEffort
-    ? config.reasoningEffort === "none" || config.reasoningEffort === "minimal"
-    : false;
-  const minimaxThinking = isMinimaxManufacturer && config?.reasoningEffort
-    ? { thinking: { type: minimaxThinkingDisabled ? "disabled" : "adaptive" } as const }
+  const minimaxReasoning = isMinimaxManufacturer && config?.reasoningEffort
+    ? { reasoning: { effort: config.reasoningEffort === "minimal" ? "none" : config.reasoningEffort } }
     : {};
   const modelInstance = owned.instance({
     apiKey,
     baseURL: baseURL!,
     name: "xixixi",
-    ...minimaxThinking,
+    ...minimaxReasoning,
     ...(TEXT_DEBUG_HTTP && openAICompatible ? { fetch: createDebugFetch(`${owned.manufacturer}:${model}`) } : {}),
   } as any);
 
