@@ -988,12 +988,12 @@ function buildSessionExpectedSpeaker(state: Record<string, any>) {
       canPlayerSpeakNow
         ? state.player?.name || "用户"
         : turnState.expectedRole || "",
-    ).trim() || "用户",
+    ).trim(),
     expectedRoleType: String(
       canPlayerSpeakNow
         ? "player"
         : turnState.expectedRoleType || "",
-    ).trim() || "player",
+    ).trim(),
   };
 }
 
@@ -1245,10 +1245,9 @@ function applyPlanTurnStateToSessionState(
   }
   setRuntimeTurnState(state, world, {
     canPlayerSpeak: false,
-    // 编辑师现在允许不再返回 nextRoleType。
-    // 这里优先沿用显式值，缺失时回退到当前发言角色类型，再回退到旁白。
-    expectedRoleType: String(plan.nextRoleType || plan.roleType || "narrator"),
-    expectedRole: String(plan.nextRole || plan.role || state.narrator?.name || "旁白"),
+    // nextRoleType 为空时不应拿当前 roleType 兜底，否则会把"当前发言角色"误当成"下一轮预期角色"
+    expectedRoleType: String(plan.nextRoleType || ""),
+    expectedRole: String(plan.nextRole || ""),
     lastSpeakerRoleType: String(plan.roleType || "narrator"),
     lastSpeaker: String(plan.role || state.narrator?.name || "旁白"),
   });
@@ -4563,8 +4562,8 @@ async function commitSessionNarrativeTurnInner(input: CommitSessionNarrativeTurn
   } else {
     setRuntimeTurnState(state, world, {
       canPlayerSpeak: false,
-      expectedRoleType: String(pendingPlan?.nextRoleType || pendingPlan?.roleType || "narrator"),
-      expectedRole: String(pendingPlan?.nextRole || pendingPlan?.role || state.narrator?.name || "旁白"),
+      expectedRoleType: String(pendingPlan?.nextRoleType || ""),
+      expectedRole: String(pendingPlan?.nextRole || ""),
       lastSpeakerRoleType: committedRoleType,
       lastSpeaker: committedRole,
     });

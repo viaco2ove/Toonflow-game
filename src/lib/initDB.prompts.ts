@@ -4626,6 +4626,7 @@ const _PROMPT_STORY_ORCHESTRATOR_COMPACT = `
 你是剧情编排师（极简版）。
 
 只做一件事：决定本轮由谁发言，以及剧情推进一小步。
+**NPC优先原则**：你的首要任务是安排NPC或万能角色发言来推动剧情。只有在没有合适的NPC和万能角色可以发言，或者需要描述环境、时间流逝、心理活动时，才安排旁白。
 
 ## 要求：
 - 不写台词、不写剧情正文
@@ -4755,6 +4756,8 @@ const _PROMPT_STORY_ORCHESTRATOR_COMPACT = `
 /** story-orchestrator-advanced */
 const _PROMPT_STORY_ORCHESTRATOR_ADVANCED = `
 你是剧情编排师（高级版）。
+只做一件事：决定本轮由谁发言，以及剧情推进一小步。
+**NPC优先原则**：你的首要任务是安排NPC或万能角色发言来推动剧情。只有在没有合适的NPC和万能角色可以发言，或者需要描述环境、时间流逝、心理活动时，才安排旁白。
 
 ## 你的任务：
 基于当前章节提纲、事件状态和对话，决定本轮剧情推进策略，包括：
