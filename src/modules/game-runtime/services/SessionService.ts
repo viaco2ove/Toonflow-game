@@ -1858,19 +1858,46 @@ async function runConcurrentSessionJudgeAndNarrative(params: {
   const discardCandidatePlan = () => {
     void candidatePlanPromise.catch(() => null);
   };
+  // guide 结局（需要引导用户完成章节条件）：丢弃当前编排结果，用章节判定的 guide 提示重新跑编排
+  if (mergedOutcome.outcome === "guide") {
+    logSessionOrchestrationKeyNode("session_concurrent_arbiter:discard_candidate", params.traceMeta, {
+      reason: "judge_guide",
+    });
+    discardCandidatePlan();
+    const guideReason = String(mergedOutcome.evaluation?.reason || "章节需要引导用户推进剧情").trim();
+    const guideHint = guideReason ? `[引导提示] ${guideReason}` : "";
+    const finalPlan = await runNarrativePlan({
+      userId: params.userId,
+      world: params.world,
+      chapter: params.chapter,
+      state: params.state,
+      recentMessages: params.recentMessages,
+      playerMessage: guideHint,
+      maxRetries: 0,
+      allowControlHints: false,
+      allowStateDelta: false,
+      traceMeta: {
+        ...params.traceMeta,
+        planMode: "guide_replan",
+      },
+    });
+    return {
+      mergedOutcome,
+      plan: applySessionNarrativePlanToState({
+        userId: params.userId,
+        world: params.world,
+        chapter: params.chapter,
+        state: params.state,
+        recentMessages: params.recentMessages,
+        plan: finalPlan,
+      }),
+    };
+  }
   if (mergedOutcome.outcome !== "continue") {
     logSessionOrchestrationKeyNode("session_concurrent_arbiter:discard_candidate", params.traceMeta, {
       reason: `judge_${mergedOutcome.outcome}`,
     });
     discardCandidatePlan();
-    // guide 结局（需要引导用户完成结束条件）等同于等待用户输入：明确告诉前端由用户继续说话，
-    // 否则前端只会拿到空 plan（{role:"",roleType:"",motive:""}），无法渲染任何提示。
-    if (mergedOutcome.outcome === "guide") {
-      return {
-        mergedOutcome,
-        plan: buildWaitingForUserSessionPlan(params.state),
-      };
-    }
     return {
       mergedOutcome,
       plan: null as SessionNarrativePlanResult | null,
