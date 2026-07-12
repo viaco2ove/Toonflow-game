@@ -1181,7 +1181,7 @@ async function synthesizeDirectAliyunPreviewAudioWithRetry(options: {
   const maxAttempts = options.fresh ? DIRECT_ALIYUN_CUSTOM_VOICE_READY_RETRY_DELAYS_MS.length + 1 : 1;
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     try {
-      return await synthesizeDirectAliyunPreviewAudio(options, options.ttsModel);
+      return await synthesizeDirectAliyunPreviewAudio({ ...options, ttsModel: options.ttsModel });
     } catch (err) {
       lastError = err;
       if (attempt >= maxAttempts - 1) {
@@ -1908,6 +1908,7 @@ router.post(
                 referenceAudioSource: resolvedReferenceAudioSource,
                 sampleRate: normalizedSampleRate,
                 bypassCache: true,
+                ttsModel: originalTtsModel,
               });
               // 写入元数据，方便后续复用
               if (customVoice.voiceId) {
@@ -1933,6 +1934,7 @@ router.post(
               sampleRate: normalizedSampleRate,
               speed,
               fresh: customVoice.fresh,
+              ttsModel: originalTtsModel,
             });
             const audioUrl = buildProxyAudioUrl(req, config?.id, synthesized.sourceUrl);
             return res.status(200).send(success({
