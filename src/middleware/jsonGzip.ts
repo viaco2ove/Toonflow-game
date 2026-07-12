@@ -1,7 +1,7 @@
 import { NextFunction, Request, Response } from "express";
 import { gzip } from "zlib";
 
-const DEFAULT_JSON_GZIP_MIN_BYTES = 4 * 1024;
+const DEFAULT_JSON_GZIP_MIN_BYTES = 512;
 const JSON_GZIP_ROUTE_PREFIXES = [
   "/assets/",
   "/game/",
