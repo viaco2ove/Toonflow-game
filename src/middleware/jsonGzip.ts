@@ -2,6 +2,7 @@ import { NextFunction, Request, Response } from "express";
 import { gzip } from "zlib";
 
 const DEFAULT_JSON_GZIP_MIN_BYTES = 512;
+const DEFAULT_JSON_GZIP_LEVEL = 6;
 const JSON_GZIP_ROUTE_PREFIXES = [
   "/assets/",
   "/game/",
@@ -39,6 +40,26 @@ function getJsonGzipMinBytes(): number {
 }
 
 /**
+ * 读取 JSON gzip 的压缩级别。
+ *
+ * 用途：
+ * - 允许通过环境变量调整压缩速度与压缩率的权衡；
+ * - 1=最快/最低压缩，9=最慢/最高压缩，默认 6；
+ * - 大 JSON 包（getSession 等）建议用 1，降低后端 CPU 开销。
+ */
+function getJsonGzipLevel(): number {
+  const rawValue = Number(process.env.JSON_GZIP_LEVEL);
+  if (!Number.isFinite(rawValue)) {
+    return DEFAULT_JSON_GZIP_LEVEL;
+  }
+  const normalizedValue = Math.floor(rawValue);
+  if (normalizedValue < 1 || normalizedValue > 9) {
+    return DEFAULT_JSON_GZIP_LEVEL;
+  }
+  return normalizedValue;
+}
+
+/**
  * 判断当前请求是否声明支持 gzip 压缩。
  *
  * 用途：
@@ -59,6 +80,9 @@ function acceptsGzip(req: Request): boolean {
  * - 仅对 `/game/*` 等 API 请求启用，避免影响静态资源与 HTML 页面。
  */
 function shouldHandleJsonCompression(req: Request, res: Response): boolean {
+  if (process.env.JSON_GZIP_ENABLE !== "1") {
+    return false;
+  }
   if (req.method.toUpperCase() === "HEAD") {
     return false;
   }
@@ -151,7 +175,7 @@ export function jsonGzipMiddleware(req: Request, res: Response, next: NextFuncti
     res.setHeader("Vary", "Accept-Encoding");
     res.setHeader("Content-Type", "application/json; charset=utf-8");
 
-    gzip(payloadBuffer, (gzipError, compressedBuffer) => {
+    gzip(payloadBuffer, { level: getJsonGzipLevel() }, (gzipError, compressedBuffer) => {
       if (res.headersSent) {
         return;
       }
@@ -167,6 +191,15 @@ export function jsonGzipMiddleware(req: Request, res: Response, next: NextFuncti
       // 发送压缩体前移除旧长度，避免沿用未压缩内容长度导致客户端截断读取。
       res.removeHeader("Content-Length");
       res.setHeader("Content-Encoding", "gzip");
+      if (process.env.DEBUG_AI_TEXT === "1") {
+        console.log("[jsonGzip] compressed", {
+          path: req.path,
+          rawBytes: payloadBuffer.byteLength,
+          compressedBytes: compressedBuffer.byteLength,
+          ratio: (compressedBuffer.byteLength / payloadBuffer.byteLength * 100).toFixed(1) + "%",
+          level: getJsonGzipLevel(),
+        });
+      }
       originalSend(compressedBuffer);
     });
 
