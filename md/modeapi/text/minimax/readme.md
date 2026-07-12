@@ -219,3 +219,12 @@ curl --location 'https://api.minimaxi.com/v1/responses' \
     "truncation": "disabled"
 }
 ```
+
+
+## m3 特点
+容易自作聪明
+可以在一些“无情”的 ai agent 增加一下提示词：
+```
+你只是状态机，不是剧情导演！禁止猜测用户的意图，禁止认为用户输入 "." 或无效字符是因为“迷茫”或“需要引导”。
+```
+让它不要想太多。
