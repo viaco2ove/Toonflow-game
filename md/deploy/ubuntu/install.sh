@@ -392,6 +392,18 @@ server {
 
     client_max_body_size 100m;
 
+    # ========== 全局 gzip 压缩（核心优化 JSON 大包） ==========
+    gzip on;
+    gzip_min_length 1024;
+    gzip_types application/json text/plain text/css text/javascript application/javascript;
+    gzip_vary on;
+    gzip_comp_level 4;
+    gzip_buffers 4 64k;
+
+    # 超时优化，带宽拥堵时延长等待
+    proxy_connect_timeout 60s;
+    proxy_read_timeout 60s;
+
     root $PANEL_WEB_PUBLISH_DIR;
     index index.html;
 
@@ -408,6 +420,11 @@ server {
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
+
+        # 代理缓冲区，处理 2MB+ 大 JSON 响应
+        proxy_buffer_size 128k;
+        proxy_buffers 8 128k;
+        proxy_busy_buffers_size 256k;
     }
 
     location ~ ^/([0-9]+|u_[0-9]+)/(assets|game|voice)/ {
@@ -417,6 +434,11 @@ server {
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
+
+        # 同步添加缓冲区配置
+        proxy_buffer_size 128k;
+        proxy_buffers 8 128k;
+        proxy_busy_buffers_size 256k;
     }
 }
 EOF
