@@ -204,7 +204,7 @@ function getBodyPreview(body: BodyInit | null | undefined): string {
   return `[${Object.prototype.toString.call(body)}]`;
 }
 
-function createDebugFetch(label: string): typeof fetch {
+function createDebugFetch(label: string, agentName?: string): typeof fetch {
   return async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const requestUrl = typeof input === "string" ? input : input instanceof URL ? input.toString() : (input as Request).url;
     const requestMethod =
@@ -218,7 +218,9 @@ function createDebugFetch(label: string): typeof fetch {
     const reqDumpEnabled = process.env.AI_TEXT_DEBUG_HTTP_REQ === "1" && process.env.AI_TEXT_DEBUG_HTTP_REQ_LOG_PATH;
     if (reqDumpEnabled) {
       const reqDir = String(process.env.AI_TEXT_DEBUG_HTTP_REQ_LOG_PATH!).trim();
-      const reqFile = path.join(reqDir, `req_${Date.now()}_${label.replace(/[/:]/g, "_")}.json`);
+      const modelPart = label.replace(/[/:]/g, "_");
+      const agentPart = agentName ? `_${agentName}` : "";
+      const reqFile = path.join(reqDir, `req_${Date.now()}_${modelPart}${agentPart}.json`);
       const dumpData = {
         _meta: {
           env: { AI_TEXT_DEBUG_HTTP_REQ: "1" },
@@ -330,7 +332,7 @@ const buildOptions = async (input: AIInput<any>, config: AIConfig = {}) => {
     ...minimaxReasoning,
     ...(
       (TEXT_DEBUG_HTTP || process.env.AI_TEXT_DEBUG_HTTP_REQ === "1") && openAICompatible
-        ? { fetch: createDebugFetch(`${owned.manufacturer}:${model}`) }
+        ? { fetch: createDebugFetch(`${owned.manufacturer}:${model}`, (input as any)?.usageType || (input as any)?.usageRemark || undefined) }
         : {}
     ),
   } as any);
