@@ -15,6 +15,20 @@ function normalizeNonNegativeNumber(input: unknown): number {
   return Math.round(value * 1_000_000) / 1_000_000;
 }
 
+function normalizeTemperature(input: unknown): number {
+  const value = Number(input);
+  if (!Number.isFinite(value) || value < 0) return 0.3;
+  if (value > 2) return 2;
+  return Math.round(value * 100) / 100;
+}
+
+function normalizeTopP(input: unknown): number {
+  const value = Number(input);
+  if (!Number.isFinite(value) || value < 0) return 0.5;
+  if (value > 1) return 1;
+  return Math.round(value * 100) / 100;
+}
+
 function normalizeReasoningEffort(input: unknown): ModelReasoningEffort {
   const value = trimText(input).toLowerCase();
   if (value === "none" || value === "low" || value === "medium" || value === "high") {
@@ -45,6 +59,8 @@ export function toExternalModelConfigRow<T extends Record<string, any>>(row: T):
   outputPricePer1M: number;
   cacheReadPricePer1M: number;
   reasoningEffort: ModelReasoningEffort | "";
+  temperature: number;
+  topP: number;
 } {
   const resolvedType = trimText(row.type).toLowerCase();
   const modelType = trimText(row.modelType).toLowerCase();
@@ -59,6 +75,8 @@ export function toExternalModelConfigRow<T extends Record<string, any>>(row: T):
       outputPricePer1M: normalizeNonNegativeNumber(row.outputPricePer1M),
       cacheReadPricePer1M: normalizeNonNegativeNumber(row.cacheReadPricePer1M),
       reasoningEffort: "",
+      temperature: 0.3,
+      topP: 0.5,
     };
   }
   if (modelType === "voice_clone") {
@@ -71,6 +89,8 @@ export function toExternalModelConfigRow<T extends Record<string, any>>(row: T):
       outputPricePer1M: normalizeNonNegativeNumber(row.outputPricePer1M),
       cacheReadPricePer1M: normalizeNonNegativeNumber(row.cacheReadPricePer1M),
       reasoningEffort: "",
+      temperature: 0.3,
+      topP: 0.5,
     };
   }
   const externalType = (resolvedType || "text") as ExternalModelConfigType;
@@ -83,6 +103,8 @@ export function toExternalModelConfigRow<T extends Record<string, any>>(row: T):
     outputPricePer1M: normalizeNonNegativeNumber(row.outputPricePer1M),
     cacheReadPricePer1M: normalizeNonNegativeNumber(row.cacheReadPricePer1M),
     reasoningEffort: externalType === "text" ? normalizeReasoningEffort(row.reasoningEffort) : "",
+    temperature: externalType === "text" ? normalizeTemperature(row.temperature) : 0.3,
+    topP: externalType === "text" ? normalizeTopP(row.topP) : 0.5,
   };
 }
 
@@ -98,6 +120,8 @@ export function normalizeExternalModelConfig(input: {
   cacheReadPricePer1M?: unknown;
   currency?: unknown;
   reasoningEffort?: unknown;
+  temperature?: unknown;
+  topP?: unknown;
 }): {
   persistedType: PersistedModelConfigType;
   externalType: ExternalModelConfigType;
@@ -111,6 +135,8 @@ export function normalizeExternalModelConfig(input: {
   cacheReadPricePer1M: number;
   currency: string;
   reasoningEffort: ModelReasoningEffort;
+  temperature: number;
+  topP: number;
 } {
   const requestedType = trimText(input.type).toLowerCase();
   const manufacturer = trimText(input.manufacturer);
@@ -123,6 +149,8 @@ export function normalizeExternalModelConfig(input: {
   const cacheReadPricePer1M = normalizeNonNegativeNumber(input.cacheReadPricePer1M);
   const currency = trimText(input.currency).toUpperCase() || "CNY";
   const reasoningEffort = normalizeReasoningEffort(input.reasoningEffort);
+  const temperature = normalizeTemperature(input.temperature);
+  const topP = normalizeTopP(input.topP);
 
   if (requestedType === "voice_design") {
     return {
@@ -138,6 +166,8 @@ export function normalizeExternalModelConfig(input: {
       cacheReadPricePer1M,
       currency,
       reasoningEffort,
+      temperature,
+      topP,
     };
   }
 
@@ -155,6 +185,8 @@ export function normalizeExternalModelConfig(input: {
       cacheReadPricePer1M,
       currency,
       reasoningEffort,
+      temperature,
+      topP,
     };
   }
 
@@ -178,6 +210,8 @@ export function normalizeExternalModelConfig(input: {
       cacheReadPricePer1M,
       currency,
       reasoningEffort,
+      temperature,
+      topP,
     };
   }
 
@@ -195,5 +229,7 @@ export function normalizeExternalModelConfig(input: {
     cacheReadPricePer1M,
     currency,
     reasoningEffort,
+    temperature,
+    topP,
   };
 }

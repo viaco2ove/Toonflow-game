@@ -32,6 +32,8 @@ interface AIConfig {
   cacheReadPricePer1M?: number;
   currency?: string;
   reasoningEffort?: "none" | "minimal" | "low" | "medium" | "high";
+  temperature?: number;
+  topP?: number;
 }
 
 const LOG_LEVEL = (process.env.LOG_LEVEL || "").trim().toUpperCase();
@@ -383,6 +385,8 @@ const buildOptions = async (input: AIInput<any>, config: AIConfig = {}) => {
           }
           : {}
       ),
+      ...(config?.temperature !== undefined ? { temperature: config.temperature } : {}),
+      ...(config?.topP !== undefined ? { topP: config.topP } : {}),
     },
     responseFormat: owned.responseFormat,
   };

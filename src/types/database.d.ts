@@ -1,4 +1,4 @@
-// @db-hash 774ccb5e7d8ecf6505479961f1e349af
+// @db-hash 27b7589aa079ac633fcf9da35fa90781
 //该文件由脚本自动生成，请勿手动修改
 
 export interface t_aiModelMap {
@@ -94,6 +94,8 @@ export interface t_config {
   'outputPricePer1M'?: number | null;
   'reasoningEffort'?: string | null;
   'remark'?: string | null;
+  'temperature'?: number | null;
+  'topP'?: number | null;
   'type'?: string | null;
   'userId'?: number | null;
 }

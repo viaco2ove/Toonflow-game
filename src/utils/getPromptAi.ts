@@ -8,6 +8,8 @@ interface AiConfig {
   manufacturer: string;
   payloadMode?: "compact" | "advanced";
   reasoningEffort?: "none" | "minimal" | "low" | "medium" | "high";
+  temperature?: number;
+  topP?: number;
 }
 
 const STRICT_MODEL_KEYS = new Set([
@@ -46,7 +48,7 @@ export default async function getPromptAi(key: string, userId?: number): Promise
   if (selectedConfigId > 0) {
     aiConfigData = await db("t_config")
       .where({ id: selectedConfigId, userId: resolvedUserId })
-      .select("model", "apiKey", "baseUrl as baseURL", "manufacturer", "reasoningEffort")
+      .select("model", "apiKey", "baseUrl as baseURL", "manufacturer", "reasoningEffort", "temperature", "topP")
       .first();
   }
 

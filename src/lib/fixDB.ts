@@ -149,6 +149,8 @@ export default async (knex: Knex): Promise<void> => {
   await addColumn("t_sessionMessage", "revisitData", "text");
   await addColumn("t_config", "reasoningEffort", "text");
   await addColumn("t_config", "remark", "text");
+  await addColumn("t_config", "temperature", "float", { defaultTo: 0.3 });
+  await addColumn("t_config", "topP", "float", { defaultTo: 0.5 });
   if (await knex.schema.hasTable("t_config")) {
     await knex("t_config")
       .where("type", "text")

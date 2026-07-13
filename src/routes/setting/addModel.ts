@@ -20,10 +20,12 @@ export default router.post(
     cacheReadPricePer1M: z.union([z.number(), z.string()]).optional(),
     currency: z.string().optional(),
     reasoningEffort: z.enum(["none", "minimal", "low", "medium", "high"]).optional(),
+    temperature: z.union([z.number(), z.string()]).optional(),
+    topP: z.union([z.number(), z.string()]).optional(),
     remark: z.string().optional(),
   }),
   async (req, res) => {
-    const { type, model, baseUrl, apiKey, manufacturer, modelType, inputPricePer1M, outputPricePer1M, cacheReadPricePer1M, currency, reasoningEffort, remark } = req.body;
+    const { type, model, baseUrl, apiKey, manufacturer, modelType, inputPricePer1M, outputPricePer1M, cacheReadPricePer1M, currency, reasoningEffort, temperature, topP, remark } = req.body;
     const userId = Number((req as any)?.user?.id || 0);
     const normalized = normalizeExternalModelConfig({
       type,
@@ -37,6 +39,8 @@ export default router.post(
       cacheReadPricePer1M,
       currency,
       reasoningEffort,
+      temperature,
+      topP,
     });
 
     await u.db("t_config").insert({
@@ -51,6 +55,8 @@ export default router.post(
       cacheReadPricePer1M: normalized.cacheReadPricePer1M,
       currency: normalized.currency,
       reasoningEffort: normalized.persistedType === "text" ? normalized.reasoningEffort : null,
+      temperature: normalized.persistedType === "text" ? normalized.temperature : null,
+      topP: normalized.persistedType === "text" ? normalized.topP : null,
       remark: remark || null,
       createTime: Date.now(),
       userId,
