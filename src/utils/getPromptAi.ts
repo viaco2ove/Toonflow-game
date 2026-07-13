@@ -80,7 +80,7 @@ export default async function getPromptAi(key: string, userId?: number): Promise
       .where("t_aiModelMap.key", key)
       .where("t_config.userId", resolvedUserId)
       .select("t_config.model", "t_config.apiKey", "t_config.baseUrl as baseURL", "t_config.manufacturer")
-      .select("t_config.reasoningEffort")
+      .select("t_config.reasoningEffort", "t_config.temperature", "t_config.topP")
       .first();
   }
 
@@ -117,7 +117,7 @@ export default async function getPromptAi(key: string, userId?: number): Promise
         })
         .orderByRaw("case when manufacturer in ('t8star','openai') then 0 else 1 end")
         .orderBy("id", "desc")
-        .select("model", "apiKey", "baseUrl as baseURL", "manufacturer", "reasoningEffort");
+        .select("model", "apiKey", "baseUrl as baseURL", "manufacturer", "reasoningEffort", "temperature", "topP");
       aiConfigData = await query.first();
     }
   }

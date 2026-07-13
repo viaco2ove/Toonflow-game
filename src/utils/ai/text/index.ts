@@ -385,8 +385,8 @@ const buildOptions = async (input: AIInput<any>, config: AIConfig = {}) => {
           }
           : {}
       ),
-      ...(config?.temperature !== undefined ? { temperature: config.temperature } : {}),
-      ...(config?.topP !== undefined ? { topP: config.topP } : {}),
+      ...(config?.temperature != null && config.temperature !== 0 ? { temperature: config.temperature } : { temperature: 0.3 }),
+      ...(config?.topP != null && config.topP !== 0 ? { topP: config.topP } : { topP: 0.5 }),
     },
     responseFormat: owned.responseFormat,
   };

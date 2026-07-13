@@ -158,6 +158,14 @@ export default async (knex: Knex): Promise<void> => {
         builder.whereNull("reasoningEffort").orWhere("reasoningEffort", "");
       })
       .update({ reasoningEffort: "minimal" });
+    await knex("t_config")
+      .where("type", "text")
+      .whereNull("temperature")
+      .update({ temperature: 0.3 });
+    await knex("t_config")
+      .where("type", "text")
+      .whereNull("topP")
+      .update({ topP: 0.5 });
   }
 
   const upsertVideoModels = async (
