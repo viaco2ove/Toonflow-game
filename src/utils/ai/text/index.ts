@@ -350,6 +350,8 @@ const buildOptions = async (input: AIInput<any>, config: AIConfig = {}) => {
     outputKeys,
     plainTextOutput: Boolean(input.plainTextOutput),
     reasoningEffort: config?.reasoningEffort || "",
+    temperature: config?.temperature ?? "未指定",
+    topP: config?.topP ?? "未指定",
     messageCount,
     promptPreview: trimPreview(input.prompt || ""),
   });
