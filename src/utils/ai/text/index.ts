@@ -7,6 +7,8 @@ import { getModelList, normalizeTextModelName } from "./modelList";
 import { z } from "zod";
 import { writeAiTokenUsageLog } from "@/lib/aiTokenUsageLog";
 import type { LanguageModelUsage } from "ai";
+import fs from "fs";
+import path from "path";
 interface AIInput<T extends Record<string, z.ZodTypeAny> | undefined = undefined> {
   system?: string;
   tools?: Record<string, Tool>;
@@ -411,6 +413,36 @@ ai.invoke = async (input: AIInput<any>, config: AIConfig) => {
   });
   const options = await buildOptions(input, config);
 
+  // AI_TEXT_DEBUG_HTTP_REQ=1 时，将请求体写入文件
+  const reqDumpEnabled = process.env.AI_TEXT_DEBUG_HTTP_REQ === "1" && process.env.AI_TEXT_DEBUG_HTTP_REQ_LOG_PATH;
+  if (reqDumpEnabled) {
+    const reqDir = String(process.env.AI_TEXT_DEBUG_HTTP_REQ_LOG_PATH!).trim();
+    const agentName = (input as any)?.usageType || (input as any)?.usageRemark || "unknown";
+    const reqFile = path.join(reqDir, `req_${Date.now()}_${config?.model || "unknown"}_${agentName}.json`);
+    const dumpData = {
+      _meta: {
+        env: { AI_TEXT_DEBUG_HTTP_REQ: "1" },
+        model: config?.model || "",
+        manufacturer: config?.manufacturer || "",
+        agentName,
+      },
+      modelConfig: {
+        temperature: (options.config as any)?.temperature,
+        topP: (options.config as any)?.topP,
+        reasoningEffort: (options.config as any)?.providerOptions?.openai?.reasoningEffort,
+      },
+      _buildOptions: options,
+      _rawInput: input,
+    };
+    try {
+      fs.mkdirSync(reqDir, { recursive: true });
+      fs.writeFileSync(reqFile, JSON.stringify(dumpData, null, 2), "utf-8");
+      debugLog("req_dump", { file: reqFile });
+    } catch (e: any) {
+      debugLog("req_dump:error", { error: e?.message });
+    }
+  }
+
   try {
     const result = await generateText(options.config);
     await logTokenUsage(input, config, result as any);
@@ -506,6 +538,35 @@ ai.stream = async (input: AIInput, config: AIConfig) => {
     messageCount: Array.isArray(input.messages) ? input.messages.length : 0,
   });
   const options = await buildOptions(input, config);
+
+  // AI_TEXT_DEBUG_HTTP_REQ=1 时，将请求体写入文件（流式路径）
+  if (process.env.AI_TEXT_DEBUG_HTTP_REQ === "1" && process.env.AI_TEXT_DEBUG_HTTP_REQ_LOG_PATH) {
+    const reqDir = String(process.env.AI_TEXT_DEBUG_HTTP_REQ_LOG_PATH!).trim();
+    const agentName = (input as any)?.usageType || (input as any)?.usageRemark || "unknown";
+    const reqFile = path.join(reqDir, `req_${Date.now()}_${config?.model || "unknown"}_${agentName}_stream.json`);
+    const dumpData = {
+      _meta: {
+        stream: true,
+        model: config?.model || "",
+        manufacturer: config?.manufacturer || "",
+        agentName,
+      },
+      modelConfig: {
+        temperature: (options.config as any)?.temperature,
+        topP: (options.config as any)?.topP,
+        reasoningEffort: (options.config as any)?.providerOptions?.openai?.reasoningEffort,
+      },
+      _buildOptions: options,
+      _rawInput: input,
+    };
+    try {
+      fs.mkdirSync(reqDir, { recursive: true });
+      fs.writeFileSync(reqFile, JSON.stringify(dumpData, null, 2), "utf-8");
+      debugLog("req_dump:stream", { file: reqFile });
+    } catch (e: any) {
+      debugLog("req_dump:stream:error", { error: e?.message });
+    }
+  }
 
   try {
     const stream = streamText(options.config);

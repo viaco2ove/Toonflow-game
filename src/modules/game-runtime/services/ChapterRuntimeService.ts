@@ -322,6 +322,7 @@ function buildChapterJudgeInputSnapshot({
     : null;
 
   DebugLogUtil.log("story:memory:runtime", `buildChapterJudgeInputSnapshot worldGlobalBackground=${worldGlobalBackground} nextEvent=${nextEventInfo ? JSON.stringify({ index: nextEventInfo.index, label: nextEventInfo.label }) : "null"}`);
+  DebugLogUtil.log("story:chapter_ending_check:debug", `recentDialogue (${recentDialogue.length}条): ${JSON.stringify(recentDialogue)}`);
   return {
     chapter: {
       title: normalizeScalarText(chapter?.title) || "未命名章节",
