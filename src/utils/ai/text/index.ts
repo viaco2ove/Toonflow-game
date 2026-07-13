@@ -343,13 +343,17 @@ const buildOptions = async (input: AIInput<any>, config: AIConfig = {}) => {
       return Output.object({ schema: z.object(s) });
     },
     object: () => {
+      // MiniMax: 跳过 outputBuilders。ChapterRuntimeService 用 messages[role=system] 不是 input.system，
+      // outputBuilders 改了寂寞。直接让 AI 按 result.text 裸 JSON 返回，业务层自己解析。
+      if (isMinimaxManufacturer) {
+        return;
+      }
       const jsonSchemaPrompt = `\n请按照以下 JSON Schema 格式返回结果:\n${JSON.stringify(
         z.toJSONSchema(z.object(input.output)),
         null,
         2,
       )}\n只返回结果，不要将Schema返回。`;
       input.system = (input.system ?? "") + jsonSchemaPrompt;
-      // return Output.json();
     },
   };
 

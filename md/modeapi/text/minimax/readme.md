@@ -228,3 +228,16 @@ curl --location 'https://api.minimaxi.com/v1/responses' \
 你只是状态机，不是剧情导演！禁止猜测用户的意图，禁止认为用户输入 "." 或无效字符是因为“迷茫”或“需要引导”。
 ```
 让它不要想太多。
+
+## Vercel AI SDK & MiniMax M3
+Vercel AI SDK 的设计哲学是“结构化输出优先”。当你调用 generateObject({ schema: myZodSchema, ... }) 时，SDK 会做以下事情：
+序列化 Schema：把你写的 Zod 对象（比如 z.object({ result: z.string(), ... })）转换成标准的 JSON Schema 格式。
+注入 Instructions：为了保证模型“听话”，SDK 会把这段 JSON Schema 包装成一段自然语言指令（如图中所示：“请严格按照以下 JSON Schema 格式返回结果...”），然后放入请求体的 instructions 字段。
+模型适配：对于 MiniMax M3 这类模型，它可能没有原生的 response_format: { type: "json_schema" } 支持（或者 SDK 的 Provider 实现选择了这种更通用的方式），所以 SDK 只能通过“提示词工程”来强制模型输出 JSON。
+
+方案一：使用 output: 'no-schema' (如果你不需要严格校验)
+简单直接。
+方案二：手动控制 System Prompt (不推荐用于 generateObject)
+方案三：outputBuilders["object"]: input.system = (input.system ?? "") + jsonSchemaPrompt  ← 追加，保留原始
+MiniMax 跳过 outputBuilders（什么都不做） → SDK 直接把原始 messages 传给 MiniMax adapter → adapter 从 messages[role=system]
+取 instructions（完整 = "你是章节判定器..." + JSON Schema）→ HTTP 请求里 instructions 字段有完整内容

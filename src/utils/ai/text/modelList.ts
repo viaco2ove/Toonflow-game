@@ -41,7 +41,14 @@ const instanceMap = {
       const instructions = systemMsg?.content || "";
       const userContent = userMsgs.map((m: any) => (typeof m.content === "string" ? m.content : JSON.stringify(m.content))).join("\n");
 
-      const newBody: any = { model, instructions, input: userContent, ...(reasoning ? { reasoning } : {}), ...(rest.temperature != null && rest.temperature !== 0 ? { temperature: rest.temperature } : { temperature: 0.3 }), ...(rest.top_p != null && rest.top_p !== 0 ? { top_p: rest.top_p } : { top_p: 0.5 }) };
+      const newBody: any = {
+        model,
+        ...(instructions ? { instructions } : {}),
+        ...(userContent ? { input: userContent } : {}),
+        ...(reasoning ? { reasoning } : {}),
+        ...(rest.temperature != null && rest.temperature !== 0 ? { temperature: rest.temperature } : { temperature: 0.3 }),
+        ...(rest.top_p != null && rest.top_p !== 0 ? { top_p: rest.top_p } : { top_p: 0.5 }),
+      };
 
       const newInit = { ...init, body: JSON.stringify(newBody) };
       const response = await baseFetch(newUrl, newInit);
