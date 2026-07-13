@@ -322,8 +322,9 @@ const buildOptions = async (input: AIInput<any>, config: AIConfig = {}) => {
   // MiniMax-M3 走 /v1/responses 接口，通过 reasoning.effort 控制思考
   // none / minimal = effort:none（关闭），low / medium / high = 对应 effort 值
   const isMinimaxManufacturer = String(owned.manufacturer || "").trim().toLowerCase() === "minimax";
-  const minimaxReasoning = isMinimaxManufacturer && config?.reasoningEffort
-    ? { reasoning: { effort: config.reasoningEffort === "minimal" ? "none" : config.reasoningEffort } }
+  // MiniMax 有思考能力，必须给默认值。空字符串时用 "low" 兜底，不要让 SDK 默认 "none"
+  const minimaxReasoning = isMinimaxManufacturer
+    ? { reasoning: { effort: config?.reasoningEffort === "minimal" ? "none" : (config?.reasoningEffort || "low") } }
     : {};
   const modelInstance = owned.instance({
     apiKey,
@@ -343,16 +344,19 @@ const buildOptions = async (input: AIInput<any>, config: AIConfig = {}) => {
       return Output.object({ schema: z.object(s) });
     },
     object: () => {
-      // MiniMax: 跳过 outputBuilders。ChapterRuntimeService 用 messages[role=system] 不是 input.system，
-      // outputBuilders 改了寂寞。直接让 AI 按 result.text 裸 JSON 返回，业务层自己解析。
-      if (isMinimaxManufacturer) {
-        return;
-      }
       const jsonSchemaPrompt = `\n请按照以下 JSON Schema 格式返回结果:\n${JSON.stringify(
         z.toJSONSchema(z.object(input.output)),
         null,
         2,
       )}\n只返回结果，不要将Schema返回。`;
+      if (isMinimaxManufacturer) {
+        // MiniMax: system prompt 在 messages[role=system].content 里，不是 input.system
+        const systemMsg = (input.messages as any[])?.find((m: any) => m.role === "system");
+        if (systemMsg) {
+          systemMsg.content = (systemMsg.content || "") + jsonSchemaPrompt;
+        }
+        return;
+      }
       input.system = (input.system ?? "") + jsonSchemaPrompt;
     },
   };
