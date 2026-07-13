@@ -241,3 +241,9 @@ Vercel AI SDK 的设计哲学是“结构化输出优先”。当你调用 gener
 方案三：outputBuilders["object"]: input.system = (input.system ?? "") + jsonSchemaPrompt  ← 追加，保留原始
 MiniMax 跳过 outputBuilders（什么都不做） → SDK 直接把原始 messages 传给 MiniMax adapter → adapter 从 messages[role=system]
 取 instructions（完整 = "你是章节判定器..." + JSON Schema）→ HTTP 请求里 instructions 字段有完整内容
+
+### effort 配置无效问题
+闭包 reasoning = { effort: "medium" }（配置值）
+SDK body.reasoning = { effort: "none" }（默认值）
+finalReasoning = reasoning || body.reasoning || { effort: "low" }
+              = { effort: "medium" }  ← 优先用配置的
