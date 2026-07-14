@@ -2,6 +2,10 @@ appId: net.toonflow.www
 productName: ToonFlow
 copyright: Copyright © 2026
 
+npmRebuild: false
+nodeGypRebuild: false
+buildDependenciesFromSource: false
+
 directories:
   output: dist
   buildResources: build
@@ -38,6 +42,7 @@ win:
         - arm64
   icon: ./scripts/logo.ico
   artifactName: ${productName}-${version}-${os}-${arch}.${ext}
+  verifyUpdateCodeSignature: false
 
 nsis:
   oneClick: false
