@@ -62,3 +62,4 @@ run.local.ps1
 .hide.*
 /.claude/worktrees/agent-a4554f8deb76d473f/
 /.claude/worktrees/
+/toonflow-pkg-v1.0.2/
