@@ -33,7 +33,7 @@ START_APP_CMD = (
 RESTART_OR_START_APP_CMD = (
     "set -e; "
     f"cd {shlex.quote(APP_DIR)} && "
-    # 线上运行依赖 env/.env.local，因此统一以 local 环境重启或启动 PM2 进程。
+    # 线上运行依赖 env/.env.171.local，因此统一以 local 环境重启或启动 PM2 进程。
     f"if pm2 describe {shlex.quote(APP_NAME)} >/dev/null 2>&1; then "
     f"  NODE_ENV=local pm2 restart {shlex.quote(APP_NAME)} --update-env 2>&1; "
     "else "

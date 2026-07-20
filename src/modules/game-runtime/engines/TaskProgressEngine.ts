@@ -13,6 +13,10 @@ import {
   TaskProgressResult,
   TriggerHit,
 } from "@/modules/game-runtime/types/runtime";
+import {
+  loadPublishedChapter,
+  loadPublishedChapterTasks,
+} from "@/modules/game-runtime/services/publishedRuntime";
 
 function isRecord(input: unknown): input is Record<string, any> {
   return typeof input === "object" && input !== null && !Array.isArray(input);
@@ -77,6 +81,7 @@ export async function runTaskProgressEngine(input: TaskProgressInput): Promise<T
     now,
     nextChapterId: rawNextChapterId,
     currentStatus,
+    worldPublishId,
   } = input;
 
   const appliedDeltas: AppliedDelta[] = [];
@@ -86,10 +91,16 @@ export async function runTaskProgressEngine(input: TaskProgressInput): Promise<T
   let triggerHit: TriggerHit | null = null;
 
   if (chapterId) {
-    const taskRows = await db("t_chapterTask")
-      .where({ chapterId: Number(chapterId) })
-      .orderBy("sort", "asc")
-      .orderBy("id", "asc");
+    // 方向2：runtime 读发布表 task 快照；无 worldPublishId 回退草稿表。
+    let taskRows: any[];
+    if (Number.isFinite(worldPublishId) && worldPublishId && worldPublishId > 0) {
+      taskRows = await loadPublishedChapterTasks(worldPublishId, Number(chapterId), db);
+    } else {
+      taskRows = await db("t_chapterTask")
+        .where({ chapterId: Number(chapterId) })
+        .orderBy("sort", "asc")
+        .orderBy("id", "asc");
+    }
 
     if (taskRows.length > 0) {
       const taskProgress = ensureTaskProgress(state);
@@ -159,7 +170,9 @@ export async function runTaskProgressEngine(input: TaskProgressInput): Promise<T
   }
 
   const chapterToCheck = nextChapterId
-    ? await db("t_storyChapter").where({ id: Number(nextChapterId) }).first()
+    ? (Number.isFinite(worldPublishId) && worldPublishId && worldPublishId > 0
+      ? await loadPublishedChapter(worldPublishId, Number(nextChapterId), db)
+      : await db("t_storyChapter").where({ id: Number(nextChapterId) }).first())
     : null;
   if (chapterToCheck && hasEffectiveCondition(chapterToCheck.completionCondition)) {
     const chapterDone = evaluateCondition(chapterToCheck.completionCondition, {

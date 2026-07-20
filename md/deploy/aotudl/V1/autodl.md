@@ -40,8 +40,8 @@ TEMP_OSS=
 ## 启动
 
 ```bash
-cp docker.md/autodl.env.example docker.md/.env.autodl
-docker.md compose --env-file docker.md/.env.autodl -f docker.md/docker.md-compose.autodl.yml up -d --build
+cp docker.md/autodl.env.example docker.md/.env.171.autodl
+docker.md compose --env-file docker.md/.env.171.autodl -f docker.md/docker.md-compose.autodl.yml up -d --build
 ```
 
 ## 两种访问方式
@@ -221,7 +221,7 @@ rsync -a --delete /root/Toonflow-game-web/dist/ /root/toonflow-game-app/scripts/
 
 cd /root/toonflow-game-app
 git pull
-docker.md compose --env-file docker.md/.env.autodl -f docker.md/docker.md-compose.autodl.yml up -d --build
+docker.md compose --env-file docker.md/.env.171.autodl -f docker.md/docker.md-compose.autodl.yml up -d --build
 ```
 
 ### 10. 当前项目的关键注意点

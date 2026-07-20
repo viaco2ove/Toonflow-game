@@ -116,11 +116,11 @@ checkout_branch_if_needed() {
 }
 
 cleanup_legacy_env_files() {
-  # 旧版部署脚本会写入被 Git 跟踪的 env/.env.prod，后续 git checkout/pull 容易冲突。
+  # 旧版部署脚本会写入被 Git 跟踪的 env/.env.171.prod，后续 git checkout/pull 容易冲突。
   # 这里仅在文件已被修改时恢复该历史文件，避免再次阻塞部署。
-  if git ls-files --error-unmatch env/.env.prod >/dev/null 2>&1; then
-    if ! git diff --quiet -- env/.env.prod 2>/dev/null; then
-      git restore --worktree --staged env/.env.prod >/dev/null 2>&1 || true
+  if git ls-files --error-unmatch env/.env.171.prod >/dev/null 2>&1; then
+    if ! git diff --quiet -- env/.env.171.prod 2>/dev/null; then
+      git restore --worktree --staged env/.env.171.prod >/dev/null 2>&1 || true
     fi
   fi
 }

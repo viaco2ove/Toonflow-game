@@ -8,6 +8,7 @@ import {
   toJsonText,
 } from "@/lib/gameEngine";
 import { refreshStoryMemoryBestEffort } from "@/modules/game-runtime/engines/NarrativeOrchestrator";
+import { loadPublishedChapter, loadPublishedWorld } from "@/modules/game-runtime/services/publishedRuntime";
 
 type JsonRecord = Record<string, any>;
 
@@ -38,7 +39,14 @@ function buildRecentMessages(rows: any[]) {
     }));
 }
 
-async function loadWorldForSession(db: any, worldId: number, userId: number) {
+async function loadWorldForSession(db: any, worldId: number, userId: number, worldPublishId?: number) {
+  // 方向2：优先读发布表快照（与 runtime 一致）；无 worldPublishId 回退草稿（兼容旧 session）。
+  if (Number.isFinite(worldPublishId) && worldPublishId && worldPublishId > 0) {
+    const published = await loadPublishedWorld(worldId, db);
+    if (published) {
+      return { world: published, ownerUserId: 0 };
+    }
+  }
   let world = await db("t_storyWorld as w")
     .leftJoin("t_project as p", "w.projectId", "p.id")
     .where("w.id", worldId)
@@ -62,7 +70,7 @@ async function processSessionMemory(row: any) {
     return;
   }
 
-  const worldResult = await loadWorldForSession(db, worldId, sessionUserId);
+  const worldResult = await loadWorldForSession(db, worldId, sessionUserId, Number(row?.worldPublishId || 0));
   if (!worldResult?.world) return;
 
   const rolePair = normalizeRolePair(worldResult.world.playerRole, worldResult.world.narratorRole);
@@ -77,7 +85,11 @@ async function processSessionMemory(row: any) {
   const chapterId = Number(state.chapterId || provisionalChapterId || 0) || null;
   if (!chapterId) return;
 
-  const chapter = normalizeChapterOutput(await db("t_storyChapter").where({ id: chapterId }).first());
+  // 方向2：runtime 读发布章节快照；无 worldPublishId 回退草稿（兼容旧 session）。
+  const worldPublishId = Number(row?.worldPublishId || 0);
+  const chapter = worldPublishId > 0
+    ? await loadPublishedChapter(worldPublishId, chapterId, db)
+    : normalizeChapterOutput(await db("t_storyChapter").where({ id: chapterId }).first());
   if (!chapter) return;
 
   const rawRecentMessages = await db("t_sessionMessage")

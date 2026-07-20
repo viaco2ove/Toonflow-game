@@ -47,6 +47,7 @@ import {
   PROMPT_PLAY_TIP_AGENT,
   PROMPT_STORY_ORCHESTRATOR_OPTIONS,
   PROMPT_TASK_DIRECTOR_AGENT_OPTIONS,
+  PROMPT_STORY_UPDATE_ALIGN,
   PROMPT_VIDEO_TEXT,
 } from "./fixDB.prompts";
 
@@ -474,6 +475,58 @@ export default async (knex: Knex): Promise<void> => {
   await addColumn("t_storyChapter", "bgmAutoPlay", "integer");
   await addColumn("t_storyChapter", "showCompletionCondition", "integer");
   await addColumn("t_storyChapter", "runtimeOutline", "text");
+
+  // ===== 方向2：故事发布门控--表结构升级 =====
+  // 1) 新列：t_gameSession 记录发布版本关联与版本号
+  await addColumn("t_gameSession", "worldPublishId", "integer");
+  await addColumn("t_gameSession", "worldVersion", "integer");
+
+  // 2) 幂等建表：发布快照表（builder 与 initDB.ts 一致）
+  await ensureTable("t_storyWorld_published", (table) => {
+    table.integer("id").notNullable();
+    table.integer("worldId");
+    table.integer("version");
+    table.integer("publishedAt");
+    table.text("publishedBy");
+    table.text("name");
+    table.text("intro");
+    table.text("coverPath");
+    table.text("settings");
+    table.text("playerRole");
+    table.text("narratorRole");
+    table.integer("projectId");
+    table.integer("createTime");
+    table.integer("updateTime");
+    table.primary(["id"]);
+    table.unique(["id"]);
+    table.unique(["worldId"]);
+    table.index(["worldId"], "idx_storyWorld_published_worldId");
+  });
+  await ensureTable("t_storyChapter_published", (table) => {
+    table.integer("id").notNullable();
+    table.integer("worldPublishId");
+    table.integer("chapterId");
+    table.text("title");
+    table.text("content");
+    table.text("runtimeOutline");
+    table.integer("sort");
+    table.text("openingRole");
+    table.text("openingText");
+    table.text("bgmPath");
+    table.integer("bgmAutoPlay");
+    table.text("backgroundPath");
+    table.text("entryCondition");
+    table.text("completionCondition");
+    table.integer("showCompletionCondition");
+    table.text("triggersJson");
+    table.text("tasksJson");
+    table.integer("publishedAt");
+    table.primary(["id"]);
+    table.unique(["id"]);
+    table.unique(["worldPublishId", "chapterId"], "uq_storyChapter_published_publish_chapter");
+    table.index(["worldPublishId"], "idx_storyChapter_published_worldPublishId");
+    table.index(["chapterId"], "idx_storyChapter_published_chapterId");
+  });
 
   //更正字段
   await alterColumnType("t_config", "modelType", "text");
@@ -999,6 +1052,14 @@ export default async (knex: Knex): Promise<void> => {
           PROMPT_PLAY_TIP_AGENT,
       },
       {
+        code: "story-update-align-agent",
+        name: "AI Agent-存档智能对齐",
+        type: "aiAgent",
+        parentCode: null,
+        defaultValue:
+          PROMPT_STORY_UPDATE_ALIGN,
+      },
+      {
         code: "story-orchestrator-options",
         name: "AI Agent-剧情编排选项生成器",
         type: "aiAgent",
@@ -1090,4 +1151,32 @@ export default async (knex: Knex): Promise<void> => {
   await cleanupDuplicateStorySessions();
   await cleanupStoryChapterDrafts();
   await backfillStoryChapterRuntimeOutline();
+
+  // ===== 方向2：存量回填--旧 session 关联发布版本 =====
+  // 仅回填"已有 published 行"的 world 对应的旧 session（worldPublishId 为空）。
+  // 不重新发布未快照的 world（避免在 fixDB 里触发 AI 角色卡生成）；
+  // 那些 world 的 session 走 runtime 草稿回退路径，不崩。
+  if (await knex.schema.hasTable("t_storyWorld_published")) {
+    const publishedRows = await knex("t_storyWorld_published").select("worldId", "id", "version");
+    const publishedByWorldId = new Map<number, { id: number; version: number }>();
+    for (const row of publishedRows) {
+      const wid = Number(row.worldId || 0);
+      if (wid > 0) publishedByWorldId.set(wid, { id: Number(row.id || wid), version: Number(row.version || 0) });
+    }
+    if (publishedByWorldId.size) {
+      const staleSessions = await knex("t_gameSession")
+        .whereNull("worldPublishId")
+        .orWhere("worldPublishId", 0)
+        .select("id", "worldId");
+      for (const sess of staleSessions) {
+        const wid = Number(sess.worldId || 0);
+        const pub = publishedByWorldId.get(wid);
+        if (!pub) continue;
+        await knex("t_gameSession").where({ id: Number(sess.id) }).update({
+          worldPublishId: pub.id,
+          worldVersion: pub.version,
+        });
+      }
+    }
+  }
 };

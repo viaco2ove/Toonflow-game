@@ -20,6 +20,17 @@ import { ensureWorldRolesWithAiParameterCards } from "@/lib/roleParameterCard";
 import { applyExplicitMemoryDirectiveToPlayerCard } from "@/modules/game-runtime/services/PlayerMemoryDirectiveService";
 import { getCurrentUserId } from "@/lib/requestContext";
 import {
+  loadPublishedChapter,
+  loadPublishedFirstChapter,
+  loadPublishedChapters,
+} from "@/modules/game-runtime/services/publishedRuntime";
+import {
+  alignSessionProgress,
+  extractOldPhaseIdsFromState,
+  ProgressAlignReport,
+} from "@/modules/game-runtime/services/progressAlign";
+import { runStoryUpdateAlignAgent, mergeAiAlignIntoReport } from "@/modules/game-runtime/agents/storyUpdateAlign/StoryUpdateAlignAgent";
+import {
   applyMemoryResultToState,
   applyNarrativeMemoryHintsToState,
   advanceNarrativeUntilPlayerTurn,
@@ -188,6 +199,8 @@ function resetSessionChapterRuntimeOnSwitch(
   delete state.dynamicEvents;
   delete state.chapterProgress;
   delete state.__pendingEndingGuide;
+  // 方向2：对齐报告与具体章节绑定，切章后清掉，避免前端弹错章节的对齐预览。
+  delete state.alignReport;
   state.chapterId = normalizedNextChapterId;
   if (String(nextChapterTitle || "").trim()) {
     state.chapterTitle = String(nextChapterTitle || "").trim();
@@ -2081,13 +2094,24 @@ async function insertSessionNarrativeMessages(params: {
   return insertedRows;
 }
 
-async function resolveNextChapterIdByOrder(db: any, worldId: number, chapterId: number | null): Promise<number | null> {
+async function resolveNextChapterIdByOrder(
+  db: any,
+  worldId: number,
+  chapterId: number | null,
+  worldPublishId?: number,
+): Promise<number | null> {
   const currentChapterId = Number(chapterId || 0);
   if (!Number.isFinite(currentChapterId) || currentChapterId <= 0) return null;
-  const chapters = await db("t_storyChapter")
-    .where({ worldId })
-    .orderBy("sort", "asc")
-    .orderBy("id", "asc");
+  // 方向2：runtime 读发布表章节列表（与草稿隔离）；无 worldPublishId 回退草稿。
+  let chapters: any[];
+  if (Number.isFinite(worldPublishId) && worldPublishId && worldPublishId > 0) {
+    chapters = await loadPublishedChapters(worldPublishId, db);
+  } else {
+    chapters = await db("t_storyChapter")
+      .where({ worldId })
+      .orderBy("sort", "asc")
+      .orderBy("id", "asc");
+  }
   const currentIndex = chapters.findIndex((item: any) => Number(item.id || 0) === currentChapterId);
   const next = currentIndex >= 0 ? chapters[currentIndex + 1] : null;
   const nextId = Number(next?.id || 0);
@@ -2157,7 +2181,21 @@ function scheduleSessionRoleParameterCardRefresh(params: {
 }
 
 // 用户发言主链路只读取已保存的世界设定，避免每次发言都触发角色补卡模型。
-async function loadSessionWorld(db: any, worldId: number) {
+// 方向2：优先按 session.worldPublishId 读发布表（与作者草稿隔离）；
+// 旧 session 无 worldPublishId 时回退读草稿表（兼容不崩）。
+// 注意：返回的是 raw 行（含 published.version 整数列），版本感知对齐逻辑依赖该字段；
+// 草稿回退行无 version 列（视为 0，不触发对齐）。改此处归一化时务必保留 version。
+async function loadSessionWorld(db: any, worldId: number, worldPublishId?: number) {
+  if (Number.isFinite(worldPublishId) && worldPublishId && worldPublishId > 0) {
+    // 单版本下 published.worldId = worldId；按 worldId 列查（与 loadPublishedWorld 门面一致）
+    const published = await db("t_storyWorld_published as w")
+      .leftJoin("t_project as p", "w.projectId", "p.id")
+      .where("w.worldId", worldId)
+      .select("w.*", "p.userId as ownerUserId")
+      .first();
+    if (published) return published;
+    // published 行缺失（未发布或被删）-> 回退草稿，保证 runtime 不崩
+  }
   let world = await db("t_storyWorld as w")
     .leftJoin("t_project as p", "w.projectId", "p.id")
     .where("w.id", worldId)
@@ -2195,7 +2233,7 @@ async function addSessionMessageInner(input: AddSessionMessageInput, sessionId: 
     throw new SessionServiceError(403, "无权访问该会话");
   }
 
-  const world = await loadSessionWorld(db, Number(sessionRow.worldId || 0));
+  const world = await loadSessionWorld(db, Number(sessionRow.worldId || 0), Number(sessionRow.worldPublishId || 0));
   const rolePair = normalizeRolePair(world?.playerRole, world?.narratorRole);
   const prevChapterId = Number(sessionRow.chapterId || 0) || null;
   const prevStatus = String(sessionRow.status || "active");
@@ -2207,6 +2245,36 @@ async function addSessionMessageInner(input: AddSessionMessageInput, sessionId: 
     rolePair,
     world,
   );
+
+  // ★ 方向2：版本感知 + 确定性进度对齐。
+  // session.worldVersion 落后于 published.version 时，把 state 对齐到新 outline（幂等、零 token）。
+  // 对齐报告写入 state.alignReport 供前端"聊过"面板弹框预览；worldVersion 更新为最新。
+  const publishedVersion = Number((world as any)?.version || 0);
+  const sessionWorldVersion = Number(sessionRow.worldVersion || 0);
+  if (publishedVersion > 0 && sessionWorldVersion > 0 && sessionWorldVersion < publishedVersion) {
+    const alignChapterId = Number(state.chapterId || prevChapterId || 0);
+    const alignChapter = alignChapterId > 0
+      ? await loadPublishedChapter(Number(sessionRow.worldPublishId || 0), alignChapterId, db)
+      : null;
+    if (alignChapter?.runtimeOutline) {
+      const oldPhaseIds = extractOldPhaseIdsFromState(state);
+      const { report } = alignSessionProgress({
+        oldPhaseIds,
+        newOutline: alignChapter.runtimeOutline,
+        state,
+      });
+      state.alignReport = report;
+      state.worldVersion = publishedVersion;
+      // 写回 session：更新 worldVersion + 对齐后 stateJson（编排继续用内存里已对齐的 state）
+      await db("t_gameSession").where({ sessionId }).update({
+        worldVersion: publishedVersion,
+        stateJson: toJsonText(state, {}),
+        updateTime: now,
+      });
+      sessionRow.worldVersion = publishedVersion;
+    }
+  }
+
   // ★ 回溯支持：在 state 任何修改之前先快照一份 preMessageState
   // 用户消息的 revisitData 用这份"消息发送前"的 state，
   // 这样回溯到用户消息时可以重新走一遍 handleMiniGameTurn / orchestration 流程
@@ -2253,7 +2321,7 @@ async function addSessionMessageInner(input: AddSessionMessageInput, sessionId: 
   const attrDeltas = applyAttributeChanges(state, attrChangeList);
 
   const currentChapter = prevChapterId
-    ? normalizeChapterOutput(await db("t_storyChapter").where({ id: prevChapterId }).first())
+    ? await loadPublishedChapter(Number(sessionRow.worldPublishId || 0), prevChapterId, db)
     : null;
   if (currentChapter) {
     initializeChapterProgressForState(currentChapter, state);
@@ -2299,6 +2367,7 @@ async function addSessionMessageInner(input: AddSessionMessageInput, sessionId: 
       eventType: eventTypeValue,
       meta: metaObj,
       initialStatus: prevStatus,
+      worldPublishId: Number(sessionRow.worldPublishId || 0),
     });
 
     taskResult = await runTaskProgressEngine({
@@ -2311,6 +2380,7 @@ async function addSessionMessageInner(input: AddSessionMessageInput, sessionId: 
       now,
       nextChapterId: triggerResult.nextChapterId,
       currentStatus: triggerResult.sessionStatus,
+      worldPublishId: Number(sessionRow.worldPublishId || 0),
     });
 
     // 2. 检查是否需要 AI #2
@@ -2728,7 +2798,7 @@ async function addSessionMessageInner(input: AddSessionMessageInput, sessionId: 
         }
         const activeChapterId = Number(state.chapterId || prevChapterId || 0) || null;
         const activeChapter = activeChapterId
-          ? normalizeChapterOutput(await db("t_storyChapter").where({ id: activeChapterId }).first())
+          ? await loadPublishedChapter(Number(sessionRow.worldPublishId || 0), activeChapterId, db)
           : null;
         const eventView = buildEventView(state);
         return {
@@ -2865,7 +2935,7 @@ async function addSessionMessageInner(input: AddSessionMessageInput, sessionId: 
     flagsChapterCompleted: state.flags?.chapterCompleted,
   });
   if (sessionStatus === "chapter_completed" && (!nextChapterId || nextChapterId === prevChapterId)) {
-    const resolvedNextChapterId = await resolveNextChapterIdByOrder(db, Number(sessionRow.worldId || 0), prevChapterId);
+    const resolvedNextChapterId = await resolveNextChapterIdByOrder(db, Number(sessionRow.worldId || 0), prevChapterId, Number(sessionRow.worldPublishId || 0));
     console.log("[story:chapter_switch:addMessage] resolveNextChapterIdByOrder 结果", {
       sessionId,
       worldId: Number(sessionRow.worldId || 0),
@@ -2965,7 +3035,7 @@ async function addSessionMessageInner(input: AddSessionMessageInput, sessionId: 
     });
     const activeChapterId = Number(state.chapterId || prevChapterId || 0) || null;
     const activeChapter = activeChapterId
-      ? normalizeChapterOutput(await db("t_storyChapter").where({ id: activeChapterId }).first())
+      ? await loadPublishedChapter(Number(sessionRow.worldPublishId || 0), activeChapterId, db)
       : null;
     const eventView = buildEventView(state);
     return {
@@ -2995,7 +3065,7 @@ async function addSessionMessageInner(input: AddSessionMessageInput, sessionId: 
   let narrativePlan: any | null = null;
   if (!(nextChapterId && nextChapterId !== prevChapterId) && roleTypeValue === "player" && eventTypeValue === "on_message" && messageContent.trim()) {
     const playChapter = nextChapterId
-      ? normalizeChapterOutput(await db("t_storyChapter").where({ id: nextChapterId }).first())
+      ? await loadPublishedChapter(Number(sessionRow.worldPublishId || 0), nextChapterId, db)
       : null;
     if (playChapter) {
       const rawRecentMessages = await db("t_sessionMessage").where({ sessionId }).orderBy("id", "desc").limit(20);
@@ -3113,7 +3183,7 @@ async function addSessionMessageInner(input: AddSessionMessageInput, sessionId: 
   }
   const activeChapterId = Number(state.chapterId || prevChapterId || 0) || null;
   const activeChapter = activeChapterId
-    ? normalizeChapterOutput(await db("t_storyChapter").where({ id: activeChapterId }).first())
+    ? await loadPublishedChapter(Number(sessionRow.worldPublishId || 0), activeChapterId, db)
     : null;
   const eventView = buildEventView(state);
   return {
@@ -3165,7 +3235,7 @@ export async function generatePlayTips(sessionIdInput: string): Promise<{ tips: 
   }
 
   const currentChapterId = Number(sessionRow.chapterId || 0) || null;
-  const world = await loadSessionWorld(db, Number(sessionRow.worldId || 0));
+  const world = await loadSessionWorld(db, Number(sessionRow.worldId || 0), Number(sessionRow.worldPublishId || 0));
   const rolePair = normalizeRolePair(world?.playerRole, world?.narratorRole);
   const state = normalizeSessionState(
     sessionRow.stateJson,
@@ -3175,7 +3245,7 @@ export async function generatePlayTips(sessionIdInput: string): Promise<{ tips: 
     world,
   );
   const chapter = currentChapterId
-    ? normalizeChapterOutput(await db("t_storyChapter").where({ id: currentChapterId }).first())
+    ? await loadPublishedChapter(Number(sessionRow.worldPublishId || 0), currentChapterId, db)
     : null;
 
   const rawRecentMessages = await db("t_sessionMessage").where({ sessionId }).orderBy("id", "desc").limit(10);
@@ -3259,7 +3329,7 @@ export async function generateOrchestrateOptionsForSession(
   }
 
   const currentChapterId = Number(sessionRow.chapterId || 0) || null;
-  const world = await loadSessionWorld(db, Number(sessionRow.worldId || 0));
+  const world = await loadSessionWorld(db, Number(sessionRow.worldId || 0), Number(sessionRow.worldPublishId || 0));
   const rolePair = normalizeRolePair(world?.playerRole, world?.narratorRole);
   const state = normalizeSessionState(
     sessionRow.stateJson,
@@ -3269,7 +3339,7 @@ export async function generateOrchestrateOptionsForSession(
     world,
   );
   const chapter = currentChapterId
-    ? normalizeChapterOutput(await db("t_storyChapter").where({ id: currentChapterId }).first())
+    ? await loadPublishedChapter(Number(sessionRow.worldPublishId || 0), currentChapterId, db)
     : null;
 
   const rawRecentMessages = await db("t_sessionMessage").where({ sessionId }).orderBy("id", "desc").limit(10);
@@ -3363,7 +3433,7 @@ export async function applyOrchestrateOptionForSession(
 
     const currentChapterId = Number(sessionRow.chapterId || 0) || null;
     const sessionStatus = String(sessionRow.status || "active");
-    const world = await loadSessionWorld(db, Number(sessionRow.worldId || 0));
+    const world = await loadSessionWorld(db, Number(sessionRow.worldId || 0), Number(sessionRow.worldPublishId || 0));
     const rolePair = normalizeRolePair(world?.playerRole, world?.narratorRole);
     const state = normalizeSessionState(
       sessionRow.stateJson,
@@ -3432,7 +3502,7 @@ export async function continueSessionNarrative(sessionIdInput: string): Promise<
 
   const prevChapterId = Number(sessionRow.chapterId || 0) || null;
   const prevStatus = String(sessionRow.status || "active");
-  const world = await loadSessionWorld(db, Number(sessionRow.worldId || 0));
+  const world = await loadSessionWorld(db, Number(sessionRow.worldId || 0), Number(sessionRow.worldPublishId || 0));
   const rolePair = normalizeRolePair(world?.playerRole, world?.narratorRole);
   const state = normalizeSessionState(
     sessionRow.stateJson,
@@ -3446,7 +3516,7 @@ export async function continueSessionNarrative(sessionIdInput: string): Promise<
   }
 
   const chapter = prevChapterId
-    ? normalizeChapterOutput(await db("t_storyChapter").where({ id: prevChapterId }).first())
+    ? await loadPublishedChapter(Number(sessionRow.worldPublishId || 0), prevChapterId, db)
     : null;
   if (!chapter) {
     throw new SessionServiceError(400, "当前章节不存在");
@@ -3536,7 +3606,7 @@ export async function continueSessionNarrative(sessionIdInput: string): Promise<
   let sessionStatus = mergedOutcome.sessionStatus;
   let nextChapterId = mergedOutcome.nextChapterId;
   if (sessionStatus === "chapter_completed" && (!nextChapterId || nextChapterId === prevChapterId)) {
-    const resolvedNextChapterId = await resolveNextChapterIdByOrder(db, Number(sessionRow.worldId || 0), prevChapterId);
+    const resolvedNextChapterId = await resolveNextChapterIdByOrder(db, Number(sessionRow.worldId || 0), prevChapterId, Number(sessionRow.worldPublishId || 0));
     if (resolvedNextChapterId && resolvedNextChapterId !== prevChapterId) {
       nextChapterId = resolvedNextChapterId;
       sessionStatus = "active";
@@ -3613,7 +3683,7 @@ export async function continueSessionNarrative(sessionIdInput: string): Promise<
     sessionId,
     status: sessionStatus,
     chapterId: Number(state.chapterId || prevChapterId || 0) || null,
-    chapter: state.chapterId ? normalizeChapterOutput(await db("t_storyChapter").where({ id: state.chapterId }).first()) : null,
+    chapter: state.chapterId ? await loadPublishedChapter(Number(sessionRow.worldPublishId || 0), state.chapterId, db) : null,
     state,
     currentEventDigest: eventView.currentEventDigest,
     eventDigestWindow: eventView.eventDigestWindow,
@@ -3667,7 +3737,7 @@ async function orchestrateSessionTurnInner(sessionId: string): Promise<SessionOr
 
   const currentChapterId = Number(sessionRow.chapterId || 0) || null;
   const sessionStatus = String(sessionRow.status || "active");
-  const world = await loadSessionWorld(db, Number(sessionRow.worldId || 0));
+  const world = await loadSessionWorld(db, Number(sessionRow.worldId || 0), Number(sessionRow.worldPublishId || 0));
   const rolePair = normalizeRolePair(world?.playerRole, world?.narratorRole);
   const state = normalizeSessionState(
     sessionRow.stateJson,
@@ -3694,7 +3764,7 @@ async function orchestrateSessionTurnInner(sessionId: string): Promise<SessionOr
   });
   const finalizeOrchestrationResult = async (result: SessionOrchestrationResultSeed): Promise<SessionOrchestrationResult> => {
     const activeChapter = result.chapterId
-      ? normalizeChapterOutput(await db("t_storyChapter").where({ id: result.chapterId }).first())
+      ? await loadPublishedChapter(Number(sessionRow.worldPublishId || 0), result.chapterId, db)
       : null;
     if (activeChapter) {
       resetSessionChapterRuntimeOnSwitch(
@@ -3812,7 +3882,7 @@ async function orchestrateSessionTurnInner(sessionId: string): Promise<SessionOr
       pendingChapterId,
       pendingChapterStart,
     }));
-    const nextChapter = normalizeChapterOutput(await db("t_storyChapter").where({ id: pendingChapterId }).first());
+    const nextChapter = await loadPublishedChapter(Number(sessionRow.worldPublishId || 0), pendingChapterId, db);
     if (!nextChapter) {
       setPendingSessionChapterId(state, null);
       setPendingSessionChapterStart(state, false);
@@ -3835,7 +3905,7 @@ async function orchestrateSessionTurnInner(sessionId: string): Promise<SessionOr
       pendingChapterId,
       pendingChapterStart,
     }));
-    const nextChapter = normalizeChapterOutput(await db("t_storyChapter").where({ id: pendingChapterId }).first());
+    const nextChapter = await loadPublishedChapter(Number(sessionRow.worldPublishId || 0), pendingChapterId, db);
     if (!nextChapter) {
       setPendingSessionChapterId(state, null);
       return finalizeOrchestrationResult({
@@ -3855,15 +3925,22 @@ async function orchestrateSessionTurnInner(sessionId: string): Promise<SessionOr
   }
 
   let chapter = currentChapterId
-    ? normalizeChapterOutput(await db("t_storyChapter").where({ id: currentChapterId }).first())
+    ? await loadPublishedChapter(Number(sessionRow.worldPublishId || 0), currentChapterId, db)
     : null;
   if (!chapter) {
-    chapter = await db("t_storyChapter")
-      .where({ worldId: Number(sessionRow.worldId || 0) })
-      .orderBy("sort", "asc")
-      .orderBy("id", "asc")
-      .first();
-    chapter = normalizeChapterOutput(chapter);
+    // 方向2：回退读发布表首章；无 worldPublishId 再回退草稿（兼容旧 session）。
+    const wpId = Number(sessionRow.worldPublishId || 0);
+    if (wpId > 0) {
+      chapter = await loadPublishedFirstChapter(wpId, db);
+    } else {
+      chapter = normalizeChapterOutput(
+        await db("t_storyChapter")
+          .where({ worldId: Number(sessionRow.worldId || 0) })
+          .orderBy("sort", "asc")
+          .orderBy("id", "asc")
+          .first(),
+      );
+    }
   }
   if (!chapter) {
     throw new SessionServiceError(400, "当前章节不存在");
@@ -4177,7 +4254,7 @@ async function orchestrateSessionTurnInner(sessionId: string): Promise<SessionOr
     });
   }
   // fallbackChapterId 的意义是什么？-》当章节判定无法确定下一章时的备用值。
-  let realNextChapterId = await resolveNextChapterIdByOrder(db, Number(sessionRow.worldId || 0), currentChapterId);
+  let realNextChapterId = await resolveNextChapterIdByOrder(db, Number(sessionRow.worldId || 0), currentChapterId, Number(sessionRow.worldPublishId || 0));
   let hasPendingEndingGuide = state.__pendingEndingGuide;
   let hasNextChapterId = true;
   if(realNextChapterId==null || realNextChapterId ==0){
@@ -4240,7 +4317,7 @@ async function orchestrateSessionTurnInner(sessionId: string): Promise<SessionOr
     try {
        DebugLogUtil.log("story:orchestrator:chapter_switch"," try catch ing resolvedNextChapterId");
        resolvedNextChapterId = Number(mergedOutcome.nextChapterId || 0)
-          || await resolveNextChapterIdByOrder(db, Number(sessionRow.worldId || 0), Number(chapter.id || 0));
+          || await resolveNextChapterIdByOrder(db, Number(sessionRow.worldId || 0), Number(chapter.id || 0), Number(sessionRow.worldPublishId || 0));
     } catch (e) {
       console.error(e)
     }
@@ -4248,7 +4325,7 @@ async function orchestrateSessionTurnInner(sessionId: string): Promise<SessionOr
 
     DebugLogUtil.log("story:orchestrator:chapter_switch"," 编排结果章节判定resolvedNextChapterId", {resolvedNextChapterId: resolvedNextChapterId});
     if (resolvedNextChapterId && resolvedNextChapterId !== Number(chapter.id || 0)) {
-      const resolvedNextChapter = normalizeChapterOutput(await db("t_storyChapter").where({ id: resolvedNextChapterId }).first());
+      const resolvedNextChapter = await loadPublishedChapter(Number(sessionRow.worldPublishId || 0), resolvedNextChapterId, db);
       DebugLogUtil.log("story:orchestrator:chapter_switch"," 编排结果章节判定 resolvedNextChapter", {resolvedNextChapter: resolvedNextChapter});
       if (resolvedNextChapter) {
           if (String(plan?.role || "").trim()) {
@@ -4324,7 +4401,7 @@ export async function initSessionChapter(sessionIdInput: string, chapterIdInput?
   }
 
   const prevChapterId = Number(sessionRow.chapterId || 0) || null;
-  const world = await loadSessionWorld(db, Number(sessionRow.worldId || 0));
+  const world = await loadSessionWorld(db, Number(sessionRow.worldId || 0), Number(sessionRow.worldPublishId || 0));
   const rolePair = normalizeRolePair(world?.playerRole, world?.narratorRole);
   const state = normalizeSessionState(
     sessionRow.stateJson,
@@ -4341,7 +4418,12 @@ export async function initSessionChapter(sessionIdInput: string, chapterIdInput?
     throw new SessionServiceError(409, "当前没有待初始化的下一章节");
   }
 
-  const chapter = normalizeChapterOutput(
+  const chapter = await loadPublishedChapter(
+    Number(sessionRow.worldPublishId || 0),
+    targetChapterId,
+    db,
+  ) ?? normalizeChapterOutput(
+    // 回退草稿（兼容旧 session 无 worldPublishId）
     await db("t_storyChapter").where({ id: targetChapterId, worldId: Number(sessionRow.worldId || 0) }).first(),
   );
   if (!chapter) {
@@ -4412,7 +4494,7 @@ async function commitSessionNarrativeTurnInner(input: CommitSessionNarrativeTurn
   if (currentUserId > 0 && Number(sessionRow.userId || 0) !== currentUserId) {
     throw new SessionServiceError(403, "无权访问该会话");
   }
-  const world = await loadSessionWorld(db, Number(sessionRow.worldId || 0));
+  const world = await loadSessionWorld(db, Number(sessionRow.worldId || 0), Number(sessionRow.worldPublishId || 0));
   const rolePair = normalizeRolePair(world?.playerRole, world?.narratorRole);
   const prevChapterId = Number(sessionRow.chapterId || 0) || null;
   const prevStatus = String(sessionRow.status || "active");
@@ -4471,7 +4553,7 @@ async function commitSessionNarrativeTurnInner(input: CommitSessionNarrativeTurn
     }
   }
   const chapter = nextChapterId
-    ? normalizeChapterOutput(await db("t_storyChapter").where({ id: nextChapterId }).first())
+    ? await loadPublishedChapter(Number(sessionRow.worldPublishId || 0), nextChapterId, db)
     : null;
   if (chapter) {
     const latestGeneratedMessage = insertedRows[insertedRows.length - 1];
@@ -4508,7 +4590,7 @@ async function commitSessionNarrativeTurnInner(input: CommitSessionNarrativeTurn
       DebugLogUtil.log("story:chapter_ending_check:stats", `outcome: ${outcome}`);
       DebugLogUtil.log("story:chapter_ending_check:stats", `nextChapterId: ${nextChapterId}`);
       if (sessionStatus === "chapter_completed" && (!nextChapterId || nextChapterId === prevChapterId)) {
-        const resolvedNextChapterId = await resolveNextChapterIdByOrder(db, Number(sessionRow.worldId || 0), prevChapterId);
+        const resolvedNextChapterId = await resolveNextChapterIdByOrder(db, Number(sessionRow.worldId || 0), prevChapterId, Number(sessionRow.worldPublishId || 0));
         if (resolvedNextChapterId && resolvedNextChapterId !== prevChapterId) {
           nextChapterId = resolvedNextChapterId;
           sessionStatus = "active";
@@ -4605,7 +4687,7 @@ async function commitSessionNarrativeTurnInner(input: CommitSessionNarrativeTurn
   });
   const activeChapterId = Number(state.chapterId || prevChapterId || 0) || null;
   const activeChapter = activeChapterId
-    ? normalizeChapterOutput(await db("t_storyChapter").where({ id: activeChapterId }).first())
+    ? await loadPublishedChapter(Number(sessionRow.worldPublishId || 0), activeChapterId, db)
     : null;
   const eventView = buildEventView(state);
   return {
@@ -4627,5 +4709,152 @@ async function commitSessionNarrativeTurnInner(input: CommitSessionNarrativeTurn
     deltas: [],
     snapshotSaved: snapshotResult.snapshotSaved,
     snapshotReason: snapshotResult.snapshotReason,
+  };
+}
+
+/**
+ * 方向2：AI 智能对齐（可选增强）。
+ *
+ * 前端"智能对齐"按钮调用。流程：
+ * 1. 加载 session + published world/chapter
+ * 2. 执行确定性对齐（得到 base report）
+ * 3. 若 hasUnmatchedRename，调 StoryUpdateAlignAgent 做 phase 语义匹配 + 重新生成 eventSummary
+ * 4. merge AI 结果进报告，写回 session（stateJson + worldVersion + alignReport）
+ *
+ * 若 session.worldVersion 已 >= published.version（已对齐），直接返回当前 alignReport。
+ */
+export async function alignSessionWithAi(sessionIdInput: string, userIdInput: number): Promise<{
+  ok: boolean;
+  report: ProgressAlignReport | null;
+  source: "ai" | "deterministic" | "noop";
+  message: string;
+}> {
+  const sessionId = String(sessionIdInput || "").trim();
+  if (!sessionId) {
+    return { ok: false, report: null, source: "noop", message: "sessionId 不能为空" };
+  }
+  const currentUserId = Number(userIdInput || 0);
+  const db = getGameDb();
+  const sessionRow = await db("t_gameSession").where({ sessionId }).first();
+  if (!sessionRow) {
+    return { ok: false, report: null, source: "noop", message: "会话不存在" };
+  }
+  if (currentUserId > 0 && Number(sessionRow.userId || 0) !== currentUserId) {
+    return { ok: false, report: null, source: "noop", message: "无权访问该会话" };
+  }
+
+  const worldPublishId = Number(sessionRow.worldPublishId || 0);
+  const world = await loadSessionWorld(db, Number(sessionRow.worldId || 0), worldPublishId);
+  const publishedVersion = Number((world as any)?.version || 0);
+  const sessionWorldVersion = Number(sessionRow.worldVersion || 0);
+
+  // 已对齐则直接返回现有报告
+  if (publishedVersion <= 0 || sessionWorldVersion >= publishedVersion) {
+    const stateNow = normalizeSessionState(sessionRow.stateJson, Number(sessionRow.worldId || 0), Number(sessionRow.chapterId || 0) || null, normalizeRolePair(world?.playerRole, world?.narratorRole), world);
+    return { ok: true, report: (stateNow as any)?.alignReport || null, source: "noop", message: "已是最新版本，无需对齐" };
+  }
+
+  // 1. 确定性对齐
+  const rolePair = normalizeRolePair(world?.playerRole, world?.narratorRole);
+  const state = normalizeSessionState(sessionRow.stateJson, Number(sessionRow.worldId || 0), Number(sessionRow.chapterId || 0) || null, rolePair, world);
+  const alignChapterId = Number(state.chapterId || sessionRow.chapterId || 0);
+  const alignChapter = alignChapterId > 0
+    ? await loadPublishedChapter(worldPublishId, alignChapterId, db)
+    : null;
+  if (!alignChapter?.runtimeOutline) {
+    return { ok: false, report: null, source: "noop", message: "未找到发布章节，无法对齐" };
+  }
+  const oldPhaseIds = extractOldPhaseIdsFromState(state);
+  const { report: baseReport } = alignSessionProgress({
+    oldPhaseIds,
+    newOutline: alignChapter.runtimeOutline,
+    state,
+  });
+
+  // 2. 若无改名歧义，确定性对齐已足够，直接落库
+  if (!baseReport.hasUnmatchedRename) {
+    state.alignReport = baseReport;
+    state.worldVersion = publishedVersion;
+    await db("t_gameSession").where({ sessionId }).update({
+      worldVersion: publishedVersion,
+      stateJson: toJsonText(state, {}),
+      updateTime: nowTs(),
+    });
+    return { ok: true, report: baseReport, source: "deterministic", message: "确定性对齐完成" };
+  }
+
+  // 3. 调 AI agent 做语义匹配
+  const newPhases: Array<{ phaseId: string; phaseIndex: number; kind: string; label: string }> = (alignChapter.runtimeOutline.phases || []).map((p: any, i: number) => ({
+    phaseId: String(p?.id || ""),
+    phaseIndex: i,
+    kind: String(p?.kind || ""),
+    label: String(p?.label || ""),
+  }));
+  // 旧 phase 的 label：phaseId 形如 phase_{idx}_{slug}，取 slug 段作语义提示
+  const oldPhases = oldPhaseIds.map((id, i) => {
+    const slug = String(id || "").split("_").slice(2).join("_") || id;
+    return { phaseId: id, phaseIndex: i, kind: "", label: slug };
+  });
+  const curPhaseId = String(state?.chapterProgress?.phaseId || oldPhaseIds[0] || "");
+  const aiResult = await runStoryUpdateAlignAgent({
+    userId: currentUserId || Number(sessionRow.userId || 0),
+    oldPhases,
+    newPhases,
+    currentProgress: {
+      phaseId: curPhaseId,
+      phaseIndex: Number(state?.chapterProgress?.phaseIndex || 0),
+      eventIndex: Number(state?.chapterProgress?.eventIndex || 0),
+      eventSummary: String(state?.chapterProgress?.eventSummary || ""),
+      eventKind: String(state?.chapterProgress?.eventKind || ""),
+      eventStatus: String(state?.chapterProgress?.eventStatus || ""),
+    },
+  });
+
+  // 4. merge AI 结果：覆盖 phase 映射 + 用 AI 的 newPhaseId/newEventSummary
+  const mergedReport = mergeAiAlignIntoReport(baseReport, aiResult, oldPhaseIds);
+  if (aiResult.source === "ai" && aiResult.newPhaseId) {
+    const newPhaseIds = newPhases.map((p) => p.phaseId);
+    if (newPhaseIds.includes(aiResult.newPhaseId)) {
+      (state.chapterProgress as any).phaseId = aiResult.newPhaseId;
+      (state.chapterProgress as any).phaseIndex = newPhaseIds.indexOf(aiResult.newPhaseId);
+    }
+  }
+  if (aiResult.source === "ai" && String(aiResult.newEventSummary || "").trim()) {
+    (state.chapterProgress as any).eventSummary = String(aiResult.newEventSummary).trim();
+  }
+  // dynamicEvents/completedEvents/recentEvents 的 phaseId 跟随 AI phaseMapping 重新映射
+  const aiMap = aiResult.phaseMapping || {};
+  if (Array.isArray(state?.dynamicEvents)) {
+    for (const ev of state.dynamicEvents) {
+      const mapped = aiMap[String(ev.phaseId || "")];
+      if (mapped) ev.phaseId = mapped;
+    }
+  }
+  if (Array.isArray(state?.chapterProgress?.completedEvents)) {
+    state.chapterProgress.completedEvents = state.chapterProgress.completedEvents
+      .map((entry: string) => {
+        if (typeof entry === "string" && entry.startsWith("phase:")) {
+          const oldId = entry.slice(6);
+          const newId = aiMap[oldId];
+          return newId ? `phase:${newId}` : (newId === null ? null : entry);
+        }
+        return entry;
+      })
+      .filter((e: any) => e !== null);
+  }
+
+  state.alignReport = mergedReport;
+  state.worldVersion = publishedVersion;
+  await db("t_gameSession").where({ sessionId }).update({
+    worldVersion: publishedVersion,
+    stateJson: toJsonText(state, {}),
+    updateTime: nowTs(),
+  });
+
+  return {
+    ok: true,
+    report: mergedReport,
+    source: aiResult.source === "ai" ? "ai" : "deterministic",
+    message: aiResult.source === "ai" ? "AI 智能对齐完成" : "AI 失败，已回退确定性对齐",
   };
 }

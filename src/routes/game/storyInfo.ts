@@ -20,6 +20,10 @@ import {
   syncDebugChapterRuntime,
 } from "./debugRuntimeShared";
 import u from "@/utils";
+import {
+  loadPublishedChapter,
+  loadPublishedWorld,
+} from "@/modules/game-runtime/services/publishedRuntime";
 import {DebugLogUtil} from "@/utils/debugLogUtil";
 
 const router = express.Router();
@@ -98,11 +102,16 @@ export default router.post(
         if (!sessionRow) {
           return res.status(404).send(error("会话不存在"));
         }
-        const world = await db("t_storyWorld as w")
-          .leftJoin("t_project as p", "w.projectId", "p.id")
-          .where("w.id", Number(sessionRow.worldId || 0))
-          .select("w.*", "p.userId as ownerUserId")
-          .first();
+        // 方向2：优先读发布表快照；无 worldPublishId 回退草稿（兼容旧 session）。
+        const wpId = Number(sessionRow.worldPublishId || 0);
+        let world: any = wpId > 0 ? await loadPublishedWorld(wpId, db) : null;
+        if (!world) {
+          world = await db("t_storyWorld as w")
+            .leftJoin("t_project as p", "w.projectId", "p.id")
+            .where("w.id", Number(sessionRow.worldId || 0))
+            .select("w.*", "p.userId as ownerUserId")
+            .first();
+        }
         const rolePair = normalizeRolePair(world?.playerRole, world?.narratorRole);
         const activeState = normalizeSessionState(
           sessionRow.stateJson,
@@ -129,7 +138,9 @@ export default router.post(
           effectiveChapterId,
         });
         const chapter = effectiveChapterId > 0
-          ? await db("t_storyChapter").where({ id: effectiveChapterId }).first()
+          ? (wpId > 0
+            ? await loadPublishedChapter(wpId, effectiveChapterId, db)
+            : normalizeChapterOutput(await db("t_storyChapter").where({ id: effectiveChapterId }).first()))
           : null;
         const sessionStatus = String(sessionRow.status || "active").trim() || "active";
         // storyInfo 是前端故事设定/事件面板的权威来源。

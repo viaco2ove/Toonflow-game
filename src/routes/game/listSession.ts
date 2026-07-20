@@ -102,15 +102,21 @@ export default router.post(
       ));
       const projectIdSet = Array.from(new Set(sessions.map((item: any) => Number(item.projectId || 0)).filter((id: number) => id > 0)));
 
-      const [worldRows, chapterRows, projectRows] = await Promise.all([
+      const [worldRows, chapterRows, projectRows, publishedRows] = await Promise.all([
         worldIdSet.length ? db("t_storyWorld").whereIn("id", worldIdSet).select("id", "name", "intro", "coverPath", "settings") : Promise.resolve([]),
         chapterIdSet.length ? db("t_storyChapter").whereIn("id", chapterIdSet).select("id", "title") : Promise.resolve([]),
         projectIdSet.length ? db("t_project").whereIn("id", projectIdSet).select("id", "name") : Promise.resolve([]),
+        // 方向2：批量取发布版本号，用于"故事已更新"感知
+        worldIdSet.length ? db("t_storyWorld_published").whereIn("worldId", worldIdSet).select("worldId", "version") : Promise.resolve([]),
       ]);
 
       const worldMap = new Map<number, any>(worldRows.map((item: any) => [Number(item.id), item]));
       const chapterNameMap = new Map<number, string>(chapterRows.map((item: any) => [Number(item.id), String(item.title || "")]));
       const projectNameMap = new Map<number, string>(projectRows.map((item: any) => [Number(item.id), String(item.name || "")]));
+      // publishedVersionMap: worldId -> 最新发布版本号
+      const publishedVersionMap = new Map<number, number>(
+        publishedRows.map((item: any) => [Number(item.worldId), Number(item.version || 0)]),
+      );
 
       const latestMessageRows = await Promise.all(
         sessionIds.map((sessionId: string) =>
@@ -141,6 +147,12 @@ export default router.post(
           runtimeState.chapterTitle = resolvedChapterTitle || String(runtimeState.chapterTitle || "").trim();
         }
         const eventView = readDefaultRuntimeEventViewState(runtimeState);
+        // 方向2：版本感知--session.worldVersion 落后于 published.version 则"故事已更新"。
+        const publishedVersion = publishedVersionMap.get(worldIdValue) || 0;
+        const sessionWorldVersion = Number(item.worldVersion || 0);
+        const storyUpdated = publishedVersion > 0 && sessionWorldVersion > 0 && sessionWorldVersion < publishedVersion;
+        // 对齐报告（若曾对齐过，前端弹框预览）
+        const alignReport = runtimeState?.alignReport || null;
         return {
           sessionId,
           worldId: worldIdValue,
@@ -155,6 +167,10 @@ export default router.post(
           title: String(item.title || ""),
           status: String(item.status || ""),
           contentVersion: String(item.contentVersion || ""),
+          worldPublishId: Number(item.worldPublishId || 0) || null,
+          worldVersion: Number(item.worldVersion || 0) || null,
+          storyUpdated,
+          alignReport,
           updateTime: Number(item.updateTime || item.createTime || 0),
           state: runtimeState,
           currentEventDigest: eventView.currentEventDigest,

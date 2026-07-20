@@ -54,6 +54,9 @@ export default router.post(
 
         await trx("t_gameSession").where({ worldId }).delete();
         await trx("t_storyChapter").where({ worldId }).delete();
+        // 方向2：级联清理发布快照表
+        await trx("t_storyChapter_published").where({ worldPublishId: worldId }).delete();
+        await trx("t_storyWorld_published").where({ worldId }).delete();
         await trx("t_storyWorld").where({ id: worldId }).delete();
       });
 

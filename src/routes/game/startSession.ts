@@ -29,6 +29,11 @@ import {
 } from "@/modules/game-runtime/engines/NarrativeOrchestrator";
 import { persistSessionMessageRevisitData } from "@/modules/game-runtime/services/SessionService";
 import {
+  loadPublishedChapter,
+  loadPublishedFirstChapter,
+  loadPublishedWorld,
+} from "@/modules/game-runtime/services/publishedRuntime";
+import {
   initializeChapterProgressForState,
   syncChapterProgressWithRuntime,
 } from "@/modules/game-runtime/engines/ChapterProgressEngine";
@@ -133,15 +138,30 @@ export default router.post(
         });
       });
 
+      // 方向2：开会话优先用发布表快照（与草稿隔离）。
+      // publishedWorld 含 settings.chapterInitialSnapshots（开局快照）；不存在则回退草稿 world。
+      const publishedWorld = await loadPublishedWorld(worldId, db);
+      let worldPublishId = 0;
+      let worldVersion = 0;
+      if (publishedWorld) {
+        // 保留 ownerUserId（published 行无该字段），其余用发布快照
+        world = { ...publishedWorld, ownerUserId };
+        worldPublishId = Number(publishedWorld.id || worldId || 0);
+        worldVersion = Number(publishedWorld.version || 0);
+      }
+
       let chapter: any = null;
       const chapterIdNum = Number(chapterId);
       if (Number.isFinite(chapterIdNum) && chapterIdNum > 0) {
-        chapter = await db("t_storyChapter").where({ id: chapterIdNum, worldId }).first();
+        chapter = worldPublishId > 0
+          ? await loadPublishedChapter(worldPublishId, chapterIdNum, db)
+          : normalizeChapterOutput(await db("t_storyChapter").where({ id: chapterIdNum, worldId }).first());
       }
       if (!chapter) {
-        chapter = await db("t_storyChapter").where({ worldId }).orderBy("sort", "asc").orderBy("id", "asc").first();
+        chapter = worldPublishId > 0
+          ? await loadPublishedFirstChapter(worldPublishId, db)
+          : normalizeChapterOutput(await db("t_storyChapter").where({ worldId }).orderBy("sort", "asc").orderBy("id", "asc").first());
       }
-      chapter = normalizeChapterOutput(chapter);
 
       const rolePair = normalizeRolePair(world.playerRole, world.narratorRole);
       let state = normalizeSessionState(initialState, worldId, chapter ? Number(chapter.id) : null, rolePair, world);
@@ -223,6 +243,8 @@ export default router.post(
         projectId: Number.isFinite(Number(projectId)) ? Number(projectId) : Number(world.projectId || 0),
         chapterId: currentChapterId,
         contentVersion: buildContentVersion(world, chapter, now),
+        worldPublishId: worldPublishId || null,
+        worldVersion: worldVersion || null,
         title: String(title || `${String(world.name || "世界")}-会话`).trim(),
         status: "active",
         stateJson: toJsonText(state, {}),

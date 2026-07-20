@@ -22,6 +22,11 @@ import {
   isDebugFreePlotActive,
 } from "./debugRuntimeShared";
 import { DebugLogUtil } from "@/utils/debugLogUtil";
+import {
+  loadPublishedChapter,
+  loadPublishedFirstChapter,
+  loadPublishedWorld,
+} from "@/modules/game-runtime/services/publishedRuntime";
 
 const router = express.Router();
 
@@ -230,7 +235,12 @@ export default router.post(
           return res.status(404).send(error("会话不存在"));
         }
         worldId = Number(sessionRow.worldId || 0);
-        world = await db("t_storyWorld").where({ id: worldId }).first();
+        // 方向2：优先读发布表快照；无 worldPublishId 回退草稿（兼容旧 session）。
+        const wpId = Number(sessionRow.worldPublishId || 0);
+        world = wpId > 0 ? await loadPublishedWorld(wpId, db) : null;
+        if (!world) {
+          world = await db("t_storyWorld").where({ id: worldId }).first();
+        }
         if (!world) {
           return res.status(404).send(error("未找到故事"));
         }
@@ -239,12 +249,15 @@ export default router.post(
         // 这里优先读 session.chapterId，其次回退到 stateJson.chapterId，最后再回退首章。
         const sessionChapterId = Number(sessionRow.chapterId || sessionState.chapterId || 0);
         if (sessionChapterId > 0) {
-          chapter = await db("t_storyChapter").where({ id: sessionChapterId, worldId }).first();
+          chapter = wpId > 0
+            ? await loadPublishedChapter(wpId, sessionChapterId, db)
+            : normalizeChapterOutput(await db("t_storyChapter").where({ id: sessionChapterId, worldId }).first());
         }
         if (!chapter) {
-          chapter = await db("t_storyChapter").where({ worldId }).orderBy("sort", "asc").orderBy("id", "asc").first();
+          chapter = wpId > 0
+            ? await loadPublishedFirstChapter(wpId, db)
+            : normalizeChapterOutput(await db("t_storyChapter").where({ worldId }).orderBy("sort", "asc").orderBy("id", "asc").first());
         }
-        chapter = normalizeChapterOutput(chapter);
         if (!chapter) {
           return res.status(404).send(error("当前没有章节可游玩"));
         }

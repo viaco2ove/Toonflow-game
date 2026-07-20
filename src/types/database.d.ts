@@ -1,4 +1,4 @@
-// @db-hash 27b7589aa079ac633fcf9da35fa90781
+// @db-hash cf98061e20bc06889f537ccaf0ea6fcc
 //该文件由脚本自动生成，请勿手动修改
 
 export interface t_aiModelMap {
@@ -124,6 +124,8 @@ export interface t_gameSession {
   'updateTime'?: number | null;
   'userId'?: number | null;
   'worldId'?: number | null;
+  'worldPublishId'?: number | null;
+  'worldVersion'?: number | null;
 }
 export interface t_image {
   'assetsId'?: number | null;
@@ -261,6 +263,26 @@ export interface t_storyChapter {
   'updateTime'?: number | null;
   'worldId'?: number | null;
 }
+export interface t_storyChapter_published {
+  'backgroundPath'?: string | null;
+  'bgmAutoPlay'?: number | null;
+  'bgmPath'?: string | null;
+  'chapterId'?: number | null;
+  'completionCondition'?: string | null;
+  'content'?: string | null;
+  'entryCondition'?: string | null;
+  'id'?: number;
+  'openingRole'?: string | null;
+  'openingText'?: string | null;
+  'publishedAt'?: number | null;
+  'runtimeOutline'?: string | null;
+  'showCompletionCondition'?: number | null;
+  'sort'?: number | null;
+  'tasksJson'?: string | null;
+  'title'?: string | null;
+  'triggersJson'?: string | null;
+  'worldPublishId'?: number | null;
+}
 export interface t_storyline {
   'content'?: string | null;
   'id'?: number;
@@ -280,6 +302,22 @@ export interface t_storyWorld {
   'publishStatus'?: string | null;
   'settings'?: string | null;
   'updateTime'?: number | null;
+}
+export interface t_storyWorld_published {
+  'coverPath'?: string | null;
+  'createTime'?: number | null;
+  'id'?: number;
+  'intro'?: string | null;
+  'name'?: string | null;
+  'narratorRole'?: string | null;
+  'playerRole'?: string | null;
+  'projectId'?: number | null;
+  'publishedAt'?: number | null;
+  'publishedBy'?: string | null;
+  'settings'?: string | null;
+  'updateTime'?: number | null;
+  'version'?: number | null;
+  'worldId'?: number | null;
 }
 export interface t_taskList {
   'endTime'?: string | null;
@@ -389,8 +427,10 @@ export interface DB {
   "t_sessionStateSnapshot": t_sessionStateSnapshot;
   "t_setting": t_setting;
   "t_storyChapter": t_storyChapter;
+  "t_storyChapter_published": t_storyChapter_published;
   "t_storyline": t_storyline;
   "t_storyWorld": t_storyWorld;
+  "t_storyWorld_published": t_storyWorld_published;
   "t_taskList": t_taskList;
   "t_textModel": t_textModel;
   "t_user": t_user;

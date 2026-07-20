@@ -27,7 +27,7 @@ apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin do
 
 ```bash
 cd /root/Toonflow-game
-cp docker.md/autodl.env.example docker.md/.env.autodl
+cp docker.md/autodl.env.example docker.md/.env.171.autodl
 ```
 
 编辑 `docker/.env.autodl`：
@@ -47,7 +47,7 @@ TEMP_OSS=
 
 ```bash
 cd /root/toonflow-game-app
-docker.md compose --env-file docker.md/.env.autodl -f docker.md/docker.md-compose.autodl.yml up -d --build
+docker.md compose --env-file docker.md/.env.171.autodl -f docker.md/docker.md-compose.autodl.yml up -d --build
 ```
 
 首次启动会做这些事情：
@@ -61,7 +61,7 @@ docker.md compose --env-file docker.md/.env.autodl -f docker.md/docker.md-compos
 ### 7. 查看运行状态
 
 ```bash
-docker.md compose --env-file docker.md/.env.autodl -f docker.md/docker.md-compose.autodl.yml ps
+docker.md compose --env-file docker.md/.env.171.autodl -f docker.md/docker.md-compose.autodl.yml ps
 docker.md logs -f toonflow-autodl
 ```
 

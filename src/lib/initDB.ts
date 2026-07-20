@@ -1741,6 +1741,8 @@ export default async (knex: Knex, forceInit: boolean = false): Promise<void> => 
         table.integer("projectId");
         table.integer("chapterId");
         table.text("contentVersion");
+        table.integer("worldPublishId");
+        table.integer("worldVersion");
         table.text("title");
         table.text("status");
         table.text("stateJson");
@@ -1750,6 +1752,63 @@ export default async (knex: Knex, forceInit: boolean = false): Promise<void> => 
         table.primary(["id"]);
         table.unique(["id"]);
         table.unique(["sessionId"]);
+      },
+    },
+    {
+      // 方向2：故事发布门控--单版本覆盖的发布快照表。
+      // 一个 worldId 只对应一行，发布时覆盖；version 每次发布 +1，用于版本感知。
+      name: "t_storyWorld_published",
+      builder: (table) => {
+        table.integer("id").notNullable();
+        table.integer("worldId");
+        table.integer("version");
+        table.integer("publishedAt");
+        table.text("publishedBy");
+        // world 整行快照（字段名与 t_storyWorld 一致，便于复用归一化逻辑）
+        table.text("name");
+        table.text("intro");
+        table.text("coverPath");
+        table.text("settings");
+        table.text("playerRole");
+        table.text("narratorRole");
+        table.integer("projectId");
+        table.integer("createTime");
+        table.integer("updateTime");
+        table.primary(["id"]);
+        table.unique(["id"]);
+        table.unique(["worldId"]);
+        table.index(["worldId"], "idx_storyWorld_published_worldId");
+      },
+    },
+    {
+      // 方向2：发布章节快照表。字段名与 t_storyChapter 一致，normalizeChapterOutput 可直接复用。
+      // 额外快照该章的 trigger/task 配置（runtime 也读这些，发布门控必须一并冻结）。
+      name: "t_storyChapter_published",
+      builder: (table) => {
+        table.integer("id").notNullable();
+        table.integer("worldPublishId");
+        table.integer("chapterId");
+        table.text("title");
+        table.text("content");
+        table.text("runtimeOutline");
+        table.integer("sort");
+        table.text("openingRole");
+        table.text("openingText");
+        table.text("bgmPath");
+        table.integer("bgmAutoPlay");
+        table.text("backgroundPath");
+        table.text("entryCondition");
+        table.text("completionCondition");
+        table.integer("showCompletionCondition");
+        // 该章 t_chapterTrigger / t_chapterTask 行的 JSON 快照
+        table.text("triggersJson");
+        table.text("tasksJson");
+        table.integer("publishedAt");
+        table.primary(["id"]);
+        table.unique(["id"]);
+        table.unique(["worldPublishId", "chapterId"], "uq_storyChapter_published_publish_chapter");
+        table.index(["worldPublishId"], "idx_storyChapter_published_worldPublishId");
+        table.index(["chapterId"], "idx_storyChapter_published_chapterId");
       },
     },
     {

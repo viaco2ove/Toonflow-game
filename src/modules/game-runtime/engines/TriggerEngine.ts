@@ -13,6 +13,7 @@ import {
   TriggerExecutionResult,
   TriggerHit,
 } from "@/modules/game-runtime/types/runtime";
+import { loadPublishedChapterTriggers } from "@/modules/game-runtime/services/publishedRuntime";
 
 function resolvePath(change: AttributeChangeInput): { path: string; entityType: string; entityId: string; field: string } | null {
   const fieldRaw = String(change.field || "").trim();
@@ -172,6 +173,7 @@ export async function runTriggerEngine(input: TriggerExecutionInput): Promise<Tr
     eventType,
     meta,
     initialStatus,
+    worldPublishId,
   } = input;
 
   const appliedDeltas: AppliedDelta[] = [];
@@ -179,13 +181,21 @@ export async function runTriggerEngine(input: TriggerExecutionInput): Promise<Tr
   let sessionStatus = initialStatus;
   let nextChapterId = Number(state.chapterId || chapterId || 0) || null;
 
-  const currentChapter = nextChapterId ? await db("t_storyChapter").where({ id: nextChapterId }).first() : null;
-  const triggerRows = currentChapter
-    ? await db("t_chapterTrigger")
-      .where({ chapterId: Number(currentChapter.id), enabled: 1 })
-      .orderBy("sort", "asc")
-      .orderBy("id", "asc")
-    : [];
+  // 方向2：runtime 读发布表 trigger 快照；无 worldPublishId 回退草稿表。
+  const triggerChapterId = nextChapterId;
+  let triggerRows: any[];
+  if (Number.isFinite(worldPublishId) && worldPublishId && worldPublishId > 0 && triggerChapterId) {
+    // published 快照存全量，这里按 enabled 过滤（与草稿表 SQL where enabled=1 等价）
+    const all = await loadPublishedChapterTriggers(worldPublishId, triggerChapterId, db);
+    triggerRows = all.filter((t: any) => Number(t?.enabled ?? 0) === 1);
+  } else {
+    triggerRows = triggerChapterId
+      ? await db("t_chapterTrigger")
+        .where({ chapterId: Number(triggerChapterId), enabled: 1 })
+        .orderBy("sort", "asc")
+        .orderBy("id", "asc")
+      : [];
+  }
 
   for (const trigger of triggerRows) {
     const triggerEvent = String(trigger.triggerEvent || "on_message").trim().toLowerCase();

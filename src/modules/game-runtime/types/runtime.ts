@@ -44,6 +44,8 @@ export interface TriggerExecutionInput {
   eventType: string;
   meta: Record<string, any>;
   initialStatus: string;
+  /** 方向2：发布表 worldPublishId，runtime 读发布章节快照用 */
+  worldPublishId?: number;
 }
 
 export interface TriggerExecutionResult {
@@ -63,6 +65,8 @@ export interface TaskProgressInput {
   now: number;
   nextChapterId: number | null;
   currentStatus: string;
+  /** 方向2：发布表 worldPublishId，runtime 读发布章节快照用 */
+  worldPublishId?: number;
 }
 
 export interface TaskProgressChange {

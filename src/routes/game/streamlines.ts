@@ -38,6 +38,10 @@ import {
 import u from "@/utils";
 import { DebugLogUtil } from "@/utils/debugLogUtil";
 import { miniGameStateManager } from "@/modules/game-runtime/engines/MiniGameStateManager";
+import {
+  loadPublishedChapter,
+  loadPublishedWorld,
+} from "@/modules/game-runtime/services/publishedRuntime";
 
 const router = express.Router();
 
@@ -455,13 +459,22 @@ router.post(
           writeStreamLine(res, { type: "error", data: { message: "无权访问该会话" } });
           return;
         }
-        world = await db("t_storyWorld as w")
-          .leftJoin("t_project as p", "w.projectId", "p.id")
-          .where("w.id", Number(sessionRow.worldId || 0))
-          .select("w.*")
-          .first();
-        chapter = await db("t_storyChapter").where({ id: Number(sessionRow.chapterId || 0) }).first();
-        chapter = normalizeChapterOutput(chapter);
+        // 方向2：优先读发布表快照；无 worldPublishId 回退草稿（兼容旧 session）。
+        const wpId = Number(sessionRow.worldPublishId || 0);
+        world = wpId > 0 ? await loadPublishedWorld(wpId, db) : null;
+        if (!world) {
+          world = await db("t_storyWorld as w")
+            .leftJoin("t_project as p", "w.projectId", "p.id")
+            .where("w.id", Number(sessionRow.worldId || 0))
+            .select("w.*")
+            .first();
+        }
+        const streamChapterId = Number(sessionRow.chapterId || 0);
+        chapter = streamChapterId > 0
+          ? (wpId > 0
+            ? await loadPublishedChapter(wpId, streamChapterId, db)
+            : normalizeChapterOutput(await db("t_storyChapter").where({ id: streamChapterId }).first()))
+          : null;
         const rolePair = normalizeRolePair(world?.playerRole, world?.narratorRole);
         state = normalizeSessionState(
           sessionRow.stateJson,

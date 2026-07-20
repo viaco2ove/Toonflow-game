@@ -14,6 +14,10 @@ import {
   toJsonText,
 } from "@/lib/gameEngine";
 import { ensureWorldRolesWithAiParameterCards } from "@/lib/roleParameterCard";
+import {
+  loadPublishedChapter,
+  loadPublishedWorld,
+} from "@/modules/game-runtime/services/publishedRuntime";
 import { resolveOpeningMessage, setRuntimeTurnState } from "@/modules/game-runtime/engines/NarrativeOrchestrator";
 import { initializeChapterProgressForState, syncChapterProgressWithRuntime } from "@/modules/game-runtime/engines/ChapterProgressEngine";
 import u from "@/utils";
@@ -177,11 +181,16 @@ export default router.post(
         return res.status(404).send(error("会话不存在"));
       }
 
-      let world = await db("t_storyWorld as w")
-        .leftJoin("t_project as p", "w.projectId", "p.id")
-        .where("w.id", Number(row.worldId || 0))
-        .select("w.*", "p.userId as ownerUserId")
-        .first();
+      // 方向2：优先读发布表快照；无 worldPublishId 回退草稿（兼容旧 session）。
+      const wpId = Number(row.worldPublishId || 0);
+      let world = wpId > 0 ? await loadPublishedWorld(wpId, db) : null;
+      if (!world) {
+        world = await db("t_storyWorld as w")
+          .leftJoin("t_project as p", "w.projectId", "p.id")
+          .where("w.id", Number(row.worldId || 0))
+          .select("w.*", "p.userId as ownerUserId")
+          .first();
+      }
       const ownerUserId = Number(world?.ownerUserId || 0);
       if (world) {
         // 会话打开优先返回已保存的世界数据，缺卡补齐放后台做，避免继续聊时被慢模型阻塞。
@@ -212,7 +221,11 @@ export default router.post(
       const limit = Number.isFinite(messageLimitNum) && messageLimitNum > 0 ? Math.min(messageLimitNum, 200) : 50;
       const eventView = readDefaultRuntimeEventViewState(state);
 
-      const chapter = activeChapterId ? await db("t_storyChapter").where({ id: activeChapterId }).first() : null;
+      const chapter = activeChapterId
+        ? (wpId > 0
+          ? await loadPublishedChapter(wpId, activeChapterId, db)
+          : normalizeChapterOutput(await db("t_storyChapter").where({ id: activeChapterId }).first()))
+        : null;
       const snapshot = await db("t_sessionStateSnapshot").where({ sessionId: sessionIdValue }).orderBy("id", "desc").first();
       let rawMessages = await db("t_sessionMessage").where({ sessionId: sessionIdValue }).orderBy("id", "desc").limit(limit);
 
