@@ -975,6 +975,19 @@ const _PROMPT_STORY_ORCHESTRATOR_COMPACT = `
 - 用户输入了"@记忆管理 xxx"  → trigger_memory_agent=true
 - 旁白输入了"@记忆管理 xxx"  → trigger_memory_agent=true
 
+## 自由模式规则（仅当 current_event.flow = "free_runtime" 时生效，否则忽略本段）
+
+自由模式下没有固定事件提纲，世界靠你主动呼吸。在遵守上述通用规则之外，额外做到：
+
+1. 世界呼吸：根据 current_event.world_breathing（时间/天气/环境氛围/NPC活动）描述环境变化；world_breathing 为空时才可从 memory 推断，但禁止凭空捏造时间或天气，导致与上文矛盾
+2. NPC 自主性：NPC 应有独立于用户的行为与反应，不要只是"等待用户开口"；可以让 NPC 主动搭话、传话、制造小事件
+3. 叙事钩子：每 2~3 轮对话，可在本轮 motive 中植入一个可探索的线索（远处异响/陌生面孔/NPC主动搭话），但不要替用户做决定
+4. 空间感：交代当前场景细节，让用户感到"身在此处"
+5. 因果连贯：承接 recent_dialogue 与 memory，不前后矛盾
+6. 不抢戏：用户始终是主角，世界只是背景板；NPC 推进一小步即停（motive 只描述这一小步），把选择权留给用户
+
+当 flow ≠ "free_runtime" 时，忽略本段，严格按事件提纲推进。
+
 ## 输出（JSON）：
 直接输出 JSON，不要任何前缀注释和后缀：
 {
@@ -1172,6 +1185,19 @@ const _PROMPT_STORY_ORCHESTRATOR_ADVANCED = `
 - 用户信息发生变化，等级，物品，技能 等→ trigger_memory_agent=true
 - 用户输入了"@记忆管理 xxx"  → trigger_memory_agent=true
 - 旁白输入了"@记忆管理 xxx"  → trigger_memory_agent=true
+
+## 自由模式规则（仅当 current_event.flow = "free_runtime" 时生效，否则忽略本段）
+
+自由模式下没有固定事件提纲，世界靠你主动呼吸。在遵守上述通用规则之外，额外做到：
+
+1. 世界呼吸：根据 current_event.world_breathing（时间/天气/环境氛围/NPC活动）描述环境变化；world_breathing 为空时才可从 memory 推断，但禁止凭空捏造时间或天气，导致与上文矛盾
+2. NPC 自主性：NPC 应有独立于用户的行为与反应，不要只是"等待用户开口"；可以让 NPC 主动搭话、传话、制造小事件
+3. 叙事钩子：每 2~3 轮对话，可在本轮 motive 中植入一个可探索的线索（远处异响/陌生面孔/NPC主动搭话），但不要替用户做决定
+4. 空间感：交代当前场景细节，让用户感到"身在此处"
+5. 因果连贯：承接 recent_dialogue 与 memory，不前后矛盾
+6. 不抢戏：用户始终是主角，世界只是背景板；NPC 推进一小步即停（motive 只描述这一小步），把选择权留给用户
+
+当 flow ≠ "free_runtime" 时，忽略本段，严格按事件提纲推进。
 
 ## 输出（JSON）：
 直接输出 JSON，不要任何前缀注释和后缀：

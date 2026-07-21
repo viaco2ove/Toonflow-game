@@ -197,6 +197,14 @@ type OrchestratorPromptPayload = {
   } | null;
   // ★ P4: 完整 state（用于任务模式上下文提取）
   state?: JsonRecord;
+  // ★ 自由模式世界呼吸：仅 free_runtime 时填充，复用记忆管理器维护的动态全局背景，
+  //   不新建世界状态服务。章节模式保持 undefined，零回归。
+  worldBreathing?: {
+    timeOfDay?: string;
+    weather?: string;
+    ambientEvents?: string[];
+    npcActivities?: string[];
+  } | null;
 };
 
 type SpeakerPromptPayload = {
@@ -1580,6 +1588,7 @@ function buildCompactOrchestratorSections(payload: OrchestratorPromptPayload): A
     payload.currentEventFacts.length ? `facts:${payload.currentEventFacts.join("｜")}` : "",
     payload.currentEventMemorySummary ? `memory:${payload.currentEventMemorySummary}` : "",
     payload.currentEventMemoryFacts.length ? `memory_facts:${payload.currentEventMemoryFacts.join("｜")}` : "",
+    payload.worldBreathing ? `world_breathing:${[payload.worldBreathing.timeOfDay, payload.worldBreathing.weather, ...(payload.worldBreathing.ambientEvents || [])].filter(Boolean).join("｜")}` : "",
   ].filter(Boolean).join("\n");
   const eventSeed = shortText(
     [
@@ -1630,6 +1639,7 @@ function buildOrchestratorPromptStats(payload: OrchestratorPromptPayload, compac
     payload.currentEventMemorySummary ? `memory_summary:${payload.currentEventMemorySummary}` : "",
     payload.currentEventMemoryFacts.length ? `memory_facts:${payload.currentEventMemoryFacts.join("；")}` : "",
     payload.currentEventWindow ? `事件窗口:${payload.currentEventWindow}` : "",
+    payload.worldBreathing ? `世界呼吸:${JSON.stringify(payload.worldBreathing)}` : "",
   ].filter(Boolean).join("\n");
   const orchestratorStorySection = compactMode ? [] : [{ title: "剧情摘要", content: payload.storyState || "无" }];
   let sections: Array<{ title: string; content: string }>;
@@ -2184,6 +2194,8 @@ function buildOrchestratorInputSnapshot(payload: OrchestratorPromptPayload, comp
       memory_facts: payload.currentEventMemoryFacts,
       window: eventWindow,
       curr_stage: payload.currentStage,
+      // ★ 自由模式世界呼吸：仅 free_runtime 且提取到内容时才写入，章节模式无此键。
+      ...(payload.worldBreathing ? { world_breathing: payload.worldBreathing } : {}),
     },
     turn_state: {
       can_player_speak: payload.turnState.canPlayerSpeak,
@@ -2509,6 +2521,55 @@ function buildDynamicWorldBackground(state: JsonRecord): string {
   return String(state?.memorySummary || "").trim();
 }
 
+/**
+ * 自由模式世界呼吸提取（复用已有记忆数据，不新建世界状态服务）。
+ *
+ * 设计取舍：
+ * - 时间/天气/氛围全部从 dynamicWorldGlobalBackground + memoryFacts 里做关键词归类，
+ *   不调用 AI、不引入正则复杂度，保证确定性和零额外延迟；
+ * - 这是"展示用提取"，单一数据源仍是记忆管理器维护的 dynamicWorldGlobalBackground，
+ *   编排师侧只读不写，避免与记忆管理器抢职责；
+ * - 时间倒流等根因（缺确定性 tick）不在本函数范围内，由 prompt 层"禁止凭空捏造时间天气"约束损害。
+ */
+function buildWorldBreathing(state: JsonRecord): {
+  timeOfDay?: string;
+  weather?: string;
+  ambientEvents?: string[];
+  npcActivities?: string[];
+} | null {
+  const backgroundText = buildDynamicWorldBackground(state);
+  const facts = Array.isArray(state?.memoryFacts) ? (state.memoryFacts as unknown[]).map((item) => normalizeScalarText(item)).filter(Boolean) : [];
+  const sourceText = [backgroundText, ...facts].join("\n");
+  if (!sourceText) return null;
+
+  const TIME_KEYWORDS = ["清晨", "黎明", "早晨", "上午", "正午", "中午", "午后", "下午", "黄昏", "傍晚", "夜晚", "深夜", "午夜", "白天"];
+  const WEATHER_KEYWORDS = ["晴天", "阴天", "下雨", "细雨", "暴雨", "雷雨", "雪", "大雪", "雾", "大雾", "风暴", "狂风", "微风", "闷热", "凉爽"];
+  const ACTIVITY_HINTS = ["市集", "酒馆", "铁匠", "商队", "巡逻", "庆典", "节日", "收摊", "打烊", "叫卖", "争吵", "琴声", "钟声"];
+
+  const pickFirst = (keywords: string[]) => {
+    for (const keyword of keywords) {
+      if (sourceText.includes(keyword)) return keyword;
+    }
+    return undefined;
+  };
+
+  const ambientEvents = ACTIVITY_HINTS
+    .filter((keyword) => sourceText.includes(keyword))
+    .slice(0, 3)
+    .map((keyword) => keyword);
+
+  const timeOfDay = pickFirst(TIME_KEYWORDS);
+  const weather = pickFirst(WEATHER_KEYWORDS);
+
+  // 全空时不返回对象，让 snapshot 里的 world_breathing 为 null，提示词层据"为空才可从 memory 推断"处理。
+  if (!timeOfDay && !weather && !ambientEvents.length) return null;
+  return {
+    ...(timeOfDay ? { timeOfDay } : {}),
+    ...(weather ? { weather } : {}),
+    ...(ambientEvents.length ? { ambientEvents } : {}),
+  };
+}
+
 // 把当前说话人和上下文拼成角色发言提示词。
 // [原始全局背景] 和 [动态全局背景] 用于让角色发言模型区分世界观设定的初始状态和当前演变状态。
 function buildSpeakerUserPrompt(payload: {
@@ -2547,6 +2608,8 @@ function buildSpeakerUserPrompt(payload: {
   currentStageSummary?: string | null;
   /** 任务模式上下文（只有任务激活时才不为空） */
   taskContext?: TaskContextPayload | null;
+  /** 记忆管理器维护的动态全局背景（用于角色发言器区分初始设定和当前状态） */
+  dynamicWorldGlobalBackground?: string;
 }): string {
   const worldLines = buildSpeakerWorldLines(payload);
   const chapterLines = buildSpeakerChapterLines(payload);
@@ -3792,6 +3855,11 @@ function buildOrchestratorPromptPayload(input: {
   payload.currentEventFacts = promptEventFacts;
   // ★ P4: 传递完整 state 给 payload，供任务模式上下文提取
   payload.state = input.state;
+  // ★ 自由模式世界呼吸：仅 free_runtime 时提取，复用记忆数据，不新建服务。
+  //   章节模式保持 null，提示词层的"自由模式规则"段会因 flow≠free_runtime 而整体忽略。
+  if (input.currentEvent.eventFlowType === "free_runtime") {
+    payload.worldBreathing = buildWorldBreathing(input.state);
+  }
   return payload;
 }
 
