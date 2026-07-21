@@ -1352,6 +1352,7 @@ const _PROMPT_STORY_MEMORY = `
 3. 角色补丁（player_card_patch / npc_card_patches内单条补丁）仅允许使用以下字段，禁止新增自定义字段：
 raw_setting, personality, appearance, voice, skills, items, equipment, other, gender, age, level, level_desc, exp, next_level_exp, hp, mp, money, role_key_information
 其中role_key_information 是角色关键信息
+其中items["新获得物品"]。包括一些特殊物品如:属性点（如力量属性点(2) 这种属性加成也算作一种物品）
 4. 字段数值强制规范：
 age、level、exp、next_level_exp、hp、mp、money 必须为纯数字类型，禁止字符串数字、中文描述
 所有状态感受、模糊实力变化、剧情备注、临时buff描述统一存入other字段（字符串），禁止写入数值字段
