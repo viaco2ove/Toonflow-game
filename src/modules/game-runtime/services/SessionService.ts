@@ -14,6 +14,12 @@ import {
   RuntimeEventViewState,
   syncRuntimeCurrentEventFromChapterProgress,
   advanceWorldClock,
+  detectNarrativeTimeJump,
+  getWeatherForSlot,
+  isFreeChapterRuntimeMode,
+  readTimeMode,
+  readWorldClock,
+  WORLD_TIME_SLOTS,
   toJsonText,
   upsertRuntimeEventDigestState,
 } from "@/lib/gameEngine";
@@ -2906,6 +2912,7 @@ async function addSessionMessageInner(input: AddSessionMessageInput, sessionId: 
         forceAi,
       });
     })();
+    DebugLogUtil.log("story:orchestrator:runtime", "[worldClock] pre")
     DebugLogUtil.log("story:memory:storyInfo",`addSessionMessage nextChapterId: ${nextChapterId || prevChapterId}`);
     const ai3Promise = evaluateRuntimeOutcome({
       chapter: currentChapter,
@@ -3106,12 +3113,80 @@ async function addSessionMessageInner(input: AddSessionMessageInput, sessionId: 
       });
       narrativeMessageRow = generatedMessages[generatedMessages.length - 1] || null;
       syncChapterProgressWithRuntime(playChapter, state);
-      // P1-a 世界时钟：自由模式每轮编排完成后推进 tick，落库前写入 state.vars.worldClock。
-      // 章节模式 advanceWorldClock 内部直接返回不碰 state，零回归。
-      advanceWorldClock(state, playChapter);
+      // 世界时钟：3 模式分支（tick / narrative / realtime）。仅 free_runtime 生效，
+      // 章节模式零回归。realtime 不落库，tick / narrative 推进 worldClock。
+      const progressForClock = readChapterProgressState(state);
+      const phaseIdRaw = String(progressForClock?.phaseId || "").trim();
+      const isFreeMode = !phaseIdRaw;
+      const timeMode = readTimeMode(state);
+      const clockBefore = readWorldClock(state);
+      // [WORLD-CLOCK] 入口：详细记录所有判定状态，方便定位为何不推进
+      DebugLogUtil.log("story:orchestrator:runtime", "[worldClock] enter", JSON.stringify({
+        isFreeMode,
+        phaseId: phaseIdRaw,
+        timeMode,
+        eventIndex: progressForClock?.eventIndex,
+        clockBefore: clockBefore,
+        worldClockInVars: Boolean(state?.vars?.worldClock),
+      }));
+      if (!isFreeMode) {
+        DebugLogUtil.log("story:orchestrator:runtime", "[worldClock] skip: not free mode", JSON.stringify({
+          phaseId: phaseIdRaw,
+          reason: "chapter mode or phaseId non-empty, 3 modes do not apply",
+        }));
+      } else {
+        if (timeMode === "realtime") {
+          DebugLogUtil.log("story:orchestrator:runtime", "[worldClock] skip: realtime mode", JSON.stringify({
+            reason: "realtime mode 不落库，前端本地算",
+            clockBefore,
+          }));
+        } else if (timeMode === "narrative") {
+          // 剧情推动：从最新编排师 motive + 最近对话检测时间跳跃关键词
+          const latestMotive = (generatedMessages[generatedMessages.length - 1] as any)?.content || "";
+          const recentText = String(latestMotive).slice(0, 200);
+          const jump = detectNarrativeTimeJump(recentText);
+          DebugLogUtil.log("story:orchestrator:runtime", "[worldClock] narrative mode", JSON.stringify({
+            latestMotivePreview: recentText,
+            detectedJump: jump,
+            clockBefore,
+          }));
+          if (jump > 0) {
+            const nextTick = clockBefore.tick + jump;
+            const slotIndex = ((nextTick % WORLD_TIME_SLOTS.length) + WORLD_TIME_SLOTS.length) % WORLD_TIME_SLOTS.length;
+            const timeOfDay = WORLD_TIME_SLOTS[slotIndex];
+            const weather = getWeatherForSlot(timeOfDay);
+            state.vars.worldClock = { tick: nextTick, timeOfDay, weather };
+            DebugLogUtil.log("story:orchestrator:runtime", "[worldClock] narrative advanced", JSON.stringify({
+              from: clockBefore,
+              to: { tick: nextTick, timeOfDay, weather },
+              jump,
+            }));
+          } else {
+            DebugLogUtil.log("story:orchestrator:runtime", "[worldClock] narrative no jump", JSON.stringify({
+              reason: "未检测到过夜/几天后 等关键词",
+              latestMotivePreview: recentText,
+            }));
+          }
+        } else {
+          // tick 模式：每轮 +1
+          advanceWorldClock(state, true);
+          const clockAfter = readWorldClock(state);
+          DebugLogUtil.log("story:orchestrator:runtime", "[worldClock] tick advanced", JSON.stringify({
+            from: clockBefore,
+            to: clockAfter,
+          }));
+        }
+      }
 
     }
   }
+
+  // [WORLD-CLOCK] 落库前最终状态：用于确认 write-back 是否真的写入 DB
+  const clockFinal = readWorldClock(state);
+  DebugLogUtil.log("story:orchestrator:runtime", "[worldClock] persist before", JSON.stringify({
+    clockFinal,
+    worldClockInVars: Boolean(state?.vars?.worldClock),
+  }));
 
   const stateJson = toJsonText(state, {});
   await db("t_gameSession").where({ sessionId }).update({

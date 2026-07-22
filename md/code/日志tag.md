@@ -124,7 +124,7 @@ if (DebugLogUtil.isDebugLogEnabled()) {
   nextChapterId：
 ```
 编排流程文件生成命令： 
-yarn debug:event-chain logs/app-2026-05-21.log 
+yarn debug:event-chain logs/app-2026-07-22.log 
 
 ## 小游戏日志摘要生成
 yarn debug:mini-game logs/app-2026-05-08.log 
@@ -161,6 +161,9 @@ yarn debug:mini-game:task logs/app-2026-06-18.log
 - 任务成功/失败/主动退出
 - 任务结算旁白
 - 回溯时状态是否正确保留
+
+## 
+node scripts/generateWorldClockSummary.js logs/app-2026-07-22.log
 
 ## @记忆管理 日志
 如 @记忆管理 睡觉恢复

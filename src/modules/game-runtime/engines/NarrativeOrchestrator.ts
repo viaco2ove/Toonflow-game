@@ -21,6 +21,9 @@ import {
   readWorldClock,
   shouldEmitHook,
   markHookEmitted,
+  getWeatherForSlot,
+  readTimeMode,
+  realHourToSlot,
 } from "@/lib/gameEngine";
 import {
   advanceChapterProgressAfterNarrative,
@@ -2570,14 +2573,24 @@ function buildWorldBreathing(state: JsonRecord): {
 
   // P1-a：优先用确定性时钟；worldClock 为默认值（tick:0/老存档）时，记忆文本兜底。
   // 判断"是否为真实时钟值"：tick>0 或 state.vars.worldClock 显式存在。
+  // 3 模式：realtime 模式下完全用现实时间，不读 worldClock，不走记忆文本兜底。
   const varsBag = asRecord(state?.vars);
   const hasExplicitClock = Boolean(varsBag.worldClock);
-  const timeOfDay = (hasExplicitClock || clock.tick > 0)
-    ? clock.timeOfDay
-    : (pickFirst(TIME_KEYWORDS) || clock.timeOfDay);
-  const weather = (hasExplicitClock || clock.tick > 0)
-    ? clock.weather
-    : (pickFirst(WEATHER_KEYWORDS) || clock.weather);
+  const timeMode = readTimeMode(state);
+  const isRealtime = timeMode === "realtime";
+
+  let timeOfDay: string | undefined;
+  let weather: string | undefined;
+  if (isRealtime) {
+    timeOfDay = realHourToSlot(new Date().getHours());
+    weather = getWeatherForSlot(timeOfDay);
+  } else if (hasExplicitClock || clock.tick > 0) {
+    timeOfDay = clock.timeOfDay;
+    weather = clock.weather;
+  } else {
+    timeOfDay = pickFirst(TIME_KEYWORDS) || clock.timeOfDay;
+    weather = pickFirst(WEATHER_KEYWORDS) || clock.weather;
+  }
 
   // 全空时不返回对象，让 snapshot 里的 world_breathing 为 null，提示词层据"为空才可从 memory 推断"处理。
   if (!timeOfDay && !weather && !ambientEvents.length) return null;
@@ -3878,7 +3891,8 @@ function buildOrchestratorPromptPayload(input: {
   if (input.currentEvent.eventFlowType === "free_runtime") {
     payload.worldBreathing = buildWorldBreathing(input.state);
     // ★ P2-b 叙事钩子：确定性计数，>= HOOK_INTERVAL 轮时通知 AI 植钩子。
-    payload.shouldEmitHook = shouldEmitHook(input.state, input.chapter);
+    // 已在 free_runtime 块内，isFreeMode 直接传 true。
+    payload.shouldEmitHook = shouldEmitHook(input.state, true);
   }
   return payload;
 }
@@ -4511,13 +4525,15 @@ export async function runNarrativePlan(input: OrchestratorInput): Promise<Narrat
     playerMessageLength: normalizeScalarText(input.playerMessage).length,
     recentMessageCount: Array.isArray(input.recentMessages) ? input.recentMessages.length : 0,
   });
+  // 用运行时 event 实际 flowType 判断，不依赖 chapter 字段完整性。
+  const isFreeModeForHook = readCurrentRuntimeEventContext(input.chapter, input.state).eventFlowType === "free_runtime";
   try {
     const result = await doRunNarrativePlan(input);
     // ★ P2-b 叙事钩子（路线C 主流程控计数）：
     //   自由模式且到触发间隔时，给 motive 追加钩子要求（兜底强制，AI 在 payload 里
     //   也能看到 should_emit_hook 主动配合），并立即 markHookEmitted 锁定计数。
     //   只在有实质 motive（非 player/非空）时追加，避免给空 motive 画蛇添足。
-    if (shouldEmitHook(input.state, input.chapter) && result.motive) {
+    if (shouldEmitHook(input.state, isFreeModeForHook) && result.motive) {
       result.motive = `${result.motive}【叙事钩子】在本轮回复中自然植入一个可探索线索（远处异响/陌生面孔/NPC主动搭话/未解之物），不替用户做决定，一两句点到即止。`;
       markHookEmitted(input.state);
       logOrchestratorKeyNode("narrativeHook:emitted", input.traceMeta, {

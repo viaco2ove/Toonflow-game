@@ -1189,7 +1189,7 @@ export const WORLD_TIME_SLOTS = [
 ] as const;
 
 /** 每个时段的默认天气，确定性映射 */
-const DEFAULT_WEATHER_BY_SLOT: Record<string, string> = {
+export const DEFAULT_WEATHER_BY_SLOT: Record<string, string> = {
   清晨: "晴",
   上午: "晴",
   正午: "晴",
@@ -1199,6 +1199,83 @@ const DEFAULT_WEATHER_BY_SLOT: Record<string, string> = {
   深夜: "阴",
   午夜: "阴",
 };
+
+/** 公开的 weather 查表函数（3 模式共用） */
+export function getWeatherForSlot(timeOfDay: string): string {
+  return DEFAULT_WEATHER_BY_SLOT[timeOfDay] || "晴";
+}
+
+/** 把 0-23 小时映射到 8 段时间之一。现实同步模式用。 */
+export function realHourToSlot(hour: number): string {
+  const h = Number.isFinite(hour) ? Math.max(0, Math.min(23, Math.floor(hour))) : 12;
+  if (h < 5) return "午夜";
+  if (h < 7) return "清晨";
+  if (h < 11) return "上午";
+  if (h < 14) return "正午";
+  if (h < 17) return "下午";
+  if (h < 19) return "黄昏";
+  if (h < 22) return "夜晚";
+  return "深夜";
+}
+
+/** 时间模式：tick（轮转）| narrative（剧情推动）| realtime（现实同步） */
+export type TimeMode = "tick" | "narrative" | "realtime";
+
+/** 天气模式：slot（按时段默认）| narrative（从剧情推断，留扩展位）| manual（手动覆盖，留扩展位） */
+export type WeatherMode = "slot" | "narrative" | "manual";
+
+/** 读 timeMode，默认 "tick" */
+export function readTimeMode(state: unknown): TimeMode {
+  const root = isRecord(state) ? state : null;
+  const vars = root && isRecord(root.vars) ? root.vars : null;
+  const value = vars ? String(vars.timeMode || "").trim() : "";
+  if (value === "narrative" || value === "realtime") return value;
+  return "tick";
+}
+
+/** 读 weatherMode，默认 "slot" */
+export function readWeatherMode(state: unknown): WeatherMode {
+  const root = isRecord(state) ? state : null;
+  const vars = root && isRecord(root.vars) ? root.vars : null;
+  const value = vars ? String(vars.weatherMode || "").trim() : "";
+  if (value === "narrative" || value === "manual") return value;
+  return "slot";
+}
+
+/**
+ * 剧情推动模式：从最近文本里检测时间跳跃关键词，返回 tick 增量。
+ * - +1：过夜/第二天/次日/翌日/睡了一觉
+ * - +8*N：几天后/数日后/一周后（按数字 N 算）
+ * - 命中多个取最大
+ */
+export function detectNarrativeTimeJump(text: string): number {
+  const source = String(text || "");
+  if (!source) return 0;
+  let maxJump = 0;
+  // 单时段跳跃
+  if (/(过夜|睡了一觉|次日|翌日|第二天)/.test(source)) {
+    maxJump = Math.max(maxJump, 1);
+  }
+  // 多日跳跃
+  const multiDayMatch = source.match(/(\d+|几|数)\s*(天|日|周|礼拜)后/);
+  if (multiDayMatch) {
+    const numStr = multiDayMatch[1];
+    let days = 1;
+    if (/\d+/.test(numStr)) {
+      days = parseInt(numStr, 10) || 1;
+    } else if (numStr === "数") {
+      days = 3; // 数日后 = 3 天默认
+    } else if (numStr === "几") {
+      days = 2; // 几天后 = 2 天默认
+    }
+    const unit = multiDayMatch[2];
+    let slots = 1;
+    if (unit === "天" || unit === "日") slots = 1;
+    else if (unit === "周" || unit === "礼拜") slots = 7;
+    maxJump = Math.max(maxJump, 8 * days * slots);
+  }
+  return maxJump;
+}
 
 /** 世界时钟状态结构 */
 export interface WorldClockState {
@@ -1230,9 +1307,13 @@ export function readWorldClock(state: unknown): WorldClockState {
 /**
  * 推进世界时钟 tick。仅自由模式生效；章节模式直接返回，不碰 state（零回归）。
  * 在编排完成、state 落库前调用（见 SessionService）。
+ *
+ * isFreeMode 由调用方基于 currentEvent.eventFlowType === "free_runtime" 计算传入，
+ * 不依赖 chapter 字段完整性（playChapter 加载的字段可能不全，但编排层
+ * 已经能确认 flow=free_runtime 时本轮就是自由模式）。
  */
-export function advanceWorldClock(state: JsonRecord, chapter: any): WorldClockState | null {
-  if (!isFreeChapterRuntimeMode(chapter)) return null;
+export function advanceWorldClock(state: JsonRecord, isFreeMode: boolean): WorldClockState | null {
+  if (!isFreeMode) return null;
   const clock = readWorldClock(state);
   const nextTick = clock.tick + 1;
   const slotIndex = ((nextTick % WORLD_TIME_SLOTS.length) + WORLD_TIME_SLOTS.length) % WORLD_TIME_SLOTS.length;
@@ -1277,9 +1358,11 @@ export function readLastHookTick(state: unknown): number {
 /**
  * 判断本轮是否应植入叙事钩子。仅自由模式生效。
  * currentTick 来自 worldClock.tick（P1-a），lastHookTick 来自 state.vars。
+ *
+ * isFreeMode 由调用方基于 currentEvent.eventFlowType === "free_runtime" 计算传入。
  */
-export function shouldEmitHook(state: unknown, chapter: any): boolean {
-  if (!isFreeChapterRuntimeMode(chapter)) return false;
+export function shouldEmitHook(state: unknown, isFreeMode: boolean): boolean {
+  if (!isFreeMode) return false;
   const clock = readWorldClock(state);
   const lastHookTick = readLastHookTick(state);
   return clock.tick - lastHookTick >= HOOK_INTERVAL;

@@ -188,6 +188,77 @@ function generateEventChainSummaryMarkdown(logFilePath, outputMarkdownPath) {
   const rawLog = fs.readFileSync(logFilePath, "utf8");
   const lines = rawLog.split(/\r?\n/);
   const entries = [];
+  const worldClockEntries = [];
+
+  /**
+   * 从世界时钟流转条目生成 markdown 段落。
+   * 依赖闭包内的 worldClockEntries。
+   */
+  const buildWorldClockSection = () => {
+    if (worldClockEntries.length === 0) {
+      return [
+        "",
+        "## 世界时钟流转",
+        "",
+        "（日志中无 [worldClock] ）",
+        "",
+      ];
+    }
+    const byKind = {};
+    for (const e of worldClockEntries) byKind[e.kind] = (byKind[e.kind] || 0) + 1;
+    const skipReasons = {};
+    for (const e of worldClockEntries) {
+      if (!e.kind.startsWith("skip")) continue;
+      const reason = (e.payload && e.payload.reason) || e.kind;
+      skipReasons[reason] = (skipReasons[reason] || 0) + 1;
+    }
+    const tickSeries = [];
+    for (const e of worldClockEntries) {
+      const c = (e.payload && (e.payload.clockBefore || e.payload.to || e.payload.clockFinal)) || null;
+      if (c && typeof c.tick === "number") tickSeries.push(c);
+    }
+    const uniqueTick = tickSeries.filter((c, i, arr) => i === 0 || c.tick !== arr[i - 1].tick);
+    const lines = [
+      "",
+      "## 世界时钟流转",
+      "",
+      `- 总条目数: ${worldClockEntries.length}`,
+      "- 按 kind 统计:",
+      ...Object.entries(byKind).sort().map(([k, v]) => `  - \`${k}\`: ${v}`),
+    ];
+    if (Object.keys(skipReasons).length > 0) {
+      lines.push("- 跳过原因统计:");
+      for (const [r, n] of Object.entries(skipReasons).sort((a, b) => b[1] - a[1])) {
+        lines.push(`  - ${n} 次: ${r}`);
+      }
+    }
+    if (uniqueTick.length > 0) {
+      lines.push("");
+      lines.push(`- tick 唯一值序列（按时间）: ${uniqueTick.map((c) => `tick=${c.tick}(${c.timeOfDay}/${c.weather})`).join(" → ")}`);
+    }
+    lines.push("");
+    lines.push("| 时间 | 模式 | tick | timeOfDay | weather | 备注 |");
+    lines.push("|---|---|---|---|---|---|");
+    for (const e of worldClockEntries) {
+      const c = (e.payload && (e.payload.clockBefore || e.payload.to || e.payload.clockFinal)) || {};
+      const tick = c.tick != null ? c.tick : "-";
+      const time = c.timeOfDay || "-";
+      const weather = c.weather || "-";
+      let note = "";
+      if (e.payload) {
+        if (e.payload.reason) note = e.payload.reason;
+        else if (e.payload.jump != null) note = `jump=+${e.payload.jump}`;
+        else if (e.payload.detectedJump != null) note = `detected=${e.payload.detectedJump}`;
+        else if (e.kind === "enter") {
+          note = `isFreeMode=${e.payload.isFreeMode}, phaseId="${e.payload.phaseId || ""}", timeMode=${e.payload.timeMode}`;
+        }
+      }
+      lines.push(`| ${e.timestamp} | ${e.kind} | ${tick} | ${time} | ${weather} | ${note} |`);
+    }
+    lines.push("");
+    return lines;
+  };
+
   let currentEntry = null;
   let currentContext = {};
   let pendingEntryPatch = {};
@@ -376,6 +447,18 @@ function generateEventChainSummaryMarkdown(logFilePath, outputMarkdownPath) {
       currentEntry.eventProgressResolution = extractAfter(line, "resolution=");
       continue;
     }
+    // 世界时钟流转条目（独立于编排条目，按时间序列汇总在文末）
+    if (line.includes("[story:orchestrator:runtime]") && line.includes("[worldClock]")) {
+      const payload = parseJsonFromLogLine(line);
+      if (payload) {
+        const tsMatch = line.match(/^\[(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\.\d+)\]/);
+        const timestamp = tsMatch ? tsMatch[1] : "";
+        const kindMatch = line.match(/\[worldClock\]\s+(\S+)/);
+        const kind = kindMatch ? kindMatch[1] : "";
+        worldClockEntries.push({ timestamp, kind, payload });
+      }
+      continue;
+    }
     if (line.includes("[story:chapter_ending_check:runtime]")) {
       const payload = parseJsonFromLogLine(line);
       if (payload) {
@@ -452,6 +535,7 @@ function generateEventChainSummaryMarkdown(logFilePath, outputMarkdownPath) {
       linesForEntry.push("");
       return linesForEntry;
     }),
+    ...buildWorldClockSection(),
   ];
 
   fs.mkdirSync(path.dirname(outputMarkdownPath), { recursive: true });
@@ -459,6 +543,7 @@ function generateEventChainSummaryMarkdown(logFilePath, outputMarkdownPath) {
   return {
     outputPath: outputMarkdownPath,
     entryCount: entries.length,
+    worldClockEntryCount: worldClockEntries.length,
   };
 }
 
