@@ -1157,6 +1157,83 @@ export function isFreeChapterRuntimeMode(chapter: any): boolean {
   return !hasCompletionCondition && !hasEndingRules;
 }
 
+// ============================================================================
+// P1-a 世界时钟（自由模式确定性时间推进）
+//
+// 设计目的：替代 P0 的 worldBreathing 从记忆文本关键词匹配时间的做法。
+// 记忆文本每轮被记忆管理器重写，时间会倒流/凝固；改用 state.vars.worldClock
+// 的确定性 tick 推进，时间单调循环，根除倒流。
+//
+// 边界（与叙事驱动力.md 一致）：
+// - 仅自由模式推进 tick（isFreeChapterRuntimeMode）；章节模式时间由章节提纲控制。
+// - 8 段时间循环：清晨/上午/正午/下午/黄昏/夜晚/深夜/午夜。
+// - 纯机械 tick++，不做"过夜/几天后"关键词加速（待观察后再加）。
+// - 天气按时段确定性映射，不用 Math.random，保证存档可复现。
+// ============================================================================
+
+/** 8 段时间槽，tick % 8 取下标 */
+export const WORLD_TIME_SLOTS = [
+  "清晨", "上午", "正午", "下午", "黄昏", "夜晚", "深夜", "午夜",
+] as const;
+
+/** 每个时段的默认天气，确定性映射 */
+const DEFAULT_WEATHER_BY_SLOT: Record<string, string> = {
+  清晨: "晴",
+  上午: "晴",
+  正午: "晴",
+  下午: "多云",
+  黄昏: "多云",
+  夜晚: "晴",
+  深夜: "阴",
+  午夜: "阴",
+};
+
+/** 世界时钟状态结构 */
+export interface WorldClockState {
+  tick: number;
+  timeOfDay: string;
+  weather: string;
+}
+
+/**
+ * 惰性读取世界时钟。老存档无 worldClock 时返回默认值（tick:0 / 清晨 / 晴），
+ * 不写回 state（写回由 advanceWorldClock 负责）。
+ */
+export function readWorldClock(state: unknown): WorldClockState {
+  const vars = (state && typeof state === "object")
+    ? (state as Record<string, any>).vars
+    : null;
+  const clock = vars && typeof vars === "object"
+    ? (vars as Record<string, any>).worldClock
+    : null;
+  const tick = Number.isFinite(Number(clock?.tick)) ? Number(clock.tick) : 0;
+  const slotIndex = ((tick % WORLD_TIME_SLOTS.length) + WORLD_TIME_SLOTS.length) % WORLD_TIME_SLOTS.length;
+  const rawTimeOfDay = String(clock?.timeOfDay || "").trim();
+  const timeOfDay = rawTimeOfDay || WORLD_TIME_SLOTS[slotIndex];
+  const rawWeather = String(clock?.weather || "").trim();
+  const weather = rawWeather || DEFAULT_WEATHER_BY_SLOT[timeOfDay] || "晴";
+  return { tick, timeOfDay, weather };
+}
+
+/**
+ * 推进世界时钟 tick。仅自由模式生效；章节模式直接返回，不碰 state（零回归）。
+ * 在编排完成、state 落库前调用（见 SessionService）。
+ */
+export function advanceWorldClock(state: JsonRecord, chapter: any): WorldClockState | null {
+  if (!isFreeChapterRuntimeMode(chapter)) return null;
+  const clock = readWorldClock(state);
+  const nextTick = clock.tick + 1;
+  const slotIndex = ((nextTick % WORLD_TIME_SLOTS.length) + WORLD_TIME_SLOTS.length) % WORLD_TIME_SLOTS.length;
+  const timeOfDay = WORLD_TIME_SLOTS[slotIndex];
+  const weather = DEFAULT_WEATHER_BY_SLOT[timeOfDay] || "晴";
+  const nextClock: WorldClockState = { tick: nextTick, timeOfDay, weather };
+  if (!state.vars || typeof state.vars !== "object") {
+    (state as Record<string, any>).vars = {};
+  }
+  (state.vars as Record<string, any>).worldClock = nextClock;
+  return nextClock;
+}
+
 // 组合章节运行时提纲。
 // 优先使用作者显式配置的 runtimeOutline；缺失时再从章节字段自动补全 opening/userNodes/phases/fixedEvents。
 export function buildChapterRuntimeOutline(input: {

@@ -13,6 +13,7 @@ import {
   RuntimeEventDigestState,
   RuntimeEventViewState,
   syncRuntimeCurrentEventFromChapterProgress,
+  advanceWorldClock,
   toJsonText,
   upsertRuntimeEventDigestState,
 } from "@/lib/gameEngine";
@@ -3105,6 +3106,9 @@ async function addSessionMessageInner(input: AddSessionMessageInput, sessionId: 
       });
       narrativeMessageRow = generatedMessages[generatedMessages.length - 1] || null;
       syncChapterProgressWithRuntime(playChapter, state);
+      // P1-a 世界时钟：自由模式每轮编排完成后推进 tick，落库前写入 state.vars.worldClock。
+      // 章节模式 advanceWorldClock 内部直接返回不碰 state，零回归。
+      advanceWorldClock(state, playChapter);
 
     }
   }

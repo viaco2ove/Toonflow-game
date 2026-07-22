@@ -18,6 +18,7 @@ import {
   readRuntimeCurrentEventState,
   setChapterProgressState,
   syncRuntimeCurrentEventFromChapterProgress,
+  readWorldClock,
 } from "@/lib/gameEngine";
 import {
   advanceChapterProgressAfterNarrative,
@@ -2522,14 +2523,17 @@ function buildDynamicWorldBackground(state: JsonRecord): string {
 }
 
 /**
- * 自由模式世界呼吸提取（复用已有记忆数据，不新建世界状态服务）。
+ * 自由模式世界呼吸提取。
+ *
+ * P1-a 升级：时间/天气改为优先读 state.vars.worldClock（确定性 tick 推进），
+ * 根治 P0 从记忆文本匹配导致的时间倒流/凝固。记忆文本关键词匹配降为兜底，
+ * 仅在 worldClock 不存在（老存档）时回退。ambientEvents 仍从记忆文本提取
+ * （时钟不含氛围信息）。
  *
  * 设计取舍：
- * - 时间/天气/氛围全部从 dynamicWorldGlobalBackground + memoryFacts 里做关键词归类，
- *   不调用 AI、不引入正则复杂度，保证确定性和零额外延迟；
- * - 这是"展示用提取"，单一数据源仍是记忆管理器维护的 dynamicWorldGlobalBackground，
- *   编排师侧只读不写，避免与记忆管理器抢职责；
- * - 时间倒流等根因（缺确定性 tick）不在本函数范围内，由 prompt 层"禁止凭空捏造时间天气"约束损害。
+ * - 不调用 AI、不引入正则复杂度，保证确定性和零额外延迟；
+ * - 这是"展示用提取"，worldClock 的推进由 advanceWorldClock 在落库前负责，
+ *   本函数只读不写，避免与记忆管理器抢职责。
  */
 function buildWorldBreathing(state: JsonRecord): {
   timeOfDay?: string;
@@ -2537,10 +2541,10 @@ function buildWorldBreathing(state: JsonRecord): {
   ambientEvents?: string[];
   npcActivities?: string[];
 } | null {
+  const clock = readWorldClock(state);
   const backgroundText = buildDynamicWorldBackground(state);
   const facts = Array.isArray(state?.memoryFacts) ? (state.memoryFacts as unknown[]).map((item) => normalizeScalarText(item)).filter(Boolean) : [];
   const sourceText = [backgroundText, ...facts].join("\n");
-  if (!sourceText) return null;
 
   const TIME_KEYWORDS = ["清晨", "黎明", "早晨", "上午", "正午", "中午", "午后", "下午", "黄昏", "傍晚", "夜晚", "深夜", "午夜", "白天"];
   const WEATHER_KEYWORDS = ["晴天", "阴天", "下雨", "细雨", "暴雨", "雷雨", "雪", "大雪", "雾", "大雾", "风暴", "狂风", "微风", "闷热", "凉爽"];
@@ -2558,8 +2562,16 @@ function buildWorldBreathing(state: JsonRecord): {
     .slice(0, 3)
     .map((keyword) => keyword);
 
-  const timeOfDay = pickFirst(TIME_KEYWORDS);
-  const weather = pickFirst(WEATHER_KEYWORDS);
+  // P1-a：优先用确定性时钟；worldClock 为默认值（tick:0/老存档）时，记忆文本兜底。
+  // 判断"是否为真实时钟值"：tick>0 或 state.vars.worldClock 显式存在。
+  const varsBag = asRecord(state?.vars);
+  const hasExplicitClock = Boolean(varsBag.worldClock);
+  const timeOfDay = (hasExplicitClock || clock.tick > 0)
+    ? clock.timeOfDay
+    : (pickFirst(TIME_KEYWORDS) || clock.timeOfDay);
+  const weather = (hasExplicitClock || clock.tick > 0)
+    ? clock.weather
+    : (pickFirst(WEATHER_KEYWORDS) || clock.weather);
 
   // 全空时不返回对象，让 snapshot 里的 world_breathing 为 null，提示词层据"为空才可从 memory 推断"处理。
   if (!timeOfDay && !weather && !ambientEvents.length) return null;
