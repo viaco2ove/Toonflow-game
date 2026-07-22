@@ -3046,6 +3046,7 @@ async function addSessionMessageInner(input: AddSessionMessageInput, sessionId: 
       ? await loadPublishedChapter(Number(sessionRow.worldPublishId || 0), activeChapterId, db)
       : null;
     const eventView = buildEventView(state);
+    DebugLogUtil.log("story:orchestrator:runtime", "[worldClock] return")
     return {
       sessionId,
       status: sessionStatus,
@@ -3068,6 +3069,7 @@ async function addSessionMessageInner(input: AddSessionMessageInput, sessionId: 
     };
   }
 
+  DebugLogUtil.log("story:orchestrator:runtime", "[worldClock] chapterSwitchMessageRow")
   let chapterSwitchMessageRow: any = null;
   let generatedMessages: Record<string, any>[] = [];
   let narrativePlan: any | null = null;
