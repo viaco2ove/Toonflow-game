@@ -740,7 +740,19 @@ function extractRuntimePhasesFromContent(
           ),
           userNodeId: stageUserNode?.id || null,
           body: stageDirectives.cleanedBody,
-          userSpeakRequired: stageDirectives.userSpeakRequired,
+          // B 修复：用户发言阶段若作者未显式配置 userSpeakRequired，默认要求 1 次发言。
+          // 兜底逻辑：仅当 (1) 阶段是 user 阶段 且 (2) 作者未配置 (null) 且 (3) 标题含"用户/发言"字样 才生效。
+          // 作者显式设为 0/null/具体数字 时不受影响。
+          userSpeakRequired: (() => {
+            if (stageDirectives.userSpeakRequired !== null && stageDirectives.userSpeakRequired !== undefined) {
+              return stageDirectives.userSpeakRequired;
+            }
+            const headingLower = String(stage.heading || "").toLowerCase();
+            if (isUserStage && (headingLower.includes("用户") || headingLower.includes("发言"))) {
+              return 1;
+            }
+            return stageDirectives.userSpeakRequired;
+          })(),
         });
       });
     }

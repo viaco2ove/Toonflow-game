@@ -984,7 +984,7 @@ const _PROMPT_STORY_ORCHESTRATOR_COMPACT = `
 3. 叙事钩子：当 current_event.should_emit_hook = true 时，在本轮 motive 中植入一个可探索的线索（远处异响/陌生面孔/NPC主动搭话），但不要替用户做决定；该标志由系统按固定间隔确定性触发，你无需自行计数，标志为 true 时才植、否则不植
 4. 空间感：交代当前场景细节，让用户感到"身在此处"
 5. 因果连贯：承接 recent_dialogue 与 memory，不前后矛盾
-6. 不抢戏：用户始终是主角，世界只是背景板；NPC 推进一小步即停（motive 只描述这一小步），把选择权留给用户
+6. NPC 自由对话：不要硬编码"一问一答"节奏，NPC 之间可以自然抢话、连珠炮、多人互动；用户想插话时自然会插，编排师无需主动为用户预留发言位
 
 当 flow ≠ "free_runtime" 时，忽略本段，严格按事件提纲推进。
 
@@ -1195,7 +1195,7 @@ const _PROMPT_STORY_ORCHESTRATOR_ADVANCED = `
 3. 叙事钩子：当 current_event.should_emit_hook = true 时，在本轮 motive 中植入一个可探索的线索（远处异响/陌生面孔/NPC主动搭话），但不要替用户做决定；该标志由系统按固定间隔确定性触发，你无需自行计数，标志为 true 时才植、否则不植
 4. 空间感：交代当前场景细节，让用户感到"身在此处"
 5. 因果连贯：承接 recent_dialogue 与 memory，不前后矛盾
-6. 不抢戏：用户始终是主角，世界只是背景板；NPC 推进一小步即停（motive 只描述这一小步），把选择权留给用户
+6. NPC 自由对话：不要硬编码"一问一答"节奏，NPC 之间可以自然抢话、连珠炮、多人互动；用户想插话时自然会插，编排师无需主动为用户预留发言位
 
 当 flow ≠ "free_runtime" 时，忽略本段，严格按事件提纲推进。
 
@@ -1476,6 +1476,14 @@ const _PROMPT_STORY_EVENT_PROGRESS = `你是事件进度检测器。你只判断
 - event_status=waiting_input：代表当前事件还需要用户输入
 - event_status=active：代表当前事件仍在推进，但还没轮到用户
 - event_status=completed：只在 ended=true 时使用
+
+## 用户发言阶段完成判定（重要）
+当 current_stage.label 含"用户发言"且需要判定该阶段是否完成时：
+- 用户**任何**非空、非纯标点的输入都算已发言（"." 视为跳过表达，也算完成）
+- 不要把"用户发言"理解为"用户必须下达具体动作指令"——表达意愿、提问、感叹、命令、沉默跳过都属于"发言"
+- 用户一旦在该阶段留下任何有效输入，ended=true、event_status=active，让系统推进剧情
+- 不要因为"剧情还没发生具体变化"就判定用户还没发言——那是编排师的事，不是你的事
+- 若用户**连续多轮**都被判 waiting_input 但实际已多次输入，应主动结束该阶段，避免死循环
 
 ## 输出示例
 {“ended”:false,”event_status”:”waiting_input”,”progress_summary”:”当前事件仍在等待用户补充角色名称、性别和年龄”,”progress_facts”:[“用户尚未提供完整角色信息”,”当前仅完成开场引导”,”需要继续等待用户输入”],”reason”:”当前事件目标尚未完成，仍需用户继续提供信息”}

@@ -1922,6 +1922,24 @@ export function applyAiEventProgressResolution(input: {
   const currentEvent = readRuntimeCurrentEventState(input.state);
   const stableSummary = String(current.eventSummary || currentEvent.summary || "").trim();
   const progressSummary = String(input.resolution.progressSummary || "").trim();
+
+  // C 修复：防卡死循环兜底。统计当前事件连续 waiting_input 轮数：
+  // - eventStatus=active/completed → 重置为 0
+  // - eventStatus=waiting_input 且 ended=false → 累计 +1
+  // 累计到 STALL_THRESHOLD 时，强制 isCurrentStageCompleted=true，让阶段推进。
+  const STALL_THRESHOLD = 5;
+  const stateVars = asRecord(input.state?.vars);
+  const prevStallCount = Number(stateVars.eventStallCount) || 0;
+  const resolvedStatus = String(input.resolution.eventStatus || "").trim();
+  const newStallCount = (resolvedStatus === "waiting_input" && !input.resolution.ended)
+    ? prevStallCount + 1
+    : 0;
+  if (!input.state.vars || typeof input.state.vars !== "object") {
+    (input.state as Record<string, any>).vars = {};
+  }
+  (input.state.vars as Record<string, any>).eventStallCount = newStallCount;
+  const stallForceComplete = newStallCount >= STALL_THRESHOLD;
+
   const nextFacts = mergeAiProgressFacts(
     Array.isArray(currentEvent.facts) ? currentEvent.facts : [],
     input.resolution.progressFacts,
@@ -1961,7 +1979,8 @@ export function applyAiEventProgressResolution(input: {
 
   const isCurrentStageCompleted = input.resolution.ended
     || /已完成.*推进至|已完成.*等待|已完成.*进入|场景.*完成|阶段.*完成|推进到.*阶段/i.test(progressSummary)
-    || userSpeakCompleted;
+    || userSpeakCompleted
+    || stallForceComplete;
 
   // 打印 stage 状态日志
   console.log("[story:event_progress:runtime][stage]", JSON.stringify({
