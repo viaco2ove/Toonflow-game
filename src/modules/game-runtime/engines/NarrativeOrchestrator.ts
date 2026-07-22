@@ -19,6 +19,8 @@ import {
   setChapterProgressState,
   syncRuntimeCurrentEventFromChapterProgress,
   readWorldClock,
+  shouldEmitHook,
+  markHookEmitted,
 } from "@/lib/gameEngine";
 import {
   advanceChapterProgressAfterNarrative,
@@ -206,6 +208,9 @@ type OrchestratorPromptPayload = {
     ambientEvents?: string[];
     npcActivities?: string[];
   } | null;
+  // ★ P2-b 叙事钩子标志：仅自由模式，距上次钩子 >= HOOK_INTERVAL 轮时为 true。
+  //   AI 据此主动配合植钩子；主流程同时在 motive 追加钩子要求兜底。章节模式 false。
+  shouldEmitHook?: boolean;
 };
 
 type SpeakerPromptPayload = {
@@ -2197,8 +2202,7 @@ function buildOrchestratorInputSnapshot(payload: OrchestratorPromptPayload, comp
       curr_stage: payload.currentStage,
       // ★ 自由模式世界呼吸：仅 free_runtime 且提取到内容时才写入，章节模式无此键。
       ...(payload.worldBreathing ? { world_breathing: payload.worldBreathing } : {}),
-    },
-    turn_state: {
+    },    turn_state: {
       can_player_speak: payload.turnState.canPlayerSpeak,
       expected_role_type: sanitizeRoleType(payload.turnState.expectedRoleType),
       expected_role: payload.turnState.expectedRole || "",
@@ -2209,6 +2213,8 @@ function buildOrchestratorInputSnapshot(payload: OrchestratorPromptPayload, comp
     active_task: payload.state ? (extractTaskContext(payload.state) || null) : null,
     recent_dialogue: payload.recentDialogue,
     latest_player_message: payload.latestPlayerMessage || "",
+    // ★ P2-b 叙事钩子标志：仅自由模式且到触发间隔时为 true，引导 AI 植入可探索线索。
+    ...(payload.shouldEmitHook ? { should_emit_hook: true } : {}),
   };
   if (compactMode) {
     //如果 compactMode 为真，就把 snapshot.current_event.window 这个字段删掉。
@@ -3871,6 +3877,8 @@ function buildOrchestratorPromptPayload(input: {
   //   章节模式保持 null，提示词层的"自由模式规则"段会因 flow≠free_runtime 而整体忽略。
   if (input.currentEvent.eventFlowType === "free_runtime") {
     payload.worldBreathing = buildWorldBreathing(input.state);
+    // ★ P2-b 叙事钩子：确定性计数，>= HOOK_INTERVAL 轮时通知 AI 植钩子。
+    payload.shouldEmitHook = shouldEmitHook(input.state, input.chapter);
   }
   return payload;
 }
@@ -4505,6 +4513,17 @@ export async function runNarrativePlan(input: OrchestratorInput): Promise<Narrat
   });
   try {
     const result = await doRunNarrativePlan(input);
+    // ★ P2-b 叙事钩子（路线C 主流程控计数）：
+    //   自由模式且到触发间隔时，给 motive 追加钩子要求（兜底强制，AI 在 payload 里
+    //   也能看到 should_emit_hook 主动配合），并立即 markHookEmitted 锁定计数。
+    //   只在有实质 motive（非 player/非空）时追加，避免给空 motive 画蛇添足。
+    if (shouldEmitHook(input.state, input.chapter) && result.motive) {
+      result.motive = `${result.motive}【叙事钩子】在本轮回复中自然植入一个可探索线索（远处异响/陌生面孔/NPC主动搭话/未解之物），不替用户做决定，一两句点到即止。`;
+      markHookEmitted(input.state);
+      logOrchestratorKeyNode("narrativeHook:emitted", input.traceMeta, {
+        tick: readWorldClock(input.state).tick,
+      });
+    }
     return result;
   } finally {
     const cost = Date.now() - start;

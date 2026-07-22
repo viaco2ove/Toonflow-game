@@ -1234,6 +1234,57 @@ export function advanceWorldClock(state: JsonRecord, chapter: any): WorldClockSt
   return nextClock;
 }
 
+// ============================================================================
+// P2-b 叙事钩子确定性计数（自由模式）
+//
+// 设计目的：P0 提示词写了"每 2-3 轮植入叙事钩子"，但 AI 自行计数不可靠（可能每轮都
+// 钩或从不钩）。改用 state.vars.lastHookTick 做确定性计数，路线 C：主流程控计数。
+//
+// 机制：
+// - shouldEmitHook：仅自由模式，currentTick - lastHookTick >= HOOK_INTERVAL 时返回 true
+// - 标志注入 payload 让 AI 主动配合；主流程同时强制给 motive 追加钩子要求兜底
+// - markHookEmitted：编排师本轮返回后，把 lastHookTick 更新为当前 tick，锁定计数
+// - 章节模式不触发（isFreeChapterRuntimeMode 判断），零回归
+// ============================================================================
+
+/** 钩子触发间隔（距上次钩子的 tick 数） */
+export const HOOK_INTERVAL = 3;
+
+/** 读取上次植钩子的 tick，无记录返回 -1（表示从未植过） */
+export function readLastHookTick(state: unknown): number {
+  const vars = (state && typeof state === "object")
+    ? (state as Record<string, any>).vars
+    : null;
+  const lastHookTick = vars && typeof vars === "object"
+    ? (vars as Record<string, any>).lastHookTick
+    : null;
+  const tick = Number(lastHookTick);
+  return Number.isFinite(tick) ? tick : -1;
+}
+
+/**
+ * 判断本轮是否应植入叙事钩子。仅自由模式生效。
+ * currentTick 来自 worldClock.tick（P1-a），lastHookTick 来自 state.vars。
+ */
+export function shouldEmitHook(state: unknown, chapter: any): boolean {
+  if (!isFreeChapterRuntimeMode(chapter)) return false;
+  const clock = readWorldClock(state);
+  const lastHookTick = readLastHookTick(state);
+  return clock.tick - lastHookTick >= HOOK_INTERVAL;
+}
+
+/**
+ * 标记本轮已植入钩子，更新 lastHookTick 为当前 tick。
+ * 在编排师返回后调用，无论后续发言器成败都锁定计数，避免钩子永不计数。
+ */
+export function markHookEmitted(state: JsonRecord): void {
+  const clock = readWorldClock(state);
+  if (!state.vars || typeof state.vars !== "object") {
+    (state as Record<string, any>).vars = {};
+  }
+  (state.vars as Record<string, any>).lastHookTick = clock.tick;
+}
+
 // 组合章节运行时提纲。
 // 优先使用作者显式配置的 runtimeOutline；缺失时再从章节字段自动补全 opening/userNodes/phases/fixedEvents。
 export function buildChapterRuntimeOutline(input: {

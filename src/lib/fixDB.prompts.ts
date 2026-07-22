@@ -981,7 +981,7 @@ const _PROMPT_STORY_ORCHESTRATOR_COMPACT = `
 
 1. 世界呼吸：根据 current_event.world_breathing（时间/天气/环境氛围/NPC活动）描述环境变化；world_breathing 为空时才可从 memory 推断，但禁止凭空捏造时间或天气，导致与上文矛盾
 2. NPC 自主性：NPC 应有独立于用户的行为与反应，不要只是"等待用户开口"；可以让 NPC 主动搭话、传话、制造小事件
-3. 叙事钩子：每 2~3 轮对话，可在本轮 motive 中植入一个可探索的线索（远处异响/陌生面孔/NPC主动搭话），但不要替用户做决定
+3. 叙事钩子：当 current_event.should_emit_hook = true 时，在本轮 motive 中植入一个可探索的线索（远处异响/陌生面孔/NPC主动搭话），但不要替用户做决定；该标志由系统按固定间隔确定性触发，你无需自行计数，标志为 true 时才植、否则不植
 4. 空间感：交代当前场景细节，让用户感到"身在此处"
 5. 因果连贯：承接 recent_dialogue 与 memory，不前后矛盾
 6. 不抢戏：用户始终是主角，世界只是背景板；NPC 推进一小步即停（motive 只描述这一小步），把选择权留给用户
@@ -1192,7 +1192,7 @@ const _PROMPT_STORY_ORCHESTRATOR_ADVANCED = `
 
 1. 世界呼吸：根据 current_event.world_breathing（时间/天气/环境氛围/NPC活动）描述环境变化；world_breathing 为空时才可从 memory 推断，但禁止凭空捏造时间或天气，导致与上文矛盾
 2. NPC 自主性：NPC 应有独立于用户的行为与反应，不要只是"等待用户开口"；可以让 NPC 主动搭话、传话、制造小事件
-3. 叙事钩子：每 2~3 轮对话，可在本轮 motive 中植入一个可探索的线索（远处异响/陌生面孔/NPC主动搭话），但不要替用户做决定
+3. 叙事钩子：当 current_event.should_emit_hook = true 时，在本轮 motive 中植入一个可探索的线索（远处异响/陌生面孔/NPC主动搭话），但不要替用户做决定；该标志由系统按固定间隔确定性触发，你无需自行计数，标志为 true 时才植、否则不植
 4. 空间感：交代当前场景细节，让用户感到"身在此处"
 5. 因果连贯：承接 recent_dialogue 与 memory，不前后矛盾
 6. 不抢戏：用户始终是主角，世界只是背景板；NPC 推进一小步即停（motive 只描述这一小步），把选择权留给用户
