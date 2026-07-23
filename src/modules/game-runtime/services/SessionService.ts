@@ -3808,12 +3808,14 @@ async function orchestrateSessionTurnInner(sessionId: string): Promise<SessionOr
       // 现实同步：不落库，前端用服务器时间本地算
       DebugLogUtil.log("story:orchestrator:runtime", "[worldClock] skip: realtime mode", JSON.stringify({ clockBefore }));
     } else if (timeMode === "narrative") {
-      // 剧情推动：两层判定——第1层 AI 显式声明 timeAdvance > 0；第2层关键词正则扫 motive+eventSummary
+      // 剧情推动：两层判定——第1层 AI 显式声明 timeAdvance > 0；第2层关键词正则扫用户输入+AI motive+eventSummary
       const explicitSlots = (resultPlan as any)?.timeAdvance;
       const explicitValid = typeof explicitSlots === "number" && Number.isFinite(explicitSlots) && explicitSlots > 0;
+      // ★ 扩大扫描范围：用户最后 2 条消息 + AI motive + eventSummary（关键词可能在用户输入里，如"睡了三天才醒来"）
+      const userMsgs = recentMessages.slice(0, 2).map((m: any) => String(m?.content || "")).join("\n");
       const motiveText = String(resultPlan?.motive || "").slice(0, 200);
       const summaryText = String((resultPlan as any)?.eventSummary || "").slice(0, 200);
-      const combinedText = `${motiveText}\n${summaryText}`;
+      const combinedText = `${userMsgs}\n${motiveText}\n${summaryText}`;
       const keywordJump = detectNarrativeTimeJump(combinedText);
       const jump = explicitValid ? Math.floor(explicitSlots) : keywordJump;
       const source = explicitValid ? "explicit" : (keywordJump > 0 ? "keyword" : null);
@@ -3822,6 +3824,7 @@ async function orchestrateSessionTurnInner(sessionId: string): Promise<SessionOr
         keywordJump,
         jump,
         source,
+        userMsgPreview: userMsgs.slice(0, 80),
         motivePreview: motiveText.slice(0, 80),
       }));
       if (jump > 0) {
@@ -3833,7 +3836,7 @@ async function orchestrateSessionTurnInner(sessionId: string): Promise<SessionOr
         (state as any).vars.worldClock = { tick: nextTick, timeOfDay, weather };
         DebugLogUtil.log("story:orchestrator:runtime", "[worldClock] narrative advanced", JSON.stringify({ from: clockBefore, to: { tick: nextTick, timeOfDay, weather }, jump, source }));
       } else {
-        DebugLogUtil.log("story:orchestrator:runtime", "[worldClock] narrative no jump", JSON.stringify({ reason: "本轮无时间流逝", motivePreview: motiveText.slice(0, 80) }));
+        DebugLogUtil.log("story:orchestrator:runtime", "[worldClock] narrative no jump", JSON.stringify({ reason: "本轮无时间流逝", userMsgPreview: userMsgs.slice(0, 80), motivePreview: motiveText.slice(0, 80) }));
       }
     } else if (timeMode === "manual") {
       // 手动模式：worldClock 由前端下拉选择后通过 updateWorldClockMode 写入，后端不自动推进
