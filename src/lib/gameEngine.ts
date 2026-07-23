@@ -1219,18 +1219,18 @@ export function realHourToSlot(hour: number): string {
 }
 
 /** 时间模式：tick（轮转）| narrative（剧情推动）| realtime（现实同步） */
-export type TimeMode = "tick" | "narrative" | "realtime";
+export type TimeMode = "tick" | "narrative" | "realtime" | "manual";
 
 /** 天气模式：slot（按时段默认）| narrative（从剧情推断，留扩展位）| manual（手动覆盖，留扩展位） */
 export type WeatherMode = "slot" | "narrative" | "manual";
 
-/** 读 timeMode，默认 "tick" */
+/** 读 timeMode，默认 "narrative" */
 export function readTimeMode(state: unknown): TimeMode {
   const root = isRecord(state) ? state : null;
   const vars = root && isRecord(root.vars) ? root.vars : null;
   const value = vars ? String(vars.timeMode || "").trim() : "";
-  if (value === "narrative" || value === "realtime") return value;
-  return "tick";
+  if (value === "tick" || value === "narrative" || value === "realtime" || value === "manual") return value as TimeMode;
+  return "narrative";
 }
 
 /** 读 weatherMode，默认 "slot" */

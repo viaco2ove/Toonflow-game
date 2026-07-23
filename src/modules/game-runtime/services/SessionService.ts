@@ -309,6 +309,8 @@ export interface SessionNarrativePlanResult {
     payloadMode: "compact" | "advanced";
     payloadModeSource: "explicit" | "inferred";
   };
+  /** 剧情推动模式:本轮编排显式声明的时间推进时段数(0=不推进,正整数=推进N个时段) */
+  timeAdvance?: number;
 }
 
 export interface SessionChapterCommand {
@@ -3115,80 +3117,13 @@ async function addSessionMessageInner(input: AddSessionMessageInput, sessionId: 
       });
       narrativeMessageRow = generatedMessages[generatedMessages.length - 1] || null;
       syncChapterProgressWithRuntime(playChapter, state);
-      // 世界时钟：3 模式分支（tick / narrative / realtime）。仅 free_runtime 生效，
-      // 章节模式零回归。realtime 不落库，tick / narrative 推进 worldClock。
-      const progressForClock = readChapterProgressState(state);
-      const phaseIdRaw = String(progressForClock?.phaseId || "").trim();
-      const isFreeMode = !phaseIdRaw;
-      const timeMode = readTimeMode(state);
-      const clockBefore = readWorldClock(state);
-      // [WORLD-CLOCK] 入口：详细记录所有判定状态，方便定位为何不推进
-      DebugLogUtil.log("story:orchestrator:runtime", "[worldClock] enter", JSON.stringify({
-        isFreeMode,
-        phaseId: phaseIdRaw,
-        timeMode,
-        eventIndex: progressForClock?.eventIndex,
-        clockBefore: clockBefore,
-        worldClockInVars: Boolean(state?.vars?.worldClock),
-      }));
-      if (!isFreeMode) {
-        DebugLogUtil.log("story:orchestrator:runtime", "[worldClock] skip: not free mode", JSON.stringify({
-          phaseId: phaseIdRaw,
-          reason: "chapter mode or phaseId non-empty, 3 modes do not apply",
-        }));
-      } else {
-        if (timeMode === "realtime") {
-          DebugLogUtil.log("story:orchestrator:runtime", "[worldClock] skip: realtime mode", JSON.stringify({
-            reason: "realtime mode 不落库，前端本地算",
-            clockBefore,
-          }));
-        } else if (timeMode === "narrative") {
-          // 剧情推动：从最新编排师 motive + 最近对话检测时间跳跃关键词
-          const latestMotive = (generatedMessages[generatedMessages.length - 1] as any)?.content || "";
-          const recentText = String(latestMotive).slice(0, 200);
-          const jump = detectNarrativeTimeJump(recentText);
-          DebugLogUtil.log("story:orchestrator:runtime", "[worldClock] narrative mode", JSON.stringify({
-            latestMotivePreview: recentText,
-            detectedJump: jump,
-            clockBefore,
-          }));
-          if (jump > 0) {
-            const nextTick = clockBefore.tick + jump;
-            const slotIndex = ((nextTick % WORLD_TIME_SLOTS.length) + WORLD_TIME_SLOTS.length) % WORLD_TIME_SLOTS.length;
-            const timeOfDay = WORLD_TIME_SLOTS[slotIndex];
-            const weather = getWeatherForSlot(timeOfDay);
-            state.vars.worldClock = { tick: nextTick, timeOfDay, weather };
-            DebugLogUtil.log("story:orchestrator:runtime", "[worldClock] narrative advanced", JSON.stringify({
-              from: clockBefore,
-              to: { tick: nextTick, timeOfDay, weather },
-              jump,
-            }));
-          } else {
-            DebugLogUtil.log("story:orchestrator:runtime", "[worldClock] narrative no jump", JSON.stringify({
-              reason: "未检测到过夜/几天后 等关键词",
-              latestMotivePreview: recentText,
-            }));
-          }
-        } else {
-          // tick 模式：每轮 +1
-          advanceWorldClock(state, true);
-          const clockAfter = readWorldClock(state);
-          DebugLogUtil.log("story:orchestrator:runtime", "[worldClock] tick advanced", JSON.stringify({
-            from: clockBefore,
-            to: clockAfter,
-          }));
-        }
-      }
+      // ★ 世界时钟推进（P1-a）已迁移至 orchestrateSessionTurnInner 的 finalizeOrchestrationResult。
+      // 本条 addMessage 内联编排路径仅在 orchestrate!==false 时执行；前端固定发 orchestrate:false，
+      // 真正编排走 /game/orchestration -> orchestrateSessionTurnInner，故此处不再推进 worldClock，
+      // 避免与 orchestrateSessionTurnInner 双重推进。参见 applyWorldClockForTurn。
 
     }
   }
-
-  // [WORLD-CLOCK] 落库前最终状态：用于确认 write-back 是否真的写入 DB
-  const clockFinal = readWorldClock(state);
-  DebugLogUtil.log("story:orchestrator:runtime", "[worldClock] persist before", JSON.stringify({
-    clockFinal,
-    worldClockInVars: Boolean(state?.vars?.worldClock),
-  }));
 
   const stateJson = toJsonText(state, {});
   await db("t_gameSession").where({ sessionId }).update({
@@ -3843,7 +3778,79 @@ async function orchestrateSessionTurnInner(sessionId: string): Promise<SessionOr
   logSessionOrchestrationKeyNode("session_request:accepted", requestTrace, {
     recentMessageCount: recentMessages.length,
   });
-  const finalizeOrchestrationResult = async (result: SessionOrchestrationResultSeed): Promise<SessionOrchestrationResult> => {
+  // ★ 世界时钟推进（P1-a）：仅自由模式 + 本轮真产生叙事时推进 tick。
+  // 前端发 orchestrate:false -> addMessage 早返回 -> 真正编排走本函数，
+  // 所以前一段在 addMessage 内联编排里写的推进代码是死代码（从未执行）。
+  // 这里是唯一真正会被前端 /game/orchestration 命中的推进点。
+  // narrativeProducedThisTurn: 仅当本轮真跑了编排/任务开场/章节开场时为 true；
+  // 早返回（pendingNarrativePlan 残留、canPlayerSpeakNow、空 plan）传 false，不推进。
+  // chapterForClock 由调用方传入（finalizeOrchestrationResult 传 activeChapter），
+  // 避免直接闭包外层 chapter（它在下方才赋值，pendingChapterId 早返回路径会触发 TDZ）。
+  const applyWorldClockForTurn = (narrativeProducedThisTurn: boolean, resultPlan: any, chapterForClock: any): void => {
+    const isFreeMode = isFreeChapterRuntimeMode(chapterForClock);
+    if (!isFreeMode || !narrativeProducedThisTurn) {
+      DebugLogUtil.log("story:orchestrator:runtime", "[worldClock] turn skip", JSON.stringify({
+        isFreeMode,
+        narrativeProducedThisTurn,
+        reason: !isFreeMode ? "not free mode" : "no narrative produced this turn",
+      }));
+      return;
+    }
+    const timeMode = readTimeMode(state);
+    const clockBefore = readWorldClock(state);
+    DebugLogUtil.log("story:orchestrator:runtime", "[worldClock] enter", JSON.stringify({
+      isFreeMode,
+      timeMode,
+      clockBefore,
+      eventIndex: readChapterProgressState(state)?.eventIndex,
+    }));
+    if (timeMode === "realtime") {
+      // 现实同步：不落库，前端用服务器时间本地算
+      DebugLogUtil.log("story:orchestrator:runtime", "[worldClock] skip: realtime mode", JSON.stringify({ clockBefore }));
+    } else if (timeMode === "narrative") {
+      // 剧情推动：两层判定——第1层 AI 显式声明 timeAdvance > 0；第2层关键词正则扫 motive+eventSummary
+      const explicitSlots = (resultPlan as any)?.timeAdvance;
+      const explicitValid = typeof explicitSlots === "number" && Number.isFinite(explicitSlots) && explicitSlots > 0;
+      const motiveText = String(resultPlan?.motive || "").slice(0, 200);
+      const summaryText = String((resultPlan as any)?.eventSummary || "").slice(0, 200);
+      const combinedText = `${motiveText}\n${summaryText}`;
+      const keywordJump = detectNarrativeTimeJump(combinedText);
+      const jump = explicitValid ? Math.floor(explicitSlots) : keywordJump;
+      const source = explicitValid ? "explicit" : (keywordJump > 0 ? "keyword" : null);
+      DebugLogUtil.log("story:orchestrator:runtime", "[worldClock] narrative mode", JSON.stringify({
+        explicitSlots: explicitValid ? explicitSlots : undefined,
+        keywordJump,
+        jump,
+        source,
+        motivePreview: motiveText.slice(0, 80),
+      }));
+      if (jump > 0) {
+        const nextTick = clockBefore.tick + jump;
+        const slotIndex = ((nextTick % WORLD_TIME_SLOTS.length) + WORLD_TIME_SLOTS.length) % WORLD_TIME_SLOTS.length;
+        const timeOfDay = WORLD_TIME_SLOTS[slotIndex];
+        const weather = getWeatherForSlot(timeOfDay);
+        (state as Record<string, any>).vars = (state as any).vars || {};
+        (state as any).vars.worldClock = { tick: nextTick, timeOfDay, weather };
+        DebugLogUtil.log("story:orchestrator:runtime", "[worldClock] narrative advanced", JSON.stringify({ from: clockBefore, to: { tick: nextTick, timeOfDay, weather }, jump, source }));
+      } else {
+        DebugLogUtil.log("story:orchestrator:runtime", "[worldClock] narrative no jump", JSON.stringify({ reason: "本轮无时间流逝", motivePreview: motiveText.slice(0, 80) }));
+      }
+    } else if (timeMode === "manual") {
+      // 手动模式：worldClock 由前端下拉选择后通过 updateWorldClockMode 写入，后端不自动推进
+      DebugLogUtil.log("story:orchestrator:runtime", "[worldClock] skip: manual mode", JSON.stringify({ clockBefore }));
+    } else {
+      // tick 模式：每轮 +1
+      advanceWorldClock(state as any, true);
+      const clockAfter = readWorldClock(state);
+      DebugLogUtil.log("story:orchestrator:runtime", "[worldClock] tick advanced", JSON.stringify({ from: clockBefore, to: clockAfter }));
+    }
+    DebugLogUtil.log("story:orchestrator:runtime", "[worldClock] persist before", JSON.stringify({ clockFinal: readWorldClock(state) }));
+  };
+
+  const finalizeOrchestrationResult = async (
+    result: SessionOrchestrationResultSeed,
+    narrativeProducedThisTurn = false,
+  ): Promise<SessionOrchestrationResult> => {
     const activeChapter = result.chapterId
       ? await loadPublishedChapter(Number(sessionRow.worldPublishId || 0), result.chapterId, db)
       : null;
@@ -3859,6 +3866,11 @@ async function orchestrateSessionTurnInner(sessionId: string): Promise<SessionOr
     }
     const expectedSpeaker = buildSessionExpectedSpeaker(state);
     setPendingSessionNarrativePlan(state, result.plan);
+    // ★ 世界时钟推进：在 state 落库前写回 state.vars.worldClock
+    // chapterForClock 用 activeChapter（本函数刚按 result.chapterId 加载的完整章节）。
+    // 不回退外层 chapter：它在下方才赋值，pendingChapterId 早返回路径会触发 TDZ。
+    // activeChapter 为 null（无章节）时 isFreeChapterRuntimeMode(null)=false，自然不推进。
+    applyWorldClockForTurn(narrativeProducedThisTurn, result.plan, activeChapter);
     await db("t_gameSession").where({ sessionId }).update({
       stateJson: toJsonText(state, {}),
       chapterId: result.chapterId,
@@ -3916,7 +3928,7 @@ async function orchestrateSessionTurnInner(sessionId: string): Promise<SessionOr
           eventType: String(openingMessage.eventType || "on_enter_chapter"),
           presetContent: String(openingMessage.content || ""),
         }),
-      });
+      }, true);
     }
     const plan = await runNarrativePlan({
       userId: currentUserId,
@@ -3951,7 +3963,7 @@ async function orchestrateSessionTurnInner(sessionId: string): Promise<SessionOr
       expectedRole: "",
       expectedRoleType: "",
       plan: builtPlan,
-    });
+    }, true);
   };
 
   const pendingChapterId = getPendingSessionChapterId(state);
@@ -4247,7 +4259,7 @@ async function orchestrateSessionTurnInner(sessionId: string): Promise<SessionOr
               eventType: "on_mini_game_start",
               presetContent: "",
             }),
-          });
+          }, true);
         }
       }
     }
@@ -4295,7 +4307,7 @@ async function orchestrateSessionTurnInner(sessionId: string): Promise<SessionOr
       expectedRoleType: "",
       command: null,
       plan: builtPlan,
-    });
+    }, true);
   }
   DebugLogUtil.log("story:orchestrator:runtime", "走大模型编排", JSON.stringify({
     sessionId,
@@ -4332,7 +4344,7 @@ async function orchestrateSessionTurnInner(sessionId: string): Promise<SessionOr
       expectedRoleType: "",
       command: null,
       plan: taskPlan,
-    });
+    }, true);
   }
   // fallbackChapterId 的意义是什么？-》当章节判定无法确定下一章时的备用值。
   let realNextChapterId = await resolveNextChapterIdByOrder(db, Number(sessionRow.worldId || 0), currentChapterId, Number(sessionRow.worldPublishId || 0));
@@ -4429,7 +4441,7 @@ async function orchestrateSessionTurnInner(sessionId: string): Promise<SessionOr
             expectedRole: "",
             expectedRoleType: "",
             plan,
-          });
+          }, true);
         }
       }
   }
@@ -4454,7 +4466,7 @@ async function orchestrateSessionTurnInner(sessionId: string): Promise<SessionOr
     eventDigestWindowText: eventView.eventDigestWindowText,
     plan,
   };
-  return finalizeOrchestrationResult(result);
+  return finalizeOrchestrationResult(result, true);
 }
 
 /**

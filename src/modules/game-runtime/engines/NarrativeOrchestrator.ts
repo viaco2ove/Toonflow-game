@@ -111,6 +111,8 @@ export interface NarrativePlanResult {
   speakerMode?: "template" | "fast" | "premium";
   speakerRouteReason?: string;
   orchestratorRuntime?: NarrativeRuntimeMeta;
+  /** 剧情推动模式:本轮编排显式声明的时间推进时段数(0=不推进,正整数=推进N个时段) */
+  timeAdvance?: number;
 }
 
 export interface OrchestratorResult extends NarrativePlanResult {
@@ -3981,6 +3983,14 @@ function buildAiNarrativePlanResult(input: {
     || getPlainField(fieldMap, "trigger_memory_agent", "triggermemoryagent"),
   ) || memoryHints.length > 0;
 
+  // ★ 剧情推动模式:解析 AI 显式声明的 time_advance(时段推进数,0=不推进,正整数=推N个时段)
+  const explicitTimeAdvance = hasObjectLike ? (objectLike as any).timeAdvance : undefined;
+  const plainTimeAdvance = Number(getPlainField(fieldMap, "time_advance", "timeadvance")) || NaN;
+  const rawTimeAdvance = explicitTimeAdvance !== undefined ? explicitTimeAdvance : plainTimeAdvance;
+  const timeAdvance = (typeof rawTimeAdvance === "number" && Number.isFinite(rawTimeAdvance) && rawTimeAdvance > 0)
+    ? Math.floor(rawTimeAdvance)
+    : undefined;
+
   DebugLogUtil.log("story:memory:runtime", `triggerMemoryAgent=${triggerMemoryAgent}`);
 
   // eventStatus / eventAdjustMode 决定这轮编排执行完以后，当前事件是保持、更新、等待输入，还是标记完成。
@@ -4083,6 +4093,7 @@ function buildAiNarrativePlanResult(input: {
         eventFacts: resolvedEventFacts,
         eventStatus,
         orchestratorRuntime: input.orchestratorRuntime,
+        timeAdvance,
       };
     }
     return {
@@ -4105,6 +4116,7 @@ function buildAiNarrativePlanResult(input: {
       eventFacts: resolvedEventFacts,
       eventStatus,
       orchestratorRuntime: input.orchestratorRuntime,
+      timeAdvance,
     };
   }
   if (canYieldDirectly) {
@@ -4132,6 +4144,7 @@ function buildAiNarrativePlanResult(input: {
       eventFacts: resolvedEventFacts,
       eventStatus,
       orchestratorRuntime: input.orchestratorRuntime,
+      timeAdvance,
     };
   }
   throw createRuntimeModelError("orchestrator", "模型返回结构无效或缺少可执行的角色编排");

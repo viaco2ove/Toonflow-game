@@ -985,6 +985,7 @@ const _PROMPT_STORY_ORCHESTRATOR_COMPACT = `
 4. 空间感：交代当前场景细节，让用户感到"身在此处"
 5. 因果连贯：承接 recent_dialogue 与 memory，不前后矛盾
 6. NPC 自由对话：不要硬编码"一问一答"节奏，NPC 之间可以自然抢话、连珠炮、多人互动；用户想插话时自然会插，编排师无需主动为用户预留发言位
+7. 时间推进（可选）：如果本轮旁白/剧情明确描述了时间流逝（如"过了一夜"、"数日后"、"修炼闭关"），可在返回 JSON 里加 \`time_advance\`。日常对话不要填此项，保持时间凝固。格式见下方输出示例。
 
 当 flow ≠ "free_runtime" 时，忽略本段，严格按事件提纲推进。
 
@@ -999,7 +1000,8 @@ const _PROMPT_STORY_ORCHESTRATOR_COMPACT = `
   "event_adjust_mode": "keep",
   "event_status": "waiting_input",
   "event_summary": "@旁白：请输入你的姓名，性别，年龄进行绑定",
-  "event_facts": ["当前处于斗破苍穹乌坦城时间线的空间戒指绑定环节"]
+  "event_facts": ["当前处于斗破苍穹乌坦城时间线的空间戒指绑定环节"],
+  "time_advance": null
 }
 `;
 
@@ -1196,6 +1198,7 @@ const _PROMPT_STORY_ORCHESTRATOR_ADVANCED = `
 4. 空间感：交代当前场景细节，让用户感到"身在此处"
 5. 因果连贯：承接 recent_dialogue 与 memory，不前后矛盾
 6. NPC 自由对话：不要硬编码"一问一答"节奏，NPC 之间可以自然抢话、连珠炮、多人互动；用户想插话时自然会插，编排师无需主动为用户预留发言位
+7. 时间推进（可选）：如果本轮旁白/剧情明确描述了时间流逝（如"过了一夜"、"数日后"、"修炼闭关"），可在返回 JSON 里加 \`time_advance\`。日常对话不要填此项，保持时间凝固。格式见下方输出示例。
 
 当 flow ≠ "free_runtime" 时，忽略本段，严格按事件提纲推进。
 
@@ -1210,7 +1213,8 @@ const _PROMPT_STORY_ORCHESTRATOR_ADVANCED = `
   "event_adjust_mode": "keep",
   "event_status": "waiting_input",
   "event_summary": "@旁白：请输入你的姓名，性别，年龄进行绑定",
-  "event_facts": ["当前处于斗破苍穹乌坦城时间线的空间戒指绑定环节"]
+  "event_facts": ["当前处于斗破苍穹乌坦城时间线的空间戒指绑定环节"],
+  "time_advance": null
 }
 
 ## 输出字段：
@@ -1224,7 +1228,8 @@ event_adjust_mode:
 event_status:
 event_summary:
 event_facts:
-`;
+
+  time_advance:（可选）时间推进量，填整数表示推进时段数，不填或0表示本轮时间不推进`;
 
 /** story-speaker  useFastSpeakerPrompt*/
 const _PROMPT_STORY_SPEAKER = `你是角色发言器。根据当前事件和本轮动机，生成符合角色的台词或旁白。
@@ -1448,6 +1453,8 @@ const _PROMPT_STORY_EVENT_PROGRESS = `你是事件进度检测器。你只判断
 
 ## 关键规则：关于用户输入 "."
 - 用户输入 "." 是一个明确的**跳过指令**。
+"." 就是明确的发言和行动。应该判定为已完成用户发言阶段！！！
+模型禁止返回类似的判定：【"reason": "当前阶段是用户发言阶段，用户虽然多次输入'.'但根据事件流程仍在等待用户做出明确的发言或行动来决定下一步方向，因此事件尚未结束，继续等待用户输入"】
 - 它代表用户不想进行当前互动，希望剧情自动推进。
 - 当检测到用户输入为 "." 时，应认为当前需要用户回应的阶段已经**被用户主动跳过并完成**。
 - 此时，\`event_status\` 应判定为 \`active\`，表示系统可以继续推进剧情，而不是 \`waiting_input\`。

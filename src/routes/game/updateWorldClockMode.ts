@@ -21,11 +21,17 @@ const router = express.Router();
  */
 router.post("/", validateFields({
   sessionId: z.string().min(1),
-  timeMode: z.enum(["tick", "narrative", "realtime"]).optional(),
+  timeMode: z.enum(["tick", "narrative", "realtime", "manual"]).optional(),
   weatherMode: z.enum(["slot", "narrative", "manual"]).optional(),
+  /** manual 模式下,前端传用户手动选择的时间/天气/_tick */
+  worldClock: z.object({
+    tick: z.number().int().nonnegative(),
+    timeOfDay: z.string().min(1),
+    weather: z.string().min(1),
+  }).optional(),
 }), async (req: any, res: any) => {
   try {
-    const { sessionId, timeMode, weatherMode } = req.body;
+    const { sessionId, timeMode, weatherMode, worldClock } = req.body;
     const db = getGameDb();
     const currentUserId = Number(req?.user?.id || 0);
     if (!Number.isFinite(currentUserId) || currentUserId <= 0) {
@@ -46,6 +52,14 @@ router.post("/", validateFields({
     }
     if (weatherMode) {
       state.vars.weatherMode = weatherMode;
+    }
+    // ★ manual 模式:前端直接写 worldClock(tick/timeOfDay/weather),后端原样落库
+    if (worldClock && typeof worldClock === "object") {
+      state.vars.worldClock = {
+        tick: Number(worldClock.tick) || 0,
+        timeOfDay: String(worldClock.timeOfDay || "").trim(),
+        weather: String(worldClock.weather || "").trim(),
+      };
     }
 
     const stateJson = toJsonText(state, {});
