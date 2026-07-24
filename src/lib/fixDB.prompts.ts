@@ -1249,7 +1249,8 @@ event_status:
 event_summary:
 event_facts:
 
-  time_advance:（可选）时间推进量，填整数表示推进时段数，不填或0表示本轮时间不推进`;
+  time_advance:（可选）时间推进对象，格式 { tick: 推进时段数, weather?: 天气, reason?: 原因 }。tick 为正整数时推进时段数，weather 可填"晴/阴/雨/雪/雾/风"直接覆盖天气，不填则按时段默认值。日常对话不推进时间。
+`;
 
 /** story-speaker  useFastSpeakerPrompt*/
 const _PROMPT_STORY_SPEAKER = `你是角色发言器。根据当前事件和本轮动机，生成符合角色的台词或旁白。
