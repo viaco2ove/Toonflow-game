@@ -323,8 +323,9 @@ const buildOptions = async (input: AIInput<any>, config: AIConfig = {}) => {
   // none / minimal = effort:none（关闭），low / medium / high = 对应 effort 值
   const isMinimaxManufacturer = String(owned.manufacturer || "").trim().toLowerCase() === "minimax";
   // MiniMax 有思考能力，必须给默认值。空字符串时用 "low" 兜底，不要让 SDK 默认 "none"
+  // 映射规则: none=关闭思考, minimal/low/medium/high=对应思考深度
   const minimaxReasoning = isMinimaxManufacturer
-    ? { reasoning: { effort: config?.reasoningEffort === "minimal" ? "none" : (config?.reasoningEffort || "low") } }
+    ? { reasoning: { effort: config?.reasoningEffort || "low" } }
     : {};
   const modelInstance = owned.instance({
     apiKey,
