@@ -3808,35 +3808,74 @@ async function orchestrateSessionTurnInner(sessionId: string): Promise<SessionOr
       // 现实同步：不落库，前端用服务器时间本地算
       DebugLogUtil.log("story:orchestrator:runtime", "[worldClock] skip: realtime mode", JSON.stringify({ clockBefore }));
     } else if (timeMode === "narrative") {
-      // 剧情推动：两层判定——第1层 AI 显式声明 timeAdvance > 0；第2层关键词正则扫用户输入+AI motive+eventSummary
-      const explicitSlots = (resultPlan as any)?.timeAdvance;
-      const explicitValid = typeof explicitSlots === "number" && Number.isFinite(explicitSlots) && explicitSlots > 0;
-      // ★ 扩大扫描范围：用户最后 2 条消息 + AI motive + eventSummary（关键词可能在用户输入里，如"睡了三天才醒来"）
-      const userMsgs = recentMessages.slice(0, 2).map((m: any) => String(m?.content || "")).join("\n");
-      const motiveText = String(resultPlan?.motive || "").slice(0, 200);
-      const summaryText = String((resultPlan as any)?.eventSummary || "").slice(0, 200);
-      const combinedText = `${userMsgs}\n${motiveText}\n${summaryText}`;
-      const keywordJump = detectNarrativeTimeJump(combinedText);
-      const jump = explicitValid ? Math.floor(explicitSlots) : keywordJump;
-      const source = explicitValid ? "explicit" : (keywordJump > 0 ? "keyword" : null);
-      DebugLogUtil.log("story:orchestrator:runtime", "[worldClock] narrative mode", JSON.stringify({
-        explicitSlots: explicitValid ? explicitSlots : undefined,
-        keywordJump,
-        jump,
-        source,
-        userMsgPreview: userMsgs.slice(0, 80),
-        motivePreview: motiveText.slice(0, 80),
-      }));
+      // 剧情推动：三层判定，按优先级从高到低，命中即停
+      // ★ 触发1：用户 @旁白: 指令含时间关键词，直接从用户消息解析
+      const latestUserMsg = recentMessages.length > 0 ? String(recentMessages[0]?.content || "") : "";
+      const userMsgMatch = /^@旁白[:：](.+)/.exec(latestUserMsg.trim());
+      let jump = 0;
+      let weatherOverride: string | null = null;
+      let source: string | null = null;
+      if (userMsgMatch) {
+        const userText = userMsgMatch[1];
+        jump = detectNarrativeTimeJump(userText);
+        // 尝试从用户消息里解析天气关键词（如"阴天"、"晴天"）
+        const weatherKeywords: Array<[RegExp, string]> = [
+          [/晴天|晴/i, "晴"],
+          [/多云|阴天|阴/i, "阴"],
+          [/雨天|下雨|雨/i, "雨"],
+          [/雪天|下雪|雪/i, "雪"],
+          [/雾天|起雾|雾/i, "雾"],
+          [/刮风|大风|风/i, "风"],
+        ];
+        for (const [regex, w] of weatherKeywords) {
+          if (regex.test(userText)) { weatherOverride = w; break; }
+        }
+        if (jump > 0) source = "user_narrator_cmd";
+        DebugLogUtil.log("story:orchestrator:runtime", "[worldClock] narrative trigger1(user_cmd)", JSON.stringify({
+          userMsgPreview: userText.slice(0, 80),
+          jump,
+          weatherOverride,
+          source,
+        }));
+      }
+      // ★ 触发2：AI 编排师显式声明 timeAdvance
+      if (jump === 0) {
+        const explicitSlots = (resultPlan as any)?.timeAdvance;
+        const explicitValid = typeof explicitSlots === "number" && Number.isFinite(explicitSlots) && explicitSlots > 0;
+        if (explicitValid) {
+          jump = Math.floor(explicitSlots);
+          source = "explicit";
+          DebugLogUtil.log("story:orchestrator:runtime", "[worldClock] narrative trigger2(explicit)", JSON.stringify({
+            explicitSlots,
+            jump,
+            source,
+            motivePreview: String(resultPlan?.motive || "").slice(0, 80),
+          }));
+        }
+      }
+      // ★ 触发3：关键词正则兜底（扫 motive + eventSummary）
+      if (jump === 0) {
+        const motiveText = String(resultPlan?.motive || "").slice(0, 200);
+        const summaryText = String((resultPlan as any)?.eventSummary || "").slice(0, 200);
+        const combinedText = `${motiveText}\n${summaryText}`;
+        jump = detectNarrativeTimeJump(combinedText);
+        if (jump > 0) source = "keyword";
+        DebugLogUtil.log("story:orchestrator:runtime", "[worldClock] narrative trigger3(keyword)", JSON.stringify({
+          jump,
+          source,
+          motivePreview: motiveText.slice(0, 80),
+        }));
+      }
       if (jump > 0) {
         const nextTick = clockBefore.tick + jump;
         const slotIndex = ((nextTick % WORLD_TIME_SLOTS.length) + WORLD_TIME_SLOTS.length) % WORLD_TIME_SLOTS.length;
         const timeOfDay = WORLD_TIME_SLOTS[slotIndex];
-        const weather = getWeatherForSlot(timeOfDay);
+        const weather = weatherOverride || getWeatherForSlot(timeOfDay);
         (state as Record<string, any>).vars = (state as any).vars || {};
         (state as any).vars.worldClock = { tick: nextTick, timeOfDay, weather };
         DebugLogUtil.log("story:orchestrator:runtime", "[worldClock] narrative advanced", JSON.stringify({ from: clockBefore, to: { tick: nextTick, timeOfDay, weather }, jump, source }));
       } else {
-        DebugLogUtil.log("story:orchestrator:runtime", "[worldClock] narrative no jump", JSON.stringify({ reason: "本轮无时间流逝", userMsgPreview: userMsgs.slice(0, 80), motivePreview: motiveText.slice(0, 80) }));
+        DebugLogUtil.log("story:orchestrator:runtime", "[worldClock] narrative no jump", JSON.stringify({ reason: "本轮无时间流逝" }));
       }
     } else if (timeMode === "manual") {
       // 手动模式：worldClock 由前端下拉选择后通过 updateWorldClockMode 写入，后端不自动推进
