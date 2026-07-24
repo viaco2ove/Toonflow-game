@@ -111,8 +111,8 @@ export interface NarrativePlanResult {
   speakerMode?: "template" | "fast" | "premium";
   speakerRouteReason?: string;
   orchestratorRuntime?: NarrativeRuntimeMeta;
-  /** 剧情推动模式:本轮编排显式声明的时间推进时段数(0=不推进,正整数=推进N个时段) */
-  timeAdvance?: number;
+  /** 剧情推动模式:本轮编排显式声明的时间推进 { tick: 推进时段数, weather?: 天气, reason?: 原因 } */
+  timeAdvance?: { tick: number; weather?: string; reason?: string } | number;
 }
 
 export interface OrchestratorResult extends NarrativePlanResult {
@@ -139,6 +139,7 @@ export interface NarrativePlanSummary {
   eventStatus: RuntimeCurrentEventState["status"];
   speakerMode?: "template" | "fast" | "premium";
   speakerRouteReason?: string;
+  timeAdvance?: { tick: number; weather?: string; reason?: string } | number;
   orchestratorRuntime?: NarrativeRuntimeMeta;
 }
 
@@ -3983,13 +3984,26 @@ function buildAiNarrativePlanResult(input: {
     || getPlainField(fieldMap, "trigger_memory_agent", "triggermemoryagent"),
   ) || memoryHints.length > 0;
 
-  // ★ 剧情推动模式:解析 AI 显式声明的 time_advance(时段推进数,0=不推进,正整数=推N个时段)
+  // ★ 剧情推动模式:解析 AI 显式声明的 time_advance
+  // 支持两种格式: 数字(旧) 或 对象 { tick, weather?, reason? }(新)
   const explicitTimeAdvance = hasObjectLike ? (objectLike as any).timeAdvance : undefined;
   const plainTimeAdvance = Number(getPlainField(fieldMap, "time_advance", "timeadvance")) || NaN;
-  const rawTimeAdvance = explicitTimeAdvance !== undefined ? explicitTimeAdvance : plainTimeAdvance;
-  const timeAdvance = (typeof rawTimeAdvance === "number" && Number.isFinite(rawTimeAdvance) && rawTimeAdvance > 0)
-    ? Math.floor(rawTimeAdvance)
-    : undefined;
+  let timeAdvance: NarrativePlanResult["timeAdvance"] = undefined;
+  if (typeof explicitTimeAdvance === "object" && explicitTimeAdvance !== null) {
+    // 新格式: { tick, weather, reason }
+    const tick = typeof explicitTimeAdvance.tick === "number" ? explicitTimeAdvance.tick : 0;
+    timeAdvance = (tick > 0) ? {
+      tick: Math.floor(tick),
+      weather: typeof explicitTimeAdvance.weather === "string" ? explicitTimeAdvance.weather : undefined,
+      reason: typeof explicitTimeAdvance.reason === "string" ? explicitTimeAdvance.reason : undefined,
+    } : undefined;
+  } else {
+    // 旧格式: 纯数字
+    const raw = explicitTimeAdvance !== undefined ? explicitTimeAdvance : plainTimeAdvance;
+    if (typeof raw === "number" && Number.isFinite(raw) && raw > 0) {
+      timeAdvance = Math.floor(raw);
+    }
+  }
 
   DebugLogUtil.log("story:memory:runtime", `triggerMemoryAgent=${triggerMemoryAgent}`);
 
@@ -5360,6 +5374,7 @@ export function summarizeNarrativePlan(result: OrchestratorResult | null | undef
     eventStatus: result.eventStatus || "idle",
     speakerMode: result.speakerMode,
     speakerRouteReason: normalizeScalarText(result.speakerRouteReason),
+    timeAdvance: result.timeAdvance,
     orchestratorRuntime: result.orchestratorRuntime
       ? {
         modelKey: normalizeScalarText(result.orchestratorRuntime.modelKey),
