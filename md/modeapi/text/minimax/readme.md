@@ -38,7 +38,7 @@ MiniMax-M2.7-highspeed 是 MiniMax-M2.7 的两倍以上价格。
 // 开启自适应（默认，不写也是这个）
 "thinking": {"type": "adaptive"}
 
-  - /v1/responses 控制思考程度
+  - /v1/responses 控制思考程度？假的控制不了！ 效果和 /v1/chat/completions 一样
 "reasoning": {"effort": "none"}      // 关闭思考（推荐，台词生成不需要）
 "reasoning": {"effort": "minimal"}   // 开启 adaptive（=low=medium=high，不调深度）
 "reasoning": {"effort": "low"}       // 同上
