@@ -996,7 +996,6 @@ const _PROMPT_STORY_ORCHESTRATOR_COMPACT = `
 }
 - **时段**：清晨/上午/正午/下午/傍晚/夜晚/深夜/午夜
     tick: 0/1/2/3/4/5/6/7
-    slots: 往前走几个时段
 - **天气**：晴/多云/阴/雨/雪/雾/风
   weather_tick: 0/1/2/3/4/5/6/7
   
