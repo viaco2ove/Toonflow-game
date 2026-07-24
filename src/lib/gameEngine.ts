@@ -1252,27 +1252,29 @@ export function detectNarrativeTimeJump(text: string): number {
   const source = String(text || "");
   if (!source) return 0;
   let maxJump = 0;
-  // 单时段跳跃
-  if (/(过夜|睡了一觉|次日|翌日|第二天)/.test(source)) {
+  // 单时段跳跃（含各种"睡了X才醒来"变体）
+  if (/(过夜|睡了一觉|次日|翌日|第二天|醒来时|睡了一夜|一夜后|才醒来)/.test(source)) {
     maxJump = Math.max(maxJump, 1);
   }
-  // 多日跳跃
-  const multiDayMatch = source.match(/(\d+|几|数)\s*(天|日|周|礼拜)后/);
+  // 多日跳跃（含 "X天后" / "X天才" / "X天才才" 等变体）
+  const multiDayMatch = source.match(/((\d+|几|数)\s*)天\s*(后|才才|才|后才)/);
   if (multiDayMatch) {
-    const numStr = multiDayMatch[1];
+    const numStr = multiDayMatch[2];
     let days = 1;
     if (/\d+/.test(numStr)) {
       days = parseInt(numStr, 10) || 1;
     } else if (numStr === "数") {
-      days = 3; // 数日后 = 3 天默认
+      days = 3;
     } else if (numStr === "几") {
-      days = 2; // 几天后 = 2 天默认
+      days = 2;
     }
-    const unit = multiDayMatch[2];
-    let slots = 1;
-    if (unit === "天" || unit === "日") slots = 1;
-    else if (unit === "周" || unit === "礼拜") slots = 7;
-    maxJump = Math.max(maxJump, 8 * days * slots);
+    // 匹配 "X天后" 或 "X天才" 或 "X天才才" -> 多日跳跃
+    maxJump = Math.max(maxJump, 8 * days);
+  }
+  // 多时段跳跃（不含 "后/才" 的 "X天" 靠得太近，如 "三天三夜"）
+  const multiSlotMatch = source.match(/((\d+|几|数)\s*)天\s*(夜|早|午|昏|暮)/);
+  if (multiSlotMatch) {
+    maxJump = Math.max(maxJump, 1);
   }
   return maxJump;
 }
