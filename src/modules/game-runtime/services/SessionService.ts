@@ -3855,11 +3855,6 @@ async function orchestrateSessionTurnInner(sessionId: string): Promise<SessionOr
       // ★ 触发2：AI 编排师显式声明 timeAdvance
       if (jump === 0) {
         const explicit = (resultPlan as any)?.timeAdvance;
-        DebugLogUtil.log("story:orchestrator:runtime", "[worldClock] timeAdvance raw", JSON.stringify({
-          explicit,
-          explicitType: typeof explicit,
-          isObject: typeof explicit === "object" && explicit !== null,
-        }));
         const explicitTick = typeof explicit?.tick === "number" && Number.isFinite(explicit.tick) ? explicit.tick : 0;
         const explicitWeather = typeof explicit?.weather === "string" && explicit.weather.trim() ? explicit.weather.trim() : null;
         if (explicitTick > 0) {
