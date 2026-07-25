@@ -309,8 +309,8 @@ export interface SessionNarrativePlanResult {
     payloadMode: "compact" | "advanced";
     payloadModeSource: "explicit" | "inferred";
   };
-  /** 剧情推动模式:本轮编排显式声明的时间推进时段数(0=不推进,正整数=推进N个时段) */
-  timeAdvance?: number;
+  /** 剧情推动模式:本轮编排显式声明的时间推进 { tick, weather?, reason? } 或时段数 */
+  timeAdvance?: { tick: number; weather?: string; reason?: string } | number;
 }
 
 export interface SessionChapterCommand {
@@ -1067,6 +1067,7 @@ function buildSessionPlanResult(plan: ({
   speakerRouteReason?: unknown;
   nextNarrativePlan?: unknown;
   orchestratorRuntime?: unknown;
+  timeAdvance?: unknown;
 }) | null | undefined): SessionNarrativePlanResult | null {
   if (!plan) return null;
   return {
@@ -1144,6 +1145,19 @@ function buildSessionPlanResult(plan: ({
         payloadMode: String(raw.payloadMode || "").trim().toLowerCase() === "advanced" ? "advanced" : "compact",
         payloadModeSource: String(raw.payloadModeSource || "").trim().toLowerCase() === "explicit" ? "explicit" : "inferred",
       };
+    })(),
+    // ★ 透传 timeAdvance（对象格式 { tick, weather, reason } 或数字）
+    timeAdvance: (() => {
+      const raw = plan.timeAdvance as any;
+      if (typeof raw === "object" && raw !== null) {
+        return {
+          tick: typeof raw.tick === "number" ? Math.floor(raw.tick) : 0,
+          weather: typeof raw.weather === "string" ? raw.weather.trim() : undefined,
+          reason: typeof raw.reason === "string" ? raw.reason.trim() : undefined,
+        };
+      }
+      if (typeof raw === "number" && Number.isFinite(raw) && raw > 0) return Math.floor(raw);
+      return undefined;
     })(),
   };
 }
@@ -3841,6 +3855,11 @@ async function orchestrateSessionTurnInner(sessionId: string): Promise<SessionOr
       // ★ 触发2：AI 编排师显式声明 timeAdvance
       if (jump === 0) {
         const explicit = (resultPlan as any)?.timeAdvance;
+        DebugLogUtil.log("story:orchestrator:runtime", "[worldClock] timeAdvance raw", JSON.stringify({
+          explicit,
+          explicitType: typeof explicit,
+          isObject: typeof explicit === "object" && explicit !== null,
+        }));
         const explicitTick = typeof explicit?.tick === "number" && Number.isFinite(explicit.tick) ? explicit.tick : 0;
         const explicitWeather = typeof explicit?.weather === "string" && explicit.weather.trim() ? explicit.weather.trim() : null;
         if (explicitTick > 0) {
