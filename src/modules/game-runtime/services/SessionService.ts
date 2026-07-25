@@ -3824,34 +3824,14 @@ async function orchestrateSessionTurnInner(sessionId: string): Promise<SessionOr
     } else if (timeMode === "narrative") {
       // 剧情推动：三层判定，按优先级从高到低，命中即停
       // ★ 触发1：用户 @旁白: 指令含时间关键词，直接从用户消息解析
-      const latestUserMsg = recentMessages.length > 0 ? String(recentMessages[0]?.content || "") : "";
+      // 注意：recentMessages 是正序（buildRecentMessages 内部 rows.reverse()），
+      // 最新消息在数组末尾，不是 [0]。
+      const latestUserMsg = recentMessages.length > 0 ? String(recentMessages[recentMessages.length - 1]?.content || "") : "";
       const userMsgMatch = /^@旁白[:：](.+)/.exec(latestUserMsg.trim());
       let jump = 0;
       let weatherOverride: string | null = null;
       let source: string | null = null;
-      if (userMsgMatch) {
-        const userText = userMsgMatch[1];
-        jump = detectNarrativeTimeJump(userText);
-        // 尝试从用户消息里解析天气关键词（如"阴天"、"晴天"）
-        const weatherKeywords: Array<[RegExp, string]> = [
-          [/晴天|晴/i, "晴"],
-          [/多云|阴天|阴/i, "阴"],
-          [/雨天|下雨|雨/i, "雨"],
-          [/雪天|下雪|雪/i, "雪"],
-          [/雾天|起雾|雾/i, "雾"],
-          [/刮风|大风|风/i, "风"],
-        ];
-        for (const [regex, w] of weatherKeywords) {
-          if (regex.test(userText)) { weatherOverride = w; break; }
-        }
-        if (jump > 0) source = "user_narrator_cmd";
-        DebugLogUtil.log("story:orchestrator:runtime", "[worldClock] narrative trigger1(user_cmd)", JSON.stringify({
-          userMsgPreview: userText.slice(0, 80),
-          jump,
-          weatherOverride,
-          source,
-        }));
-      }
+
       // ★ 触发2：AI 编排师显式声明 timeAdvance
       if (jump === 0) {
         const explicit = (resultPlan as any)?.timeAdvance;
@@ -3894,6 +3874,31 @@ async function orchestrateSessionTurnInner(sessionId: string): Promise<SessionOr
           motivePreview: motiveText.slice(0, 80),
         }));
       }
+      // 把用户消息里的时间关键词（如"明天"、"后天"）改到最后面
+      if (userMsgMatch && jump === 0) {
+        const userText = userMsgMatch[1];
+        jump = detectNarrativeTimeJump(userText);
+        // 尝试从用户消息里解析天气关键词（如"阴天"、"晴天"）
+        const weatherKeywords: Array<[RegExp, string]> = [
+          [/晴天|晴/i, "晴"],
+          [/多云|阴天|阴/i, "阴"],
+          [/雨天|下雨|雨/i, "雨"],
+          [/雪天|下雪|雪/i, "雪"],
+          [/雾天|起雾|雾/i, "雾"],
+          [/刮风|大风|风/i, "风"],
+        ];
+        for (const [regex, w] of weatherKeywords) {
+          if (regex.test(userText)) { weatherOverride = w; break; }
+        }
+        if (jump > 0) source = "user_narrator_cmd";
+        DebugLogUtil.log("story:orchestrator:runtime", "[worldClock] narrative trigger1(user_cmd)", JSON.stringify({
+          userMsgPreview: userText.slice(0, 80),
+          jump,
+          weatherOverride,
+          source,
+        }));
+      }
+
       if (jump > 0) {
         const nextTick = clockBefore.tick + jump;
         const slotIndex = ((nextTick % WORLD_TIME_SLOTS.length) + WORLD_TIME_SLOTS.length) % WORLD_TIME_SLOTS.length;
@@ -3940,6 +3945,9 @@ async function orchestrateSessionTurnInner(sessionId: string): Promise<SessionOr
     // chapterForClock 用 activeChapter（本函数刚按 result.chapterId 加载的完整章节）。
     // 不回退外层 chapter：它在下方才赋值，pendingChapterId 早返回路径会触发 TDZ。
     // activeChapter 为 null（无章节）时 isFreeChapterRuntimeMode(null)=false，自然不推进。
+    DebugLogUtil.log("story:orchestrator:runtime", "[worldClock] applyWorldClockForTurn", JSON.stringify({
+            plan:result.plan
+    }));
     applyWorldClockForTurn(narrativeProducedThisTurn, result.plan, activeChapter);
     await db("t_gameSession").where({ sessionId }).update({
       stateJson: toJsonText(state, {}),

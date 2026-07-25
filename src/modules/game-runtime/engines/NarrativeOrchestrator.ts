@@ -1497,19 +1497,63 @@ function unwrapModelText(input: unknown): string {
   return text;
 }
 
-// 从纯文本中解析 key:value 形式的字段。
-// 兼容两种常见返回：
-// 1. `key: value`
-// 2. `key:` 下一行才是真正的 value
-// 这样可以容忍模型把字段值拆到下一行，而不会把 role/motive 解析丢掉。
+
+/**
+ * 解析模型输出文本，自动区分 JSON / 纯文本 key:value 两种格式
+ * // 从纯文本中解析 key:value 形式的字段。
+ * // 兼容两种常见返回：
+ * // 1. `key: value`
+ * // 2. `key:` 下一行才是真正的 value
+ * // 这样可以容忍模型把字段值拆到下一行，而不会把 role/motive 解析丢掉。
+ * @param rawText 模型原始输出字符串
+ * @returns 扁平化小写键值映射 Record<string, string>
+ */
 function parseFieldMap(rawText: string): Record<string, string> {
+  const text = rawText.trim();
+  // 1. 优先判断是否为JSON对象
+  if (text.startsWith("{") && text.endsWith("}")) {
+    try {
+      const jsonData = JSON.parse(text);
+      // JSON扁平化递归函数，把嵌套对象/数组全部转单层字符串键值
+      const flattenJson = (obj: unknown, prefix = ""): Record<string, string> => {
+        const res: Record<string, string> = {};
+        if (obj === null || typeof obj !== "object") {
+          return res;
+        }
+        const target = obj as Record<string, any>;
+        for (const key of Object.keys(target)) {
+          const fullKey = (prefix ? `${prefix}_${key}` : key).toLowerCase();
+          const val = target[key];
+          if (Array.isArray(val)) {
+            // 数组转为逗号拼接字符串
+            res[fullKey] = val.join("，");
+          } else if (typeof val === "object" && val !== null) {
+            // 嵌套对象递归展开
+            Object.assign(res, flattenJson(val, fullKey));
+          } else {
+            // 基础类型直接转字符串
+            res[fullKey] = String(val);
+          }
+        }
+        return res;
+      };
+      return flattenJson(jsonData);
+    } catch (err) {
+      // JSON解析失败，降级走原文本解析逻辑
+      console.warn("JSON解析失败，切换纯文本解析", err);
+    }
+  }
+
+  // 2. 原有纯文本 key:value 解析逻辑（兼容跨行value）
   const lines = unwrapModelText(rawText)
     .split(/\r?\n+/)
     .map((item) => item.trim())
     .filter(Boolean);
   const result: Record<string, string> = {};
   let pendingKey = "";
+
   for (const line of lines) {
+    // 匹配 -/* 前缀 + key : / = 分隔符
     const matched = line.match(/^[-*]?\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*[:：=][ \t]*(.*)$/);
     if (matched) {
       const key = matched[1].toLowerCase();
@@ -1518,14 +1562,11 @@ function parseFieldMap(rawText: string): Record<string, string> {
         result[key] = value;
         pendingKey = "";
       } else {
-        // 模型有时会输出：
-        // motive:
-        // 展示空间戒指内的具体存放物品情况
-        // 这里先记住 key，下一行再吃 value。
         pendingKey = key;
       }
       continue;
     }
+    // 上一行存在待填充key，当前行作为value
     if (pendingKey) {
       result[pendingKey] = line;
       pendingKey = "";
@@ -1533,6 +1574,7 @@ function parseFieldMap(rawText: string): Record<string, string> {
   }
   return result;
 }
+
 
 // 按候选字段名顺序获取第一个可用值。
 function getPlainField(fields: Record<string, string>, ...keys: string[]): string {
@@ -3986,8 +4028,13 @@ function buildAiNarrativePlanResult(input: {
 
   // ★ 剧情推动模式:解析 AI 显式声明的 time_advance
   // 支持两种格式: 数字(旧) 或 对象 { tick, weather?, reason? }(新)
-  const explicitTimeAdvance = hasObjectLike ? (objectLike as any).timeAdvance : undefined;
-  const plainTimeAdvance = Number(getPlainField(fieldMap, "time_advance", "timeadvance")) || NaN;
+  // 注意: AI 走 JSON 输出时 fieldMap 为空(整行不是 key:value),所以 time_advance
+  // 必须从 objectLike 取,不能用 getPlainField(fieldMap)。
+  const explicitTimeAdvance = hasObjectLike ? (objectLike as any).time_advance : undefined;
+  DebugLogUtil.log("story:orchestrator:runtime", "[worldClock] timeAdvance", JSON.stringify({
+            timeadvance: explicitTimeAdvance,
+            fieldMap:fieldMap
+  }));
   let timeAdvance: NarrativePlanResult["timeAdvance"] = undefined;
   if (typeof explicitTimeAdvance === "object" && explicitTimeAdvance !== null) {
     // 新格式: { tick, weather, reason }
@@ -3997,12 +4044,9 @@ function buildAiNarrativePlanResult(input: {
       weather: typeof explicitTimeAdvance.weather === "string" ? explicitTimeAdvance.weather : undefined,
       reason: typeof explicitTimeAdvance.reason === "string" ? explicitTimeAdvance.reason : undefined,
     } : undefined;
-  } else {
-    // 旧格式: 纯数字
-    const raw = explicitTimeAdvance !== undefined ? explicitTimeAdvance : plainTimeAdvance;
-    if (typeof raw === "number" && Number.isFinite(raw) && raw > 0) {
-      timeAdvance = Math.floor(raw);
-    }
+  } else if (typeof explicitTimeAdvance === "number" && Number.isFinite(explicitTimeAdvance) && explicitTimeAdvance > 0) {
+    // 旧格式: 纯数字 (objectLike.time_advance 直接是 number 的兜底)
+    timeAdvance = Math.floor(explicitTimeAdvance);
   }
 
   DebugLogUtil.log("story:memory:runtime", `triggerMemoryAgent=${triggerMemoryAgent}`);
