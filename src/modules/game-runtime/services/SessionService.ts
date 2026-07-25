@@ -3855,13 +3855,23 @@ async function orchestrateSessionTurnInner(sessionId: string): Promise<SessionOr
       // ★ 触发2：AI 编排师显式声明 timeAdvance
       if (jump === 0) {
         const explicit = (resultPlan as any)?.timeAdvance;
-        const explicitTick = typeof explicit?.tick === "number" && Number.isFinite(explicit.tick) ? explicit.tick : 0;
+        const explicitTick = typeof explicit?.tick === "number" && Number.isFinite(explicit.tick) ? explicit.tick : -1;
         const explicitWeather = typeof explicit?.weather === "string" && explicit.weather.trim() ? explicit.weather.trim() : null;
-        if (explicitTick > 0) {
+        if (explicitTick !== -1) {
           jump = Math.floor(explicitTick);
           if (explicitWeather) weatherOverride = explicitWeather;
           source = "explicit";
           DebugLogUtil.log("story:orchestrator:runtime", "[worldClock] narrative trigger2(explicit)", JSON.stringify({
+            explicitTick,
+            explicitWeather,
+            jump,
+            weatherOverride,
+            source,
+            motivePreview: String(resultPlan?.motive || "").slice(0, 80),
+          }));
+        }
+        else {
+          DebugLogUtil.log("story:orchestrator:runtime", "[worldClock] narrative trigger-1(explicit)", JSON.stringify({
             explicitTick,
             explicitWeather,
             jump,
