@@ -1642,7 +1642,7 @@ function buildCompactOrchestratorSections(payload: OrchestratorPromptPayload): A
     payload.currentEventFacts.length ? `facts:${payload.currentEventFacts.join("｜")}` : "",
     payload.currentEventMemorySummary ? `memory:${payload.currentEventMemorySummary}` : "",
     payload.currentEventMemoryFacts.length ? `memory_facts:${payload.currentEventMemoryFacts.join("｜")}` : "",
-    payload.worldBreathing ? `world_breathing:${[payload.worldBreathing.timeOfDay, payload.worldBreathing.weather, ...(payload.worldBreathing.ambientEvents || [])].filter(Boolean).join("｜")}` : "",
+    payload.worldBreathing ? `world_breathing:${[payload.worldBreathing.timeOfDay, payload.worldBreathing.weather, ...(payload.worldBreathing.ambientEvents || []), ...(payload.worldBreathing.npcActivities || [])].filter(Boolean).join("｜")}` : "",
   ].filter(Boolean).join("\n");
   const eventSeed = shortText(
     [
@@ -2455,13 +2455,14 @@ function buildCompactMemoryOutputExampleLines(): string[] {
           patch: {
             items: ["新获得物品"],
             other: ["新状态"],
-            information: "角色的关键信息，如身份备注、编排限制等",
+            role_key_information: "身份备注等关键信息\n【当前行为】在铁匠铺打铁，赶制神秘订单（黄昏·阴）",
           },
         },
       ],
       dynamic_world_global_background:"新的动态全局背景"
     }, null, 2),
     "注意：patch 只允许这些字段：raw_setting, personality, appearance, voice, skills, items, equipment, other, gender, age, level, level_desc, exp, next_level_exp, hp, mp, money, role_key_information。",
+    "role_key_information 必须包含原身份备注 + 末尾【当前行为】段（仅自由模式），不可只返回行为段而丢失身份备注。",
     "没有变化就返回空对象 {} 或空数组 []。",
   ];
 }
@@ -2518,13 +2519,14 @@ function buildFullMemoryOutputExampleLines(): string[] {
           patch: {
             items: ["新物品"],
             other: ["新状态"],
-            information: "角色的关键信息，如身份备注、编排限制等",
+            role_key_information: "身份备注等关键信息\n【当前行为】在铁匠铺打铁，赶制神秘订单（黄昏·阴）",
           },
         },
       ],
       dynamic_world_global_background: "新的动态全局背景"
     }, null, 2),
     "只允许使用这些 patch 字段：raw_setting, personality, appearance, voice, skills, items, equipment, other, gender, age, level, level_desc, exp, next_level_exp, hp, mp, money, role_key_information。",
+    "role_key_information 必须包含原身份备注 + 末尾【当前行为】段（仅自由模式），不可只返回行为段而丢失身份备注。",
     "如果没有参数卡变化，player_card_patch 返回 {}，npc_card_patches 返回 []。",
   ];
 }
@@ -2574,6 +2576,50 @@ function buildDynamicWorldBackground(state: JsonRecord): string {
   const dynamic = String(state?.dynamicWorldGlobalBackground || "").trim();
   if (dynamic) return dynamic;
   return String(state?.memorySummary || "").trim();
+}
+
+/**
+ * 从 role_key_information 里提取【当前行为】段。
+ *
+ * 记忆管理器每轮把 NPC 当前行为以 `【当前行为】xxx` 格式追加到 role_key_information 末尾。
+ * 本函数正则提取该段文本（去掉前缀），供 buildWorldBreathing 拼进 npcActivities。
+ * 没有行为段（老存档/万能角色/旁白）返回 null。
+ *
+ * 注意：行为段格式为 `【当前行为】在{地点}{动作}（{时段}·{天气}）`，这里只取行为描述，
+ * 末尾的时间天气括注一并保留，让编排师能看到行为与环境的关系。
+ */
+function extractCurrentBehavior(roleKeyInformation: unknown): string | null {
+  const text = normalizeScalarText(roleKeyInformation);
+  if (!text) return null;
+  const matched = text.match(/【当前行为】(.+)/);
+  const behavior = matched ? normalizeScalarText(matched[1]) : "";
+  return behavior || null;
+}
+
+/**
+ * 遍历在场 NPC，从各自参数卡的 role_key_information 提取【当前行为】段，
+ * 拼成 `["铁匠老王：在铁匠铺打铁（黄昏·阴）", ...]` 列表。
+ *
+ * 仅收集 npc 类型角色（跳过 general 万能角色 / narrator 旁白 / player 用户 / system），
+ * 万能角色不维护当前行为以保持其"万能"特性。
+ */
+function collectNpcActivities(state: JsonRecord): string[] {
+  const npcBag = asRecord(state?.npcs);
+  if (!hasRecordKeys(npcBag)) return [];
+  const activities: string[] = [];
+  Object.values(npcBag).forEach((value) => {
+    const npc = asRecord(value);
+    const roleType = normalizeScalarText(npc.roleType || npc.role_type).toLowerCase();
+    // 仅 npc 类型；general/narrator/player/system 跳过
+    if (roleType && roleType !== "npc") return;
+    const name = normalizeScalarText(npc.name);
+    const card = asRecord(npc.parameterCardJson);
+    const behavior = extractCurrentBehavior(card.role_key_information || card.information);
+    if (name && behavior) {
+      activities.push(`${name}：${behavior}`);
+    }
+  });
+  return activities.slice(0, 8);
 }
 
 /**
@@ -2637,12 +2683,17 @@ function buildWorldBreathing(state: JsonRecord): {
     weather = pickFirst(WEATHER_KEYWORDS) || clock.weather;
   }
 
+  // P1-b NPC 自主行为：从各 NPC 参数卡 role_key_information 提取【当前行为】段。
+  // 记忆管理器每轮维护，这里只读不写。
+  const npcActivities = collectNpcActivities(state);
+
   // 全空时不返回对象，让 snapshot 里的 world_breathing 为 null，提示词层据"为空才可从 memory 推断"处理。
-  if (!timeOfDay && !weather && !ambientEvents.length) return null;
+  if (!timeOfDay && !weather && !ambientEvents.length && !npcActivities.length) return null;
   return {
     ...(timeOfDay ? { timeOfDay } : {}),
     ...(weather ? { weather } : {}),
     ...(ambientEvents.length ? { ambientEvents } : {}),
+    ...(npcActivities.length ? { npcActivities } : {}),
   };
 }
 
@@ -2865,6 +2916,8 @@ function buildMemoryUserPrompt(payload: {
   playerCard: JsonRecord | null;
   narratorCard: JsonRecord | null;
   npcCards: JsonRecord[];
+  /** 世界时钟（仅自由模式传入；章节模式为 null/undefined，不渲染） */
+  worldClock?: { tick: number; timeOfDay: string; weather: string } | null;
 }, compactMode = false): string {
   if (compactMode) {
     const currentEventLines = buildMemoryCurrentEventLines(payload);
@@ -2885,6 +2938,11 @@ function buildMemoryUserPrompt(payload: {
       "[动态全局背景]",
       payload.dynamicWorldGlobalBackground || "无",
       "",
+      ...(payload.worldClock ? [
+        "[世界时钟]",
+        `tick: ${payload.worldClock.tick}｜时段: ${payload.worldClock.timeOfDay}｜天气: ${payload.worldClock.weather}`,
+        "",
+      ] : []),
       "[章节]",
       `标题: ${payload.chapterTitle || "未命名章节"}`,
       "",
@@ -2931,6 +2989,11 @@ function buildMemoryUserPrompt(payload: {
     "[动态全局背景]",
     payload.dynamicWorldGlobalBackground || "无",
     "",
+    ...(payload.worldClock ? [
+      "[世界时钟]",
+      `tick: ${payload.worldClock.tick}｜时段: ${payload.worldClock.timeOfDay}｜天气: ${payload.worldClock.weather}`,
+      "",
+    ] : []),
     ...currentEventLines,
     "",
     "[事件增量]",
@@ -4947,6 +5010,9 @@ export async function runStoryMemoryManager(input: {
       ? buildMemoryRoleCardSummary(roleCardSnapshots.narratorCard, compactMode)
       : null,
     npcCards: roleCardSnapshots.npcCards.map((item) => buildMemoryRoleCardSummary(item, compactMode)),
+    // ★ P1-b NPC 自主行为：仅自由模式注入世界时钟，驱动记忆管理器维护 NPC「当前行为」
+    //    章节模式 currentEvent.eventFlowType !== "free_runtime" 时不传，提示词规则据此跳过行为维护
+    worldClock: currentEvent.eventFlowType === "free_runtime" ? readWorldClock(input.state) : null,
   };
   const systemPrompt = buildMemorySystemPrompt(prompts.storyMemory);
   const userPrompt = buildMemoryUserPrompt(payload, compactMode);
