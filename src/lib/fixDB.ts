@@ -502,6 +502,27 @@ export default async (knex: Knex): Promise<void> => {
     table.unique(["worldId"]);
     table.index(["worldId"], "idx_storyWorld_published_worldId");
   });
+
+  // 世界书条目表：幂等建表，老库自动补建（阶段1 存储层，注入引擎是阶段2）
+  await ensureTable("t_worldBook", (table) => {
+    table.increments("id").primary();
+    table.integer("worldId");
+    table.text("entryId");
+    table.text("title");
+    table.text("category");
+    table.text("keys");
+    table.integer("constant");
+    table.integer("probability");
+    table.integer("order");
+    table.text("group");
+    table.text("selectiveLogic");
+    table.text("selectiveKeys");
+    table.text("content");
+    table.integer("sort");
+    table.integer("createTime");
+    table.integer("updateTime");
+    table.index(["worldId"], "idx_worldBook_worldId");
+  });
   await ensureTable("t_storyChapter_published", (table) => {
     table.integer("id").notNullable();
     table.integer("worldPublishId");

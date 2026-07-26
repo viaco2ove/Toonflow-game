@@ -14,6 +14,7 @@
  *   新增未登记的 tag 不会因类型报错而阻断。
  */
 export const logTagList = [
+  "debug:common",
   // ===== 编排器 / 叙事 =====
   "story:orchestrator", // 编排器通用
   "story:orchestrator:runtime", // 编排师运行态日志（是否走到模型、走大模型编排等）

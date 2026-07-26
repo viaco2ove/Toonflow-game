@@ -1,5 +1,6 @@
 import { NextFunction, Request, Response } from "express";
 import u from "@/utils";
+import {DebugLogUtil} from "@/utils/debugLogUtil";
 
 const PROJECT_SCOPED_PREFIXES = ["/assets/", "/novel/", "/outline/", "/script/", "/storyboard/", "/video/", "/game/", "/task/"];
 
@@ -493,6 +494,7 @@ export async function enforceResourceIsolation(req: Request, res: Response, next
     }
 
     if (isProjectScopedPath(path) && !NON_PROJECT_SCOPED_PATHS.has(path)) {
+      DebugLogUtil.log("debug:common", `[isProjectScopedPath] not in NON_PROJECT_SCOPED_PATHS: ${path}`);
       return res.status(403).send({ message: "无法确认资源归属项目，访问被拒绝" });
     }
 

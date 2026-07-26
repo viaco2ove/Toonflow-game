@@ -3003,6 +3003,110 @@ export function normalizeWorldOutput(row: any): JsonRecord | null {
   };
 }
 
+// ============================================================================
+// 世界书条目归一化（阶段1：存储 + CRUD）
+//
+// t_worldBook 表里 keys/selectiveKeys 存 JSON 数组文本，constant 存 0/1 整数。
+// 这里负责把数据库行归一化成前端直接消费的条目对象（布尔/数组/数字都转好）。
+// 导入 worldbook.json 时也复用同一套归一化，保证字段容错（缺字段给默认值）。
+// ============================================================================
+
+/** 世界书条目（前端消费的归一化形态） */
+export interface WorldBookEntry {
+  id?: number;
+  worldId?: number;
+  entryId: string;
+  title: string;
+  category: string;
+  keys: string[];
+  constant: boolean;
+  probability: number;
+  order: number;
+  group: string;
+  selectiveLogic: string;
+  selectiveKeys: string[];
+  content: string;
+  sort: number;
+  createTime?: number;
+  updateTime?: number;
+}
+
+/** 合法类目白名单（导入时容错：非法值归到 "world"） */
+const WORLD_BOOK_CATEGORIES = ["constants", "locations", "characters", "factions", "items", "events", "world", "random"];
+
+/** 合法 selectiveLogic 枚举（空串表示无） */
+const WORLD_BOOK_LOGIC_VALUES = ["AND ANY", "AND ALL", "NOT ANY", "NOT ALL"];
+
+/** 把单个条目（数据库行 或 导入 JSON）归一化成 WorldBookEntry */
+export function normalizeWorldBookEntry(raw: any): WorldBookEntry {
+  const obj = parseJsonSafe<JsonRecord>(raw, {});
+  const source = (raw && typeof raw === "object") ? raw : obj;
+  const parseKeys = (value: unknown): string[] => {
+    if (Array.isArray(value)) {
+      return value.map((item) => String(item || "").trim()).filter(Boolean);
+    }
+    const parsed = parseJsonSafe<string[]>(value, []);
+    return Array.isArray(parsed) ? parsed.map((item) => String(item || "").trim()).filter(Boolean) : [];
+  };
+  const categoryRaw = String(source.category || source.type || "world").trim();
+  const category = WORLD_BOOK_CATEGORIES.includes(categoryRaw) ? categoryRaw : "world";
+  const logicRaw = String(source.selectiveLogic || source.selective_logic || "").trim();
+  const selectiveLogic = WORLD_BOOK_LOGIC_VALUES.includes(logicRaw) ? logicRaw : "";
+  const probability = Number.isFinite(Number(source.probability)) ? Math.max(0, Math.min(100, Math.floor(Number(source.probability)))) : 100;
+  const order = Number.isFinite(Number(source.order)) ? Math.floor(Number(source.order)) : 100;
+  const sort = Number.isFinite(Number(source.sort)) ? Math.floor(Number(source.sort)) : 0;
+  return {
+    id: Number.isFinite(Number(source.id)) ? Number(source.id) : undefined,
+    worldId: Number.isFinite(Number(source.worldId)) ? Number(source.worldId) : undefined,
+    entryId: String(source.entryId || source.entry_id || source.id || "").trim(),
+    title: String(source.title || source.name || "").trim(),
+    category,
+    keys: parseKeys(source.keys),
+    constant: Boolean(source.constant) || Number(source.constant) === 1,
+    probability,
+    order,
+    group: String(source.group || "").trim(),
+    selectiveLogic,
+    selectiveKeys: parseKeys(source.selectiveKeys || source.selective_keys),
+    content: String(source.content || source.text || "").trim(),
+    sort,
+    createTime: Number.isFinite(Number(source.createTime)) ? Number(source.createTime) : undefined,
+    updateTime: Number.isFinite(Number(source.updateTime)) ? Number(source.updateTime) : undefined,
+  };
+}
+
+/** 把数据库行数组归一化成条目数组（按 sort 升序、id 升序） */
+export function normalizeWorldBookOutput(rows: any[]): WorldBookEntry[] {
+  if (!Array.isArray(rows)) return [];
+  return rows
+    .map((row) => normalizeWorldBookEntry(row))
+    .filter((entry) => entry.title || entry.content)
+    .sort((a, b) => {
+      if (a.sort !== b.sort) return a.sort - b.sort;
+      return (a.id || 0) - (b.id || 0);
+    });
+}
+
+/** 把前端条目对象序列化成数据库写入 payload（keys/selectiveKeys 转 JSON 文本，constant 转 0/1） */
+export function serializeWorldBookEntry(entry: Partial<WorldBookEntry>, worldId: number): JsonRecord {
+  const normalized = normalizeWorldBookEntry(entry);
+  return {
+    worldId,
+    entryId: normalized.entryId,
+    title: normalized.title,
+    category: normalized.category,
+    keys: JSON.stringify(normalized.keys || []),
+    constant: normalized.constant ? 1 : 0,
+    probability: normalized.probability,
+    order: normalized.order,
+    group: normalized.group,
+    selectiveLogic: normalized.selectiveLogic,
+    selectiveKeys: JSON.stringify(normalized.selectiveKeys || []),
+    content: normalized.content,
+    sort: normalized.sort,
+  };
+}
+
 // 归一化章节输出，并同步构建 runtimeOutline。
 export function normalizeChapterOutput(row: any): JsonRecord | null {
   if (!row) return null;

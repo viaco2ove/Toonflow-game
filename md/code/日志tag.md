@@ -15,6 +15,10 @@ if (DebugLogUtil.isDebugLogEnabled()) {
     console.log("[story:orchestrator:runtime]", JSON.stringify(runtimeLog));
 ...
 }
+DebugLogUtil.log("story:memory:stats", `response_chars=${responseText.length}`);
+DebugLogUtil.log("story:memory:storyInfo"," sync_after", JSON.stringify({
+  currentEventAfterSync: activeState.currentEvent,
+}));
 ```
 ## logtag list
 [logTagList.ts](../../src/utils/logTagList.ts)

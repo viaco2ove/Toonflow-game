@@ -1,4 +1,4 @@
-// @db-hash cf98061e20bc06889f537ccaf0ea6fcc
+// @db-hash d5d912273ab13a8d13163409fcf0c8c8
 //该文件由脚本自动生成，请勿手动修改
 
 export interface t_aiModelMap {
@@ -403,6 +403,24 @@ export interface t_voiceModel {
   'mode'?: string | null;
   'model'?: string | null;
 }
+export interface t_worldBook {
+  'category'?: string | null;
+  'constant'?: number | null;
+  'content'?: string | null;
+  'createTime'?: number | null;
+  'entryId'?: string | null;
+  'group'?: string | null;
+  'id'?: number;
+  'keys'?: string | null;
+  'order'?: number | null;
+  'probability'?: number | null;
+  'selectiveKeys'?: string | null;
+  'selectiveLogic'?: string | null;
+  'sort'?: number | null;
+  'title'?: string | null;
+  'updateTime'?: number | null;
+  'worldId'?: number | null;
+}
 
 export interface DB {
   "t_aiModelMap": t_aiModelMap;
@@ -438,4 +456,5 @@ export interface DB {
   "t_videoConfig": t_videoConfig;
   "t_videoModel": t_videoModel;
   "t_voiceModel": t_voiceModel;
+  "t_worldBook": t_worldBook;
 }

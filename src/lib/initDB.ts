@@ -1671,6 +1671,29 @@ export default async (knex: Knex, forceInit: boolean = false): Promise<void> => 
       },
     },
     {
+      // 世界书条目表：自由模式静态世界知识注入的数据源（阶段1 只做存储+CRUD，注入引擎是阶段2）。
+      // 每条目一行，外键 worldId 关联 t_storyWorld。keys/selectiveKeys 存 JSON 数组文本。
+      name: "t_worldBook",
+      builder: (table) => {
+        table.increments("id").primary();
+        table.integer("worldId");
+        table.text("entryId");
+        table.text("title");
+        table.text("category");
+        table.text("keys");
+        table.integer("constant");
+        table.integer("probability");
+        table.integer("order");
+        table.text("group");
+        table.text("selectiveLogic");
+        table.text("selectiveKeys");
+        table.text("content");
+        table.integer("sort");
+        table.integer("createTime");
+        table.integer("updateTime");
+      },
+    },
+    {
       name: "t_storyChapter",
       builder: (table) => {
         table.integer("id").notNullable();
