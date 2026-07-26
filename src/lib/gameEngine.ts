@@ -3187,6 +3187,24 @@ export function selectWorldBookForInjection(
   return kept;
 }
 
+/**
+ * 便捷函数：匹配世界书条目并直接返回拼好的世界知识文本（条目 content 用双换行拼接）。
+ *
+ * 给任务模式那种"字符串拼 prompt"的 agent 用（TaskDirector/TaskSpeaker），
+ * 避免每个 agent 重复 selectWorldBookForInjection + map + join。
+ * 无匹配或无条目时返回空串。
+ */
+export function buildWorldKnowledgeText(
+  entries: WorldBookEntry[] | null | undefined,
+  scanText: string,
+  tokenBudget: number,
+): string {
+  if (!Array.isArray(entries) || !entries.length) return "";
+  const matched = selectWorldBookForInjection(entries, scanText, tokenBudget);
+  if (!matched.length) return "";
+  return matched.map((entry) => entry.content).filter(Boolean).join("\n\n");
+}
+
 // 归一化章节输出，并同步构建 runtimeOutline。
 export function normalizeChapterOutput(row: any): JsonRecord | null {
   if (!row) return null;

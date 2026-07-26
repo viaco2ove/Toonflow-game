@@ -674,6 +674,8 @@ router.post(
             "", // npcCards（由 SpeakerAgent 自己查 npc 列表时补充）
             "", // originalGlobalBackground
             "", // dynamicGlobalBackground
+            // ★ 阶段2:从 state.vars 读取 tryBuildTaskModePlan 预匹配的世界知识文本
+            String(((state.vars || {}) as Record<string, any>).taskWorldKnowledge || ""),
           );
           content = String(speakerResult.content || "").trim() || effectiveMotive || "";
         } finally {

@@ -22,6 +22,8 @@ import {
   WORLD_TIME_SLOTS,
   toJsonText,
   upsertRuntimeEventDigestState,
+  normalizeWorldBookOutput,
+  buildWorldKnowledgeText,
 } from "@/lib/gameEngine";
 import { ensureWorldRolesWithAiParameterCards } from "@/lib/roleParameterCard";
 import { applyExplicitMemoryDirectiveToPlayerCard } from "@/modules/game-runtime/services/PlayerMemoryDirectiveService";
@@ -1453,6 +1455,33 @@ async function tryBuildTaskModePlan(input: {
   const memorySummary = String(memoryDigest.stableMemorySummary || "").trim();
   const dynamicGlobalBg = memorySummary || "（无动态事实）";
 
+  // ★ 阶段2:预加载世界书并匹配本轮关键词，注入任务编排器/发言器
+  //   scanText = playerMessage + dialogue.content（任务模式用 dialogue）
+  //   worldKnowledgeText 拼好后传给 directTaskNarrative
+  let worldKnowledgeText = "";
+  try {
+    const worldId = Number(input.world?.id || 0);
+    if (worldId) {
+      const wbRows = await getGameDb()("t_worldBook").where({ worldId }).select("*");
+      const wbEntries = normalizeWorldBookOutput(wbRows);
+      if (wbEntries.length) {
+        const scanText = [
+          playerMessage,
+          ...dialogue.map((d) => String(d.content || "")),
+        ].join("\n");
+        worldKnowledgeText = buildWorldKnowledgeText(wbEntries, scanText, 800);
+      }
+    }
+  } catch (err) {
+    console.warn("[task-mode-plan] 世界书预加载失败", (err as any)?.message || err);
+  }
+  // ★ 阶段2:把 worldKnowledgeText 存 state.vars，供 /streamlines 的 TaskSpeaker 读取复用
+  //   （任务发言器在 streamlines 链路，拿不到 tryBuildTaskModePlan 的局部变量）
+  if (!input.state.vars || typeof input.state.vars !== "object") {
+    input.state.vars = {};
+  }
+  (input.state.vars as Record<string, any>).taskWorldKnowledge = worldKnowledgeText;
+
   // 1. Intent
   const intentResult = await analyzeTaskIntent({
     userId: input.userId,
@@ -1699,6 +1728,7 @@ async function tryBuildTaskModePlan(input: {
     npcCards,
     originalGlobalBg,
     dynamicGlobalBg,
+    worldKnowledgeText,
   );
   console.log("[task-mode-plan] Director:", directorResult.speaker, "/", directorResult.taskType, "| motive:", directorResult.motive, "| direction:", directorResult.direction, "| speakerRole:", directorResult.speakerRole);
 

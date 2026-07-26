@@ -25,6 +25,7 @@ import {
   readTimeMode,
   realHourToSlot,
   selectWorldBookForInjection,
+  buildWorldKnowledgeText,
   normalizeWorldBookOutput,
   getGameDb,
   type WorldBookEntry,
@@ -282,6 +283,10 @@ type SpeakerPromptPayload = {
   taskContext?: TaskContextPayload | null;
   /** 记忆管理器维护的动态全局背景（用于角色发言器区分初始设定和当前状态） */
   dynamicWorldGlobalBackground?: string;
+  // ★ 阶段2:本轮匹配的世界书条目 content 列表，注入发言器 prompt
+  worldContext?: {
+    worldKnowledge: string[];
+  } | null;
 };
 
 type RecentDialogueTurn = {
@@ -2762,6 +2767,10 @@ function buildSpeakerUserPrompt(payload: {
   taskContext?: TaskContextPayload | null;
   /** 记忆管理器维护的动态全局背景（用于角色发言器区分初始设定和当前状态） */
   dynamicWorldGlobalBackground?: string;
+  /** ★ 阶段2:本轮匹配的世界书条目 content 列表 */
+  worldContext?: {
+    worldKnowledge: string[];
+  } | null;
 }): string {
   const worldLines = buildSpeakerWorldLines(payload);
   const chapterLines = buildSpeakerChapterLines(payload);
@@ -2786,6 +2795,10 @@ function buildSpeakerUserPrompt(payload: {
     "[动态全局背景]",
     payload.dynamicWorldGlobalBackground || "无",
     "",
+    // ★ 阶段2:本轮匹配的世界书条目（地点/世界设定等静态知识），供发言器参考
+    ...(payload.worldContext && payload.worldContext.worldKnowledge.length
+      ? ["[世界知识]", payload.worldContext.worldKnowledge.join("\n\n"), ""]
+      : []),
     ...chapterLines,
     "",
     ...phaseLines,
@@ -2943,6 +2956,10 @@ function buildMemoryUserPrompt(payload: {
   npcCards: JsonRecord[];
   /** 世界时钟（仅自由模式传入；章节模式为 null/undefined，不渲染） */
   worldClock?: { tick: number; timeOfDay: string; weather: string } | null;
+  /** ★ 阶段2:本轮匹配的世界书条目 content 列表，供记忆管理器参考（不照抄进 summary/facts） */
+  worldContext?: {
+    worldKnowledge: string[];
+  } | null;
 }, compactMode = false): string {
   if (compactMode) {
     const currentEventLines = buildMemoryCurrentEventLines(payload);
@@ -2968,6 +2985,9 @@ function buildMemoryUserPrompt(payload: {
         `tick: ${payload.worldClock.tick}｜时段: ${payload.worldClock.timeOfDay}｜天气: ${payload.worldClock.weather}`,
         "",
       ] : []),
+      ...(payload.worldContext && payload.worldContext.worldKnowledge.length
+        ? [`[世界知识] ${payload.worldContext.worldKnowledge.join("｜")}`, ""]
+        : []),
       "[章节]",
       `标题: ${payload.chapterTitle || "未命名章节"}`,
       "",
@@ -3019,6 +3039,10 @@ function buildMemoryUserPrompt(payload: {
       `tick: ${payload.worldClock.tick}｜时段: ${payload.worldClock.timeOfDay}｜天气: ${payload.worldClock.weather}`,
       "",
     ] : []),
+    // ★ 阶段2:世界知识（仅参考，不照抄进 summary/facts）
+    ...(payload.worldContext && payload.worldContext.worldKnowledge.length
+      ? ["[世界知识]", payload.worldContext.worldKnowledge.join("\n\n"), ""]
+      : []),
     ...currentEventLines,
     "",
     "[事件增量]",
@@ -4342,6 +4366,8 @@ export async function runStorySpeakerContent(input: {
   motive: string;
   /** 小游戏模式时使用 motive 作为上下文，不使用章节事件上下文 */
   eventType?: string;
+  /** ★ 阶段2:本轮匹配的世界书条目（由调用方 runNarrativeOrchestrator 预加载传入） */
+  worldBookEntries?: WorldBookEntry[];
 }): Promise<string> {
   // 角色发言链和编排链一样，保留 build/invoke/total 三段耗时，方便直接对照慢点到底出在哪。
   const totalStartedAt = Date.now();
@@ -4526,6 +4552,19 @@ export async function runStorySpeakerContent(input: {
     // 添加当前阶段信息
     currentStageIndex: chapterProgress?.stageIndex ?? 0,
     currentStageSummary: currentStage?.targetSummary || null,
+    // ★ 阶段2:世界书注入。scanText 含 motive（编排师给的地点/角色线索）+ 玩家输入 + 最近对话，
+    //   让发言器生成台词时能参考地点设定等静态知识。
+    worldContext: (() => {
+      if (!input.worldBookEntries || !input.worldBookEntries.length) return null;
+      const scanText = [
+        normalizeScalarText(input.motive),
+        normalizeScalarText(input.playerMessage),
+        ...input.recentMessages.map((m) => normalizeScalarText((m as any)?.content)),
+      ].join("\n");
+      const budget = compactMode ? 800 : 2000;
+      const matched = selectWorldBookForInjection(input.worldBookEntries, scanText, budget);
+      return matched.length ? { worldKnowledge: matched.map((e) => e.content).filter(Boolean) } : null;
+    })(),
   };
   // 只在 prompt payload 层切换当前/下一事件上下文，不改运行态原始事件信息，避免 UI 和回溯链失真。
   // 无论快路由还是标准路由，都统一使用完整版 speaker prompt。
@@ -5021,6 +5060,8 @@ export async function runNarrativeOrchestrator(input: OrchestratorInput): Promis
     playerMessage: input.playerMessage,
     currentRole: matchedRole,
     motive: plan.motive,
+    // ★ 阶段2:复用编排师已预加载的世界书条目，传给发言器做 keys 匹配注入
+    worldBookEntries: input.worldBookEntries,
   });
   const result = {
     ...plan,
@@ -5059,6 +5100,8 @@ export async function runStoryMemoryManager(input: {
   chapter: any;
   state: JsonRecord;
   recentMessages: RuntimeMessageInput[];
+  /** ★ 阶段2:本轮匹配的世界书条目（由调用方 refreshStoryMemoryBestEffort 预加载传入） */
+  worldBookEntries?: WorldBookEntry[];
 }): Promise<MemoryManagerResult> {
   // 记忆管理也需要打印 build/invoke/total 三段耗时，方便直接比对是 prompt 过大还是模型慢。
   const totalStartedAt = Date.now();
@@ -5098,6 +5141,18 @@ export async function runStoryMemoryManager(input: {
     // ★ P1-b NPC 自主行为：仅自由模式注入世界时钟，驱动记忆管理器维护 NPC「当前行为」
     //    章节模式 currentEvent.eventFlowType !== "free_runtime" 时不传，提示词规则据此跳过行为维护
     worldClock: currentEvent.eventFlowType === "free_runtime" ? readWorldClock(input.state) : null,
+    // ★ 阶段2:世界书注入。scanText 用 eventDelta（本轮增量对话）+ recentDialogue，
+    //   让记忆管理器提炼记忆时能参考地点/世界设定等静态知识（仅参考，不照抄进 summary/facts）。
+    worldContext: (() => {
+      if (!input.worldBookEntries || !input.worldBookEntries.length) return null;
+      const scanText = [
+        ...memoryInputs.eventDeltaMessages.map((m: any) => normalizeScalarText(m?.content)),
+        ...memoryInputs.dialogueMessages.map((m: any) => normalizeScalarText(m?.content)),
+      ].join("\n");
+      const budget = compactMode ? 800 : 2000;
+      const matched = selectWorldBookForInjection(input.worldBookEntries, scanText, budget);
+      return matched.length ? { worldKnowledge: matched.map((e) => e.content).filter(Boolean) } : null;
+    })(),
   };
   const systemPrompt = buildMemorySystemPrompt(prompts.storyMemory);
   const userPrompt = buildMemoryUserPrompt(payload, compactMode);
@@ -5619,9 +5674,25 @@ export async function refreshStoryMemoryBestEffort(input: {
   chapter: any;
   state: JsonRecord;
   recentMessages: RuntimeMessageInput[];
+  /** ★ 阶段2:世界书条目（调用方已预加载则复用，否则本函数内读 DB） */
+  worldBookEntries?: WorldBookEntry[];
 }): Promise<MemoryManagerResult | null> {
   const recentMessages = Array.isArray(input.recentMessages) ? input.recentMessages.filter(Boolean) : [];
   if (!recentMessages.length) return null;
+  // ★ 阶段2:预加载世界书条目，传给记忆管理器做 keys 匹配注入（仅参考，不照抄进 summary/facts）
+  if (!input.worldBookEntries) {
+    try {
+      const worldId = Number(input.world?.id || 0);
+      if (worldId) {
+        const db = getGameDb();
+        const rows = await db("t_worldBook").where({ worldId }).select("*");
+        input.worldBookEntries = normalizeWorldBookOutput(rows);
+      }
+    } catch (err) {
+      console.warn("[refreshStoryMemoryBestEffort] 预加载世界书失败", (err as any)?.message || err);
+      input.worldBookEntries = [];
+    }
+  }
   try {
     const previousSummary = normalizeScalarText(input.state.memorySummary);
     const previousFacts = Array.isArray(input.state.memoryFacts)

@@ -78,6 +78,7 @@ async function directorAi(
   npcCards: string,
   originalGlobalBackground: string,
   dynamicGlobalBackground: string,
+  worldKnowledge: string,
 ): Promise<DirectorResult> {
   const systemPrompt = await loadTaskPrompt("task-director-agent", FALLBACK_SYSTEM);
 
@@ -105,6 +106,7 @@ ${originalGlobalBackground || "（无）"}
 
 故事动态全局背景描述：
 ${dynamicGlobalBackground || "（无）"}
+${worldKnowledge ? `\n【世界知识】（本轮匹配的静态世界设定，供选角/写动机参考）\n${worldKnowledge}` : ""}
 
 请输出 JSON：
 {"speaker":"...","motive":"...","taskType":"...","direction":"...","expectedResult":"..."}`;
@@ -223,8 +225,9 @@ export async function directTaskNarrative(
   npcCards: string,
   originalGlobalBackground: string,
   dynamicGlobalBackground: string,
+  worldKnowledge: string,
 ): Promise<DirectorResult> {
   const hist = dialogue.slice(-6).map(d => `${d.role}:${String(d.content || "").slice(0, 60)}`).join("|");
   // ★ 不再短路：所有等级都走 AI（包括 maintain），保证任务系统/旁白也是 AI 编排出来的
-  return directorAi(progressLevel, task?.objective || "无", task?.process || [], npcList, hist, message, userId, npcCards, originalGlobalBackground, dynamicGlobalBackground);
+  return directorAi(progressLevel, task?.objective || "无", task?.process || [], npcList, hist, message, userId, npcCards, originalGlobalBackground, dynamicGlobalBackground, worldKnowledge);
 }

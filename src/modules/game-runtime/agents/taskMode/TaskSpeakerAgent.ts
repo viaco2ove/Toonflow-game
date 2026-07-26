@@ -44,6 +44,7 @@ async function generateAi(
   npcCards: string,
   originalGlobalBackground: string,
   dynamicGlobalBackground: string,
+  worldKnowledge: string,
 ): Promise<SpeakerResult> {
   const systemPrompt = await loadTaskPrompt("task-speaker-agent", FALLBACK_SYSTEM);
 
@@ -70,6 +71,7 @@ ${originalGlobalBackground || "（无）"}
 
 故事动态全局背景描述：
 ${dynamicGlobalBackground || "（无）"}
+${worldKnowledge ? `\n【世界知识】（本轮匹配的静态世界设定，供参考）\n${worldKnowledge}` : ""}
 
 请生成本轮台词，要求：
 - 直接、自然，不要废话和元说明（不要写"作为旁白"、"任务系统说明"等）
@@ -177,9 +179,10 @@ export async function generateTaskSpeech(
   npcCards: string,
   originalGlobalBackground: string,
   dynamicGlobalBackground: string,
+  worldKnowledge: string,
 ): Promise<SpeakerResult> {
   const hist = dialogue.slice(-8).map(d => `${d.role}:${String(d.content || "").slice(0, 60)}`).join("|");
   // ★ 不再短路：system/narrator/npc 都走 AI 生成台词
   // 之前直接返回模板会让"任务系统"、"旁白"输出僵硬的占位文本（如"清晰告知玩家任务进展"）
-  return generateAi(director, npcCard, task?.objective || "无", hist, message, userId, npcCards, originalGlobalBackground, dynamicGlobalBackground);
+  return generateAi(director, npcCard, task?.objective || "无", hist, message, userId, npcCards, originalGlobalBackground, dynamicGlobalBackground, worldKnowledge);
 }

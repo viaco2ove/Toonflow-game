@@ -23,6 +23,14 @@ export interface TaskModeContext {
   npcList?: Array<{ id: string; name: string; roleType?: string; card?: string }>;
   recentDialogue?: Array<{ role: string; content: string }>;
   chapterTitle?: string;
+  /** ★ 阶段2:本轮匹配的世界书知识文本（已拼接好），注入 Director/Speaker prompt */
+  worldKnowledge?: string;
+  /** NPC 参数卡拼接文本（调用方 SessionService 构造） */
+  npcCards?: string;
+  /** 故事初始全局背景 */
+  originalGlobalBackground?: string;
+  /** 故事动态全局背景（记忆管理器维护） */
+  dynamicGlobalBackground?: string;
 }
 
 export interface TaskModeResult {
@@ -92,6 +100,7 @@ export async function orchestrateTaskMode(ctx: TaskModeContext): Promise<TaskMod
     ctx.npcCards || "",
     ctx.originalGlobalBackground || "",
     ctx.dynamicGlobalBackground || "",
+    ctx.worldKnowledge || "",
   );
   console.log("[TaskMode] Step3 编排：", directorResult.speaker, "/", directorResult.taskType);
 
@@ -104,6 +113,10 @@ export async function orchestrateTaskMode(ctx: TaskModeContext): Promise<TaskMod
     ctx.recentDialogue || [],
     ctx.playerMessage,
     ctx.userId,
+    ctx.npcCards || "",
+    ctx.originalGlobalBackground || "",
+    ctx.dynamicGlobalBackground || "",
+    ctx.worldKnowledge || "",
   );
   console.log("[TaskMode] Step4 发言：", String(speakerResult.content || "").slice(0, 60));
 
