@@ -834,7 +834,15 @@ async function handleDebugOrchestrationRequest(req: express.Request, res: expres
       }));
     }
     // data 里只保留 role/roleType/motive；code/message 由标准响应信封承载。
-    const responseData = buildMinimalOrchestrationResponse(result.plan || null);
+    // ★ 编排失败标识：plan 实质为空时透传 orchestrationError，前端据此提示重新编排。
+    // ★ 阶段2 debug:透传 activatedWorldBook，供前端"激活的世界书"面板展示本轮注入的条目。
+    const orchestrationError = String(result.orchestrationError || "").trim() || null;
+    const activatedWorldBook = (result.plan as any)?.activatedWorldBook;
+    const responseData = {
+      ...buildMinimalOrchestrationResponse(result.plan || null),
+      ...(orchestrationError ? { orchestrationError } : {}),
+      ...(Array.isArray(activatedWorldBook) && activatedWorldBook.length ? { activatedWorldBook } : {}),
+    };
     if (DebugLogUtil.isDebugLogEnabled()) {
       console.log("[orchestration/index.ts] buildMinimalOrchestrationResponse 返回:", JSON.stringify(responseData));
     }

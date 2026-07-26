@@ -24,6 +24,10 @@ import {
   getWeatherForSlot,
   readTimeMode,
   realHourToSlot,
+  selectWorldBookForInjection,
+  normalizeWorldBookOutput,
+  getGameDb,
+  type WorldBookEntry,
 } from "@/lib/gameEngine";
 import {
   advanceChapterProgressAfterNarrative,
@@ -83,6 +87,8 @@ export interface OrchestratorInput {
   allowControlHints?: boolean;
   allowStateDelta?: boolean;
   traceMeta?: JsonRecord;
+  /** 世界书条目（自由模式由 runNarrativePlan 预加载注入；阶段2 注入引擎消费） */
+  worldBookEntries?: WorldBookEntry[];
 }
 
 type NarrativePlanSource = "ai" | "fallback" | "rule";
@@ -113,6 +119,8 @@ export interface NarrativePlanResult {
   orchestratorRuntime?: NarrativeRuntimeMeta;
   /** 剧情推动模式:本轮编排显式声明的时间推进 { tick: 推进时段数, weather?: 天气, reason?: 原因 } */
   timeAdvance?: { tick: number; weather?: string; reason?: string } | number;
+  /** 阶段2 debug:本轮激活注入的世界书条目（title+content+category），供前端实时观察 */
+  activatedWorldBook?: { title: string; category: string; constant: boolean; content: string }[];
 }
 
 export interface OrchestratorResult extends NarrativePlanResult {
@@ -141,6 +149,8 @@ export interface NarrativePlanSummary {
   speakerRouteReason?: string;
   timeAdvance?: { tick: number; weather?: string; reason?: string } | number;
   orchestratorRuntime?: NarrativeRuntimeMeta;
+  /** 阶段2 debug:本轮激活的世界书条目，透传给前端展示 */
+  activatedWorldBook?: { title: string; category: string; constant: boolean; content: string }[];
 }
 
 export interface NarrativeRuntimeMeta {
@@ -213,6 +223,18 @@ type OrchestratorPromptPayload = {
     weather?: string;
     ambientEvents?: string[];
     npcActivities?: string[];
+  } | null;
+  // ★ 阶段2 世界书注入：worldBreathing + 匹配到的世界知识条目合并成 worldContext。
+  //   仅自由模式填充。worldBreathing 保留兼容，worldContext 是合并后的新字段，渲染优先用。
+  worldContext?: {
+    timeOfDay?: string;
+    weather?: string;
+    ambientEvents?: string[];
+    npcActivities?: string[];
+    /** 匹配到的世界书条目 content 列表（constant 全收 + 非 constant 按 keys 命中），注入 prompt 用 */
+    worldKnowledge: string[];
+    /** 匹配到的完整条目（含 title），供 debug/前端展示"激活的世界书"用 */
+    worldBookMatched?: WorldBookEntry[];
   } | null;
   // ★ P2-b 叙事钩子标志：仅自由模式，距上次钩子 >= HOOK_INTERVAL 轮时为 true。
   //   AI 据此主动配合植钩子；主流程同时在 motive 追加钩子要求兜底。章节模式 false。
@@ -1642,7 +1664,7 @@ function buildCompactOrchestratorSections(payload: OrchestratorPromptPayload): A
     payload.currentEventFacts.length ? `facts:${payload.currentEventFacts.join("｜")}` : "",
     payload.currentEventMemorySummary ? `memory:${payload.currentEventMemorySummary}` : "",
     payload.currentEventMemoryFacts.length ? `memory_facts:${payload.currentEventMemoryFacts.join("｜")}` : "",
-    payload.worldBreathing ? `world_breathing:${[payload.worldBreathing.timeOfDay, payload.worldBreathing.weather, ...(payload.worldBreathing.ambientEvents || []), ...(payload.worldBreathing.npcActivities || [])].filter(Boolean).join("｜")}` : "",
+    payload.worldContext ? `world_context:${[payload.worldContext.timeOfDay, payload.worldContext.weather, ...(payload.worldContext.ambientEvents || []), ...(payload.worldContext.npcActivities || []), ...(payload.worldContext.worldKnowledge || [])].filter(Boolean).join("｜")}` : (payload.worldBreathing ? `world_context:${[payload.worldBreathing.timeOfDay, payload.worldBreathing.weather, ...(payload.worldBreathing.ambientEvents || []), ...(payload.worldBreathing.npcActivities || [])].filter(Boolean).join("｜")}` : ""),
   ].filter(Boolean).join("\n");
   const eventSeed = shortText(
     [
@@ -1693,7 +1715,7 @@ function buildOrchestratorPromptStats(payload: OrchestratorPromptPayload, compac
     payload.currentEventMemorySummary ? `memory_summary:${payload.currentEventMemorySummary}` : "",
     payload.currentEventMemoryFacts.length ? `memory_facts:${payload.currentEventMemoryFacts.join("；")}` : "",
     payload.currentEventWindow ? `事件窗口:${payload.currentEventWindow}` : "",
-    payload.worldBreathing ? `世界呼吸:${JSON.stringify(payload.worldBreathing)}` : "",
+    payload.worldContext ? `世界呼吸:${JSON.stringify({ timeOfDay: payload.worldContext.timeOfDay, weather: payload.worldContext.weather, ambientEvents: payload.worldContext.ambientEvents, npcActivities: payload.worldContext.npcActivities })}` : (payload.worldBreathing ? `世界呼吸:${JSON.stringify(payload.worldBreathing)}` : ""),
   ].filter(Boolean).join("\n");
   const orchestratorStorySection = compactMode ? [] : [{ title: "剧情摘要", content: payload.storyState || "无" }];
   let sections: Array<{ title: string; content: string }>;
@@ -1705,6 +1727,9 @@ function buildOrchestratorPromptStats(payload: OrchestratorPromptPayload, compac
       { title: "章节内部提纲", content: orchestratorChapterContent },
       { title: "角色列表", content: payload.roles.map((role) => `- ${sanitizeRoleType(role.roleType)} | ${normalizeScalarText(role.name)} | ${describeRole(role)}`).join("\n") || "无" },
       ...orchestratorStorySection,
+      ...(payload.worldContext && payload.worldContext.worldKnowledge.length
+        ? [{ title: "世界知识", content: payload.worldContext.worldKnowledge.join("\n\n") }]
+        : []),
       { title: "当前阶段", content: orchestratorCurrentPhaseContent },
       { title: "当前事件", content: orchestratorCurrentEventContent },
       { title: "回合状态", content: [`can_player_speak:${payload.turnState.canPlayerSpeak ? "true" : "false"}`, `expected_role_type:${sanitizeRoleType(payload.turnState.expectedRoleType)}`, `expected_role:${payload.turnState.expectedRole || "无"}`, `last_speaker_role_type:${sanitizeRoleType(payload.turnState.lastSpeakerRoleType)}`, `last_speaker:${payload.turnState.lastSpeaker || "无"}`].join("\n") },
@@ -3830,6 +3855,7 @@ function buildResolvedRuleNarrativePlan(input: {
   };
   currentEvent: ReturnType<typeof readCurrentRuntimeEventContext>;
   orchestratorRuntime: NarrativeRuntimeMeta;
+  activatedWorldBook?: { title: string; category: string; constant: boolean; content: string }[];
 }): NarrativePlanResult {
   return {
     ...input.plan,
@@ -3840,6 +3866,7 @@ function buildResolvedRuleNarrativePlan(input: {
     eventFacts: input.currentEvent.eventFacts,
     eventStatus: input.plan.awaitUser ? "waiting_input" : input.currentEvent.eventStatus,
     orchestratorRuntime: input.orchestratorRuntime,
+    activatedWorldBook: input.activatedWorldBook,
   };
 }
 
@@ -3861,6 +3888,8 @@ function buildOrchestratorPromptPayload(input: {
   compactMode: boolean;
   traceMeta?: JsonRecord;
   playerMessage?: string;
+  /** 世界书条目（自由模式由 runNarrativePlan 预加载，阶段2 注入引擎消费） */
+  worldBookEntries?: WorldBookEntry[];
 }): OrchestratorPromptPayload {
   const shouldSuppressCompletedGuide = shouldSuppressCompletedFreeChapterGuidePrompt({
     chapter: input.chapter,
@@ -3996,11 +4025,41 @@ function buildOrchestratorPromptPayload(input: {
   payload.state = input.state;
   // ★ 自由模式世界呼吸：仅 free_runtime 时提取，复用记忆数据，不新建服务。
   //   章节模式保持 null，提示词层的"自由模式规则"段会因 flow≠free_runtime 而整体忽略。
+  let breathing: { timeOfDay?: string; weather?: string; ambientEvents?: string[]; npcActivities?: string[] } | null = null;
   if (input.currentEvent.eventFlowType === "free_runtime") {
-    payload.worldBreathing = buildWorldBreathing(input.state);
+    breathing = buildWorldBreathing(input.state);
+    payload.worldBreathing = breathing;
     // ★ P2-b 叙事钩子：确定性计数，>= HOOK_INTERVAL 轮时通知 AI 植钩子。
     // 已在 free_runtime 块内，isFreeMode 直接传 true。
     payload.shouldEmitHook = shouldEmitHook(input.state, true);
+  }
+  // ★ 阶段2 世界书注入：所有模式都注入（章节+自由）。
+  //   keys 匹配 latestPlayerMessage + recentDialogue，token 预算联动 compact/advanced。
+  //   自由模式与 worldBreathing 合并成 worldContext；章节模式 worldBreathing 为 null，worldContext 只含 worldKnowledge。
+  //   说明：原设计仅自由模式，后扩展为全模式--地点氛围/世界设定等静态知识对章节剧情同样有价值。
+  if (input.worldBookEntries && input.worldBookEntries.length) {
+    const scanText = [
+      payload.latestPlayerMessage || "",
+      ...(payload.recentDialogue || []).map((turn) => String(turn?.content || "")),
+    ].join("\n");
+    const tokenBudget = input.compactMode ? 800 : 2000;
+    const matched = selectWorldBookForInjection(input.worldBookEntries, scanText, tokenBudget);
+    payload.worldContext = {
+      ...(breathing || {}),
+      worldKnowledge: matched.map((entry) => entry.content).filter(Boolean),
+      worldBookMatched: matched,
+    };
+    logOrchestratorKeyNode("worldBook:injected", input.traceMeta, {
+      flowType: input.currentEvent.eventFlowType,
+      totalEntries: input.worldBookEntries.length,
+      matched: matched.length,
+      tokenBudget,
+      scanTextPreview: scanText.slice(0, 60),
+    });
+  }else {
+     logOrchestratorKeyNode("worldBook:injected fail eventFlowType", input.traceMeta, {
+      eventFlowType: input.currentEvent.eventFlowType
+    });
   }
   return payload;
 }
@@ -4661,6 +4720,23 @@ export async function runNarrativePlan(input: OrchestratorInput): Promise<Narrat
   });
   // 用运行时 event 实际 flowType 判断，不依赖 chapter 字段完整性。
   const isFreeModeForHook = readCurrentRuntimeEventContext(input.chapter, input.state).eventFlowType === "free_runtime";
+  // ★ 阶段2 世界书注入：所有模式都预加载该世界的世界书条目（仅一次 DB 读，按 worldId 索引）。
+  //   doRunNarrativePlan -> buildOrchestratorPromptPayload 消费 input.worldBookEntries 做 keys 匹配。
+  //   调用方若已传入（如批量编排复用），则不重复读。DB 读失败兜底为空，编排照常进行。
+  //   说明：阶段2 原设计仅自由模式注入，后扩展为章节+自由都注入（地点氛围/世界设定对章节也有价值）。
+  if (!input.worldBookEntries) {
+    try {
+      const worldId = Number(input.world?.id || 0);
+      if (worldId) {
+        const db = getGameDb();
+        const rows = await db("t_worldBook").where({ worldId }).select("*");
+        input.worldBookEntries = normalizeWorldBookOutput(rows);
+      }
+    } catch (err) {
+      console.warn("[runNarrativePlan] 预加载世界书失败，跳过注入", (err as any)?.message || err);
+      input.worldBookEntries = [];
+    }
+  }
   try {
     const result = await doRunNarrativePlan(input);
     // ★ P2-b 叙事钩子（路线C 主流程控计数）：
@@ -4741,6 +4817,7 @@ async function doRunNarrativePlan(input: OrchestratorInput): Promise<NarrativePl
     compactMode,
     traceMeta: input.traceMeta,
     playerMessage: input.playerMessage,
+    worldBookEntries: input.worldBookEntries,
   });
   const hasPlayerInput = payload.latestPlayerMessage.length > 0;
   const isSkip = payload.latestPlayerMessage === ".";
@@ -4778,6 +4855,9 @@ async function doRunNarrativePlan(input: OrchestratorInput): Promise<NarrativePl
       plan: ruleDecision.plan,
       currentEvent,
       orchestratorRuntime,
+      activatedWorldBook: payload.worldContext?.worldBookMatched?.map((e) => ({
+        title: e.title, category: e.category, constant: e.constant, content: e.content,
+      })),
     });
   }
 
@@ -4837,7 +4917,7 @@ async function doRunNarrativePlan(input: OrchestratorInput): Promise<NarrativePl
     orchestratorTokenUsage = (result as any)?.usage || null;
 
     // 第四段：模型调用成功后，不在主函数里直接拆字段，而是交给专门的解析器统一处理。
-    return buildAiNarrativePlanResult({
+    const planResult = buildAiNarrativePlanResult({
       rawText,
       compactMode,
       allowControlHints,
@@ -4852,6 +4932,11 @@ async function doRunNarrativePlan(input: OrchestratorInput): Promise<NarrativePl
       orchestratorRuntime,
       isSkip,
     });
+    // ★ 阶段2 debug:把本轮激活的世界书条目挂到 plan result，供前端实时观察
+    planResult.activatedWorldBook = payload.worldContext?.worldBookMatched?.map((e) => ({
+      title: e.title, category: e.category, constant: e.constant, content: e.content,
+    }));
+    return planResult;
   } catch (err) {
     // 第五段：模型失败时，尽量保住剧情继续运行。
     // 余额不足会直接抛给上层，其它错误则退回到 fallback 编排。
@@ -5497,6 +5582,14 @@ export function summarizeNarrativePlan(result: OrchestratorResult | null | undef
         payloadMode: result.orchestratorRuntime.payloadMode === "advanced" ? "advanced" : "compact",
         payloadModeSource: result.orchestratorRuntime.payloadModeSource === "explicit" ? "explicit" : "inferred",
       }
+      : undefined,
+    activatedWorldBook: Array.isArray(result.activatedWorldBook)
+      ? result.activatedWorldBook.map((item) => ({
+        title: normalizeScalarText(item.title),
+        category: normalizeScalarText(item.category),
+        constant: Boolean(item.constant),
+        content: normalizeScalarText(item.content),
+      })).filter((item) => item.title || item.content)
       : undefined,
   };
 }

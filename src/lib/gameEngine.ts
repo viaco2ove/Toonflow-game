@@ -3107,6 +3107,86 @@ export function serializeWorldBookEntry(entry: Partial<WorldBookEntry>, worldId:
   };
 }
 
+// ============================================================================
+// 世界书注入引擎（阶段2）
+//
+// 自由模式下，世界书条目按关键词匹配注入编排师上下文。
+// - constant 条目（世界宪法层，如"主角核心规则"）始终注入，不分 category
+// - 非 constant 条目仅 locations/events/world/random 四类参与注入
+//   （characters/factions/items 走参数卡，不重复注入）
+// - keys 匹配 scanText：纯文本 includes，/regex/ 包裹的按正则（try-catch 容错）
+// - 按 order 升序排序，按 token 预算（chars/4 估算）截断低优先级
+// ============================================================================
+
+/** 注入允许的非 constant 类目（characters/factions/items 走参数卡） */
+const WORLD_BOOK_INJECTABLE_CATEGORIES = new Set(["locations", "events", "world", "random"]);
+
+/** token 估算：与 NarrativeOrchestrator.estimatePromptTokens 一致（chars/4） */
+function estimateWorldBookTokens(text: string): number {
+  const chars = String(text || "").length;
+  return chars ? Math.max(1, Math.ceil(chars / 4)) : 0;
+}
+
+/** 检查单个 key 是否命中扫描文本。支持 /regex/ 正则（容错降级为纯文本） */
+function matchWorldBookKey(key: string, scanText: string): boolean {
+  const k = String(key || "").trim();
+  if (!k) return false;
+  // /pattern/flags 包裹视为正则
+  const regexMatch = k.match(/^\/(.+)\/([gimsuy]*)$/);
+  if (regexMatch) {
+    try {
+      return new RegExp(regexMatch[1], regexMatch[2]).test(scanText);
+    } catch {
+      // 非法正则降级为纯文本包含
+      return scanText.includes(k);
+    }
+  }
+  return scanText.includes(k);
+}
+
+/**
+ * 从世界书条目里选出本轮要注入的条目。
+ *
+ * @param entries 全部世界书条目（已归一化）
+ * @param scanText 扫描文本（latestPlayerMessage + recentDialogue content 拼接）
+ * @param tokenBudget token 预算上限（compact 800 / advanced 2000）
+ * @returns 按 order 排序、预算内的条目列表
+ */
+export function selectWorldBookForInjection(
+  entries: WorldBookEntry[],
+  scanText: string,
+  tokenBudget: number,
+): WorldBookEntry[] {
+  if (!Array.isArray(entries) || !entries.length) return [];
+  const text = String(scanText || "");
+
+  // 1. 筛选：constant 全收；非 constant 仅允许类目 + keys 命中
+  const matched = entries.filter((entry) => {
+    if (!entry || !entry.content) return false;
+    if (entry.constant) return true; // 常驻条目始终注入
+    if (!WORLD_BOOK_INJECTABLE_CATEGORIES.has(entry.category)) return false; // characters/factions/items 跳过
+    if (!Array.isArray(entry.keys) || !entry.keys.length) return false; // 非常驻必须有 keys
+    return entry.keys.some((key) => matchWorldBookKey(key, text));
+  });
+
+  // 2. 按 order 升序排序（order 大的靠后，对输出影响大；预算紧时截断 order 小的）
+  matched.sort((a, b) => (a.order || 0) - (b.order || 0));
+
+  // 3. token 预算截断
+  const kept: WorldBookEntry[] = [];
+  let used = 0;
+  for (const entry of matched) {
+    const cost = estimateWorldBookTokens(entry.content);
+    if (used + cost > tokenBudget && kept.length > 0) {
+      // 超预算且已有条目，跳过（保留至少已收集的）
+      continue;
+    }
+    kept.push(entry);
+    used += cost;
+  }
+  return kept;
+}
+
 // 归一化章节输出，并同步构建 runtimeOutline。
 export function normalizeChapterOutput(row: any): JsonRecord | null {
   if (!row) return null;

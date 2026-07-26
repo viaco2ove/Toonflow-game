@@ -37,6 +37,10 @@ const NON_PROJECT_SCOPED_PATHS = new Set<string>([
   "/game/importWorldRole",
   "/game/debugRuntimeShared/revisit",
   "/game/debugRuntimeShared/revisit/history",
+  "/game/listWorldBook",
+  "/game/saveWorldBookEntry",
+  "/game/importWorldBook",
+  "/game/deleteWorldBookEntry",
 ]);
 
 function toPositiveInt(value: any): number | null {

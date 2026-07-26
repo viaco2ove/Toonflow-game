@@ -311,6 +311,8 @@ export interface SessionNarrativePlanResult {
   };
   /** 剧情推动模式:本轮编排显式声明的时间推进 { tick, weather?, reason? } 或时段数 */
   timeAdvance?: { tick: number; weather?: string; reason?: string } | number;
+  /** 阶段2 debug:本轮激活注入的世界书条目（title+category+constant+content），透传给前端展示 */
+  activatedWorldBook?: { title: string; category: string; constant: boolean; content: string }[];
 }
 
 export interface SessionChapterCommand {
@@ -331,6 +333,9 @@ export interface SessionOrchestrationResult {
   eventDigestWindow: RuntimeEventViewState["eventDigestWindow"];
   eventDigestWindowText: RuntimeEventViewState["eventDigestWindowText"];
   plan: SessionNarrativePlanResult | null;
+  /** 编排错误标识：本轮应产生编排但 plan 无效（role/motive 都空）时置 "orchestration_failed"。
+   *  合法中间态（章节切换/waiting_input/null plan）不置。前端据此提示重新编排。 */
+  orchestrationError?: string | null;
 }
 
 export interface InitSessionChapterResult {
@@ -1068,6 +1073,7 @@ function buildSessionPlanResult(plan: ({
   nextNarrativePlan?: unknown;
   orchestratorRuntime?: unknown;
   timeAdvance?: unknown;
+  activatedWorldBook?: unknown;
 }) | null | undefined): SessionNarrativePlanResult | null {
   if (!plan) return null;
   return {
@@ -1159,6 +1165,15 @@ function buildSessionPlanResult(plan: ({
       if (typeof raw === "number" && Number.isFinite(raw) && raw > 0) return Math.floor(raw);
       return undefined;
     })(),
+    // ★ 阶段2 debug:透传激活的世界书条目（title+category+constant+content），供前端"激活的世界书"面板展示
+    activatedWorldBook: Array.isArray(plan.activatedWorldBook)
+      ? (plan.activatedWorldBook as any[]).map((item) => ({
+        title: String(item?.title || "").trim(),
+        category: String(item?.category || "").trim(),
+        constant: Boolean(item?.constant),
+        content: String(item?.content || "").trim(),
+      })).filter((item) => item.title || item.content)
+      : undefined,
   };
 }
 
@@ -1176,6 +1191,23 @@ function buildPublicSessionPlanResult(plan: SessionNarrativePlanResult | null): 
     nextRole: "",
     nextRoleType: "",
   };
+}
+
+/**
+ * 判断编排 plan 是否"实质为空"（编排失败信号）。
+ *
+ * plan 为 null、或 role/motive 都空、或 roleType 为空，视为无效。
+ * 用于主编排路径标记 orchestrationError，让前端提示重新编排。
+ * 注意：waiting_input 的合法 plan 有 role="用户"/roleType="player"/motive="等待输入"，不会被误判。
+ */
+function isSessionPlanEffectivelyEmpty(plan: SessionNarrativePlanResult | null): boolean {
+  if (!plan) return true;
+  const role = String(plan.role || "").trim();
+  const roleType = String(plan.roleType || "").trim();
+  const motive = String(plan.motive || "").trim();
+  // awaitUser=true 的 plan 即使 motive 简短也是合法的"等待用户"，不算失败
+  if (plan.awaitUser && roleType) return false;
+  return !role && !motive && !roleType;
 }
 
 function buildEventView(state: Record<string, any>) {
@@ -4543,6 +4575,10 @@ async function orchestrateSessionTurnInner(sessionId: string): Promise<SessionOr
     eventDigestWindow: eventView.eventDigestWindow,
     eventDigestWindowText: eventView.eventDigestWindowText,
     plan,
+    // ★ 编排错误判定：走到主编排路径说明本轮应产生叙事。
+    //   若 plan 为 null 或 role/motive 都空，说明编排真失败（AI 报错/空响应/兜底也失败），
+    //   标记 orchestrationError 让前端提示重新编排。章节切换/waiting 等中间态不走这里。
+    orchestrationError: isSessionPlanEffectivelyEmpty(plan) ? "orchestration_failed" : null,
   };
   return finalizeOrchestrationResult(result, true);
 }
