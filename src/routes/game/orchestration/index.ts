@@ -163,6 +163,13 @@ async function applyDebugNarrativePlanToState(params: {
 }) {
   applyOrchestratorResultToState(params.state, params.plan);
   applyNarrativeMemoryHintsToState(params.state, params.plan.memoryHints);
+  // ★ 阶段2 debug:把本轮激活的世界书条目写到 state.vars，供 /game/storyInfo 读取返回前端面板。
+  if (!params.state.vars || typeof params.state.vars !== "object") {
+    params.state.vars = {};
+  }
+  (params.state.vars as Record<string, any>).activatedWorldBook = Array.isArray(params.plan.activatedWorldBook)
+    ? params.plan.activatedWorldBook
+    : [];
   if (params.plan.triggerMemoryAgent) {
     // 调试模式同步等待记忆管理完成，确保参数卡更新后再返回前端
     await triggerStoryMemoryRefreshInBackground({
@@ -835,13 +842,12 @@ async function handleDebugOrchestrationRequest(req: express.Request, res: expres
     }
     // data 里只保留 role/roleType/motive；code/message 由标准响应信封承载。
     // ★ 编排失败标识：plan 实质为空时透传 orchestrationError，前端据此提示重新编排。
-    // ★ 阶段2 debug:透传 activatedWorldBook，供前端"激活的世界书"面板展示本轮注入的条目。
+    //   注意：activatedWorldBook 等编排过程数据不走本接口（保持最小响应），
+    //   改由编排时写入 state，/game/storyInfo 读取返回。
     const orchestrationError = String(result.orchestrationError || "").trim() || null;
-    const activatedWorldBook = (result.plan as any)?.activatedWorldBook;
     const responseData = {
       ...buildMinimalOrchestrationResponse(result.plan || null),
       ...(orchestrationError ? { orchestrationError } : {}),
-      ...(Array.isArray(activatedWorldBook) && activatedWorldBook.length ? { activatedWorldBook } : {}),
     };
     if (DebugLogUtil.isDebugLogEnabled()) {
       console.log("[orchestration/index.ts] buildMinimalOrchestrationResponse 返回:", JSON.stringify(responseData));

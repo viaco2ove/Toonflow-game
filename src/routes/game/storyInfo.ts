@@ -29,6 +29,25 @@ import {DebugLogUtil} from "@/utils/debugLogUtil";
 const router = express.Router();
 
 /**
+ * 从 state.vars 读取本轮编排激活的世界书条目。
+ *
+ * 编排时（applySessionNarrativePlanToState / applyDebugNarrativePlanToState）把
+ * plan.activatedWorldBook 写入 state.vars.activatedWorldBook，storyInfo 读取返回前端。
+ * 这样 /game/orchestration 响应保持最小（只 role/roleType/motive），世界书激活数据走 storyInfo。
+ */
+function readActivatedWorldBookFromState(state: Record<string, any>): { title: string; category: string; constant: boolean; content: string }[] {
+  const vars = (state && typeof state === "object") ? state.vars : null;
+  const list = (vars && typeof vars === "object") ? (vars as Record<string, any>).activatedWorldBook : null;
+  if (!Array.isArray(list)) return [];
+  return list.map((item: any) => ({
+    title: String(item?.title || "").trim(),
+    category: String(item?.category || "").trim(),
+    constant: Boolean(item?.constant),
+    content: String(item?.content || "").trim(),
+  })).filter((item: { title: string; content: string }) => item.title || item.content);
+}
+
+/**
  * 根据正式会话状态构造结束弹窗标题。
  *
  * 用途：
@@ -179,6 +198,9 @@ export default router.post(
           endDialogDetail = `章节《${chapter?.title || activeState.chapterTitle}》完成，故事已完结。可进入自由模式继续游玩，或返回历史重新开始。`;
         }
         console.log("[storyInfo] 最终endDialog", { sessionEndDialog, endDialogDetail });
+        // ★ 阶段2 debug:从 state.vars 读取本轮编排激活的世界书条目，供前端"激活的世界书"面板展示。
+        //   编排时写入 state，storyInfo 读取返回，避免 /game/orchestration 响应夹带编排过程数据。
+        const activatedWorldBook = readActivatedWorldBookFromState(activeState);
         return res.status(200).send(success({
           worldId: Number(sessionRow.worldId || 0),
           status: sessionStatus,
@@ -200,6 +222,7 @@ export default router.post(
           allEventStageProgress: eventView.allEventStageProgress,
           endDialog: sessionEndDialog,
           endDialogDetail: endDialogDetail,
+          activatedWorldBook,
           // 小游戏配置：前端根据此配置决定语音等待时间
           // AUDIO_PROXY_MIN_SEC 默认3秒，可通过环境变量配置
           miniGameConfig: {
@@ -296,6 +319,8 @@ export default router.post(
         eventDigestWindow: stageProgressView.eventDigestWindow || [],
         eventDigestWindowText: stageProgressView.eventDigestWindowText || String(snapshot.eventDigestWindowText || ""),
         allEventStageProgress: stageProgressView.allEventStageProgress,
+        // ★ 阶段2 debug:从 state.vars 读取本轮编排激活的世界书条目
+        activatedWorldBook: readActivatedWorldBookFromState(activeState),
       }));
     } catch (err) {
       return res.status(500).send(error(u.error(err).message));

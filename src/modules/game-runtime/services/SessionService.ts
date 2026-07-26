@@ -1332,6 +1332,14 @@ function applySessionNarrativePlanToState(params: {
 }) {
   applyOrchestratorResultToState(params.state, params.plan);
   applyNarrativeMemoryHintsToState(params.state, params.plan.memoryHints);
+  // ★ 阶段2 debug:把本轮激活的世界书条目写到 state.vars，供 /game/storyInfo 读取返回前端面板。
+  //   不走 /game/orchestration 响应（保持最小 role/roleType/motive 响应）。
+  if (!params.state.vars || typeof params.state.vars !== "object") {
+    params.state.vars = {};
+  }
+  (params.state.vars as Record<string, any>).activatedWorldBook = Array.isArray(params.plan.activatedWorldBook)
+    ? params.plan.activatedWorldBook
+    : [];
   if (params.plan.triggerMemoryAgent) {
     triggerStoryMemoryRefreshInBackground({
       userId: params.userId,
