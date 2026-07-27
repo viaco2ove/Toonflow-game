@@ -4613,10 +4613,20 @@ async function orchestrateSessionTurnInner(sessionId: string): Promise<SessionOr
     eventDigestWindow: eventView.eventDigestWindow,
     eventDigestWindowText: eventView.eventDigestWindowText,
     plan,
-    // ★ 编排错误判定：走到主编排路径说明本轮应产生叙事。
-    //   若 plan 为 null 或 role/motive 都空，说明编排真失败（AI 报错/空响应/兜底也失败），
-    //   标记 orchestrationError 让前端提示重新编排。章节切换/waiting 等中间态不走这里。
-    orchestrationError: isSessionPlanEffectivelyEmpty(plan) ? "orchestration_failed" : null,
+    // ★ 编排错误判定：plan 实质为空且当前没有正在进行的"切下一章"流程时，视为编排失败。
+    //   - outcome=continue + 空 plan：本应产出叙事却没产出 → 失败。
+    //   - outcome=success + 空 plan + 无 pendingChapterId：章节判定为成功但既没生成收尾台词，
+    //     也没切到下一章（卡死态）→ 失败，让前端提示重新编排。
+    //   - 合法不标错：success 且已 setPendingSessionChapterId（下一轮会自动开场，本轮空是正常的）；
+    //     failed（会话已结束，前端走 endDialog，不需要重试编排）。
+    //   注意：success 的切章早返回路径（plan.role 非空）在上方 finalizeOrchestrationResult 已提前 return，
+    //   能落到这里且 pendingChapterId 为空，说明确实是没产出任何内容的卡死态。
+    orchestrationError:
+      (isSessionPlanEffectivelyEmpty(plan)
+        && !getPendingSessionChapterId(state)
+        && mergedOutcome.outcome !== "failed")
+        ? "orchestration_failed"
+        : null,
   };
   return finalizeOrchestrationResult(result, true);
 }
