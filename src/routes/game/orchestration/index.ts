@@ -841,14 +841,15 @@ async function handleDebugOrchestrationRequest(req: express.Request, res: expres
       }));
     }
     // data 里只保留 role/roleType/motive；code/message 由标准响应信封承载。
-    // ★ 编排失败标识：plan 实质为空时透传 orchestrationError，前端据此提示重新编排。
+    // ★ 编排失败：后端返回 HTTP 500 + message=orchestration_failed，前端据此显示"编排错误"重试按钮。
     //   注意：activatedWorldBook 等编排过程数据不走本接口（保持最小响应），
     //   改由编排时写入 state，/game/storyInfo 读取返回。
     const orchestrationError = String(result.orchestrationError || "").trim() || null;
-    const responseData = {
-      ...buildMinimalOrchestrationResponse(result.plan || null),
-      ...(orchestrationError ? { orchestrationError } : {}),
-    };
+    if (orchestrationError) {
+      DebugLogUtil.log("story:orchestrator:runtime", "编排失败，返回 HTTP 500", { orchestrationError });
+      return res.status(500).send(success(null, orchestrationError));
+    }
+    const responseData = buildMinimalOrchestrationResponse(result.plan || null);
     if (DebugLogUtil.isDebugLogEnabled()) {
       console.log("[orchestration/index.ts] buildMinimalOrchestrationResponse 返回:", JSON.stringify(responseData));
     }
