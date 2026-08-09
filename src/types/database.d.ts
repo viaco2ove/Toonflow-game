@@ -420,6 +420,8 @@ export interface t_worldBook {
   'title'?: string | null;
   'updateTime'?: number | null;
   'worldId'?: number | null;
+  /** 允许注入的 Agent Key 列表；空或含 "all" 表示全部 Agent */
+  'agentList'?: string | null;
 }
 
 export interface DB {

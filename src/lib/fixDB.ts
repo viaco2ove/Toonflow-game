@@ -521,6 +521,7 @@ export default async (knex: Knex): Promise<void> => {
     table.integer("sort");
     table.integer("createTime");
     table.integer("updateTime");
+    table.text("agentList");
     table.index(["worldId"], "idx_worldBook_worldId");
   });
   await ensureTable("t_storyChapter_published", (table) => {

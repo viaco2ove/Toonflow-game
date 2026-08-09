@@ -4067,7 +4067,7 @@ function buildOrchestratorPromptPayload(input: {
       ...(payload.recentDialogue || []).map((turn) => String(turn?.content || "")),
     ].join("\n");
     const tokenBudget = input.compactMode ? 800 : 2000;
-    const matched = selectWorldBookForInjection(input.worldBookEntries, scanText, tokenBudget);
+    const matched = selectWorldBookForInjection(input.worldBookEntries, scanText, tokenBudget, "narrative_orchestrator");
     payload.worldContext = {
       ...(breathing || {}),
       worldKnowledge: matched.map((entry) => entry.content).filter(Boolean),
@@ -4562,7 +4562,7 @@ export async function runStorySpeakerContent(input: {
         ...input.recentMessages.map((m) => normalizeScalarText((m as any)?.content)),
       ].join("\n");
       const budget = compactMode ? 800 : 2000;
-      const matched = selectWorldBookForInjection(input.worldBookEntries, scanText, budget);
+      const matched = selectWorldBookForInjection(input.worldBookEntries, scanText, budget, "story_speaker");
       return matched.length ? { worldKnowledge: matched.map((e) => e.content).filter(Boolean) } : null;
     })(),
   };
@@ -5150,7 +5150,7 @@ export async function runStoryMemoryManager(input: {
         ...memoryInputs.dialogueMessages.map((m: any) => normalizeScalarText(m?.content)),
       ].join("\n");
       const budget = compactMode ? 800 : 2000;
-      const matched = selectWorldBookForInjection(input.worldBookEntries, scanText, budget);
+      const matched = selectWorldBookForInjection(input.worldBookEntries, scanText, budget, "story_memory_manager");
       return matched.length ? { worldKnowledge: matched.map((e) => e.content).filter(Boolean) } : null;
     })(),
   };

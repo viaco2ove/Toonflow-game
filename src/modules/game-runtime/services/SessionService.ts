@@ -1469,7 +1469,7 @@ async function tryBuildTaskModePlan(input: {
           playerMessage,
           ...dialogue.map((d) => String(d.content || "")),
         ].join("\n");
-        worldKnowledgeText = buildWorldKnowledgeText(wbEntries, scanText, 800);
+        worldKnowledgeText = buildWorldKnowledgeText(wbEntries, scanText, 800, "task_director");
       }
     }
   } catch (err) {

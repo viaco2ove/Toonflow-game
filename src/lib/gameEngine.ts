@@ -3029,6 +3029,8 @@ export interface WorldBookEntry {
   sort: number;
   createTime?: number;
   updateTime?: number;
+  /** 允许注入的 Agent Key 列表；空或含 "all" 表示全部 Agent */
+  agentList?: string[];
 }
 
 /** 合法类目白名单（导入时容错：非法值归到 "world"） */
@@ -3072,6 +3074,7 @@ export function normalizeWorldBookEntry(raw: any): WorldBookEntry {
     sort,
     createTime: Number.isFinite(Number(source.createTime)) ? Number(source.createTime) : undefined,
     updateTime: Number.isFinite(Number(source.updateTime)) ? Number(source.updateTime) : undefined,
+    agentList: parseKeys(source.agentList),
   };
 }
 
@@ -3104,6 +3107,7 @@ export function serializeWorldBookEntry(entry: Partial<WorldBookEntry>, worldId:
     selectiveKeys: JSON.stringify(normalized.selectiveKeys || []),
     content: normalized.content,
     sort: normalized.sort,
+    agentList: JSON.stringify(normalized.agentList || []),
   };
 }
 
@@ -3152,17 +3156,31 @@ function matchWorldBookKey(key: string, scanText: string): boolean {
  * @param tokenBudget token 预算上限（compact 800 / advanced 2000）
  * @returns 按 order 排序、预算内的条目列表
  */
+/**
+ * 判断某条目是否对指定 Agent 可见。
+ * - agentList 为空或含 "all" → 对全部 Agent 可见
+ * - 否则只在 agentList 包含 agentKey 时注入
+ */
+function worldBookEntryVisibleToAgent(entry: WorldBookEntry, agentKey: string): boolean {
+  const list = entry.agentList;
+  if (!Array.isArray(list) || !list.length) return true;
+  if (list.includes("all")) return true;
+  return list.includes(agentKey);
+}
+
 export function selectWorldBookForInjection(
   entries: WorldBookEntry[],
   scanText: string,
   tokenBudget: number,
+  agentKey?: string,
 ): WorldBookEntry[] {
   if (!Array.isArray(entries) || !entries.length) return [];
   const text = String(scanText || "");
 
-  // 1. 筛选：constant 全收；非 constant 仅允许类目 + keys 命中
+  // 1. 筛选：constant 全收；非 constant 仅允许类目 + keys 命中 + agentKey 过滤
   const matched = entries.filter((entry) => {
     if (!entry || !entry.content) return false;
+    if (agentKey && !worldBookEntryVisibleToAgent(entry, agentKey)) return false; // agentKey 过滤
     if (entry.constant) return true; // 常驻条目始终注入
     if (!WORLD_BOOK_INJECTABLE_CATEGORIES.has(entry.category)) return false; // characters/factions/items 跳过
     if (!Array.isArray(entry.keys) || !entry.keys.length) return false; // 非常驻必须有 keys
@@ -3198,9 +3216,10 @@ export function buildWorldKnowledgeText(
   entries: WorldBookEntry[] | null | undefined,
   scanText: string,
   tokenBudget: number,
+  agentKey?: string,
 ): string {
   if (!Array.isArray(entries) || !entries.length) return "";
-  const matched = selectWorldBookForInjection(entries, scanText, tokenBudget);
+  const matched = selectWorldBookForInjection(entries, scanText, tokenBudget, agentKey);
   if (!matched.length) return "";
   return matched.map((entry) => entry.content).filter(Boolean).join("\n\n");
 }
