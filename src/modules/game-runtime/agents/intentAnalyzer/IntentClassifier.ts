@@ -11,6 +11,7 @@
 
 import u from "@/utils";
 import { z } from "zod";
+import { buildWorldKnowledgeText, normalizeWorldBookOutput } from "@/lib/gameEngine";
 
 // ============================================================================
 // 类型定义
@@ -22,6 +23,7 @@ export type IntentType = "create_task" | "exit_task" | "query_progress" | "game_
 /** IntentContext：意图分析输入 */
 export interface IntentContext {
   userId: number;
+  worldId?: number;
   playerMessage: string;
   recentMessages?: Array<{ role?: string | null; content?: string | null }>;
   activeTaskId?: string | null;
