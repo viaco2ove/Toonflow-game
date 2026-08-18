@@ -12,6 +12,9 @@ https://platform.minimaxi.com/docs/api-reference/speech-t2a-http
 语音克隆
 https://platform.minimaxi.com/docs/api-reference/voice-cloning-clone
 
+要求说明：
+[README.md](../../../res/voice-presets/can_clone/README.md)
+
 #### 语音设计接口
 curl --location 'https://api.minimaxi.com/v1/voice_design' \
 --header 'Authorization: Bearer xxx' \
