@@ -2,6 +2,9 @@ import { z } from "zod";
 import u from "@/utils";
 import {
   JsonRecord,
+  buildWorldKnowledgeText,
+  getGameDb,
+  normalizeWorldBookOutput,
   nowTs,
   parseJsonSafe,
 } from "@/lib/gameEngine";
@@ -1030,7 +1033,20 @@ async function generateMiniGameMentorSpeech(
 ): Promise<string> {
   try {
     const modelConfig = await resolveMiniGameModel(ctx.userId);
-    const prompt = buildMiniGameMentorSpeechPrompt(ctx, rulebook, root, request);
+    // ★ 世界书注入：让小游戏台词参考地点/世界设定
+    let worldKnowledge = "";
+    const wId = Number(ctx.world?.id || 0);
+    if (wId) {
+      try {
+        const scanText = String(ctx.playerMessage || "");
+        const wbRows = await getGameDb()("t_worldBook").where({ worldId: wId }).select("*");
+        const wbEntries = normalizeWorldBookOutput(wbRows);
+        worldKnowledge = buildWorldKnowledgeText(wbEntries, scanText, 300, "mini_game_mentor_speech");
+      } catch (e) {
+        console.warn("[mini_game_mentor_speech] 世界书加载失败", e);
+      }
+    }
+    const prompt = buildMiniGameMentorSpeechPrompt(ctx, rulebook, root, request) + (worldKnowledge ? `\n\n【世界知识】\n${worldKnowledge}` : "");
     const result = await u.ai.text.invoke(
       {
         usageType: "小游戏角色台词",
@@ -1852,6 +1868,7 @@ async function resolveBattleActionByAgent(
   const options = buildMiniGameIntentOptions(session, rulebook);
   const intent = await resolveMiniGameIntentByAi({
     userId: ctx.userId,
+    worldId: Number(ctx.world?.id || 0) || undefined,
     gameType: rulebook.gameType,
     phase: scalarText(session.phase),
     status: scalarText(session.status),
@@ -2710,6 +2727,7 @@ async function handleSellCommand(
     input.playerMessage,
     inventory as any[],
     input.userId,
+    Number(input.world?.id || 0) || undefined,
   );
 
   // 输出 [story:mini_game:stats] 日志（与小游戏动作解析对齐）
@@ -6358,6 +6376,7 @@ export async function handleMiniGameTurn(input: MiniGameControllerInput): Promis
   );
   const aiIntent = isExactRuleMatch ? null : await resolveMiniGameIntentByAi({
     userId: input.userId,
+    worldId: Number(input.world?.id || 0) || undefined,
     gameType: rulebook.gameType,
     phase: scalarText(activeSession.phase),
     status: scalarText(activeSession.status),

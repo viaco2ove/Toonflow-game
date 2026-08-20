@@ -2,6 +2,7 @@ import { z } from "zod";
 import { parse } from "best-effort-json-parser";
 import u from "@/utils";
 import { DebugLogUtil } from "@/utils/debugLogUtil";
+import { buildWorldKnowledgeText, normalizeWorldBookOutput } from "@/lib/gameEngine";
 
 export interface InventoryItem {
   name: string;
@@ -201,6 +202,7 @@ export async function resolveSellIntent(
   userInput: string,
   inventory: InventoryItem[],
   userId: number,
+  worldId?: number,
 ): Promise<SellIntentResult | null> {
   if (!String(userInput || "").trim()) return null;
   if (!Array.isArray(inventory)) return null;
@@ -210,7 +212,18 @@ export async function resolveSellIntent(
     const modelConfig = await resolveSellModel(userId);
     // 从数据库加载提示词，无配置时使用默认提示词
     const dbPrompt = await loadSellPrompt();
-    const systemPrompt = dbPrompt || DEFAULT_SELL_SYSTEM_PROMPT;
+    // ★ 世界书注入
+    let worldKnowledge = "";
+    if (worldId) {
+      try {
+        const rows = await u.db("t_worldBook").where({ worldId }).select("*");
+        const entries = normalizeWorldBookOutput(rows);
+        worldKnowledge = buildWorldKnowledgeText(entries, userInput, 300, "mini_game_sell_intent");
+      } catch (e) {
+        console.warn("[mini_game_sell_intent] 世界书加载失败", e);
+      }
+    }
+    const systemPrompt = (dbPrompt || DEFAULT_SELL_SYSTEM_PROMPT) + (worldKnowledge ? `\n\n【世界知识】\n${worldKnowledge}` : "");
 
     const userPrompt = buildSellPrompt(userInput, inventory);
     const schemaPrompt = buildSellIntentSchemaPrompt();

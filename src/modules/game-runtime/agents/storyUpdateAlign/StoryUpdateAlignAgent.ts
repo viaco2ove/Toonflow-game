@@ -15,6 +15,7 @@ import u from "@/utils";
 import { z } from "zod";
 import { loadTaskPrompt } from "../taskMode/loadTaskPrompt";
 import { ProgressAlignReport } from "@/modules/game-runtime/services/progressAlign";
+import { buildWorldKnowledgeText, normalizeWorldBookOutput } from "@/lib/gameEngine";
 
 const FALLBACK_SYSTEM = `你是故事存档迁移专家。任务：把用户在旧版故事中的存档进度对齐到新版章节，重点做阶段语义匹配和事件摘要重生成。
 
@@ -69,6 +70,8 @@ const AI_SCHEMA = z.object({
 
 export interface StoryUpdateAlignInput {
   userId: number;
+  /** 世界 ID（用于世界书注入，调用方传入） */
+  worldId?: number;
   oldPhases: Array<{ phaseId: string; phaseIndex: number; kind: string; label: string }>;
   newPhases: Array<{ phaseId: string; phaseIndex: number; kind: string; label: string }>;
   currentProgress: {
@@ -94,7 +97,23 @@ export interface StoryUpdateAlignResult {
 export async function runStoryUpdateAlignAgent(input: StoryUpdateAlignInput): Promise<StoryUpdateAlignResult> {
   const systemPrompt = await loadTaskPrompt("story-update-align-agent", FALLBACK_SYSTEM);
 
-  const userPrompt = `请对齐以下存档进度到新版章节，严格输出 JSON。
+  // ★ 世界书注入
+  let worldKnowledge = "";
+  if (input.worldId) {
+    try {
+      const scanText = [
+        input.currentProgress.eventSummary,
+        ...input.oldPhases.map((p) => p.label),
+      ].join("\n");
+      const rows = await u.db("t_worldBook").where({ worldId: input.worldId }).select("*");
+      const entries = normalizeWorldBookOutput(rows);
+      worldKnowledge = buildWorldKnowledgeText(entries, scanText, 400, "story_update_align");
+    } catch (e) {
+      console.warn("[story_update_align] 世界书加载失败", e);
+    }
+  }
+
+  const userPrompt = `${worldKnowledge ? `【世界知识】\n${worldKnowledge}\n\n` : ""}请对齐以下存档进度到新版章节，严格输出 JSON。
 
 旧版阶段：
 ${JSON.stringify(input.oldPhases, null, 2)}

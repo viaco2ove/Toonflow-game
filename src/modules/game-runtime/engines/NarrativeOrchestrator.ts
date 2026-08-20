@@ -5890,6 +5890,7 @@ export function applyOrchestratorResultToState(state: JsonRecord, result: Narrat
  */
 async function applyNarrativeEventProgress(params: {
   userId?: number;
+  world?: any;
   chapter: any;
   state: JsonRecord;
   role?: string;
@@ -5928,6 +5929,7 @@ async function applyNarrativeEventProgress(params: {
   // 先把“当前事件”交给 AI 判断，避免规则信号先把 phase 错切到下一事件。
   const resolution = await evaluateEventProgressByAi({
     userId: params.userId,
+    world: params.world,
     chapter: params.chapter,
     state: params.state,
     messageContent: params.content,
@@ -6026,6 +6028,7 @@ export async function advanceNarrativeUntilPlayerTurn(input: OrchestratorInput &
     if (current.role && current.content) {
       const phaseAdvance = await applyNarrativeEventProgress({
         userId: input.userId,
+        world: input.world,
         chapter: input.chapter,
         state: input.state,
         role: current.role,

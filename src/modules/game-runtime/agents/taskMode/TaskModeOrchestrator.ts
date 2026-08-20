@@ -70,6 +70,10 @@ export async function orchestrateTaskMode(ctx: TaskModeContext): Promise<TaskMod
     ctx.recentDialogue || [],
     ctx.playerMessage,
     ctx.userId,
+    ctx.npcCards || "",
+    ctx.originalGlobalBackground || "",
+    ctx.dynamicGlobalBackground || "",
+    ctx.worldKnowledge || "",
   );
   console.log("[TaskMode] Step2 推进：", progressResult.level, "/", progressResult.tier);
 
@@ -178,6 +182,10 @@ async function handleTaskCompletion(
     ctx.playerMessage,
     intentResult.reasoning || "任务结束",
     ctx.userId,
+    ctx.npcCards || "",
+    ctx.originalGlobalBackground || "",
+    ctx.dynamicGlobalBackground || "",
+    ctx.worldKnowledge || "",
   );
   console.log("[TaskMode] 评估结果：", completionResult.level);
 

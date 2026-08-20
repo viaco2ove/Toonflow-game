@@ -1,7 +1,10 @@
 import u from "@/utils";
 import {
+  buildWorldKnowledgeText,
+  getGameDb,
   isFreeChapterRuntimeMode,
   JsonRecord, parseJsonSafe,
+  normalizeWorldBookOutput,
   readChapterProgressState,
   readPhaseAwareRuntimeCurrentEventDigestState,
 } from "@/lib/gameEngine";
@@ -375,8 +378,12 @@ function buildChapterJudgePrompt(input: {
   messageContent?: string;
   eventType?: string;
   recentMessages?: any[];
+  worldKnowledge?: string;
 }): string {
-  return JSON.stringify(buildChapterJudgeInputSnapshot(input), null, 2);
+  const snapshotText = JSON.stringify(buildChapterJudgeInputSnapshot(input), null, 2);
+  return input.worldKnowledge
+    ? `${snapshotText}\n\n【世界知识】\n${input.worldKnowledge}`
+    : snapshotText;
 }
 
 async function loadChapterJudgePrompt(): Promise<string> {
@@ -500,7 +507,23 @@ async function evaluateChapterOutcomeByAi(input: EvaluateRuntimeOutcomeInput): P
     return fallback;
   }
   const buildStartedAt = Date.now();
-  const userPrompt = buildChapterJudgePrompt(input);
+  // ★ 世界书注入：章节判定参考世界设定
+  let worldKnowledge = "";
+  const wId = Number(input.world?.id || 0);
+  if (wId) {
+    try {
+      const scanText = [
+        normalizeScalarText(input.messageContent),
+        ...(Array.isArray(input.recentMessages) ? input.recentMessages.map((m) => normalizeScalarText(m?.content)) : []),
+      ].filter(Boolean).join("\n");
+      const wbRows = await getGameDb()("t_worldBook").where({ worldId: wId }).select("*");
+      const wbEntries = normalizeWorldBookOutput(wbRows);
+      worldKnowledge = buildWorldKnowledgeText(wbEntries, scanText, 400, "chapter_outcome_judge");
+    } catch (e) {
+      console.warn("[chapter_outcome_judge] 世界书加载失败", e);
+    }
+  }
+  const userPrompt = buildChapterJudgePrompt({ ...input, worldKnowledge });
   const buildMs = Date.now() - buildStartedAt;
   let rawText = "";
   let tokenUsage: ChapterJudgeTokenUsage | null = null;

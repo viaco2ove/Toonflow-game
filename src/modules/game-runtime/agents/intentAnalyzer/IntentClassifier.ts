@@ -133,9 +133,10 @@ exit_task > memory_update > create_task > query_progress > game_action > normal_
 // User Prompt
 // ============================================================================
 
-function buildUserPrompt(ctx: IntentContext): string {
+function buildUserPrompt(ctx: IntentContext, worldKnowledge?: string): string {
   const hasActiveTask = !!ctx.activeTaskId;
-  return `输入：${ctx.playerMessage}\n（${hasActiveTask ? "当前有进行中任务" : "当前无进行中任务"}）\n输出 JSON：`;
+  const base = `输入：${ctx.playerMessage}\n（${hasActiveTask ? "当前有进行中任务" : "当前无进行中任务"}）\n输出 JSON：`;
+  return worldKnowledge ? `${base}\n\n【世界知识】\n${worldKnowledge}` : base;
 }
 
 // ============================================================================
@@ -191,7 +192,19 @@ export async function classifyIntentWithAi(ctx: IntentContext): Promise<IntentRe
 
     const { loadTaskPrompt } = await import("../taskMode/loadTaskPrompt");
     const systemPrompt = await loadTaskPrompt("intent-analyzer", buildSystemPrompt());
-    const userPrompt = buildUserPrompt(ctx);
+    // ★ 世界书注入：scanText = playerMessage + recentMessages
+    let worldKnowledge = "";
+    if (ctx.worldId) {
+      try {
+        const scanText = [ctx.playerMessage, ...(ctx.recentMessages || []).map((m) => m.content || "")].join("\n");
+        const rows = await u.db("t_worldBook").where({ worldId: ctx.worldId }).select("*");
+        const entries = normalizeWorldBookOutput(rows);
+        worldKnowledge = buildWorldKnowledgeText(entries, scanText, 400, "intent_classifier");
+      } catch (e) {
+        console.warn("[intent_classifier] 世界书加载失败", e);
+      }
+    }
+    const userPrompt = buildUserPrompt(ctx, worldKnowledge);
 
     console.log("[story:intent:analysis:runtime] request", JSON.stringify({
       userId: ctx.userId,

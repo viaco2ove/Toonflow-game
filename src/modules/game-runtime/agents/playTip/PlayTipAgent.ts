@@ -12,6 +12,7 @@
 import u from "@/utils";
 import { z } from "zod";
 import { loadTaskPrompt } from "../taskMode/loadTaskPrompt";
+import { buildWorldKnowledgeText, normalizeWorldBookOutput } from "@/lib/gameEngine";
 
 const FALLBACK_SYSTEM = `你是玩家行动建议器。基于当前剧情/任务上下文，为玩家生成 3 条不同方向的可执行行动提示，让玩家可以直接复制到输入框发送。
 
@@ -62,6 +63,8 @@ export interface PlayTipContext {
   recentDialogue: string;
   playerCard: string;
   playerHandle: string;
+  /** ★ 世界知识（调用方预加载注入） */
+  worldKnowledge?: string;
 }
 
 export interface PlayTipResult {
@@ -110,7 +113,8 @@ ${ctx.recentDialogue || "（暂无对话）"}
 请根据以上上下文，为玩家生成 3 条不同方向的、可直接发送到输入框的第一人称行动提示。
 
 请严格输出 JSON：
-{"tips":["...","...","..."]}`;
+{"tips":["...","...","..."]}
+${ctx.worldKnowledge ? `\n\n【世界知识】\n${ctx.worldKnowledge}` : ""}`;
 
   console.log("[story:play_tip:runtime] request", JSON.stringify({
     userId: ctx.userId,

@@ -16,6 +16,7 @@
 import u from "@/utils";
 import { z } from "zod";
 import { loadTaskPrompt } from "../taskMode/loadTaskPrompt";
+import { buildWorldKnowledgeText, normalizeWorldBookOutput } from "@/lib/gameEngine";
 
 const STORY_FALLBACK_SYSTEM = `你是剧情编排选项生成器。
 
@@ -90,6 +91,8 @@ export interface OrchestrateOptionsContext {
   latestPlayerMessage?: string;
   /** current_event 摘要文本 */
   currentEvent?: string;
+  /** ★ 世界知识（调用方预加载注入，编排选项参考地点/世界设定） */
+  worldKnowledge?: string;
   /** 任务模式专属 */
   taskObjective?: string;
   taskProcess?: string;
@@ -171,6 +174,10 @@ export async function generateOrchestrateOptions(ctx: OrchestrateOptionsContext)
     `[{"role":"...","motive":"..."},{"role":"...","motive":"..."},{"role":"...","motive":"..."},{"role":"...","motive":"..."},{"role":"...","motive":"..."}]`,
   );
 
+  // ★ 世界知识追加
+  if (ctx.worldKnowledge) {
+    userPromptParts.push(`\n【世界知识】\n${ctx.worldKnowledge}`);
+  }
   const userPrompt = userPromptParts.join("\n");
 
   // ★ 与剧情编排师同款的日志格式，方便排查

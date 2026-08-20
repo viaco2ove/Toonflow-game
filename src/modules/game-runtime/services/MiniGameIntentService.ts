@@ -3,6 +3,7 @@ import { parse } from "best-effort-json-parser";
 import u from "@/utils";
 import { miniGamePromptCodeByType } from "@/agents/story/mini_game/index";
 import { DebugLogUtil } from "@/utils/debugLogUtil";
+import { buildWorldKnowledgeText, normalizeWorldBookOutput } from "@/lib/gameEngine";
 
 export interface MiniGameIntentOptionInput {
   actionId: string;
@@ -13,6 +14,8 @@ export interface MiniGameIntentOptionInput {
 
 export interface ResolveMiniGameIntentInput {
   userId: number;
+  /** 世界 ID（用于世界书注入，调用方传入） */
+  worldId?: number;
   gameType: string;
   phase: string;
   status: string;
@@ -20,6 +23,8 @@ export interface ResolveMiniGameIntentInput {
   latestNarration: string;
   userInput: string;
   options: MiniGameIntentOptionInput[];
+  /** 世界书知识文本（调用方预加载注入） */
+  worldKnowledge?: string;
 }
 
 export interface MiniGameIntentResult {
@@ -197,7 +202,19 @@ export async function resolveMiniGameIntentByAi(input: ResolveMiniGameIntentInpu
   let prompt = "";
   let buildFinishedAt = startedAt;
   try {
-    systemPrompt = `${await loadMiniGamePrompt(input.gameType)}${buildMiniGameIntentSchemaPrompt()}`.trim();
+    // ★ 世界书注入
+    let worldKnowledge = "";
+    if (input.worldId) {
+      try {
+        const scanText = String(input.userInput || "");
+        const rows = await u.db("t_worldBook").where({ worldId: input.worldId }).select("*");
+        const entries = normalizeWorldBookOutput(rows);
+        worldKnowledge = buildWorldKnowledgeText(entries, scanText, 300, "mini_game_intent");
+      } catch (e) {
+        console.warn("[mini_game_intent] 世界书加载失败", e);
+      }
+    }
+    systemPrompt = `${await loadMiniGamePrompt(input.gameType)}${buildMiniGameIntentSchemaPrompt()}${worldKnowledge ? `\n\n【世界知识】\n${worldKnowledge}` : ""}`.trim();
     if (!systemPrompt) return null;
     const modelConfig = await resolveMiniGameModel(input.userId);
     prompt = buildMiniGameIntentPrompt(input);

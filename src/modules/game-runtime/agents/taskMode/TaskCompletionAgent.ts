@@ -15,6 +15,7 @@
 import u from "@/utils";
 import { z } from "zod";
 import { loadTaskPrompt } from "./loadTaskPrompt";
+import { buildWorldKnowledgeText, normalizeWorldBookOutput } from "@/lib/gameEngine";
 
 const FALLBACK_SYSTEM = `你是任务完成评估器。输出严格JSON。
 
@@ -85,6 +86,7 @@ async function evalAi(
   npcCards: string,
   originalGlobalBackground: string,
   dynamicGlobalBackground: string,
+  worldKnowledge: string,
   userId: number,
 ): Promise<CompletionResult> {
   const systemPrompt = await loadTaskPrompt("task-completion-agent", FALLBACK_SYSTEM);
@@ -108,6 +110,7 @@ ${originalGlobalBackground || "（无）"}
 
 故事动态全局背景描述：
 ${dynamicGlobalBackground || "（无）"}
+${worldKnowledge ? `\n\n【世界知识】\n${worldKnowledge}` : ""}
 
 请综合判断 decision：
 - 如果"玩家本轮输入"明确表达完成/提交/结算 → 倾向 success
@@ -235,6 +238,7 @@ export async function evaluateTaskCompletion(
   npcCards: string = "",
   originalGlobalBackground: string = "",
   dynamicGlobalBackground: string = "",
+  worldKnowledge: string = "",
 ): Promise<CompletionResult> {
   const hist = dialogue.slice(-20).map(d => `${d.role}:${String(d.content || "").slice(0, 60)}`).join("|");
 
@@ -264,6 +268,7 @@ export async function evaluateTaskCompletion(
     npcCards,
     originalGlobalBackground,
     dynamicGlobalBackground,
+    worldKnowledge,
     userId,
   );
 }

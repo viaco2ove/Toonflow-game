@@ -626,6 +626,7 @@ function checkEventProgressAiNeeded(
  */
 async function applySessionUserEventProgress(params: {
   userId?: number;
+  world?: any;
   chapter: any;
   state: Record<string, any>;
   messageId?: number | null;
@@ -709,6 +710,7 @@ async function applySessionUserEventProgress(params: {
   } else {
     resolution = await evaluateEventProgressByAi({
       userId: params.userId,
+      world: params.world,
       chapter: params.chapter,
       state: params.state,
       messageContent: params.messageContent,
@@ -816,6 +818,7 @@ async function applySessionPreOrchestrationEventProgress(params: {
 
   const resolution = await evaluateEventProgressByAi({
     userId: params.userId,
+    world: params.world,
     chapter: params.chapter,
     state: params.state,
     messageContent: latestContent,
@@ -1504,6 +1507,7 @@ async function tryBuildTaskModePlan(input: {
       npcCards,
       originalGlobalBg,
       dynamicGlobalBg,
+      worldKnowledgeText,
     );
     console.log("[task-mode-plan] 任务放弃，生成完成评估");
     return buildTaskNarrativePlan({
@@ -1562,6 +1566,7 @@ async function tryBuildTaskModePlan(input: {
     npcCards,
     originalGlobalBg,
     dynamicGlobalBg,
+    worldKnowledgeText,
   );
   console.log("[task-mode-plan] Progress:", progressResult.level, "/", progressResult.tier, "/", JSON.stringify(progressResult.processUpdate), "| process:", taskState.process?.join(" → "));
 
@@ -1622,6 +1627,7 @@ async function tryBuildTaskModePlan(input: {
       npcCards,
       originalGlobalBg,
       dynamicGlobalBg,
+      worldKnowledgeText,
     );
     await finalizeTaskMiniGame({
       state: input.state,
@@ -1667,6 +1673,7 @@ async function tryBuildTaskModePlan(input: {
     npcCards,
     originalGlobalBg,
     dynamicGlobalBg,
+    worldKnowledgeText,
   );
   console.log("[task-mode-plan] Completion 评估", {
     decision: completionResult.decision,
@@ -1942,6 +1949,7 @@ async function runConcurrentSessionJudgeAndNarrative(params: {
   DebugLogUtil.log("story:memory:storyInfo",`runConcurrentSessionJudgeAndNarrative nextChapterId: ${params.fallbackChapterId}`);
   const mergedOutcome = await evaluateRuntimeOutcome({
     userId: params.userId,
+    world: params.world,
     chapter: params.chapter,
     state: params.state,
     messageContent: String(params.latestRecentMessage?.content || ""),
@@ -2488,6 +2496,7 @@ async function addSessionMessageInner(input: AddSessionMessageInput, sessionId: 
       DebugLogUtil.log("story:ai_parallel", "[addSessionMessage] 开始预计算 AI #2 (evaluateEventProgressByAi)");
       ai2Promise = evaluateEventProgressByAi({
         userId: currentUserId,
+        world,
         chapter: currentChapter,
         state,
         messageContent,
@@ -2979,6 +2988,7 @@ async function addSessionMessageInner(input: AddSessionMessageInput, sessionId: 
     const ai2Promise = (async () => {
       await applySessionUserEventProgress({
         userId: currentUserId,
+        world,
         chapter: currentChapter,
         state,
         messageId,
@@ -3002,6 +3012,7 @@ async function addSessionMessageInner(input: AddSessionMessageInput, sessionId: 
     DebugLogUtil.log("story:memory:storyInfo",`addSessionMessage nextChapterId: ${nextChapterId || prevChapterId}`);
     const ai3Promise = evaluateRuntimeOutcome({
       chapter: currentChapter,
+      world,
       state,
       messageContent,
       eventType: eventTypeValue,
@@ -3387,6 +3398,19 @@ export async function generatePlayTips(sessionIdInput: string): Promise<{ tips: 
   const { generatePlayerTips } = await import("@/modules/game-runtime/agents/playTip/PlayTipAgent");
   // 动态背景：直接从 state.memorySummary 读取（与 buildDynamicWorldBackground 同源）
   const dynamicGlobalBackground = String(state.memorySummary || "").trim() || undefined;
+  // ★ 世界书注入
+  let worldKnowledgeTip = "";
+  const wId = Number(sessionRow.worldId || 0);
+  if (wId) {
+    try {
+      const scanText = [dialogueText].filter(Boolean).join("\n");
+      const wbRows = await db("t_worldBook").where({ worldId: wId }).select("*");
+      const wbEntries = normalizeWorldBookOutput(wbRows);
+      worldKnowledgeTip = buildWorldKnowledgeText(wbEntries, scanText, 400, "play_tip");
+    } catch (e) {
+      console.warn("[play_tip] 世界书加载失败", e);
+    }
+  }
   const result = await generatePlayerTips({
     userId: currentUserId,
     worldName: String(w.name || "未命名世界"),
@@ -3400,6 +3424,7 @@ export async function generatePlayTips(sessionIdInput: string): Promise<{ tips: 
     recentDialogue: dialogueText,
     playerCard,
     playerHandle,
+    worldKnowledge: worldKnowledgeTip,
   });
 
   return result;
@@ -3481,6 +3506,20 @@ export async function generateOrchestrateOptionsForSession(
     Array.isArray(currentEvent.facts) && currentEvent.facts.length ? `facts:${currentEvent.facts.join("；")}` : "",
   ].filter(Boolean).join("\n");
 
+  // ★ 世界书注入
+  let worldKnowledge = "";
+  const worldId = Number(sessionRow.worldId || 0);
+  if (worldId) {
+    try {
+      const scanText = [latestPlayerMessage ? String((latestPlayerMessage as any).content || "") : "", dialogueText].filter(Boolean).join("\n");
+      const wbRows = await db("t_worldBook").where({ worldId }).select("*");
+      const wbEntries = normalizeWorldBookOutput(wbRows);
+      worldKnowledge = buildWorldKnowledgeText(wbEntries, scanText, 400, "orchestrate_options");
+    } catch (e) {
+      console.warn("[orchestrate_options] 世界书加载失败", e);
+    }
+  }
+
   const { generateOrchestrateOptions } = await import("@/modules/game-runtime/agents/orchestrateOptions/OrchestrateOptionsAgent");
   const result = await generateOrchestrateOptions({
     userId: currentUserId,
@@ -3496,6 +3535,7 @@ export async function generateOrchestrateOptionsForSession(
     currentEvent: currentEventText,
     taskObjective: taskObjective || undefined,
     taskProcess: taskProcess || undefined,
+    worldKnowledge,
   });
 
   return { options: result.options, source: result.source };
@@ -3686,6 +3726,7 @@ export async function continueSessionNarrative(sessionIdInput: string): Promise<
   DebugLogUtil.log("story:memory:storyInfo",`continueSessionNarrative nextChapterId: ${prevChapterId}`);
   const mergedOutcome = await evaluateRuntimeOutcome({
     chapter,
+    world,
     state,
     messageContent: String(latestGeneratedMessage?.content || ""),
     eventType: String(latestGeneratedMessage?.eventType || "on_orchestrated_reply"),
@@ -4821,6 +4862,7 @@ async function commitSessionNarrativeTurnInner(input: CommitSessionNarrativeTurn
       DebugLogUtil.log("story:memory:storyInfo",`commitSessionNarrativeTurnInner nextChapterId: ${prevChapterId}`);
       const mergedOutcome = await evaluateRuntimeOutcome({
         chapter,
+        world,
         state,
         messageContent: String(latestGeneratedMessage?.content || input.content || ""),
         eventType: latestEventType || committedEventType,
@@ -5053,6 +5095,7 @@ export async function alignSessionWithAi(sessionIdInput: string, userIdInput: nu
   const curPhaseId = String(state?.chapterProgress?.phaseId || oldPhaseIds[0] || "");
   const aiResult = await runStoryUpdateAlignAgent({
     userId: currentUserId || Number(sessionRow.userId || 0),
+    worldId: Number(sessionRow.worldId || 0) || undefined,
     oldPhases,
     newPhases,
     currentProgress: {

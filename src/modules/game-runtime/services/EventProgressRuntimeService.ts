@@ -1,8 +1,11 @@
 import u from "@/utils";
 import {
+  buildWorldKnowledgeText,
+  getGameDb,
   isFreeChapterRuntimeMode,
   JsonRecord,
   normalizeChapterRuntimeOutline,
+  normalizeWorldBookOutput,
   readChapterProgressState,
   readPhaseAwareRuntimeCurrentEventDigestState,
 } from "@/lib/gameEngine";
@@ -23,6 +26,7 @@ import { z } from "zod";
  */
 export interface EvaluateEventProgressInput {
   userId?: number;
+  world?: any;
   chapter: any;
   state: JsonRecord;
   messageContent?: string;
@@ -557,7 +561,23 @@ export async function evaluateEventProgressByAi(
     return null;
   }
   const buildStartedAt = Date.now();
-  const prompt = JSON.stringify(inputSnapshot, null, 2);
+  // ★ 世界书注入：事件进度判定参考世界设定
+  let worldKnowledge = "";
+  const wId = Number((input.world as any)?.id || 0);
+  if (wId) {
+    try {
+      const scanText = [
+        String(input.messageContent || ""),
+        ...(Array.isArray(input.recentMessages) ? input.recentMessages.map((m: any) => String(m?.content || "")) : []),
+      ].filter(Boolean).join("\n");
+      const wbRows = await getGameDb()("t_worldBook").where({ worldId: wId }).select("*");
+      const wbEntries = normalizeWorldBookOutput(wbRows);
+      worldKnowledge = buildWorldKnowledgeText(wbEntries, scanText, 400, "event_progress_judge");
+    } catch (e) {
+      console.warn("[event_progress_judge] 世界书加载失败", e);
+    }
+  }
+  const prompt = JSON.stringify(inputSnapshot, null, 2) + (worldKnowledge ? `\n\n【世界知识】\n${worldKnowledge}` : "");
   const buildMs = Date.now() - buildStartedAt;
   let rawText = "";
   let tokenUsage: EventProgressTokenUsage | null = null;

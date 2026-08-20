@@ -679,6 +679,7 @@ export function syncDebugChapterRuntime(chapter: any, state: Record<string, any>
 
 export async function applyDebugUserMessageProgress(params: {
   chapter: any;
+  world?: any;
   state: Record<string, any>;
   messageContent: string;
   eventType?: string;
@@ -701,6 +702,7 @@ export async function applyDebugUserMessageProgress(params: {
   // 先把原始当前事件送给 AI 判断，避免旧规则先根据宽信号把 phase 提前切到下一事件。
   const resolution = await evaluateEventProgressByAi({
     userId: params.userId,
+    world: params.world,
     chapter: params.chapter,
     state: params.state,
     messageContent: params.messageContent,
@@ -735,6 +737,7 @@ export async function applyDebugUserMessageProgress(params: {
 
 export async function applyDebugNarrativeMessageProgress(params: {
   chapter: any;
+  world?: any;
   state: Record<string, any>;
   role?: string;
   roleType?: string;
@@ -755,6 +758,7 @@ export async function applyDebugNarrativeMessageProgress(params: {
   // 避免规则层基于宽 advanceSignals 先把当前事件切成下一个事件。
   const resolution = await evaluateEventProgressByAi({
     userId: params.userId,
+    world: params.world,
     chapter: params.chapter,
     state: params.state,
     messageContent: params.content,

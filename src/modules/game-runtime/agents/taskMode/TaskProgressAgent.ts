@@ -9,6 +9,7 @@ import u from "@/utils";
 import { z } from "zod";
 import { IntentType } from "../intentAnalyzer/IntentClassifier";
 import { loadTaskPrompt } from "./loadTaskPrompt";
+import { buildWorldKnowledgeText, normalizeWorldBookOutput } from "@/lib/gameEngine";
 
 const FALLBACK_SYSTEM = `你是任务推进判定器。输出严格JSON。
 
@@ -202,6 +203,7 @@ async function evalAi(
   npcCards: string,
   originalGlobalBackground: string,
   dynamicGlobalBackground: string,
+  worldKnowledge: string = "",
 ): Promise<ProgressResult> {
   const systemPrompt = await loadTaskPrompt("task-progress-agent", FALLBACK_SYSTEM);
 
@@ -223,6 +225,7 @@ ${originalGlobalBackground || "（无）"}
 
 故事动态全局背景描述：
 ${dynamicGlobalBackground || "（无）"}
+${worldKnowledge ? `\n\n【世界知识】\n${worldKnowledge}` : ""}
 
 【判断规则】
 1. 如果玩家正在执行与任务目标相关的动作（探索、移动、询问、打探、寻找、排查、开始行动等），标记当前进行中的阶段为完成
@@ -342,6 +345,7 @@ export async function evaluateTaskProgress(
   npcCards: string,
   originalGlobalBackground: string,
   dynamicGlobalBackground: string,
+  worldKnowledge: string = "",
 ): Promise<ProgressResult> {
   const phases = task?.process ?? [];
 
@@ -364,5 +368,6 @@ export async function evaluateTaskProgress(
     npcCards,
     originalGlobalBackground,
     dynamicGlobalBackground,
+    worldKnowledge,
   );
 }

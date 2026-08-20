@@ -1,7 +1,9 @@
 import {
+  buildWorldKnowledgeText,
   isFreeChapterRuntimeMode,
   JsonRecord,
   normalizeChapterRuntimeOutline,
+  normalizeWorldBookOutput,
   nowTs,
   parseJsonSafe,
   readChapterProgressState,
@@ -910,6 +912,24 @@ async function evaluateFreeTaskResolutionByAi(input: {
     })),
     currentUserAction: scalarText(input.playerMessage),
   }, null, 2);
+  // ★ 世界书注入
+  let worldKnowledge = "";
+  const wId = Number(input.world?.id || 0);
+  if (wId) {
+    try {
+      const scanText = [
+        scalarText(input.playerMessage),
+        scalarText(input.activeTask.objective),
+        ...input.recentMessages.slice(-5).map((m) => scalarText(m.content)),
+      ].filter(Boolean).join("\n");
+      const wbRows = await u.db("t_worldBook").where({ worldId: wId }).select("*");
+      const wbEntries = normalizeWorldBookOutput(wbRows);
+      worldKnowledge = buildWorldKnowledgeText(wbEntries, scanText, 400, "free_task_resolution");
+    } catch (e) {
+      console.warn("[free_task_resolution] 世界书加载失败", e);
+    }
+  }
+  const promptWithWorld = prompt + (worldKnowledge ? `\n\n【世界知识】\n${worldKnowledge}` : "");
   try {
     const result = await u.ai.text.invoke(
       {
@@ -943,7 +963,7 @@ async function evaluateFreeTaskResolutionByAi(input: {
               "6. 失败时 narration 必须说明失败原因，并明确任务已结束。",
             ].join("\n"),
           },
-          { role: "user", content: prompt },
+          { role: "user", content: promptWithWorld },
         ],
         maxRetries: 0,
       },
@@ -1046,6 +1066,24 @@ async function generateFreeChapterTaskBlueprintByAi(input: {
       maxFailureConditions: 3,
     },
   }, null, 2);
+  // ★ 世界书注入
+  let worldKnowledge = "";
+  const wId2 = Number(input.world?.id || 0);
+  if (wId2) {
+    try {
+      const scanText = [
+        scalarText(input.option.description),
+        scalarText(input.option.rawLine),
+        scalarText(taskTitle),
+      ].filter(Boolean).join("\n");
+      const wbRows = await u.db("t_worldBook").where({ worldId: wId2 }).select("*");
+      const wbEntries = normalizeWorldBookOutput(wbRows);
+      worldKnowledge = buildWorldKnowledgeText(wbEntries, scanText, 600, "free_task_blueprint");
+    } catch (e) {
+      console.warn("[free_task_blueprint] 世界书加载失败", e);
+    }
+  }
+  const promptWithWorld = prompt + (worldKnowledge ? `\n\n【世界知识】\n${worldKnowledge}` : "");
   try {
     const result = await u.ai.text.invoke(
       {
@@ -1083,7 +1121,7 @@ async function generateFreeChapterTaskBlueprintByAi(input: {
               "6. 不要改动任务原意，只能细化任务。",
             ].join("\n"),
           },
-          { role: "user", content: prompt },
+          { role: "user", content: promptWithWorld },
         ],
         maxRetries: 0,
       },
