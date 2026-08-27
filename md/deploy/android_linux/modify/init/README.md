@@ -1,30 +1,19 @@
 # 初始服务器环境
 ## 资源文件
 [README.md](../tools/README.md)
-
-## 安装conda
-```
-# (可选) 下载并安装 Miniconda (如果环境中还没有 conda)
-# x86
-# wget https://mirrors.tuna.tsinghua.edu.cn/anaconda/miniconda/Miniconda3-latest-Linux-x86_64.sh -O miniconda.sh
-# bash miniconda.sh -b
-# ARM64 
-# rm -rf /root/miniconda3 miniconda.sh
-# wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-aarch64.sh
-# bash Miniconda3-latest-Linux-aarch64.sh -b
-```
-
-## 安装 MOSS-TTS-Nano (非必须)
+## 安装 MOSS-TTS-Nano
 `git clone --depth 1  https://github.com/OpenMOSS/MOSS-TTS-Nano.git /data/toonflow/tools/moss-tts-nano/MOSS-TTS-Nano
 `
 `wget https://mirrors.tuna.tsinghua.edu.cn/anaconda/miniconda/Miniconda3-latest-Linux-x86_64.sh -O miniconda.sh
 `
-
 linux
 ```
 # 1. 进入工具目录 (注意路径分隔符改为斜杠)
 cd /data/toonflow/tools/moss-tts-nano
 
+# (可选) 下载并安装 Miniconda (如果环境中还没有 conda)
+# wget https://mirrors.tuna.tsinghua.edu.cn/anaconda/miniconda/Miniconda3-latest-Linux-x86_64.sh -O miniconda.sh
+# bash miniconda.sh -b
 
 # 2. 创建并激活局部 Conda 环境
 conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main
@@ -50,11 +39,11 @@ pip install -e .
 ```
 
 
-### 清除旧的虚拟环境
+## 清除旧的虚拟环境
 rm -rf /data/toonflow/tools/moss-tts-nano/venv
 cd /data/toonflow/tools/moss-tts-nano
 
-### 创建交换文件，增加虚拟内存
+## 创建交换文件，增加虚拟内存
 编辑 vi /etc/fstab，删掉 / 注释 /swapfile 那一行
 重启
 swapoff /swapfile
@@ -72,4 +61,4 @@ sudo swapon /swapfile
 
 
 ### nodejs 22 安装 与加速
-[nodejs.md](../app/nodejs.md)
+[nodejs.md](nodejs.md)
