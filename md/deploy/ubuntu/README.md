@@ -11,7 +11,7 @@
 [install.config.sh](install.config.sh)
 [install.sh](install.sh)
 ```bash
-scp -r md/deploy/android_linux root@你的服务器IP:/data/data/com.termux/files/ubuntu
+scp -r md/deploy/ubuntu root@你的服务器IP:~/ubuntu
 ```
 
 ## 2. 登录服务器

@@ -1,6 +1,8 @@
-#!/usr/bin/env bash
+#!/bin/bash
 set -Eeuo pipefail
 
+# head :#!/usr/bin/env bash
+# head :#!/bin/bash
 # Toonflow Game Ubuntu 一键部署脚本。
 # 用途：
 # - 安装 Node/Yarn/PM2/Nginx/ffmpeg/编译依赖
