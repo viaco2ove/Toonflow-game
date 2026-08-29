@@ -6,10 +6,22 @@
 [README.md](modify/init/README.md)
 
 下面内容只涉及安装
+## ~ 是**当前用户主目录（home directory）
+~/ 实际是/home/ or /root/
+
+验证方法
+```bash
+echo ~        # 显示当前 ~ 展开后的实际路径
+echo $HOME    # 等价，环境变量 HOME 存的就是主目录
+```
+一般情况（ubuntu 等系统默认）
+普通用户指向 /home/用户名，root 指向 /root；~/ 只是带斜杠的写法，方便拼接子路径。
+
 ## 1. 传目录到服务器
 [main.py](detail/main.py)
 [install.config.sh](install.config.sh)
 [install.sh](install.sh)
+
 ```bash
 scp -r md/deploy/ubuntu root@你的服务器IP:~/ubuntu
 ```
