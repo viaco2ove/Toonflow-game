@@ -77,3 +77,7 @@ http://你的服务器IP:6008/
 这里是 :6008
 不是 /6008/
 ```
+
+## 如果出问题了，可以删除了再试
+rm -rf /opt/toonflow/toonflow-game-app
+rm -rf /opt/toonflow/toonflow-game-web
