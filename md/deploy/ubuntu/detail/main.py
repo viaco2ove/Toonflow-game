@@ -44,27 +44,6 @@ RESTART_OR_START_APP_CMD = (
 LAST_ACTION_LOG = "暂无操作记录"
 
 
-def _is_systemd() -> bool:
-    """检测当前环境是否使用 systemd（proot/termux 无 systemd）"""
-    return os.path.exists("/run/systemd/system")
-
-
-def _nginx_reload_cmd() -> str:
-    """返回适合当前环境的 nginx 重启命令"""
-    if _is_systemd():
-        return "systemctl reload nginx && systemctl restart nginx"
-    # proot / 无 systemd 环境：直接 kill + 启动
-    return "pkill nginx 2>/dev/null; nginx"
-
-
-def _nginx_status_cmd() -> str:
-    """返回适合当前环境的 nginx 状态查询命令"""
-    if _is_systemd():
-        return "systemctl status nginx --no-pager 2>&1 || true"
-    # 无 systemd：检查 nginx 进程是否存在
-    return 'pgrep -a nginx || echo "nginx 未运行"'
-
-
 APP_LOG_FILE = f"{APP_LOG_DIR}/app-$(date +%Y-%m-%d).log"
 
 
@@ -160,17 +139,14 @@ def git_pull_current_branch(repo_dir: str) -> str:
 
 
 def sync_web_publish_dir() -> str:
-    nginx_reload = _nginx_reload_cmd()
     return run(
         "set -e; "
         f"mkdir -p {shlex.quote(WEB_PUBLISH_DIR)} && "
-        f"rsync -rlt --no-perms --delete {shlex.quote(WEB_SOURCE_DIR)}/ {shlex.quote(WEB_PUBLISH_DIR)}/ && "
-        # 跳过 chown www-data（proot 环境无此用户）
-        "id -u www-data >/dev/null 2>&1 && "
+        f"rsync -a --delete {shlex.quote(WEB_SOURCE_DIR)}/ {shlex.quote(WEB_PUBLISH_DIR)}/ && "
         f"chown -R www-data:www-data {shlex.quote(WEB_PUBLISH_DIR)} && "
-        f"chmod -R 755 {shlex.quote(WEB_PUBLISH_DIR)} || true && "
+        f"chmod -R 755 {shlex.quote(WEB_PUBLISH_DIR)} && "
         # 清理nginx缓存 + 重启
-        f"nginx -t 2>&1 && {nginx_reload} 2>&1"
+        "nginx -t 2>&1 && systemctl reload nginx 2>&1 && systemctl restart nginx 2>&1"
     )
 
 
@@ -197,7 +173,7 @@ def build_web_project_command() -> str:
         "yarn build 2>&1 && "
         f"rm -rf {safe_output_dir} && "
         f"mkdir -p {safe_output_dir} && "
-        f"rsync -rlt --no-perms --delete dist/ {safe_output_dir}/ 2>&1"
+        f"rsync -a --delete dist/ {safe_output_dir}/ 2>&1"
     )
 
 
@@ -326,9 +302,6 @@ def force_sync_all_current_branches() -> str:
 
 
 def install_ffmpeg() -> str:
-    return run("apt update && apt install ffmpeg -y")
-
-def install_ffmpeg_sudo() -> str:
     return run("sudo apt update && sudo apt install ffmpeg -y")
 
 
@@ -347,13 +320,7 @@ def detect_pm2_status(pm2_text: str) -> str:
 
 def detect_nginx_running(nginx_text: str) -> bool:
     lowered = nginx_text.lower()
-    # systemd 模式：nginx 服务状态
-    if "active (running)" in lowered or "nginx is running" in lowered:
-        return True
-    # proot/无 systemd 模式：pgrep 输出包含 nginx 进程
-    if "nginx" in lowered and "未运行" not in lowered:
-        return True
-    return False
+    return "active (running)" in lowered or "nginx is running" in lowered
 
 
 def detect_listening(port_text: str, port: int) -> bool:
@@ -408,7 +375,7 @@ def git_info() -> dict:
 
 def service_status() -> dict:
     pm2_list = run("pm2 jlist")
-    nginx_status = run(_nginx_status_cmd())
+    nginx_status = run("systemctl status nginx --no-pager 2>&1 || true")
     app_port = run(f"ss -lntp | grep ':{APP_PORT} ' || true")
     app_http = run(f"curl -i -sS --max-time 3 http://127.0.0.1:{APP_PORT}/ || true")
     web_port = run(f"ss -lntp | grep ':{WEB_PORT} ' || true")
@@ -539,8 +506,7 @@ def app_restart():
 
 @app.get("/nginx/restart")
 def nginx_restart():
-    nginx_reload = _nginx_reload_cmd()
-    output = run(f"nginx -t && {nginx_reload}")
+    output = run("nginx -t && systemctl restart nginx")
     set_last_action_log("重启Nginx", output)
     return RedirectResponse("/")
 
@@ -551,10 +517,7 @@ def deploy_sync_web():
     if not build.ok:
         set_last_action_log("Web构建失败", build.output)
         return RedirectResponse("/")
-    nginx_reload = _nginx_reload_cmd()
-    publish = run_result(
-        f"rsync -rlt --no-perms --delete {WEB_SOURCE_DIR}/ {WEB_PUBLISH_DIR}/ && {nginx_reload}"
-    )
+    publish = run_result(f"rsync -a --delete {WEB_SOURCE_DIR}/ {WEB_PUBLISH_DIR}/ && systemctl reload nginx")
     set_last_action_log("Web构建+发布成功", build.output + "\n" + publish.output)
     return RedirectResponse("/")
 
@@ -706,8 +669,5 @@ def clear_pm2_logs_handler():
 def tools_install_ffmpeg():
     """安装 ffmpeg"""
     output = install_ffmpeg()
-    set_last_action_log("安装 ffmpeg", output)
-
-    output = install_ffmpeg_sudo()
     set_last_action_log("安装 ffmpeg", output)
     return RedirectResponse("/")
