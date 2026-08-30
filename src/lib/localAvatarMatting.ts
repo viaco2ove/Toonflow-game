@@ -669,17 +669,35 @@ export async function installLocalBiRefNet(input?: {
         await runManagedBiRefNetPython(["-m", "pip", "install", "--upgrade", "pip", "setuptools", "wheel"], {
           timeoutMs: 900000,
         });
-        await runManagedBiRefNetPython([
-        "-m",
-        "pip",
-        "install",
-        `rembg==${LOCAL_BIREFNET_REMBG_VERSION}`,
-        `onnxruntime==${LOCAL_BIREFNET_ONNXRUNTIME_VERSION}`,
-        "pillow",
-        "numpy",
-      ], {
-        timeoutMs: 1800000,
-      });
+        try {
+          await runManagedBiRefNetPython([
+            "-m",
+            "pip",
+            "install",
+            `rembg==${LOCAL_BIREFNET_REMBG_VERSION}`,
+            `onnxruntime==${LOCAL_BIREFNET_ONNXRUNTIME_VERSION}`,
+            "pillow",
+            "numpy",
+          ], {
+            timeoutMs: 1800000,
+          });
+        } catch (e) {
+        }
+
+        try {
+          await runManagedBiRefNetPython([
+            "-m",
+            "pip",
+            "install",
+            `rembg`,
+            `onnxruntime`,
+            "pillow",
+            "numpy",
+          ], {
+            timeoutMs: 1800000,
+          });
+        } catch (e) {
+        }
       }
 
       if (isLocalModNetModelName(model)) {

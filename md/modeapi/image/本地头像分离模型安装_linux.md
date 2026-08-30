@@ -29,7 +29,8 @@ source /data/toonflow/tools/avatar-matting/birefnet/venv/bin/activate
 
 # 安装依赖
 python -m pip install --upgrade pip setuptools wheel
-python -m pip install rembg==2.0.67 onnxruntime==1.22.1 pillow numpy
+#python -m pip install rembg==2.0.67 onnxruntime==1.22.1 pillow numpy
+python -m pip install rembg onnxruntime pillow numpy
 
 # 预热模型
 python /data/toonflow/tools/avatar-matting/birefnet/run_birefnet.py --warmup --model birefnet-portrait
@@ -46,7 +47,8 @@ source /data/toonflow/tools/avatar-matting/birefnet/venv/bin/activate
 
 # 安装依赖
 python -m pip install --upgrade pip setuptools wheel
-python -m pip install onnxruntime==1.22.1 pillow numpy rembg==2.0.67
+# python -m pip install onnxruntime==1.22.1 pillow numpy rembg==2.0.67
+python -m pip install rembg onnxruntime pillow numpy
 
 # 下载 MODNet 模型
 python -c "import pathlib, urllib.request; p=pathlib.Path(r'/data/toonflow/tools/avatar-matting/birefnet/model-cache/modnet_photographic_portrait_matting.onnx'); p.parent.mkdir(parents=True, exist_ok=True); urllib.request.urlretrieve('https://huggingface.co/DavG25/modnet-pretrained-models/resolve/main/models/modnet_photographic_portrait_matting.onnx', p)"
