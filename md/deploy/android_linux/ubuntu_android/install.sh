@@ -1,9 +1,9 @@
 #!/bin/bash
-set -Eeuo pipefail
+# Android/Termux 兼容：移除 pipefail（某些 Android bash 不支持）
+set -Eeuo nounset
 
-# head :#!/usr/bin/env bash
-# head :#!/bin/bash
-# Toonflow Game Ubuntu 一键部署脚本。
+# Toonflow Game Android/Termux 一键部署脚本。
+# 专为 Termux 环境优化，不依赖 systemd。
 # 用途：
 # - 安装 Node/Yarn/PM2/Nginx/ffmpeg/编译依赖
 # - 拉取或更新后端仓库与前端仓库
@@ -14,6 +14,11 @@ set -Eeuo pipefail
 # - 部署 FastAPI 管理页 detail/main.py
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# PREFIX 是 Termux 专属环境变量，proot Ubuntu / 普通 Ubuntu 里不存在。
+# 提前补默认值，避免 set -u 下引用未定义变量报错。
+PREFIX="${PREFIX:-}"
+
 if [ -f "$SCRIPT_DIR/install.config.sh" ]; then
   # 允许用户把常用变量放到同目录配置文件里，避免每次手敲一长串环境变量。
   # shellcheck disable=SC1091
@@ -75,7 +80,10 @@ install_yarn_dependencies() {
 }
 
 run_sudo() {
-  if [ "$(id -u)" -eq 0 ]; then
+  # Termux 环境不需要 sudo
+  if [ -d "/data/data/com.termux" ] || [ -f "$PREFIX/bin/pkg" ]; then
+    "$@"
+  elif [ "$(id -u)" -eq 0 ]; then
     "$@"
   else
     sudo "$@"
@@ -172,41 +180,65 @@ clone_or_update_repo() {
 
 install_system_deps() {
   log "安装系统依赖"
-  run_sudo apt-get update
-  run_sudo apt-get install -y \
-    git \
-    curl \
-    ca-certificates \
-    rsync \
-    build-essential \
-    python3 \
-    python3-pip \
-    python3-venv \
-    make \
-    g++ \
-    ffmpeg \
-    nginx
+  # 检测是否为 Termux 环境
+  if [ -d "/data/data/com.termux" ] || [ -f "$PREFIX/bin/pkg" ]; then
+    log "检测到 Termux 环境，使用 pkg 安装依赖"
+    pkg update -y
+    pkg install -y git curl wget rsync build-essential python3 pip ffmpeg nginx nodejs
+  else
+    run_sudo apt-get update
+    run_sudo apt-get install -y \
+      git \
+      curl \
+      ca-certificates \
+      rsync \
+      build-essential \
+      python3 \
+      python3-pip \
+      python3-venv \
+      make \
+      g++ \
+      ffmpeg \
+      nginx
+  fi
 }
 
 install_node_yarn_pm2() {
-  if command -v node >/dev/null 2>&1; then
-    local major
-    major="$(node -v | sed 's/^v//' | cut -d. -f1)"
-    if [ "$major" = "$NODE_MAJOR" ]; then
+  # 检测是否为 Termux 环境
+  local is_termux=0
+  if [ -d "/data/data/com.termux" ] || [ -f "$PREFIX/bin/pkg" ]; then
+    is_termux=1
+  fi
+
+  if [ "$is_termux" = "1" ]; then
+    # Termux 环境：Node.js 已通过 pkg 安装
+    if command -v node >/dev/null 2>&1; then
       log "Node.js 已安装：$(node -v)"
     else
-      log "当前 Node.js $(node -v)，将安装 Node.js $NODE_MAJOR"
+      log "安装 Node.js via pkg"
+      pkg install -y nodejs
+    fi
+  else
+    # Ubuntu 环境：使用 nodesource
+    if command -v node >/dev/null 2>&1; then
+      local major
+      major="$(node -v | sed 's/^v//' | cut -d. -f1)"
+      if [ "$major" = "$NODE_MAJOR" ]; then
+        log "Node.js 已安装：$(node -v)"
+      else
+        log "当前 Node.js $(node -v)，将安装 Node.js $NODE_MAJOR"
+        curl -fsSL "https://deb.nodesource.com/setup_${NODE_MAJOR}.x" | run_sudo bash -
+        run_sudo apt-get install -y nodejs
+      fi
+    else
+      log "安装 Node.js $NODE_MAJOR"
       curl -fsSL "https://deb.nodesource.com/setup_${NODE_MAJOR}.x" | run_sudo bash -
       run_sudo apt-get install -y nodejs
     fi
-  else
-    log "安装 Node.js $NODE_MAJOR"
-    curl -fsSL "https://deb.nodesource.com/setup_${NODE_MAJOR}.x" | run_sudo bash -
-    run_sudo apt-get install -y nodejs
   fi
 
   log "安装 Yarn 和 PM2"
-  run_sudo npm install -g yarn@1.22.22 pm2
+  npm install -g yarn@1.22.22 pm2
   node -v
   yarn -v
   pm2 -v
@@ -239,15 +271,17 @@ build_frontend() {
 
   log "同步前端 dist 到后端 scripts/web"
   mkdir -p "$APP_DIR/scripts/web"
-#  rsync -a --delete "$WEB_DIR/dist/" "$APP_DIR/scripts/web/"
+#  rsync -rlt --no-perms --delete "$WEB_DIR/dist/" "$APP_DIR/scripts/web/"
 rsync -rlt --delete "$WEB_DIR/dist/" "$APP_DIR/scripts/web/"
 
   log "同步前端 dist 到 Nginx 发布目录"
   mkdir -p "$PANEL_WEB_PUBLISH_DIR"
-#  rsync -a --delete "$WEB_DIR/dist/" "$PANEL_WEB_PUBLISH_DIR/"
   rsync -rlt --delete "$WEB_DIR/dist/" "$PANEL_WEB_PUBLISH_DIR/"
-  run_sudo chown -R www-data:www-data "$PANEL_WEB_PUBLISH_DIR"
-  run_sudo chmod -R 755 "$PANEL_WEB_PUBLISH_DIR"
+  # Termux 环境没有 www-data 用户，跳过 chown
+  if id -u www-data >/dev/null 2>&1; then
+    run_sudo chown -R www-data:www-data "$PANEL_WEB_PUBLISH_DIR"
+    run_sudo chmod -R 755 "$PANEL_WEB_PUBLISH_DIR"
+  fi
 }
 
 write_backend_env() {
@@ -299,10 +333,11 @@ start_pm2() {
   pm2 save
 
   log "尝试配置 PM2 开机自启"
-#  if command -v systemctl >/dev/null 2>&1; then
   if [ -d /run/systemd/system ]; then
     pm2 startup systemd -u "$(whoami)" --hp "$HOME" || true
     pm2 save
+  else
+    log "systemd 不可用，跳过开机自启配置"
   fi
 }
 
@@ -333,22 +368,27 @@ install_panel() {
   "$panel_python" -m pip install fastapi uvicorn
 
   # 生成独立启动脚本，让手动启动与 PM2 托管启动走完全一致的路径。
-  cat > "$panel_start_script" <<EOF
-#!/usr/bin/env bash
-set -Eeuo pipefail
+  # 注意：这里用单引号 EOF 防止变量在 install.sh 中被展开
+  cat > "$panel_start_script" <<'PANELEOF'
+#!/bin/bash
+set -Euo nounset
 
-# 启动 Ubuntu 管理页，并显式导出运行所需的环境变量。
+# 启动 Toonflow 管理页
+PANEL_DIR="$(dirname "$(readlink -f "$0")")"
 cd "$PANEL_DIR" || exit 1
-export PANEL_APP_NAME="$PANEL_APP_NAME"
-export PANEL_APP_DIR="$PANEL_APP_DIR"
-export PANEL_APP_PORT="$PANEL_APP_PORT"
-export PANEL_WEB_PORT="$PANEL_WEB_PORT"
-export PANEL_WEB_PUBLISH_DIR="$PANEL_WEB_PUBLISH_DIR"
-export PANEL_WEB_PROJECT_DIR="$PANEL_WEB_PROJECT_DIR"
-export PANEL_WEB_BUILD_NODE_OPTIONS="$PANEL_WEB_BUILD_NODE_OPTIONS"
 
-exec "$panel_python" -m uvicorn main:app --host 0.0.0.0 --port "$PANEL_PORT"
-EOF
+PANEL_PYTHON="$PANEL_DIR/.venv/bin/python"
+
+export PANEL_APP_NAME="${PANEL_APP_NAME:-toonflow-game}"
+export PANEL_APP_DIR="${PANEL_APP_DIR:-/opt/toonflow/toonflow-game-app}"
+export PANEL_APP_PORT="${PANEL_APP_PORT:-60002}"
+export PANEL_WEB_PORT="${PANEL_WEB_PORT:-8080}"
+export PANEL_WEB_PUBLISH_DIR="${PANEL_WEB_PUBLISH_DIR:-/opt/toonflow/www}"
+export PANEL_WEB_PROJECT_DIR="${PANEL_WEB_PROJECT_DIR:-/opt/toonflow/Toonflow-game-web}"
+export PANEL_WEB_BUILD_NODE_OPTIONS="${PANEL_WEB_BUILD_NODE_OPTIONS:---max-old-space-size=512}"
+
+exec "$PANEL_PYTHON" -m uvicorn main:app --host 0.0.0.0 --port "${PANEL_PORT:-6008}"
+PANELEOF
   chmod +x "$panel_start_script"
 
   # 先清理可能残留的 PM2 管理页进程，避免占用同一端口导致新服务无法启动。
@@ -357,7 +397,6 @@ EOF
     pm2 save || true
   fi
 
-#  if command -v systemctl >/dev/null 2>&1; then
   if [ -d /run/systemd/system ]; then
     log "使用 systemd 托管管理页"
     run_sudo tee "$panel_service_file" > /dev/null <<EOF
@@ -391,6 +430,12 @@ EOF
 write_nginx_config() {
   log "写入 Nginx 配置"
   local nginx_file="/etc/nginx/sites-available/toonflow-game"
+
+  # Termux 环境使用不同的 nginx 路径
+  if [ -d "/data/data/com.termux" ] || [ -f "$PREFIX/bin/pkg" ]; then
+    nginx_file="$PREFIX/etc/nginx/sites-available/toonflow-game"
+  fi
+
   run_sudo tee "$nginx_file" > /dev/null <<EOF
 server {
     listen $HTTP_PORT;
@@ -449,13 +494,29 @@ server {
 }
 EOF
 
-  run_sudo ln -sf "$nginx_file" /etc/nginx/sites-enabled/toonflow-game
-  if [ -f /etc/nginx/sites-enabled/default ]; then
-    run_sudo rm -f /etc/nginx/sites-enabled/default
+  local nginx_enabled_dir
+  if [ -d "/data/data/com.termux" ] || [ -f "$PREFIX/bin/pkg" ]; then
+    nginx_enabled_dir="$PREFIX/etc/nginx/sites-enabled"
+  else
+    nginx_enabled_dir="/etc/nginx/sites-enabled"
   fi
+
+  run_sudo ln -sf "$nginx_file" "$nginx_enabled_dir/toonflow-game"
+  if [ -f "$nginx_enabled_dir/default" ]; then
+    run_sudo rm -f "$nginx_enabled_dir/default"
+  fi
+
+  # 测试并启动 nginx（兼容 systemd 和非 systemd 环境）
   run_sudo nginx -t
-  run_sudo systemctl enable nginx
-  run_sudo systemctl reload nginx
+  if [ -d /run/systemd/system ]; then
+    run_sudo systemctl enable nginx
+    run_sudo systemctl reload nginx
+  else
+    # 非 systemd 环境直接启动 nginx
+    pkill nginx 2>/dev/null || true
+    run_sudo nginx
+    log "Nginx 已启动（非 systemd 环境）"
+  fi
 }
 
 print_result() {

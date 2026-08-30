@@ -57,7 +57,7 @@ sudo swapon /swapfile
 
 
 ## 本地头像分离
-[本地头像分离模型安装_linux.md](../../../../modeapi/image/本地头像分离模型安装_linux.md)
+[本地头像分离模型安装_linux.md](../../../../../modeapi/image/本地头像分离模型安装_linux.md)
 
 
 ### nodejs 22 安装 与加速

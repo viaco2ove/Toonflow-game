@@ -28,10 +28,10 @@ yarn build
 # 同步到后端 scripts/web 目录
 rm -rf /opt/toonflow/toonflow-game-app/scripts/web
 mkdir -p /opt/toonflow/toonflow-game-app/scripts/web
-rsync -a --delete dist/ /opt/toonflow/toonflow-game-app/scripts/web/
+rsync -rlt --no-perms --delete dist/ /opt/toonflow/toonflow-game-app/scripts/web/
 
 # 同步到 Nginx 发布目录
-rsync -a --delete dist/ /var/www/toonflow/
+rsync -rlt --no-perms --delete dist/ /var/www/toonflow/
 chown -R www-data:www-data /var/www/toonflow
 chmod -R 755 /var/www/toonflow
 
@@ -103,8 +103,8 @@ cd /opt/toonflow/Toonflow-game-web
   yarn install --frozen-lockfile --force                                                                                                                                            
   export NODE_OPTIONS=--max-old-space-size=512                                                                                                                                      
   yarn build                                                                                                                                                                        
-  rsync -a --delete dist/ /opt/toonflow/toonflow-game-app/scripts/web/                                                                                                              
-  rsync -a --delete dist/ /var/www/toonflow/                                                                                                                                        
+  rsync -rlt --no-perms --delete dist/ /opt/toonflow/toonflow-game-app/scripts/web/                                                                                                              
+  rsync -rlt --no-perms --delete dist/ /var/www/toonflow/                                                                                                                                        
   chown -R www-data:www-data /var/www/toonflow                                                                                                                                      
   chmod -R 755 /var/www/toonflow                                                                                                                                                    
   nginx -t && systemctl reload nginx

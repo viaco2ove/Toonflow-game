@@ -142,7 +142,7 @@ def sync_web_publish_dir() -> str:
     return run(
         "set -e; "
         f"mkdir -p {shlex.quote(WEB_PUBLISH_DIR)} && "
-        f"rsync -a --delete {shlex.quote(WEB_SOURCE_DIR)}/ {shlex.quote(WEB_PUBLISH_DIR)}/ && "
+        f"rsync -rlt --no-perms --delete {shlex.quote(WEB_SOURCE_DIR)}/ {shlex.quote(WEB_PUBLISH_DIR)}/ && "
         f"chown -R www-data:www-data {shlex.quote(WEB_PUBLISH_DIR)} && "
         f"chmod -R 755 {shlex.quote(WEB_PUBLISH_DIR)} && "
         # 清理nginx缓存 + 重启
@@ -173,7 +173,7 @@ def build_web_project_command() -> str:
         "yarn build 2>&1 && "
         f"rm -rf {safe_output_dir} && "
         f"mkdir -p {safe_output_dir} && "
-        f"rsync -a --delete dist/ {safe_output_dir}/ 2>&1"
+        f"rsync -rlt --no-perms --delete dist/ {safe_output_dir}/ 2>&1"
     )
 
 
@@ -302,6 +302,9 @@ def force_sync_all_current_branches() -> str:
 
 
 def install_ffmpeg() -> str:
+    return run("apt update && apt install ffmpeg -y")
+
+def install_ffmpeg_sudo() -> str:
     return run("sudo apt update && sudo apt install ffmpeg -y")
 
 
@@ -517,7 +520,7 @@ def deploy_sync_web():
     if not build.ok:
         set_last_action_log("Web构建失败", build.output)
         return RedirectResponse("/")
-    publish = run_result(f"rsync -a --delete {WEB_SOURCE_DIR}/ {WEB_PUBLISH_DIR}/ && systemctl reload nginx")
+    publish = run_result(f"rsync -rlt --no-perms --delete {WEB_SOURCE_DIR}/ {WEB_PUBLISH_DIR}/ && systemctl reload nginx")
     set_last_action_log("Web构建+发布成功", build.output + "\n" + publish.output)
     return RedirectResponse("/")
 
@@ -669,5 +672,8 @@ def clear_pm2_logs_handler():
 def tools_install_ffmpeg():
     """安装 ffmpeg"""
     output = install_ffmpeg()
+    set_last_action_log("安装 ffmpeg", output)
+
+    output = install_ffmpeg_sudo()
     set_last_action_log("安装 ffmpeg", output)
     return RedirectResponse("/")

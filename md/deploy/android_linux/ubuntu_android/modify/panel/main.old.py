@@ -97,7 +97,7 @@ def sync_web_publish_dir() -> str:
     return run(
         "set -e; "
         f"mkdir -p {shlex.quote(WEB_PUBLISH_DIR)} && "
-        f"rsync -a --delete {shlex.quote(WEB_SOURCE_DIR)}/ {shlex.quote(WEB_PUBLISH_DIR)}/ && "
+        f"rsync -rlt --no-perms --delete {shlex.quote(WEB_SOURCE_DIR)}/ {shlex.quote(WEB_PUBLISH_DIR)}/ && "
         f"chown -R www-data:www-data {shlex.quote(WEB_PUBLISH_DIR)} && "
         f"chmod -R 755 {shlex.quote(WEB_PUBLISH_DIR)} && "
         "nginx -t 2>&1 && systemctl reload nginx 2>&1"
@@ -147,7 +147,7 @@ def build_web_project_command() -> str:
         "fi && "
         f"rm -rf {safe_output_dir} && "
         f"mkdir -p {safe_output_dir} && "
-        f"rsync -a --delete dist/ {safe_output_dir}/ 2>&1"
+        f"rsync -rlt --no-perms --delete dist/ {safe_output_dir}/ 2>&1"
     )
 
 
@@ -702,7 +702,7 @@ def deploy_sync_web():
     publish_result = run_result(
         "set -e; "
         f"mkdir -p {shlex.quote(WEB_PUBLISH_DIR)} && "
-        f"rsync -a --delete {shlex.quote(WEB_SOURCE_DIR)}/ {shlex.quote(WEB_PUBLISH_DIR)}/ && "
+        f"rsync -rlt --no-perms --delete {shlex.quote(WEB_SOURCE_DIR)}/ {shlex.quote(WEB_PUBLISH_DIR)}/ && "
         f"chown -R www-data:www-data {shlex.quote(WEB_PUBLISH_DIR)} && "
         f"chmod -R 755 {shlex.quote(WEB_PUBLISH_DIR)} && "
         "nginx -t 2>&1 && systemctl reload nginx 2>&1"

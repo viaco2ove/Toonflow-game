@@ -119,7 +119,7 @@ ss -lntp | grep 6008
 
 ## 7. 说明
 
-如果已经使用新版 `md/deploy/ubuntu/install.sh` 重新部署，安装脚本会自动：
+如果已经使用新版 `../../install.sh` 重新部署，安装脚本会自动：
 
 - 生成 `/opt/toonflow/panel/start-panel.sh`
 - 生成 `toonflow-panel.service`
