@@ -46,7 +46,7 @@ export PUBLIC_URL="http://你的服务器IP/"
 ```
 
 ## 4. 安装主站
-
+请保持网络“特别” 通畅！！！
 ```bash
 chmod +x install.sh
 source ./install.config.sh
