@@ -299,7 +299,8 @@ start_pm2() {
   pm2 save
 
   log "尝试配置 PM2 开机自启"
-  if command -v systemctl >/dev/null 2>&1; then
+#  if command -v systemctl >/dev/null 2>&1; then
+  if [ -d /run/systemd/system ]; then
     pm2 startup systemd -u "$(whoami)" --hp "$HOME" || true
     pm2 save
   fi
@@ -356,7 +357,8 @@ EOF
     pm2 save || true
   fi
 
-  if command -v systemctl >/dev/null 2>&1; then
+#  if command -v systemctl >/dev/null 2>&1; then
+  if [ -d /run/systemd/system ]; then
     log "使用 systemd 托管管理页"
     run_sudo tee "$panel_service_file" > /dev/null <<EOF
 [Unit]
