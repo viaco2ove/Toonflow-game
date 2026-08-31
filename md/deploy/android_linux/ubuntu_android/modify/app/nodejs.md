@@ -73,3 +73,6 @@ pm2 stop toonflow-panel
 cd /opt/toonflow/panel
 ./start-panel.sh
 再次点击构建-构建成功。 结论弱智ai!
+
+## 改用 supervisor
+supervisor 去启动detail/main.py toonflow-panel
