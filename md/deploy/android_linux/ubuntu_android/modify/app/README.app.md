@@ -42,6 +42,8 @@ ls -lh /data/toonflow/logs/
 ## 重启后端
 ```bash
 pm2 restart toonflow-game
+pm2 restart toonflow-game --update-env
+pm2 save
 ```
 
 ## 停止后端

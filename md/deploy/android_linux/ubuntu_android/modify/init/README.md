@@ -17,12 +17,7 @@
 ## 其他工具
 apt update && apt install -y wget curl
 apt update && apt install -y git
-
-yarn config set registry https://registry.npmmirror.com
-- node 22
-curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
-apt install -y nodejs
-
+[nodejs.md](../app/nodejs.md)
 
 ## 安装 MOSS-TTS-Nano (非必须)
 `git clone --depth 1  https://github.com/OpenMOSS/MOSS-TTS-Nano.git /data/toonflow/tools/moss-tts-nano/MOSS-TTS-Nano
