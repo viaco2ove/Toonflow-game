@@ -491,19 +491,6 @@ function resolveDirectAliyunBusinessPresetVoiceId(config: { model?: string | nul
   return defaultVoiceId;
 }
 
-async function resolveLocalCloneGateway(userId: number): Promise<{ baseUrl: string; headers: Record<string, string> }> {
-  const row = await u.db("t_config")
-    .where({ type: "voice", userId, manufacturer: "ai_voice_tts" })
-    .orderBy("id", "desc")
-    .first();
-  const baseUrl = normalizeVoiceBaseUrl(String(row?.baseUrl ));
-  const headers: Record<string, string> = {};
-  if (String(row?.apiKey || "").trim()) {
-    headers.Authorization = `Bearer ${String(row?.apiKey || "").trim()}`;
-  }
-  return { baseUrl, headers };
-}
-
 async function synthesizeWithLocalClone(
   req: express.Request,
   userId: number,
@@ -513,7 +500,18 @@ async function synthesizeWithLocalClone(
   format: string,
   speed?: number | null,
 ) {
-  const { baseUrl, headers } = await resolveLocalCloneGateway(userId);
+  // 用调用方通过 req.localCloneConfigId 传入的配置 id 精确锁定配置，
+  // 避免之前写死查 manufacturer: "ai_voice_tts" 导致 baseUrl 变成 undefined 的崩溃。
+  const voiceConfigId = Number((req as any).localCloneConfigId ?? 0);
+  const row = voiceConfigId > 0
+    ? await u.db("t_config").where({ id: voiceConfigId }).first()
+    : await u.db("t_config").where({ type: "voice", userId }).orderBy("id", "desc").first();
+  const baseUrl = normalizeVoiceBaseUrl(String(row?.baseUrl ?? ""));
+  const apiKey = String(row?.apiKey ?? "").trim();
+  const headers: Record<string, string> = {};
+  if (apiKey) {
+    headers.Authorization = `Bearer ${apiKey}`;
+  }
   const cloneForm = new FormData();
   cloneForm.append("text", text);
   cloneForm.append("format", format || "wav");
@@ -2062,6 +2060,7 @@ router.post(
             },
           }));
         }
+        (req as any).localCloneConfigId = config?.id ?? 0;
         const cloned = await synthesizeWithLocalClone(
           req,
           userId,
@@ -2185,6 +2184,7 @@ router.post(
             },
           }));
         }
+        (req as any).localCloneConfigId = config?.id ?? 0;
         const cloned = await synthesizeWithLocalClone(
           req,
           userId,
