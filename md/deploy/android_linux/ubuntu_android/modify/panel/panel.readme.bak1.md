@@ -1,6 +1,6 @@
 ```bash
   pm2 delete toonflow-panel || true && pm2 start bash --name toonflow-panel -- -lc 'cd /opt/toonflow/panel && PANEL_APP_NAME="toonflow-game" PANEL_APP_DIR="/opt/toonflow/toonflow- 
-  game-app" PANEL_APP_PORT="60002" PANEL_WEB_PORT="80" PANEL_WEB_PUBLISH_DIR="/var/www/toonflow" PANEL_WEB_PROJECT_DIR="/opt/toonflow/Toonflow-game-web"                            
+  game-app" PANEL_APP_PORT="60002" PANEL_WEB_PORT="8080" PANEL_WEB_PUBLISH_DIR="/var/www/toonflow" PANEL_WEB_PROJECT_DIR="/opt/toonflow/Toonflow-game-web"                            
   PANEL_WEB_BUILD_NODE_OPTIONS="--max-old-space-size=512" /opt/toonflow/panel/.venv/bin/python -m uvicorn main:app --host 0.0.0.0 --port 6008' && pm2 save  
 ```
 
@@ -12,7 +12,7 @@ cd /opt/toonflow/panel || exit 1
 export PANEL_APP_NAME="toonflow-game"                                                                                                                                             
 export PANEL_APP_DIR="/opt/toonflow/toonflow-game-app"                                                                                                                            
 export PANEL_APP_PORT="60002"                                                                                                                                                     
-export PANEL_WEB_PORT="80"                                                                                                                                                        
+export PANEL_WEB_PORT="8080"                                                                                                                                                        
 export PANEL_WEB_PUBLISH_DIR="/var/www/toonflow"                                                                                                                                  
 export PANEL_WEB_PROJECT_DIR="/opt/toonflow/Toonflow-game-web"                                                                                                                    
 export PANEL_WEB_BUILD_NODE_OPTIONS="--max-old-space-size=512"                                                                                                                    

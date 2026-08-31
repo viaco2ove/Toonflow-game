@@ -3,6 +3,7 @@
 [README.md](detail/README.md)
 
 ## ubuntu 环境设置
+[nodejs.md](modify/app/nodejs.md)
 [README.md](modify/init/README.md)
 
 下面内容只涉及安装

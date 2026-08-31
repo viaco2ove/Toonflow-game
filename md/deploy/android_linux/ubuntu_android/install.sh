@@ -35,7 +35,7 @@ APP_BRANCH="${APP_BRANCH:-}"
 WEB_BRANCH="${WEB_BRANCH:-}"
 NODE_MAJOR="${NODE_MAJOR:-20}"
 APP_PORT="${APP_PORT:-60002}"
-HTTP_PORT="${HTTP_PORT:-80}"
+HTTP_PORT="${HTTP_PORT:-8080}"
 PM2_NAME="${PM2_NAME:-toonflow-game}"
 SERVER_NAME="${SERVER_NAME:-_}"
 PUBLIC_URL="${PUBLIC_URL:-}"
@@ -101,7 +101,7 @@ detect_public_url() {
   if [ -z "$ip" ]; then
     ip="127.0.0.1"
   fi
-  if [ "$HTTP_PORT" = "80" ]; then
+  if [ "$HTTP_PORT" = "8080" ]; then
     printf 'http://%s/' "$ip"
   else
     printf 'http://%s:%s/' "$ip" "$HTTP_PORT"

@@ -15,7 +15,7 @@ APP_NAME = os.environ.get("PANEL_APP_NAME", "../modify/toonflow-game").strip() o
 APP_DIR = os.environ.get("PANEL_APP_DIR",
                          "/opt/toonflow/toonflow-game-app").strip() or "/opt/toonflow/toonflow-game-app"
 APP_PORT = int(os.environ.get("PANEL_APP_PORT", "60002").strip() or "60002")
-WEB_PORT = int(os.environ.get("PANEL_WEB_PORT", "80").strip() or "80")
+WEB_PORT = int(os.environ.get("PANEL_WEB_PORT", "8080").strip() or "8080")
 WEB_SOURCE_DIR = f"{APP_DIR}/scripts/web"
 WEB_PUBLISH_DIR = os.environ.get("PANEL_WEB_PUBLISH_DIR", "/var/www/toonflow").strip() or "/var/www/toonflow"
 WEB_PROJECT_DIR = os.environ.get("PANEL_WEB_PROJECT_DIR", "").strip()

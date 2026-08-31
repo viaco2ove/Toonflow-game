@@ -68,7 +68,7 @@ pm2 monit
 ## 维护
 
 ### 清理库
-/opt/toonflow/toonflow-game-app
+cd /opt/toonflow/toonflow-game-app
 rm -rf /opt/toonflow/toonflow-game-app/node_modules
 
 ### nodejs 22 安装 与加速
@@ -77,3 +77,6 @@ rm -rf /opt/toonflow/toonflow-game-app/node_modules
 
 ### 更新库
 yarn install
+
+### 构建
+yarn buil
