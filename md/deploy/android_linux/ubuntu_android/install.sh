@@ -35,7 +35,7 @@ APP_BRANCH="${APP_BRANCH:-}"
 WEB_BRANCH="${WEB_BRANCH:-}"
 NODE_MAJOR="${NODE_MAJOR:-20}"
 APP_PORT="${APP_PORT:-60002}"
-HTTP_PORT="${HTTP_PORT:-8080}"
+HTTP_PORT="${HTTP_PORT:-8088}"
 PM2_NAME="${PM2_NAME:-toonflow-game}"
 SERVER_NAME="${SERVER_NAME:-_}"
 PUBLIC_URL="${PUBLIC_URL:-}"
@@ -101,7 +101,7 @@ detect_public_url() {
   if [ -z "$ip" ]; then
     ip="127.0.0.1"
   fi
-  if [ "$HTTP_PORT" = "8080" ]; then
+  if [ "$HTTP_PORT" = "8088" ]; then
     printf 'http://%s/' "$ip"
   else
     printf 'http://%s:%s/' "$ip" "$HTTP_PORT"
@@ -382,7 +382,7 @@ PANEL_PYTHON="$PANEL_DIR/.venv/bin/python"
 export PANEL_APP_NAME="${PANEL_APP_NAME:-toonflow-game}"
 export PANEL_APP_DIR="${PANEL_APP_DIR:-/opt/toonflow/toonflow-game-app}"
 export PANEL_APP_PORT="${PANEL_APP_PORT:-60002}"
-export PANEL_WEB_PORT="${PANEL_WEB_PORT:-8080}"
+export PANEL_WEB_PORT="${PANEL_WEB_PORT:-8088}"
 export PANEL_WEB_PUBLISH_DIR="${PANEL_WEB_PUBLISH_DIR:-/opt/toonflow/www}"
 export PANEL_WEB_PROJECT_DIR="${PANEL_WEB_PROJECT_DIR:-/opt/toonflow/Toonflow-game-web}"
 export PANEL_WEB_BUILD_NODE_OPTIONS="${PANEL_WEB_BUILD_NODE_OPTIONS:---max-old-space-size=512}"

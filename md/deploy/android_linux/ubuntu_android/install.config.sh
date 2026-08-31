@@ -34,13 +34,13 @@ export WEB_BRANCH="dev"
 
 export NODE_MAJOR="20"
 export APP_PORT="60002"
-export HTTP_PORT="8080"
+export HTTP_PORT="8088"
 export PM2_NAME="toonflow-game"
 export SERVER_NAME="_"
 
 # 必填：这里写你最终给浏览器访问的地址。
 # Termux 用户注意：Android 10+ 需要用 localhost + ADB reverse 或 ngrok
-# export PUBLIC_URL="http://localhost:8080/"
+# export PUBLIC_URL="http://localhost:8088/"
 export PUBLIC_URL="http://你的服务器IP/"
 
 # 可选：临时 OSS 配置，不需要就留空。
