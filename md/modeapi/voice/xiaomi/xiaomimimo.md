@@ -194,6 +194,7 @@ mimo-v2.5-tts-voiceclone	基于音频样本复刻任意音色	通过音频样本
     }
 }
 
+data 可以直接播放的音频数据
 
 ## 文本设计音色进行语音合成(mimo-v2.5-tts-voicedesign)
 文本设计音色进行语音合成
@@ -256,7 +257,7 @@ curl --location --request POST 'https://api.xiaomimimo.com/v1/chat/completions' 
         }
     }
 }
-
+data 可以直接播放的音频数据
 ## 使用音色复刻进行语音合成(mimo-v2.5-tts-voiceclone)
 curl --location --request POST 'https://api.xiaomimimo.com/v1/chat/completions' \
 --header "api-key: $MIMO_API_KEY" \
@@ -327,3 +328,4 @@ $BASE64_AUDIO：音频文件的纯 Base64 编码字符串（不含任何前缀�
         }
     }
 }
+data 可以直接播放的音频数据

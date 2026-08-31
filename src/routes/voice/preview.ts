@@ -2060,6 +2060,36 @@ router.post(
             },
           }));
         }
+        if (manufacturer === "xiaomimimo") {
+          // xiaomimimo 的 prompt_voice 设计结果本身就是一段专属音色音频，
+          // 官方接口没有 /v1/tts/clone_upload 这种上传通道。
+          // 正确做法：用设计生成的 wav 作为参考音频，调用 voiceclone 接口合成目标文本。
+          const { synthesizeXiaomiMimoVoiceCloneBuffer } = await import("@/lib/xiaomiMimoVoice");
+          const outFormat = String(payload.format || "wav").trim().toLowerCase() || "wav";
+          const refBuffer = await loadReferenceAudioBuffer(generatedReference.audioPath);
+          const refExt = inferAudioExt(generatedReference.audioPath);
+          const refMime = refExt === "mp3" ? "audio/mpeg" : "audio/wav";
+          const cloneResult = await synthesizeXiaomiMimoVoiceCloneBuffer({
+            apiKey: String(config.apiKey || "").trim(),
+            baseUrl: String(config.baseUrl || "").trim(),
+            model: "mimo-v2.5-tts-voiceclone",
+            text: String(text || "").trim(),
+            referenceAudioBuffer: refBuffer,
+            referenceAudioMime: refMime,
+            format: outFormat,
+          });
+          const sourceUrl = await persistPreviewAudioBuffer(userId, cloneResult.buffer, outFormat);
+          const audioUrl = buildProxyAudioUrl(req, config?.id, sourceUrl);
+          return res.status(200).send(success({
+            audioUrl,
+            data: {
+              localGenerated: true,
+              model: "mimo-v2.5-tts-voiceclone",
+              voice: "mimo_default",
+              compatibilityReferencePath: generatedReference.audioPath,
+            },
+          }));
+        }
         (req as any).localCloneConfigId = config?.id ?? 0;
         const cloned = await synthesizeWithLocalClone(
           req,
@@ -2180,6 +2210,36 @@ router.post(
               ...synthesized.data,
               customVoiceId: customVoice.voiceId,
               customVoiceMode,
+              compatibilityReferencePath: generatedReference.audioPath,
+            },
+          }));
+        }
+        if (manufacturer === "xiaomimimo") {
+          // xiaomimimo 的 prompt_voice 设计结果本身就是一段专属音色音频，
+          // 官方接口没有 /v1/tts/clone_upload 这种上传通道。
+          // 正确做法：用设计生成的 wav 作为参考音频，调用 voiceclone 接口合成目标文本。
+          const { synthesizeXiaomiMimoVoiceCloneBuffer } = await import("@/lib/xiaomiMimoVoice");
+          const outFormat = String(payload.format || "wav").trim().toLowerCase() || "wav";
+          const refBuffer = await loadReferenceAudioBuffer(generatedReference.audioPath);
+          const refExt = inferAudioExt(generatedReference.audioPath);
+          const refMime = refExt === "mp3" ? "audio/mpeg" : "audio/wav";
+          const cloneResult = await synthesizeXiaomiMimoVoiceCloneBuffer({
+            apiKey: String(config.apiKey || "").trim(),
+            baseUrl: String(config.baseUrl || "").trim(),
+            model: "mimo-v2.5-tts-voiceclone",
+            text: String(text || "").trim(),
+            referenceAudioBuffer: refBuffer,
+            referenceAudioMime: refMime,
+            format: outFormat,
+          });
+          const sourceUrl = await persistPreviewAudioBuffer(userId, cloneResult.buffer, outFormat);
+          const audioUrl = buildProxyAudioUrl(req, config?.id, sourceUrl);
+          return res.status(200).send(success({
+            audioUrl,
+            data: {
+              localGenerated: true,
+              model: "mimo-v2.5-tts-voiceclone",
+              voice: "mimo_default",
               compatibilityReferencePath: generatedReference.audioPath,
             },
           }));
