@@ -118,3 +118,6 @@ supervisord -c /etc/supervisor/supervisord.conf
 
 **Q: 面板构建 yarn build 失败？**
 A: 如果直接运行 `./start-panel.sh` 正常但通过 supervisor 跑有问题，检查环境变量是否正确传递。确认 `/etc/supervisor/conf.d/toonflow-panel.conf` 中的 `environment` 配置。
+
+
+cat /var/log/supervisor/supervisord.log
