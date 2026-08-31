@@ -16,3 +16,41 @@ yarn config set sass_binary_site https://npmmirror.com/mirrors/node-sass/
 # 校验源是否生效
 yarn config get registry
 ```
+
+# 同时设环境变量（保险）
+```
+export ELECTRON_MIRROR="https://npmmirror.com/mirrors/electron/"
+export SASS_BINARY_SITE="https://npmmirror.com/mirrors/node-sass/"
+```
+
+在项目根目录放一个 .yarnrc 文件（注意没有后缀），内容如下：
+文本
+```
+registry "https://registry.npmmirror.com"
+network-timeout 600000
+electron_mirror "https://npmmirror.com/mirrors/electron/"
+sass_binary_site "https://npmmirror.com/mirrors/node-sass/"
+```
+
+## 如何清缓存
+```
+cd /opt/toonflow/toonflow-game-app
+rm -rf /opt/toonflow/toonflow-game-app/node_modules
+rm -rf node_modules dist .cache
+yarn cache clean
+```
+
+
+## 更新库
+yarn install  --frozen-lockfile --ignore-engines
+建议：首次部署用 yarn install --ignore-engines（不加 frozen-lockfile），等 lockfile 更新后再用 --frozen-lockfile。或者在脚本里做判断：
+
+## 构建
+yarn build
+
+## 重启后端
+pm2 restart toonflow-game
+
+## 看日志
+只看最近 100 行 + 实时追踪（不刷屏）
+pm2 logs toonflow-game --lines 100

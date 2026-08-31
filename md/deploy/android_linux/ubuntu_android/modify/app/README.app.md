@@ -76,7 +76,7 @@ rm -rf /opt/toonflow/toonflow-game-app/node_modules
 
 
 ### 更新库
-yarn install
+yarn install  --frozen-lockfile --ignore-engines
 
 ### 构建
-yarn buil
+yarn build
