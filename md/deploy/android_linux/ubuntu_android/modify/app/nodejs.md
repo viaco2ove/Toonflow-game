@@ -2,7 +2,7 @@
 npm install -g n
 n 22
 ## 加速
-全局换成国内 npmm irror 源（最关键提速）
+全局换成国内 npmmirror 源（最关键提速）
 bash
 运行
 ```
