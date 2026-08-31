@@ -141,7 +141,7 @@ export default router.post(
         res.status(200).send(success(`阿里百炼语音克隆测试通过，voice_id: ${output.voice}`));
       } else if (trimmedManufacturer === "ai_voice_tts") {
         // 本地 CosyVoice：验证服务可达
-        const rawBaseUrl = trimmedBaseUrl || "http://127.0.0.1:8000";
+        const rawBaseUrl = trimmedBaseUrl;
         let baseUrl = rawBaseUrl;
         try {
           const urlObj = new URL(rawBaseUrl);

@@ -391,7 +391,7 @@ function normalizedManufacturer(input?: string | null): string {
 
 export function normalizeVoiceBaseUrl(input: string | null | undefined): string {
   const base = String(input || "").trim();
-  return (base || "http://127.0.0.1:8000").replace(/\/+$/, "");
+  return (base).replace(/\/+$/, "");
 }
 
 export async function getUserVoiceConfig(userId: number, configId?: number | null) {

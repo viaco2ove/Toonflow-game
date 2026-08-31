@@ -113,7 +113,7 @@ async function resolveLocalCloneGateway(userId: number): Promise<{ baseUrl: stri
     .where({ type: "voice", userId, manufacturer: "ai_voice_tts" })
     .orderBy("id", "desc")
     .first();
-  const baseUrl = normalizeVoiceBaseUrl(String(row?.baseUrl || "http://127.0.0.1:8000"));
+  const baseUrl = normalizeVoiceBaseUrl(String(row?.baseUrl ));
   const headers: Record<string, string> = {};
   const apiKey = trimText(row?.apiKey);
   if (apiKey) {

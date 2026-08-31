@@ -496,7 +496,7 @@ async function resolveLocalCloneGateway(userId: number): Promise<{ baseUrl: stri
     .where({ type: "voice", userId, manufacturer: "ai_voice_tts" })
     .orderBy("id", "desc")
     .first();
-  const baseUrl = normalizeVoiceBaseUrl(String(row?.baseUrl || "http://127.0.0.1:8000"));
+  const baseUrl = normalizeVoiceBaseUrl(String(row?.baseUrl ));
   const headers: Record<string, string> = {};
   if (String(row?.apiKey || "").trim()) {
     headers.Authorization = `Bearer ${String(row?.apiKey || "").trim()}`;
@@ -1557,6 +1557,10 @@ router.post(
       debugContext.resolvedConfigId = Number(config.id || 0);
 
       let baseUrl = normalizeVoiceBaseUrl(config.baseUrl);
+      console.error("[voice] preview /voice/preview ", {baseUrl:config.baseUrl,
+        manufacturer:persistedConfig.manufacturer,
+        model:persistedConfig.model
+      });
       let manufacturer = String(config.manufacturer || "").trim();
       const voiceDesignConfig = mode === "prompt_voice" ? await getStoryVoiceDesignConfig(userId) : null;
       const voiceCloneConfig = mode === "clone" ? await getStoryVoiceCloneConfig(userId) : null;
@@ -2344,6 +2348,7 @@ router.post(
       }
 
       if (!String(sourceUrl || "").trim()) {
+        console.error("[voice] preview failed", "未返回可用音频地址");
         return res.status(500).send(error("未返回可用音频地址"));
       }
       const audioUrl = buildProxyAudioUrl(req, config?.id, sourceUrl);
@@ -2361,6 +2366,7 @@ router.post(
 
       res.status(200).send(success({ audioUrl, data }));
     } catch (err) {
+      console.error("[voice] preview failed", { err });
       const axiosErr = axios.isAxiosError(err) ? err : null;
       const upstreamCode = trimText(axiosErr?.response?.data?.code);
       const upstreamMessage = trimText(axiosErr?.response?.data?.message);

@@ -199,7 +199,8 @@ install_system_deps() {
       make \
       g++ \
       ffmpeg \
-      nginx
+      nginx \
+      supervisor
   fi
 }
 
@@ -342,17 +343,16 @@ start_pm2() {
 }
 
 install_panel() {
-  # 部署 FastAPI 管理页，方便在 Ubuntu 环境里查看服务状态和执行常用操作。
-  # 同时把 web 项目目录和构建内存限制传给管理页，保证面板按钮与安装脚本的构建参数一致。
-  # 管理页本身很轻量，但它还要负责触发前端构建。
-  # 这里优先使用 systemd 托管，避免在低配机器上叠加 PM2 守护层后增加额外不确定性。
-  # 如果目标环境没有 systemd，再退回 PM2 托管独立脚本。
+  # 部署 FastAPI 管理页，用 supervisor 托管（不依赖 systemd）。
+  # 为什么不用 PM2：
+  #   PM2 -> bash -> uvicorn -> subprocess -> yarn build
+  #   这条链在某些环境下会导致 libuv epoll 断言崩溃，直接运行 ./start-panel.sh 就正常。
+  #   supervisor 直接跑 start-panel.sh，不经过 PM2 进程树。
   local panel_source="$SCRIPT_DIR/detail/main.py"
   local panel_target="$PANEL_DIR/main.py"
   local panel_start_script="$PANEL_DIR/start-panel.sh"
   local panel_python="$PANEL_DIR/.venv/bin/python"
-  local panel_service_name="${PANEL_NAME}.service"
-  local panel_service_file="/etc/systemd/system/${panel_service_name}"
+  local panel_conf_file="/etc/supervisor/conf.d/${PANEL_NAME}.conf"
 
   [ -f "$panel_source" ] || die "找不到管理页脚本：$panel_source"
 
@@ -367,8 +367,7 @@ install_panel() {
   "$panel_python" -m pip install --upgrade pip
   "$panel_python" -m pip install fastapi uvicorn
 
-  # 生成独立启动脚本，让手动启动与 PM2 托管启动走完全一致的路径。
-  # 注意：这里用单引号 EOF 防止变量在 install.sh 中被展开
+  # 生成独立启动脚本，用单引号 EOF 防止变量被 install.sh 提前展开
   cat > "$panel_start_script" <<'PANELEOF'
 #!/bin/bash
 set -Euo nounset
@@ -391,40 +390,28 @@ exec "$PANEL_PYTHON" -m uvicorn main:app --host 0.0.0.0 --port "${PANEL_PORT:-60
 PANELEOF
   chmod +x "$panel_start_script"
 
-  # 先清理可能残留的 PM2 管理页进程，避免占用同一端口导致新服务无法启动。
-  if pm2 describe "$PANEL_NAME" >/dev/null 2>&1; then
-    pm2 delete "$PANEL_NAME" || true
-    pm2 save || true
-  fi
+  # 清理可能残留的 PM2 / systemd 管理页进程，避免端口冲突
+  pm2 delete "$PANEL_NAME" 2>/dev/null || true
+  run_sudo systemctl stop "${PANEL_NAME}.service" 2>/dev/null || true
+  run_sudo systemctl disable "${PANEL_NAME}.service" 2>/dev/null || true
 
-  if [ -d /run/systemd/system ]; then
-    log "使用 systemd 托管管理页"
-    run_sudo tee "$panel_service_file" > /dev/null <<EOF
-[Unit]
-Description=Toonflow Panel
-After=network.target
-
-[Service]
-Type=simple
-WorkingDirectory=$PANEL_DIR
-ExecStart=$panel_start_script
-Restart=always
-RestartSec=3
-User=root
-Environment=PYTHONUNBUFFERED=1
-
-[Install]
-WantedBy=multi-user.target
+  # 配置 supervisor
+  log "配置 supervisor 托管管理页"
+  run_sudo tee "$panel_conf_file" > /dev/null <<EOF
+[program:${PANEL_NAME}]
+command=$panel_start_script
+directory=$PANEL_DIR
+autostart=true
+autorestart=true
+startretries=3
+stdout_logfile=$PANEL_DIR/supervisor.log
+stderr_logfile=$PANEL_DIR/supervisor.err.log
+environment=PYTHONUNBUFFERED="1"
 EOF
-    run_sudo systemctl daemon-reload
-    run_sudo systemctl enable "$panel_service_name"
-    run_sudo systemctl restart "$panel_service_name"
-  else
-    # systemd 不可用时，再退回 PM2 托管独立脚本。
-    log "当前环境无 systemd，退回使用 PM2 托管管理页"
-    pm2 start "$panel_start_script" --name "$PANEL_NAME"
-    pm2 save
-  fi
+
+  run_sudo supervisorctl reread 2>&1 || true
+  run_sudo supervisorctl update 2>&1 || true
+  run_sudo supervisorctl start "$PANEL_NAME" 2>&1 || true
 }
 
 write_nginx_config() {
@@ -538,8 +525,8 @@ print_result() {
 常用命令：
   pm2 status
   pm2 logs $PM2_NAME
-  sudo systemctl status ${PANEL_NAME}.service
-  sudo journalctl -u ${PANEL_NAME}.service -n 100 --no-pager
+  supervisorctl status $PANEL_NAME
+  tail -f $PANEL_DIR/supervisor.log
   sudo nginx -t
   sudo systemctl status nginx
 
