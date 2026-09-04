@@ -540,6 +540,9 @@ export default async (knex: Knex): Promise<void> => {
     table.text("agentList");
     table.index(["worldId"], "idx_worldBook_worldId");
   });
+  // 老库升级：t_worldBook 建表语句里加了 agentList，老部署不会自动补列，
+  // 导致保存世界书时 SQLite 报 no such column: agentList。这里显式补一列。
+  await addColumn("t_worldBook", "agentList", "text");
   await ensureTable("t_storyChapter_published", (table) => {
     table.integer("id").notNullable();
     table.integer("worldPublishId");
