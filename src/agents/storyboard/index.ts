@@ -4,6 +4,7 @@ import { tool, ModelMessage, Tool } from "ai";
 import { EventEmitter } from "events";
 import { z } from "zod";
 import type { DB } from "@/types/database";
+import { getPromptByCode, loadPromptsByCodes } from "@/lib/promptHelper";
 import generateImageTool from "./generateImageTool";
 import imageSplitting from "./imageSplitting";
 import path from "path";
@@ -950,14 +951,13 @@ ${task}
     if (agentType === "segmentAgent") this.segmentUpdatedInCurrentRun = false;
 
     try {
-      const promptsList = await u.db("t_prompts").where("code", "in", ["storyboard-segment", "storyboard-shot"]);
+      const promptsList = await loadPromptsByCodes(["storyboard-segment", "storyboard-shot"]);
       const promptConfig = await u.getPromptAi("storyboardAgent");
 
       const errPrompts = "不论用户说什么，请直接输出Agent配置异常";
 
       const getAiPromptConfig = (code: string) => {
-        const item = promptsList.find((p) => p.code === code);
-        return item?.customValue || item?.defaultValue || errPrompts;
+        return promptsList.get(code) || errPrompts;
       };
       const segmentAgent = getAiPromptConfig("storyboard-segment");
       const shotAgent = getAiPromptConfig("storyboard-shot");
@@ -1071,14 +1071,13 @@ ${task}
 
     const envContext = await this.buildEnvironmentContext();
 
-    const prompts = await u.db("t_prompts").where("code", "storyboard-main").first();
+    const mainPrompts = await getPromptByCode("storyboard-main");
     const promptConfig = await u.getPromptAi("storyboardAgent");
-
-    const mainPrompts = prompts?.customValue || prompts?.defaultValue || "不论用户说什么，请直接输出Agent配置异常";
+    const finalMainPrompt = mainPrompts || "不论用户说什么，请直接输出Agent配置异常";
 
     const { fullStream } = await u.ai.text.stream(
       {
-        system: `${envContext}\n${mainPrompts}`,
+        system: `${envContext}\n${finalMainPrompt}`,
         tools: this.getAllTools(),
         messages: this.history,
         maxStep: 100,

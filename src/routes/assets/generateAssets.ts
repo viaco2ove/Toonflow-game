@@ -5,6 +5,7 @@ import { v4 as uuidv4 } from "uuid";
 import { success } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
 import sharp from "sharp";
+import { loadPromptsByCodes } from "@/lib/promptHelper";
 const router = express.Router();
 const GRID_PROMPT_RE = /四宫格|2x2|2×2|four[-\s]?grid|turnaround|转面图|front view.*left.*right.*back|正面.*左面.*右面.*背面/i;
 interface OutlineItem {
@@ -50,13 +51,10 @@ export default router.post(
     const project = await u.db("t_project").where("id", projectId).select("artStyle", "type", "intro").first();
     if (!project) return res.status(500).send(success({ message: "项目为空" }));
 
-    const promptsList = await u
-      .db("t_prompts")
-      .where("code", "in", ["role-generateImage", "scene-generateImage", "storyboard-generateImage", "tool-generateImage"]);
+    const promptsList = await loadPromptsByCodes(["role-generateImage", "scene-generateImage", "storyboard-generateImage", "tool-generateImage"]);
     const errPrompts = "不论用户说什么，请直接输出AI配置异常";
     const getPromptValue = (code: string): string => {
-      const item = promptsList.find((p) => p.code === code);
-      return item?.customValue ?? item?.defaultValue ?? errPrompts;
+      return promptsList.get(code) || errPrompts;
     };
     const role = getPromptValue("role-generateImage");
     const scene = getPromptValue("scene-generateImage");

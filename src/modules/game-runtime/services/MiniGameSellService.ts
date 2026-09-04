@@ -3,6 +3,7 @@ import { parse } from "best-effort-json-parser";
 import u from "@/utils";
 import { DebugLogUtil } from "@/utils/debugLogUtil";
 import { buildWorldKnowledgeText, normalizeWorldBookOutput } from "@/lib/gameEngine";
+import { getPromptByCode } from "@/lib/promptHelper";
 
 export interface InventoryItem {
   name: string;
@@ -69,13 +70,11 @@ async function resolveSellModel(userId: number) {
 }
 
 /**
- * 读取物品出售解析的提示词（从数据库）。
+ * 读取物品出售解析的提示词。
+ * 优先级：t_prompts.customValue > def.prompts.ts 默认值
  */
 async function loadSellPrompt(): Promise<string> {
-  const row = await u.db("t_prompts")
-    .where("code", "story-sell-item")
-    .first("defaultValue", "customValue");
-  return String(row?.customValue || row?.defaultValue || "").trim();
+  return getPromptByCode("story-sell-item");
 }
 
 /**

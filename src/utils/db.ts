@@ -50,6 +50,13 @@ const db = knex({
     max: 1,
   },
   useNullAsDefault: true,
+  // 迁移目录：开发/打包都通过 process.cwd() 解析，避开 ts-node 的 cwd 偏差
+  migrations: {
+    directory: path.resolve(process.cwd(), "src", "migrations"),
+    tableName: "knex_migrations",
+    extension: "ts",
+    loadExtensions: [".ts", ".js"],
+  },
 });
 
 const isTypeGenerationRuntime = ["dev", "local"].includes((process.env.NODE_ENV || "").toLowerCase())
@@ -59,11 +66,49 @@ const isTypeGenerationRuntime = ["dev", "local"].includes((process.env.NODE_ENV 
 export const dbBootstrapReady = (async () => {
   await withSqliteBusyRetry("configureSqlite", () => configureSqlite(db));
   await withSqliteBusyRetry("initDB", () => initDB(db));
+
+  // Knex Migrations：伪造 base 版本已执行（让 migrate.latest() 跳过 base）
+  await withSqliteBusyRetry("fakeBaseMigration", () => fakeBaseMigration(db));
+
+  // 执行 src/migrations/ 中新增的迁移（base 会被跳过）
+  await withSqliteBusyRetry("migrate", async () => {
+    const { error, results } = await db.migrate.latest();
+    if (error) throw error;
+    if (results?.length) {
+      console.log(`[db] migrations applied: ${results.map((r: any) => r.name).join(", ")}`);
+    }
+  });
+
   await withSqliteBusyRetry("fixDB", () => fixDB(db));
   if (isTypeGenerationRuntime) {
     await withSqliteBusyRetry("initKnexType", () => initKnexType(db));
   }
 })();
+
+async function fakeBaseMigration(knexDb: any): Promise<void> {
+  // knex_migrations 表可能尚不存在（migrate.latest 首次运行时会自动建），
+  // 所以先检查存在性，不存在就跳过——首次 migrate.latest() 会建表并执行迁移。
+  const tableExists = await knexDb.schema.hasTable("knex_migrations");
+  if (!tableExists) return;
+
+  const hasBase = await knexDb("knex_migrations")
+    .where("name", "20260901_000000_base.ts")
+    .first()
+    .catch(() => null);
+  if (hasBase) return;
+
+  // 插入伪造的 base 记录
+  const now = new Date();
+  const maxIdRow = (await knexDb("knex_migrations").max("id as maxId").first()) as { maxId?: number } | undefined;
+  const nextId = (maxIdRow?.maxId ?? 0) + 1;
+  await knexDb("knex_migrations").insert({
+    id: nextId,
+    name: "20260901_000000_base.ts",
+    batch: 1,
+    migration_time: now,
+  });
+  console.log("[db] fakeBaseMigration: recorded 20260901_000000_base.ts");
+}
 
 void dbBootstrapReady.catch((err) => {
   console.error("[db] bootstrap failed:", err);

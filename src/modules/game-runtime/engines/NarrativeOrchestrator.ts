@@ -1,4 +1,5 @@
 import u from "@/utils";
+import { loadPromptsByCodes } from "@/lib/promptHelper";
 import {
   ChapterRuntimePhase,
   isFreeChapterRuntimeMode,
@@ -377,13 +378,6 @@ function uniqueTextList(input: unknown[], limit: number): string[] {
     result.push(text);
   }
   return result.slice(-Math.max(1, limit));
-}
-
-// 读取 prompt 配置里的自定义值或默认值。
-function getPromptValue(row: any): string {
-  const customValue = normalizeScalarText(row?.customValue);
-  if (customValue) return customValue;
-  return normalizeScalarText(row?.defaultValue);
 }
 
 // 将未知输入尽量解析为 JSON 对象记录。
@@ -3767,30 +3761,24 @@ function buildSpeakerSystemPrompt(speakerPrompt: string, compactMode = false, ta
   ].filter(Boolean).join("\n\n");
 }
 
-// 从数据库读取故事编排相关 prompt。
+// 从 def.prompts.ts + t_prompts.customValue 读取故事编排相关 prompt。
 async function loadStoryPrompts() {
-  const rows = await u.db("t_prompts")
-    .whereIn("code", [
-      "story-orchestrator",
-      "story-orchestrator-compact",
-      "story-orchestrator-advanced",
-      "story-speaker",
-      "story-memory",
-    ])
-    .select("code", "defaultValue", "customValue");
-  const map = new Map<string, any>();
-  for (const row of rows as any[]) {
-    map.set(String(row.code || ""), row);
-  }
-  const legacyOrchestrator = getPromptValue(map.get("story-orchestrator"));
-  const compactOrchestrator = getPromptValue(map.get("story-orchestrator-compact")) || legacyOrchestrator;
-  const advancedOrchestrator = getPromptValue(map.get("story-orchestrator-advanced")) || legacyOrchestrator;
+  const map = await loadPromptsByCodes([
+    "story-orchestrator",
+    "story-orchestrator-compact",
+    "story-orchestrator-advanced",
+    "story-speaker",
+    "story-memory",
+  ]);
+  const legacyOrchestrator = map.get("story-orchestrator") || "";
+  const compactOrchestrator = map.get("story-orchestrator-compact") || legacyOrchestrator;
+  const advancedOrchestrator = map.get("story-orchestrator-advanced") || legacyOrchestrator;
   return {
     storyOrchestrator: legacyOrchestrator,
     storyOrchestratorCompact: compactOrchestrator,
     storyOrchestratorAdvanced: advancedOrchestrator,
-    storySpeaker: getPromptValue(map.get("story-speaker")),
-    storyMemory: getPromptValue(map.get("story-memory")),
+    storySpeaker: map.get("story-speaker") || "",
+    storyMemory: map.get("story-memory") || "",
   };
 }
 

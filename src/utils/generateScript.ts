@@ -1,4 +1,5 @@
 import u from "@/utils";
+import { getPromptByCode } from "@/lib/promptHelper";
 
 interface Scene {
   name: string;
@@ -129,14 +130,14 @@ ${novelData}
 
 （本次生成标识：${Date.now()}）`;
 
-  const prompts = await u.db("t_prompts").where("code", "script").first();
+  const mainPrompts = await getPromptByCode("script");
   const promptConfig = await u.getPromptAi("generateScript");
-  const mainPrompts = prompts?.customValue || prompts?.defaultValue || "不论用户说什么，请直接输出AI配置异常";
+  const finalMainPrompt = mainPrompts || "不论用户说什么，请直接输出AI配置异常";
 
   const result = await u.ai.text.invoke(
     {
       messages: [
-        { role: "system", content: mainPrompts },
+        { role: "system", content: finalMainPrompt },
         { role: "user", content: userPrompt },
       ],
     },

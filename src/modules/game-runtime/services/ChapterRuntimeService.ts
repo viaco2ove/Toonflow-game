@@ -1,4 +1,5 @@
 import u from "@/utils";
+import { getPromptByCode } from "@/lib/promptHelper";
 import {
   buildWorldKnowledgeText,
   getGameDb,
@@ -101,12 +102,6 @@ function stringifyCondition(input: unknown): string {
   } catch {
     return String(input);
   }
-}
-
-function getPromptValue(row: any): string {
-  const customValue = normalizeScalarText(row?.customValue);
-  if (customValue) return customValue;
-  return normalizeScalarText(row?.defaultValue);
 }
 
 function unwrapModelText(input: unknown): string {
@@ -387,10 +382,7 @@ function buildChapterJudgePrompt(input: {
 }
 
 async function loadChapterJudgePrompt(): Promise<string> {
-  const row = await u.db("t_prompts")
-    .where("code", "story-chapter")
-    .first("defaultValue", "customValue");
-  return getPromptValue(row);
+  return getPromptByCode("story-chapter");
 }
 
 async function resolveChapterJudgeModel(userId?: number) {

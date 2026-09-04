@@ -1,6 +1,16 @@
-// @db-hash d5d912273ab13a8d13163409fcf0c8c8
+// @db-hash 01eaaad21564bab953761c737c8a72ce
 //该文件由脚本自动生成，请勿手动修改
 
+export interface knex_migrations {
+  'batch'?: number | null;
+  'id'?: number;
+  'migration_time'?: Date | null;
+  'name'?: string | null;
+}
+export interface knex_migrations_lock {
+  'index'?: number;
+  'is_locked'?: number | null;
+}
 export interface t_aiModelMap {
   'configId'?: number | null;
   'id'?: number;
@@ -404,6 +414,7 @@ export interface t_voiceModel {
   'model'?: string | null;
 }
 export interface t_worldBook {
+  'agentList'?: string | null;
   'category'?: string | null;
   'constant'?: number | null;
   'content'?: string | null;
@@ -423,6 +434,8 @@ export interface t_worldBook {
 }
 
 export interface DB {
+  "knex_migrations": knex_migrations;
+  "knex_migrations_lock": knex_migrations_lock;
   "t_aiModelMap": t_aiModelMap;
   "t_aiTokenUsageLog": t_aiTokenUsageLog;
   "t_assets": t_assets;

@@ -1,30 +1,25 @@
 /**
- * 任务模式 Agent 共享工具：从 t_prompts 读取 prompt
+ * 任务模式 Agent 共享工具：读取 prompt
  *
- * 优先级：customValue > defaultValue > fallback (硬编码)
+ * 优先级：t_prompts.customValue > def.prompts.ts 默认值 > fallback (硬编码)
  */
 
-import u from "@/utils";
+import { getPromptByCode } from "@/lib/promptHelper";
 
 const promptCache = new Map<string, string>();
 
 /**
- * 从数据库读取指定 code 的 prompt，未命中则使用 fallback
+ * 读取指定 code 的 prompt，未命中则使用 fallback
  */
 export async function loadTaskPrompt(code: string, fallback: string): Promise<string> {
   if (promptCache.has(code)) {
     return promptCache.get(code) || fallback;
   }
   try {
-    const row = await u.db("t_prompts")
-      .where("code", code)
-      .select("defaultValue", "customValue")
-      .first();
-    const custom = String(row?.customValue || "").trim();
-    const def = String(row?.defaultValue || "").trim();
-    const value = custom || def || fallback;
-    promptCache.set(code, value);
-    return value;
+    const value = await getPromptByCode(code);
+    const finalValue = value || fallback;
+    promptCache.set(code, finalValue);
+    return finalValue;
   } catch (e) {
     console.warn(`[loadTaskPrompt] 读取失败 code=${code}：`, e);
     return fallback;

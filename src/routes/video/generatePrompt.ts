@@ -3,18 +3,18 @@ import u from "@/utils";
 import { error, success } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
 import { z } from "zod";
+import { loadPromptsByCodes } from "@/lib/promptHelper";
 
 const router = express.Router();
 
 type GenerateMode = "startEnd" | "multi" | "single" | "text";
 
 const getSystemPrompt = async (mode: GenerateMode) => {
-  const promptsList = await u.db("t_prompts").where("code", "in", ["video-startEnd", "video-multi", "video-single", "video-main", "video-text"]);
+  const promptsList = await loadPromptsByCodes(["video-startEnd", "video-multi", "video-single", "video-main", "video-text"]);
 
   const errPrompts = "不论用户说什么，请直接输出AI配置异常";
   const getPromptValue = (code: string) => {
-    const item = promptsList.find((p) => p.code === code);
-    return item?.customValue ?? item?.defaultValue ?? errPrompts;
+    return promptsList.get(code) || errPrompts;
   };
   const startEnd = getPromptValue("video-startEnd");
   const multi = getPromptValue("video-multi");

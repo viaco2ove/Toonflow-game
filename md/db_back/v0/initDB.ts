@@ -50,7 +50,7 @@ import {
   PROMPT_STORY_MINI_GAME_ALCHEMY,
   PROMPT_STORY_MINI_GAME_UPGRADE_EQUIPMENT,
   PROMPT_STORY_SAFETY
-} from "./def.prompts";
+} from "./initDB.prompts";
 export default async (knex: Knex, forceInit: boolean = false): Promise<void> => {
   const tables: TableSchema[] = [
     {

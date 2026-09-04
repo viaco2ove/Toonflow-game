@@ -3,6 +3,7 @@ import u from "@/utils";
 import * as zod from "zod";
 import { error, success } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
+import { loadPromptsByCodes } from "@/lib/promptHelper";
 const router = express.Router();
 interface OutlineItem {
   description: string;
@@ -106,12 +107,11 @@ export default router.post(
 
     const result: ResultItem[] = Object.values(itemMap);
 
-    const promptsList = await u.db("t_prompts").where("code", "in", ["role-polish", "scene-polish", "storyboard-polish", "tool-polish"]);
+    const promptsList = await loadPromptsByCodes(["role-polish", "scene-polish", "storyboard-polish", "tool-polish"]);
     const apiConfigData = await u.getPromptAi("assetsPrompt");
     const errPrompts = "不论用户说什么，请直接输出AI配置异常";
     const getPromptValue = (code: string) => {
-      const item = promptsList.find((p) => p.code === code);
-      return item?.customValue ?? item?.defaultValue ?? errPrompts;
+      return promptsList.get(code) || errPrompts;
     };
     const role = getPromptValue("role-polish");
     const scene = getPromptValue("scene-polish");

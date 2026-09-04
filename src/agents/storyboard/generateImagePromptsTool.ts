@@ -1,4 +1,5 @@
 import u from "@/utils";
+import { getPromptByCode } from "@/lib/promptHelper";
 
 type AspectRatio = "16:9" | "9:16" | "21:9" | "1:1" | "4:3" | "3:4" | "3:2" | "2:3";
 
@@ -97,9 +98,8 @@ async function generateGridPrompt(options: GridPromptOptions): Promise<GridPromp
       ? `\n【可用资产】\n${assetsName.map((a) => `- ${a.name}：${a.intro}`).join("\n")}\n\n⚠️ 必须使用完整资产名称，禁止简称或代词。`
       : "";
 
-  const promptsData = await u.db("t_prompts").where("code", "generateImagePrompts").first();
+  const mainPrompts = await getPromptByCode("generateImagePrompts");
   const promptAiConfig = await u.getPromptAi("storyboardAgent");
-  const mainPrompts = promptsData?.customValue || promptsData?.defaultValue;
   const errData = `请输出${options.prompts.length}张图片\n提示词如下:\n${options.prompts.map((p, i) => `第${i + 1}格: ${p}`).join("\n")}`;
 
   if (!mainPrompts) return { prompt: errData, gridLayout: layout };

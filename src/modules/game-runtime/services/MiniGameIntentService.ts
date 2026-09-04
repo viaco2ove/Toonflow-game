@@ -3,6 +3,7 @@ import { parse } from "best-effort-json-parser";
 import u from "@/utils";
 import { miniGamePromptCodeByType } from "@/agents/story/mini_game/index";
 import { DebugLogUtil } from "@/utils/debugLogUtil";
+import { getPromptByCode } from "@/lib/promptHelper";
 import { buildWorldKnowledgeText, normalizeWorldBookOutput } from "@/lib/gameEngine";
 
 export interface MiniGameIntentOptionInput {
@@ -82,15 +83,9 @@ function buildMiniGameIntentSchemaPrompt(): string {
  */
 async function loadMiniGamePrompt(gameType: string): Promise<string> {
   const promptCode = miniGamePromptCodeByType(gameType);
-  const dedicatedRow = await u.db("t_prompts")
-    .where("code", promptCode)
-    .first("defaultValue", "customValue");
-  const dedicatedPrompt = String(dedicatedRow?.customValue || dedicatedRow?.defaultValue || "").trim();
+  const dedicatedPrompt = await getPromptByCode(promptCode);
   if (dedicatedPrompt) return dedicatedPrompt;
-  const fallbackRow = await u.db("t_prompts")
-    .where("code", "story-mini-game")
-    .first("defaultValue", "customValue");
-  return String(fallbackRow?.customValue || fallbackRow?.defaultValue || "").trim();
+  return getPromptByCode("story-mini-game");
 }
 
 /**

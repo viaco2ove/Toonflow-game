@@ -2,6 +2,7 @@
 import u from "@/utils";
 import { EventEmitter } from "events";
 import { tool, ModelMessage } from "ai";
+import { getPromptByCode, loadPromptsByCodes } from "@/lib/promptHelper";
 import { z } from "zod";
 import type { DB } from "@/types/database";
 // ==================== 类型定义 ====================
@@ -610,14 +611,13 @@ ${task}
     this.emit("transfer", { to: agentType });
     this.log(`Sub-Agent 调用`, agentType);
 
-    const promptsList = await u.db("t_prompts").where("code", "in", ["outlineScript-a1", "outlineScript-a2", "outlineScript-director"]);
+    const promptsList = await loadPromptsByCodes(["outlineScript-a1", "outlineScript-a2", "outlineScript-director"]);
     const promptConfig = await u.getPromptAi("outlineScriptAgent");
 
     const errPrompts = "不论用户说什么，请直接输出Agent配置异常";
 
     const getAiPromptConfig = (code: string) => {
-      const item = promptsList.find((p) => p.code === code);
-      return item?.customValue || item?.defaultValue || errPrompts;
+      return promptsList.get(code) || errPrompts;
     };
     const a1Prompt = getAiPromptConfig("outlineScript-a1");
     const a2Prompt = getAiPromptConfig("outlineScript-a2");
@@ -706,14 +706,13 @@ ${task}
 
     const envContext = await this.buildEnvironmentContext();
 
-    const prompts = await u.db("t_prompts").where("code", "outlineScript-main").first();
+    const mainPrompts = await getPromptByCode("outlineScript-main");
     const promptConfig = await u.getPromptAi("outlineScriptAgent");
-
-    const mainPrompts = prompts?.customValue || prompts?.defaultValue || "不论用户说什么，请直接输出Agent配置异常";
+    const finalMainPrompt = mainPrompts || "不论用户说什么，请直接输出Agent配置异常";
 
     const { fullStream } = await u.ai.text.stream(
       {
-        system: `${envContext}\n${mainPrompts}`,
+        system: `${envContext}\n${finalMainPrompt}`,
         tools: this.getAllTools(),
         messages: this.history,
         maxStep: 100,

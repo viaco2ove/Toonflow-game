@@ -1,4 +1,5 @@
 import u from "@/utils";
+import { getPromptByCode } from "@/lib/promptHelper";
 import {
   buildWorldKnowledgeText,
   getGameDb,
@@ -111,15 +112,6 @@ function shortText(input: unknown, limit = 160): string {
 }
 
 /**
- * 优先读取自定义值，没有再回退到默认 prompt。
- */
-function getPromptValue(row: any): string {
-  const customValue = normalizeScalarText(row?.customValue);
-  if (customValue) return customValue;
-  return normalizeScalarText(row?.defaultValue);
-}
-
-/**
  * 去掉 markdown 代码块包裹，兼容模型偶尔返回 ```json 的情况。
  */
 function unwrapModelText(input: unknown): string {
@@ -202,10 +194,7 @@ function normalizeEventStatus(input: unknown): "active" | "waiting_input" | "com
  * 读取事件进度检测 prompt。
  */
 async function loadEventProgressPrompt(): Promise<string> {
-  const row = await u.db("t_prompts")
-    .where("code", "story-event-progress")
-    .first("defaultValue", "customValue");
-  return getPromptValue(row);
+  return getPromptByCode("story-event-progress");
 }
 
 /**
