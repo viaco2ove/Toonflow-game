@@ -100,6 +100,22 @@ export default async (knex: Knex): Promise<void> => {
     }
   };
 
+  const addColumnAndDef = async (
+  table: string,
+  column: string,
+  type: string,
+  options?: { defaultTo?: any }
+    ) => {
+      if (!(await knex.schema.hasTable(table))) return;
+      if (!(await knex.schema.hasColumn(table, column))) {
+        await knex.schema.alterTable(table, (t) => {
+          const col = (t as any)[type](column);
+          if (options?.defaultTo !== undefined) {
+            col.defaultTo(options.defaultTo);
+          }
+        });
+      }
+    };
   const addColumn = async (table: string, column: string, type: string) => {
     if (!(await knex.schema.hasTable(table))) return;
     if (!(await knex.schema.hasColumn(table, column))) {
@@ -150,8 +166,8 @@ export default async (knex: Knex): Promise<void> => {
   await addColumn("t_sessionMessage", "revisitData", "text");
   await addColumn("t_config", "reasoningEffort", "text");
   await addColumn("t_config", "remark", "text");
-  await addColumn("t_config", "temperature", "float", { defaultTo: 0.3 });
-  await addColumn("t_config", "topP", "float", { defaultTo: 0.5 });
+  await addColumnAndDef("t_config", "temperature", "float", { defaultTo: 0.3 });
+  await addColumnAndDef("t_config", "topP", "float", { defaultTo: 0.5 });
   if (await knex.schema.hasTable("t_config")) {
     await knex("t_config")
       .where("type", "text")
