@@ -2,7 +2,7 @@ import express from "express";
 import { z } from "zod";
 import { validateFields } from "@/middleware/middleware";
 import { error, success } from "@/lib/responseFormat";
-import { getGameDb, normalizeWorldOutput, parseJsonSafe } from "@/lib/gameEngine";
+import { getGameDb, normalizeWorldOutput } from "@/lib/gameEngine";
 import u from "@/utils";
 
 const router = express.Router();
@@ -115,12 +115,11 @@ export default router.post(
       debugLog(req, "mapping", `mapping ${rows.length} rows to output...`);
       const list = rows.map((row: any) => {
         const worldId = Number(row.id || 0);
-        const output = normalizeWorldOutput(row);
+        const output = normalizeWorldOutput(row, { minimal: true });
         return {
           ...output,
           chapterCount: chapterCountMap.get(worldId) || 0,
           sessionCount: sessionCountMap.get(worldId) || 0,
-          settings: parseJsonSafe(row.settings, {}),
         };
       });
 

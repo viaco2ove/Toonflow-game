@@ -2983,8 +2983,23 @@ export function normalizeWorldSettings(settingsRaw: unknown, topLevel: { coverPa
 }
 
 // 归一化世界输出，补齐 settings / 用户角色 / 旁白角色。
-export function normalizeWorldOutput(row: any): JsonRecord | null {
+export function normalizeWorldOutput(row: any, options?: { minimal?: boolean }): JsonRecord | null {
   if (!row) return null;
+  if (options?.minimal) {
+    // list 场景：只返回轻量字段，不处理 settings/roles 等大字段
+    return {
+      id: row.id,
+      projectId: row.projectId,
+      name: String(row.name || ""),
+      intro: String(row.intro || ""),
+      coverPath: String(row.coverPath || ""),
+      coverBgPath: String(row.coverBgPath || ""),
+      publishStatus: String(row.publishStatus || ""),
+      settings: row.settings ? parseJsonSafe(row.settings, {}) : {},
+      playerRole: row.playerRole,
+      narratorRole: row.narratorRole,
+    };
+  }
   const rolePair = normalizeRolePair(row.playerRole, row.narratorRole);
   const settings = normalizeWorldSettings(row.settings, {
     coverPath: row.coverPath,

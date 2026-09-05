@@ -76,6 +76,8 @@ rm -rf /opt/toonflow/toonflow-game-app/node_modules
 ### nodejs 22 安装 与加速
 [nodejs.md](nodejs.md)
 
+###
+git pull --ff-only origin dev
 
 ### 更新库
 yarn install  --frozen-lockfile --ignore-engines
