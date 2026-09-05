@@ -2986,7 +2986,7 @@ export function normalizeWorldSettings(settingsRaw: unknown, topLevel: { coverPa
 export function normalizeWorldOutput(row: any, options?: { minimal?: boolean }): JsonRecord | null {
   if (!row) return null;
   if (options?.minimal) {
-    // list 场景：只返回轻量字段，不处理 settings/roles 等大字段
+    // list 场景：只返回轻量字段，settings/roles 等大字段全部省略
     return {
       id: row.id,
       projectId: row.projectId,
@@ -2995,9 +2995,10 @@ export function normalizeWorldOutput(row: any, options?: { minimal?: boolean }):
       coverPath: String(row.coverPath || ""),
       coverBgPath: String(row.coverBgPath || ""),
       publishStatus: String(row.publishStatus || ""),
-      settings: row.settings ? parseJsonSafe(row.settings, {}) : {},
       playerRole: row.playerRole,
       narratorRole: row.narratorRole,
+      // 显式置空，防止 ...row 把巨大的 settings 字段带进来
+      settings: {},
     };
   }
   const rolePair = normalizeRolePair(row.playerRole, row.narratorRole);
