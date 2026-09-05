@@ -2,7 +2,7 @@ import express from "express";
 import { z } from "zod";
 import { validateFields } from "@/middleware/middleware";
 import { error, success } from "@/lib/responseFormat";
-import { getGameDb, parseJsonSafe, readDefaultRuntimeEventViewState } from "@/lib/gameEngine";
+import { getGameDb } from "@/lib/gameEngine";
 import u from "@/utils";
 
 const router = express.Router();
@@ -47,7 +47,6 @@ export default router.post(
           "s.contentVersion",
           "s.worldPublishId",
           "s.worldVersion",
-          "s.stateJson",
           "s.updateTime",
           "s.createTime",
         )
@@ -103,10 +102,7 @@ export default router.post(
       const worldIdSet = Array.from(seenWorldIds);
       const chapterIdSet = Array.from(new Set(
         sessions
-          .map((s: any) => {
-            const state = parseJsonSafe<Record<string, any>>(s.stateJson, {});
-            return Number(state?.chapterId || s.chapterId || 0);
-          })
+          .map((s: any) => Number(s.chapterId || 0))
           .filter((id: number) => id > 0),
       ));
       const projectIdSet = Array.from(new Set(sessions.map((s: any) => Number(s.projectId || 0)).filter((id: number) => id > 0)));
@@ -136,25 +132,15 @@ export default router.post(
       const list = sessions.map((item: any) => {
         const sessionId = String(item.sessionId || "");
         const worldIdValue = Number(item.worldId || 0);
-        const runtimeState = parseJsonSafe<Record<string, any>>(item.stateJson, {});
-        const chapterIdValue = Number(runtimeState?.chapterId || item.chapterId || 0);
+        const chapterIdValue = Number(item.chapterId || 0);
         const projectIdValue = Number(item.projectId || 0);
         const latest = latestMessageMap.get(sessionId);
         const worldRow = worldMap.get(worldIdValue);
         const resolvedChapterTitle = chapterIdValue > 0 ? chapterNameMap.get(chapterIdValue) || "" : "";
 
-        // 同步 chapterId/chapterTitle 到 state
-        if (runtimeState && typeof runtimeState === "object") {
-          runtimeState.chapterId = chapterIdValue > 0 ? chapterIdValue : null;
-          runtimeState.chapterTitle = resolvedChapterTitle || String(runtimeState.chapterTitle || "").trim();
-        }
-
-        const eventView = readDefaultRuntimeEventViewState(runtimeState);
         const publishedVersion = publishedVersionMap.get(worldIdValue) || 0;
         const sessionWorldVersion = Number(item.worldVersion || 0);
         const storyUpdated = publishedVersion > 0 && sessionWorldVersion > 0 && sessionWorldVersion < publishedVersion;
-        // const alignReport = runtimeState?.alignReport || null;
-        //
         return {
           sessionId,
           worldId: worldIdValue,
@@ -171,12 +157,7 @@ export default router.post(
           worldPublishId: Number(item.worldPublishId || 0) || null,
           worldVersion: Number(item.worldVersion || 0) || null,
           storyUpdated,
-          // alignReport,
           updateTime: Number(item.updateTime || item.createTime || 0),
-          state: runtimeState,
-          currentEventDigest: eventView.currentEventDigest,
-          eventDigestWindow: eventView.eventDigestWindow,
-          eventDigestWindowText: eventView.eventDigestWindowText,
           latestMessage: latest
             ? {
                 id: Number(latest.id || 0),
