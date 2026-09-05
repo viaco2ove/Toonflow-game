@@ -7,11 +7,6 @@ import u from "@/utils";
 
 const router = express.Router();
 
-interface SessionEntry {
-  item: any;
-  runtimeState: Record<string, any>;
-}
-
 export default router.post(
   "/",
   validateFields({
@@ -22,14 +17,6 @@ export default router.post(
   async (req, res) => {
     try {
       const userId = Number((req as any)?.user?.id || 0);
-      console.log("[listSession] 请求详情:", JSON.stringify({
-        body: req.body,
-        userId,
-        userEmail: (req as any)?.user?.email || "",
-        projectId: Number(req.body.projectId),
-        worldId: Number(req.body.worldId),
-        limit: Number(req.body.limit),
-      }));
       if (!Number.isFinite(userId) || userId <= 0) {
         return res.status(401).send(error("用户未登录"));
       }
@@ -40,6 +27,7 @@ export default router.post(
       const limitNum = Number(req.body.limit);
       const limit = Number.isFinite(limitNum) && limitNum > 0 ? Math.min(limitNum, 100) : 30;
 
+      // 1. 只查必要字段（避免 stateJson 等大字段）
       let query = db("t_gameSession as s").where("s.userId", userId);
       if (Number.isFinite(projectId) && projectId > 0) {
         query = query.andWhere("s.projectId", projectId);
@@ -48,118 +36,131 @@ export default router.post(
         query = query.andWhere("s.worldId", worldId);
       }
       const rawSessions = await query
-        .select("s.*")
+        .select(
+          "s.id",
+          "s.sessionId",
+          "s.worldId",
+          "s.projectId",
+          "s.chapterId",
+          "s.title",
+          "s.status",
+          "s.contentVersion",
+          "s.worldPublishId",
+          "s.worldVersion",
+          "s.stateJson",
+          "s.updateTime",
+          "s.createTime",
+        )
         .orderBy("s.updateTime", "desc")
-        .orderBy("s.id", "desc");
+        .orderBy("s.id", "desc")
+        .limit(limit * 2); // 多查一些，过滤后会留 limit 条
 
-      console.log("[listSession] rawSessions 数量:", rawSessions.length);
+      // 2. 过滤：有 player 消息 + 按 worldId 去重
+      const sessionIds = rawSessions.map((item: any) => String(item.sessionId || "")).filter(Boolean);
+      const [playableMessageRows, latestMessageRows] = await Promise.all([
+        sessionIds.length
+          ? db("t_sessionMessage")
+              .whereIn("sessionId", sessionIds)
+              .andWhere("roleType", "player")
+              .andWhere("eventType", "on_message")
+              .select("sessionId")
+              .groupBy("sessionId")
+          : Promise.resolve([]),
+        sessionIds.length
+          ? db("t_sessionMessage as m1")
+              .whereIn("sessionId", sessionIds)
+              .whereRaw(
+                `m1.id = (SELECT MAX(m2.id) FROM t_sessionMessage m2 WHERE m2.sessionId = m1.sessionId)`,
+              )
+              .select("m1.sessionId", "m1.id", "m1.role", "m1.roleType", "m1.eventType", "m1.content", "m1.createTime")
+          : Promise.resolve([]),
+      ]);
 
-      const rawSessionIds = rawSessions.map((item: any) => String(item.sessionId || "")).filter(Boolean);
-      const playableMessageRows = rawSessionIds.length
-        ? await db("t_sessionMessage")
-          .whereIn("sessionId", rawSessionIds)
-          .andWhere("roleType", "player")
-          .andWhere("eventType", "on_message")
-          .select("sessionId", "content", "roleType", "eventType")
-        : [];
-
-      console.log("[listSession] rawSessionIds:", rawSessionIds.length, "playableMessageRows:", playableMessageRows.length);
       const playableSessionIds = new Set<string>(
-        playableMessageRows
-          .filter((item: any) => String(item.content || "").trim())
-          .map((item: any) => String(item.sessionId || "")),
+        playableMessageRows.map((item: any) => String(item.sessionId || "")),
       );
+      const latestMessageMap = new Map<string, any>();
+      latestMessageRows.forEach((item: any) => {
+        if (item?.sessionId) latestMessageMap.set(String(item.sessionId), item);
+      });
+
       const seenWorldIds = new Set<number>();
       const sessions = rawSessions.filter((item: any) => {
         const sessionId = String(item.sessionId || "");
-        if (!playableSessionIds.has(sessionId)) {
-          return false;
-        }
-        const worldIdValue = Number(item.worldId || 0);
-        if (!Number.isFinite(worldIdValue) || worldIdValue <= 0) {
-          return false;
-        }
-        if (seenWorldIds.has(worldIdValue)) {
-          return false;
-        }
-        seenWorldIds.add(worldIdValue);
+        if (!playableSessionIds.has(sessionId)) return false;
+        const wid = Number(item.worldId || 0);
+        if (!Number.isFinite(wid) || wid <= 0) return false;
+        if (seenWorldIds.has(wid)) return false;
+        seenWorldIds.add(wid);
         return true;
       }).slice(0, limit);
+
       if (!sessions.length) {
         return res.status(200).send(success([]));
       }
 
-      const sessionEntries: SessionEntry[] = sessions.map((item: any) => ({
-        item,
-        runtimeState: parseJsonSafe(item.stateJson, {}),
-      }));
-      const sessionIds = sessionEntries.map((entry: SessionEntry) => String(entry.item.sessionId || "")).filter(Boolean);
-      const worldIdSet = Array.from(new Set(sessionEntries.map((entry: SessionEntry) => Number(entry.item.worldId || 0)).filter((id: number) => id > 0)));
+      // 3. 批量查 world / chapter / project（只查必要字段，不查 settings）
+      const worldIdSet = Array.from(seenWorldIds);
       const chapterIdSet = Array.from(new Set(
-        sessionEntries
-          .map((entry: SessionEntry) => Number(entry.runtimeState?.chapterId || entry.item.chapterId || 0))
+        sessions
+          .map((s: any) => {
+            const state = parseJsonSafe<Record<string, any>>(s.stateJson, {});
+            return Number(state?.chapterId || s.chapterId || 0);
+          })
           .filter((id: number) => id > 0),
       ));
-      const projectIdSet = Array.from(new Set(sessions.map((item: any) => Number(item.projectId || 0)).filter((id: number) => id > 0)));
+      const projectIdSet = Array.from(new Set(sessions.map((s: any) => Number(s.projectId || 0)).filter((id: number) => id > 0)));
 
       const [worldRows, chapterRows, projectRows, publishedRows] = await Promise.all([
-        worldIdSet.length ? db("t_storyWorld").whereIn("id", worldIdSet).select("id", "name", "intro", "coverPath", "settings") : Promise.resolve([]),
-        chapterIdSet.length ? db("t_storyChapter").whereIn("id", chapterIdSet).select("id", "title") : Promise.resolve([]),
-        projectIdSet.length ? db("t_project").whereIn("id", projectIdSet).select("id", "name") : Promise.resolve([]),
-        // 方向2：批量取发布版本号，用于"故事已更新"感知
-        worldIdSet.length ? db("t_storyWorld_published").whereIn("worldId", worldIdSet).select("worldId", "version") : Promise.resolve([]),
+        worldIdSet.length
+          ? db("t_storyWorld").whereIn("id", worldIdSet).select("id", "name", "intro", "coverPath")
+          : Promise.resolve([]),
+        chapterIdSet.length
+          ? db("t_storyChapter").whereIn("id", chapterIdSet).select("id", "title")
+          : Promise.resolve([]),
+        projectIdSet.length
+          ? db("t_project").whereIn("id", projectIdSet).select("id", "name")
+          : Promise.resolve([]),
+        worldIdSet.length
+          ? db("t_storyWorld_published").whereIn("worldId", worldIdSet).select("worldId", "version")
+          : Promise.resolve([]),
       ]);
 
       const worldMap = new Map<number, any>(worldRows.map((item: any) => [Number(item.id), item]));
       const chapterNameMap = new Map<number, string>(chapterRows.map((item: any) => [Number(item.id), String(item.title || "")]));
       const projectNameMap = new Map<number, string>(projectRows.map((item: any) => [Number(item.id), String(item.name || "")]));
-      // publishedVersionMap: worldId -> 最新发布版本号
       const publishedVersionMap = new Map<number, number>(
         publishedRows.map((item: any) => [Number(item.worldId), Number(item.version || 0)]),
       );
 
-      const latestMessageRows = await Promise.all(
-        sessionIds.map((sessionId: string) =>
-          db("t_sessionMessage").where({ sessionId }).orderBy("id", "desc").first(),
-        ),
-      );
-      const latestMessageMap = new Map<string, any>();
-      latestMessageRows.forEach((item: any) => {
-        if (item?.sessionId) {
-          latestMessageMap.set(String(item.sessionId), item);
-        }
-      });
-
-      const list = sessionEntries.map((entry: SessionEntry) => {
-        const { item, runtimeState } = entry;
+      const list = sessions.map((item: any) => {
         const sessionId = String(item.sessionId || "");
         const worldIdValue = Number(item.worldId || 0);
+        const runtimeState = parseJsonSafe<Record<string, any>>(item.stateJson, {});
         const chapterIdValue = Number(runtimeState?.chapterId || item.chapterId || 0);
         const projectIdValue = Number(item.projectId || 0);
         const latest = latestMessageMap.get(sessionId);
         const worldRow = worldMap.get(worldIdValue);
-        const worldSettings = parseJsonSafe<any>(worldRow?.settings, {});
         const resolvedChapterTitle = chapterIdValue > 0 ? chapterNameMap.get(chapterIdValue) || "" : "";
-        // listSession 返回的 state 也要同步回当前章节标题。
-        // 否则前端列表页和安卓恢复页会先拿到旧 state.chapterTitle，造成“chapterTitle=第2章，但 state 里还是第1章”。
+
+        // 同步 chapterId/chapterTitle 到 state
         if (runtimeState && typeof runtimeState === "object") {
           runtimeState.chapterId = chapterIdValue > 0 ? chapterIdValue : null;
           runtimeState.chapterTitle = resolvedChapterTitle || String(runtimeState.chapterTitle || "").trim();
         }
+
         const eventView = readDefaultRuntimeEventViewState(runtimeState);
-        // 方向2：版本感知--session.worldVersion 落后于 published.version 则"故事已更新"。
         const publishedVersion = publishedVersionMap.get(worldIdValue) || 0;
         const sessionWorldVersion = Number(item.worldVersion || 0);
         const storyUpdated = publishedVersion > 0 && sessionWorldVersion > 0 && sessionWorldVersion < publishedVersion;
-        // 对齐报告（若曾对齐过，前端弹框预览）
         const alignReport = runtimeState?.alignReport || null;
+
         return {
           sessionId,
           worldId: worldIdValue,
           worldName: String(worldRow?.name || ""),
           worldIntro: String(worldRow?.intro || ""),
-          worldGlobalBackground: String(worldRow?.worldGlobalBackground || ""),
-          worldCoverPath: String(worldRow?.coverPath || worldSettings?.coverPath || worldSettings?.coverBgPath || ""),
+          worldCoverPath: String(worldRow?.coverPath || ""),
           chapterId: chapterIdValue > 0 ? chapterIdValue : null,
           chapterTitle: resolvedChapterTitle,
           projectId: projectIdValue || null,
