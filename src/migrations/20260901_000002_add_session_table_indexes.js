@@ -12,7 +12,7 @@
  *   idx_gameSession_worldId_userId: (worldId, userId) — 支持 COUNT(DISTINCT userId)
  */
 
-async function indexExists(knex: any, tableName: string, indexName: string): Promise<boolean> {
+async function indexExists(knex, tableName, indexName) {
   const result = await knex.raw(
     "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name=? AND name=?",
     [tableName, indexName],
