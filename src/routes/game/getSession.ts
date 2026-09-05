@@ -1,7 +1,7 @@
 import express from "express";
 import { z } from "zod";
 import { validateFields } from "@/middleware/middleware";
-import { error, success } from "@/lib/responseFormat";
+import { error } from "@/lib/responseFormat";
 import {
   extractFirstChapterDialogueLine,
   getGameDb,
@@ -20,6 +20,10 @@ import {
 } from "@/modules/game-runtime/services/publishedRuntime";
 import { resolveOpeningMessage, setRuntimeTurnState } from "@/modules/game-runtime/engines/NarrativeOrchestrator";
 import { initializeChapterProgressForState, syncChapterProgressWithRuntime } from "@/modules/game-runtime/engines/ChapterProgressEngine";
+import {
+  setupNdjsonResponseHeaders,
+  writeStreamLine,
+} from "@/lib/streamResponse";
 import u from "@/utils";
 
 const router = express.Router();
@@ -276,7 +280,13 @@ export default router.post(
       state.chapterId = activeChapterId || 0;
       state.chapterTitle = String(chapter?.title || "").trim() || String(state.chapterTitle || "").trim();
 
-      const payload = {
+      // 流式返回：先 meta（带 state + world minimal + chapter），
+      // 然后逐条 message，最后 done。
+      // 这样前端拿到 meta 即可渲染骨架，不必等 messages 全部序列化。
+      setupNdjsonResponseHeaders(res);
+      res.status(200);
+
+      const meta = {
         sessionId: String(row.sessionId || ""),
         worldId: Number(row.worldId || 0),
         projectId: Number(row.projectId || 0) || null,
@@ -296,20 +306,42 @@ export default router.post(
           ? {
               id: Number(snapshot.id || 0),
               sessionId: String(snapshot.sessionId || ""),
-              state: normalizeSessionState(
-                snapshot.stateJson,
-                Number(row.worldId || 0),
-                activeChapterId,
-                rolePair,
-                world,
-              ),
+              createTime: Number(snapshot.createTime || 0),
+              reason: String(snapshot.reason || ""),
+              round: Number(snapshot.round || 0),
             }
           : null,
-        messages,
       };
-      res.status(200).send(success(payload));
+      writeStreamLine(res, { type: "meta", data: meta });
+
+      let minId = 0;
+      for (const message of messages) {
+        const msgId = Number(message.id || 0);
+        if (msgId > 0 && (minId === 0 || msgId < minId)) minId = msgId;
+        writeStreamLine(res, { type: "message", data: message });
+      }
+
+      writeStreamLine(res, {
+        type: "done",
+        data: {
+          total: messages.length,
+          minId,
+          hasMore: messages.length >= limit,
+        },
+      });
+      res.end();
     } catch (err) {
-      res.status(500).send(error(u.error(err).message));
+      if (!res.headersSent) {
+        res.status(500).send(error(u.error(err).message));
+      } else {
+        // 流已开始，无法再改 status code；通过 NDJSON 错误事件通知前端
+        try {
+          writeStreamLine(res, { type: "error", data: { message: u.error(err).message } });
+          res.end();
+        } catch {
+          // ignore
+        }
+      }
     }
   },
 );

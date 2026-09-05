@@ -2,6 +2,11 @@ import express from "express";
 import { z } from "zod";
 import { validateFields } from "@/middleware/middleware";
 import {
+  flushStreamResponse,
+  setupNdjsonResponseHeaders,
+  writeStreamLine,
+} from "@/lib/streamResponse";
+import {
   getGameDb,
   normalizeChapterOutput,
   normalizeRolePair,
@@ -44,27 +49,6 @@ import {
 } from "@/modules/game-runtime/services/publishedRuntime";
 
 const router = express.Router();
-
-/**
- * 刷新流式响应头，确保浏览器能尽快收到 NDJSON 事件。
- */
-function flushStreamResponse(res: express.Response) {
-  if (typeof res.flushHeaders === "function") {
-    res.flushHeaders();
-  }
-  const anyRes = res as express.Response & { flush?: () => void };
-  if (typeof anyRes.flush === "function") {
-    anyRes.flush();
-  }
-}
-
-/**
- * 向前端写入一条 NDJSON 流事件。
- */
-function writeStreamLine(res: express.Response, payload: Record<string, unknown>) {
-  res.write(`${JSON.stringify(payload)}\n`);
-  flushStreamResponse(res);
-}
 
 /**
  * 把完整台词拆成较小的流式片段，便于前端逐段显示。
@@ -112,10 +96,7 @@ function collectSentenceEvents(buffer: string, chunk: string) {
  */
 function createIntroductionHandler() {
   return async (req: express.Request, res: express.Response) => {
-    res.setHeader("Content-Type", "application/x-ndjson; charset=utf-8");
-    res.setHeader("Cache-Control", "no-cache, no-transform");
-    res.setHeader("Connection", "keep-alive");
-    res.setHeader("X-Accel-Buffering", "no");
+    setupNdjsonResponseHeaders(res);
 
     try {
       const plan = (req.body.plan || {}) as Record<string, unknown>;
@@ -421,10 +402,7 @@ router.post(
     }).passthrough().optional().nullable(),
   }),
   async (req, res) => {
-    res.setHeader("Content-Type", "application/x-ndjson; charset=utf-8");
-    res.setHeader("Cache-Control", "no-cache, no-transform");
-    res.setHeader("Connection", "keep-alive");
-    res.setHeader("X-Accel-Buffering", "no");
+    setupNdjsonResponseHeaders(res);
 
     try {
       const db = getGameDb();
