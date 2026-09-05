@@ -10,8 +10,8 @@
 # bash miniconda.sh -b
 # ARM64 
 # rm -rf /root/miniconda3 miniconda.sh
-# wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-aarch64.sh
-# bash Miniconda3-latest-Linux-aarch64.sh -b
+wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-aarch64.sh -O miniconda.sh
+bash miniconda.sh -b
 ```
 
 ## 其他工具
