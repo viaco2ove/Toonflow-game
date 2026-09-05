@@ -74,6 +74,18 @@ async function buildAll() {
     await esbuild.build(appBuildConfig);
     await esbuild.build(mainBuildConfig);
 
+    // 复制 Knex 迁移文件到 build 产物（迁移文件是 CommonJS .js，
+    // 不能打进 bundle；Knex 运行时按 path.resolve(__dirname, "..", "migrations") 加载）
+    const srcMigrationsDir = path.resolve("src/migrations");
+    const outMigrationsDir = path.resolve("build/src/migrations");
+    if (fs.existsSync(srcMigrationsDir)) {
+      fs.mkdirSync(outMigrationsDir, { recursive: true });
+      for (const file of fs.readdirSync(srcMigrationsDir)) {
+        fs.copyFileSync(path.join(srcMigrationsDir, file), path.join(outMigrationsDir, file));
+      }
+      console.log(`Knex 迁移文件已复制: ${outMigrationsDir}`);
+    }
+
     console.log("后端服务构建完成: build/app.js");
     console.log("Electron主进程构建完成: build/main.js");
     console.log("\n所有构建任务完成\n");

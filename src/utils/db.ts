@@ -50,12 +50,15 @@ const db = knex({
     max: 1,
   },
   useNullAsDefault: true,
-  // 迁移目录：开发/打包都通过 process.cwd() 解析，避开 ts-node 的 cwd 偏差
+  // 迁移目录：用 __dirname 解析（开发 src/utils/db.ts → ../migrations，
+  // 打包 build/utils/db.js → ../migrations），不依赖 cwd，避免 Node ESM/CJS 互操作错误。
+  // 迁移文件统一为 CommonJS .js（不能用 .ts：esbuild 打包后 require 不识别 .ts），
+  // loadExtensions 只取 .js 即可。
   migrations: {
-    directory: path.resolve(process.cwd(), "src", "migrations"),
+    directory: path.resolve(__dirname, "..", "migrations"),
     tableName: "knex_migrations",
-    extension: "ts",
-    loadExtensions: [".ts", ".js"],
+    extension: "js",
+    loadExtensions: [".js"],
   },
 });
 
@@ -67,7 +70,9 @@ export const dbBootstrapReady = (async () => {
   await withSqliteBusyRetry("configureSqlite", () => configureSqlite(db));
   await withSqliteBusyRetry("initDB", () => initDB(db));
 
-  // Knex Migrations：伪造 base 版本已执行（让 migrate.latest() 跳过 base）
+  // Knex Migrations：先清理 knex_migrations 里与 directory 不匹配的孤儿记录，
+  // 再伪造 base 版本已执行（让 migrate.latest() 跳过 base）
+  await withSqliteBusyRetry("pruneOrphanMigrations", () => pruneOrphanMigrations(db));
   await withSqliteBusyRetry("fakeBaseMigration", () => fakeBaseMigration(db));
 
   // 执行 src/migrations/ 中新增的迁移（base 会被跳过）
@@ -92,7 +97,7 @@ async function fakeBaseMigration(knexDb: any): Promise<void> {
   if (!tableExists) return;
 
   const hasBase = await knexDb("knex_migrations")
-    .where("name", "20260901_000000_base.ts")
+    .where("name", "20260901_000000_base.js")
     .first()
     .catch(() => null);
   if (hasBase) return;
@@ -103,11 +108,40 @@ async function fakeBaseMigration(knexDb: any): Promise<void> {
   const nextId = (maxIdRow?.maxId ?? 0) + 1;
   await knexDb("knex_migrations").insert({
     id: nextId,
-    name: "20260901_000000_base.ts",
+    name: "20260901_000000_base.js",
     batch: 1,
     migration_time: now,
   });
-  console.log("[db] fakeBaseMigration: recorded 20260901_000000_base.ts");
+  console.log("[db] fakeBaseMigration: recorded 20260901_000000_base.js");
+}
+
+/**
+ * 清理 knex_migrations 表里的孤儿记录：
+ * 任何 knex_migrations 表里登记的 name，在当前 migrations directory
+ * （按 Knex loadExtensions 过滤后）找不到对应文件的，都删掉。
+ *
+ * 触发场景：
+ * - 重命名了 .ts 迁移文件为 .js，旧的 `.ts` 记录留在表里会触发
+ *   "The migration directory is corrupt, the following files are missing"
+ */
+async function pruneOrphanMigrations(knexDb: any): Promise<void> {
+  const migrationsDir = path.resolve(__dirname, "..", "migrations");
+  const tableExists = await knexDb.schema.hasTable("knex_migrations");
+  if (!tableExists) return;
+  let entries: string[] = [];
+  try {
+    entries = fs.readdirSync(migrationsDir);
+  } catch {
+    // directory 不存在时啥都不做
+    return;
+  }
+  // 真实存在的迁移文件名集合（仅匹配 loadExtensions .js）
+  const existingFiles = new Set(entries.filter((f) => f.endsWith(".js")));
+  const rows = (await knexDb("knex_migrations").select("name").catch(() => [])) as Array<{ name: string }>;
+  const orphans = rows.filter((r) => !existingFiles.has(r.name)).map((r) => r.name);
+  if (!orphans.length) return;
+  await knexDb("knex_migrations").whereIn("name", orphans).delete();
+  console.log(`[db] pruneOrphanMigrations: removed ${orphans.length} orphan record(s): ${orphans.join(", ")}`);
 }
 
 void dbBootstrapReady.catch((err) => {
