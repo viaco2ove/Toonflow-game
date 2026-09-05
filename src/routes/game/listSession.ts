@@ -153,8 +153,8 @@ export default router.post(
         const publishedVersion = publishedVersionMap.get(worldIdValue) || 0;
         const sessionWorldVersion = Number(item.worldVersion || 0);
         const storyUpdated = publishedVersion > 0 && sessionWorldVersion > 0 && sessionWorldVersion < publishedVersion;
-        const alignReport = runtimeState?.alignReport || null;
-
+        // const alignReport = runtimeState?.alignReport || null;
+        //
         return {
           sessionId,
           worldId: worldIdValue,
@@ -171,7 +171,7 @@ export default router.post(
           worldPublishId: Number(item.worldPublishId || 0) || null,
           worldVersion: Number(item.worldVersion || 0) || null,
           storyUpdated,
-          alignReport,
+          // alignReport,
           updateTime: Number(item.updateTime || item.createTime || 0),
           state: runtimeState,
           currentEventDigest: eventView.currentEventDigest,
