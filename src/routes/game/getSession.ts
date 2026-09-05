@@ -218,7 +218,7 @@ export default router.post(
       );
       const activeChapterId = Number(state.chapterId || provisionalChapterId || 0) || null;
       const messageLimitNum = Number(messageLimit);
-      const limit = Number.isFinite(messageLimitNum) && messageLimitNum > 0 ? Math.min(messageLimitNum, 200) : 50;
+      const limit = Number.isFinite(messageLimitNum) && messageLimitNum > 0 ? Math.min(messageLimitNum, 100) : 50;
       const eventView = readDefaultRuntimeEventViewState(state);
 
       const chapter = activeChapterId
@@ -277,17 +277,25 @@ export default router.post(
       state.chapterTitle = String(chapter?.title || "").trim() || String(state.chapterTitle || "").trim();
 
       const payload = {
-        ...row,
+        sessionId: String(row.sessionId || ""),
+        worldId: Number(row.worldId || 0),
+        projectId: Number(row.projectId || 0) || null,
         chapterId: activeChapterId,
+        title: String(row.title || ""),
+        status: String(row.status || ""),
+        contentVersion: String(row.contentVersion || ""),
+        worldPublishId: Number(row.worldPublishId || 0) || null,
+        worldVersion: Number(row.worldVersion || 0) || null,
         state,
         currentEventDigest: eventView.currentEventDigest,
         eventDigestWindow: eventView.eventDigestWindow,
         eventDigestWindowText: eventView.eventDigestWindowText,
-        world: normalizeWorldOutput(world),
+        world: normalizeWorldOutput(world, { minimal: true }),
         chapter: normalizeChapterOutput(chapter),
         latestSnapshot: snapshot
           ? {
-              ...snapshot,
+              id: Number(snapshot.id || 0),
+              sessionId: String(snapshot.sessionId || ""),
               state: normalizeSessionState(
                 snapshot.stateJson,
                 Number(row.worldId || 0),
@@ -299,17 +307,6 @@ export default router.post(
           : null,
         messages,
       };
-      console.log("[getSession] payload size probe", {
-        sessionId: sessionIdValue,
-        total: JSON.stringify(payload).length,
-        row: JSON.stringify(row).length,
-        stateJson_raw: String(row.stateJson || "").length,
-        state: JSON.stringify(state).length,
-        world: JSON.stringify(payload.world).length,
-        chapter: JSON.stringify(payload.chapter).length,
-        snapshot: JSON.stringify(payload.latestSnapshot).length,
-        messages: JSON.stringify(messages).length,
-      });
       res.status(200).send(success(payload));
     } catch (err) {
       res.status(500).send(error(u.error(err).message));
