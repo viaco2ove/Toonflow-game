@@ -276,31 +276,41 @@ export default router.post(
       state.chapterId = activeChapterId || 0;
       state.chapterTitle = String(chapter?.title || "").trim() || String(state.chapterTitle || "").trim();
 
-      res.status(200).send(
-        success({
-          ...row,
-          chapterId: activeChapterId,
-          state,
-          currentEventDigest: eventView.currentEventDigest,
-          eventDigestWindow: eventView.eventDigestWindow,
-          eventDigestWindowText: eventView.eventDigestWindowText,
-          world: normalizeWorldOutput(world),
-          chapter: normalizeChapterOutput(chapter),
-          latestSnapshot: snapshot
-            ? {
-                ...snapshot,
-                state: normalizeSessionState(
-                  snapshot.stateJson,
-                  Number(row.worldId || 0),
-                  activeChapterId,
-                  rolePair,
-                  world,
-                ),
-              }
-            : null,
-          messages,
-        }),
-      );
+      const payload = {
+        ...row,
+        chapterId: activeChapterId,
+        state,
+        currentEventDigest: eventView.currentEventDigest,
+        eventDigestWindow: eventView.eventDigestWindow,
+        eventDigestWindowText: eventView.eventDigestWindowText,
+        world: normalizeWorldOutput(world),
+        chapter: normalizeChapterOutput(chapter),
+        latestSnapshot: snapshot
+          ? {
+              ...snapshot,
+              state: normalizeSessionState(
+                snapshot.stateJson,
+                Number(row.worldId || 0),
+                activeChapterId,
+                rolePair,
+                world,
+              ),
+            }
+          : null,
+        messages,
+      };
+      console.log("[getSession] payload size probe", {
+        sessionId: sessionIdValue,
+        total: JSON.stringify(payload).length,
+        row: JSON.stringify(row).length,
+        stateJson_raw: String(row.stateJson || "").length,
+        state: JSON.stringify(state).length,
+        world: JSON.stringify(payload.world).length,
+        chapter: JSON.stringify(payload.chapter).length,
+        snapshot: JSON.stringify(payload.latestSnapshot).length,
+        messages: JSON.stringify(messages).length,
+      });
+      res.status(200).send(success(payload));
     } catch (err) {
       res.status(500).send(error(u.error(err).message));
     }
