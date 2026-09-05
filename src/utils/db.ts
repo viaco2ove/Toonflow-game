@@ -14,6 +14,34 @@ type RowType<TName extends TableName> = DB[TName];
 
 const dbPath = getDbPath();
 console.log("Database path:", dbPath);
+
+/**
+ * 探测 Knex 迁移目录。
+ *
+ * 开发模式（tsx 跑源码）：cwd = 项目根，迁移在 src/migrations/
+ * 打包模式（build/app.js）：cwd = APP_DIR（如 /opt/toonflow/toonflow-game-app），
+ *   迁移在 build/src/migrations/（由 scripts/build.js 复制）
+ *
+ * 不能依赖 __dirname，因为 esbuild bundle 后 __dirname 指向输出文件目录，
+ * 在不同打包目标下路径会变。
+ */
+function resolveMigrationsDir(): string {
+  const candidates = [
+    path.resolve(process.cwd(), "src", "migrations"),     // dev
+    path.resolve(process.cwd(), "build", "src", "migrations"), // prod
+    path.resolve(__dirname, "..", "migrations"),           // dev 老路径兜底
+  ];
+  for (const candidate of candidates) {
+    try {
+      const stat = fs.statSync(candidate);
+      if (stat.isDirectory()) return candidate;
+    } catch {
+      // 目录不存在则继续尝试
+    }
+  }
+  // 全部都不存在时仍返回 dev 路径，让 Knex 给出明确的 ENOENT 错误提示
+  return path.resolve(process.cwd(), "src", "migrations");
+}
 if (process.platform === "win32" && /^\\\\wsl\\$/i.test(dbPath)) {
   console.warn("[db] DB path is on \\\\wsl$ share. On Windows this may trigger SQLITE_BUSY due to file-lock semantics.");
 }
@@ -50,12 +78,10 @@ const db = knex({
     max: 1,
   },
   useNullAsDefault: true,
-  // 迁移目录：用 __dirname 解析（开发 src/utils/db.ts → ../migrations，
-  // 打包 build/utils/db.js → ../migrations），不依赖 cwd，避免 Node ESM/CJS 互操作错误。
-  // 迁移文件统一为 CommonJS .js（不能用 .ts：esbuild 打包后 require 不识别 .ts），
-  // loadExtensions 只取 .js 即可。
+  // 迁移文件统一为 CommonJS .js（不能用 .ts：esbuild 打包后 require 不识别 .ts）。
+  // directory 通过 fs 探测，避免 esbuild 把 __dirname 静态内联为错误路径。
   migrations: {
-    directory: path.resolve(__dirname, "..", "migrations"),
+    directory: resolveMigrationsDir(),
     tableName: "knex_migrations",
     extension: "js",
     loadExtensions: [".js"],
@@ -125,7 +151,7 @@ async function fakeBaseMigration(knexDb: any): Promise<void> {
  *   "The migration directory is corrupt, the following files are missing"
  */
 async function pruneOrphanMigrations(knexDb: any): Promise<void> {
-  const migrationsDir = path.resolve(__dirname, "..", "migrations");
+  const migrationsDir = resolveMigrationsDir();
   const tableExists = await knexDb.schema.hasTable("knex_migrations");
   if (!tableExists) return;
   let entries: string[] = [];
