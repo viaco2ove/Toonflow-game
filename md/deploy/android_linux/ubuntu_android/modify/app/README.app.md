@@ -84,3 +84,11 @@ yarn install  --frozen-lockfile --ignore-engines
 
 ### 构建
 yarn build
+
+
+## 监控
+ps aux | grep "node /opt/toonflow" | grep -v grep
+看看有没有跑了多个线程
+
+ps aux | grep "PM2" | grep -v grep
+看看 pm2 自己有没有跑了多个线程
