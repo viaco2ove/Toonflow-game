@@ -11,7 +11,7 @@
           try_files $uri $uri/ /index.html;
       }
 
-      location ~ ^/(game|assets|voice|setting|other|user|project|prompt|index|novel|outline|script|storyboard|task|video)/ {
+      location ~ ^/(game|voice|setting|other|user|project|prompt|index|novel|outline|script|storyboard|task|video)/ {
           proxy_pass http://127.0.0.1:60002;
           proxy_http_version 1.1;
           proxy_set_header Upgrade $http_upgrade;
@@ -22,7 +22,7 @@
           proxy_set_header X-Forwarded-Proto $scheme;
       }
 
-      location ~ ^/([0-9]+|u_[0-9]+)/(assets|game|voice)/ {
+      location ~ ^/([0-9]+|u_[0-9]+)/(game|voice)/ {
           proxy_pass http://127.0.0.1:60002;
           proxy_http_version 1.1;
           proxy_set_header Host $host;

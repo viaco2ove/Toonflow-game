@@ -449,7 +449,7 @@ server {
         try_files \$uri \$uri/ /index.html;
     }
 
-    location ~ ^/(game|assets|voice|setting|other|user|project|prompt|index|novel|outline|script|storyboard|task|video|app)/ {
+    location ~ ^/(game|voice|setting|other|user|project|prompt|index|novel|outline|script|storyboard|task|video|app)/ {
         proxy_pass http://127.0.0.1:$APP_PORT;
         proxy_http_version 1.1;
         proxy_set_header Upgrade \$http_upgrade;
@@ -465,7 +465,7 @@ server {
         proxy_busy_buffers_size 256k;
     }
 
-    location ~ ^/([0-9]+|u_[0-9]+)/(assets|game|voice)/ {
+    location ~ ^/([0-9]+|u_[0-9]+)/(game|voice)/ {
         proxy_pass http://127.0.0.1:$APP_PORT;
         proxy_http_version 1.1;
         proxy_set_header Host \$host;
