@@ -324,12 +324,13 @@ build_backend() {
 }
 
 start_tower() {
-  log "启动 toonflow-game via Tower"
+  log "启动 toonflow-game via Tower PM2"
   local tower_dir="/opt/droiddesk/tower"
-  local log_file="/var/log/tower/toonflow-game.out.log"
-  local pid_file="/run/tower/toonflow-game.pid"
+  local tower_api="http://127.0.0.1:7088"
+  local svc_name="$tower-pm2_NAME"
+  local svc_cmd="NODE_ENV=local node $APP_DIR/build/app.js"
 
-  # 检查 tower-pm2 是否在跑
+  # ── 1. 确保 Tower daemon 在跑 ──
   if [ -f "/run/tower/tower-pm2.pid" ]; then
     local tower_pid
     tower_pid=$(cat /run/tower/tower-pm2.pid 2>/dev/null || echo "")
@@ -344,25 +345,61 @@ start_tower() {
     bash "$tower_dir/tower-start" || true
   fi
 
-  # 等待 tower-pm2 启动
+  # 等待 Tower daemon 就绪
   sleep 2
-
-  # 通过 tower-pm2 HTTP API 启动 toonflow-game
-  log "通过 Tower 启动 toonflow-game..."
-  local api_resp
-  api_resp=$(curl -s -X POST "http://127.0.0.1:7088/api/start/toonflow-game" 2>/dev/null || echo '{"ok":false}')
-  if echo "$api_resp" | grep -q '"ok":true'; then
-    log "toonflow-game started via Tower: $api_resp"
-  else
-    log "Tower API start failed: $api_resp"
-    log "尝试直接启动..."
-    # fallback：直接用 setsid 启动
-    mkdir -p /run/tower /var/log/tower
-    cd "$APP_DIR"
-    setsid node build/app.js >> "$log_file" 2>&1 &
-    echo $! > "$pid_file"
-    log "toonflow-game 直接启动 (PID $(cat "$pid_file"))"
+  if ! curl -s -m 3 "$tower_api/api/system" 2>/dev/null | grep -q '"ok"'; then
+    die "Tower daemon 启动失败，请检查 /var/log/tower/tower-pm2.log"
   fi
+  log "Tower daemon is ready"
+
+  # ── 2. 启用 Tower PM2 模块 ──
+  local pm2_status
+  pm2_status=$(curl -s -m 5 "$tower_api/api/pm2/status" 2>/dev/null || echo '{}')
+  if ! echo "$pm2_status" | grep -q '"enabled":true'; then
+    log "启用 Tower PM2 模块..."
+    curl -s -X POST "$tower_api/api/pm2/enable" 2>/dev/null || true
+    sleep 1
+  fi
+
+  # ── 3. 注册服务（如果已存在会返回 "already exists"，无害） ──
+  log "注册服务 $svc_name 到 Tower PM2..."
+  local add_resp
+  add_resp=$(curl -s -X POST "$tower_api/api/pm2/add" \
+    -H "Content-Type: application/json" \
+    -d "{\"name\":\"$svc_name\",\"cmd\":\"$svc_cmd\",\"cwd\":\"$APP_DIR\",\"keep_live\":true,\"start_with_os\":false}" \
+    2>/dev/null || echo '{"ok":false}')
+  if echo "$add_resp" | grep -q '"ok":true'; then
+    log "服务已注册"
+  elif echo "$add_resp" | grep -q 'already exists'; then
+    log "服务已存在，跳过注册"
+  else
+    log "注册响应: $add_resp"
+  fi
+
+  # ── 4. 重启服务（确保用最新代码） ──
+  log "通过 Tower PM2 重启 $svc_name..."
+  local start_resp
+  start_resp=$(curl -s -X POST "$tower_api/api/pm2/restart/$svc_name" 2>/dev/null || echo '{"ok":false}')
+  if echo "$start_resp" | grep -q '"ok":true'; then
+    log "toonflow-game 已通过 Tower PM2 启动"
+  else
+    log "Tower PM2 restart 响应: $start_resp"
+    # 尝试 stop + start
+    curl -s -X POST "$tower_api/api/pm2/stop/$svc_name" 2>/dev/null || true
+    sleep 1
+    start_resp=$(curl -s -X POST "$tower_api/api/pm2/start/$svc_name" 2>/dev/null || echo '{"ok":false}')
+    if echo "$start_resp" | grep -q '"ok":true'; then
+      log "toonflow-game 已通过 Tower PM2 start 启动"
+    else
+      die "Tower PM2 启动失败: $start_resp"
+    fi
+  fi
+
+  # ── 5. 验证 ──
+  sleep 2
+  local list_resp
+  list_resp=$(curl -s -m 5 "$tower_api/api/pm2/status" 2>/dev/null || echo '{}')
+  log "Tower PM2 服务列表: $list_resp"
 }
 
 install_panel() {
