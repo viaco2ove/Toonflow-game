@@ -1,5 +1,6 @@
 import express from "express";
 import { z } from "zod";
+import { v4 as uuidv4 } from "uuid";
 import { validateFields } from "@/middleware/middleware";
 import { error, success } from "@/lib/responseFormat";
 import {
@@ -17,6 +18,66 @@ import { publishWorldSynchronously } from "@/lib/worldPublish";
 import u from "@/utils";
 
 const router = express.Router();
+
+/** 匹配 data:image/xxx;base64, 前缀（含 webp/png/jpeg/gif） */
+const BASE64_IMAGE_RE = /^data:image\/([a-z0-9.+-]+);base64,/i;
+
+/**
+ * 判断字符串是否为 base64 图片（data URL 形式）。
+ */
+function isBase64Image(value: unknown): value is string {
+  return typeof value === "string" && BASE64_IMAGE_RE.test(value.trim()) && value.length > 128;
+}
+
+/**
+ * 把 base64 图片落盘为文件，返回可访问的文件路径。
+ * 复用 uploadImage 的存储约定：/{projectId}/game/world/{uuid}.{ext}
+ */
+async function saveBase64ImageToProject(base64Data: string, projectId: number, userId: number): Promise<string> {
+  const value = base64Data.trim();
+  const mime = value.match(BASE64_IMAGE_RE)?.[1]?.toLowerCase() || "png";
+  const ext = mime === "jpeg" ? "jpg" : mime;
+  const imagePath = projectId > 0
+    ? `/${projectId}/game/world/${uuidv4()}.${ext}`
+    : `/user/${userId}/game/world/${uuidv4()}.${ext}`;
+  const buffer = Buffer.from(value.replace(BASE64_IMAGE_RE, ""), "base64");
+  await u.oss.writeFile(imagePath, buffer);
+  return await u.oss.getFileUrl(imagePath);
+}
+
+/**
+ * 递归遍历对象/数组，把所有 base64 图片字符串替换为落盘后的文件 URL。
+ *
+ * 兜底场景：前端偶尔会直接把 data:image/...;base64, 塞进 saveWorld 的
+ * coverPath / settings / playerRole / narratorRole 里，导致巨大的 base64
+ * 被原样存进 t_storyWorld 的 text 列，listWorlds/getWorld 全部被拖慢。
+ * 这里统一拦截，落盘为文件后仅保留 URL。
+ */
+async function persistBase64ImagesDeep(
+  input: unknown,
+  projectId: number,
+  userId: number,
+): Promise<unknown> {
+  if (typeof input === "string") {
+    return isBase64Image(input) ? await saveBase64ImageToProject(input, projectId, userId) : input;
+  }
+  if (Array.isArray(input)) {
+    const result: unknown[] = [];
+    for (const item of input) {
+      result.push(await persistBase64ImagesDeep(item, projectId, userId));
+    }
+    return result;
+  }
+  if (input && typeof input === "object") {
+    const source = input as Record<string, unknown>;
+    const result: Record<string, unknown> = {};
+    for (const key of Object.keys(source)) {
+      result[key] = await persistBase64ImagesDeep(source[key], projectId, userId);
+    }
+    return result;
+  }
+  return input;
+}
 
 export default router.post(
   "/",
@@ -49,8 +110,6 @@ export default router.post(
         return res.status(403).send(error("无权访问该项目"));
       }
 
-      const rolePair = normalizeRolePair(playerRole, narratorRole);
-
       const worldIdNum = Number(worldId);
       let existing: any = null;
       if (Number.isFinite(worldIdNum) && worldIdNum > 0) {
@@ -65,14 +124,29 @@ export default router.post(
         return res.status(404).send(error("未找到世界观"));
       }
 
-      const normalizedCoverPath = String(coverPath || "").trim();
+      const rawCoverPath = String(coverPath || "").trim();
       const requestedPublishStatus = String(publishStatus || existing?.publishStatus || "draft").trim() || "draft";
       const isPublishRequest = requestedPublishStatus === "published";
       const normalizedPublishStatus = isPublishRequest ? "publishing" : requestedPublishStatus;
-      const normalizedSettings = normalizeWorldSettings(settings, {
+
+      // 兜底：把请求里的 base64 图片（coverPath/settings/playerRole/narratorRole 深处）落盘为文件。
+      // 避免 data:image/... 原样写进 t_storyWorld 的 text 列，拖慢后续所有读取接口。
+      const [persistedCoverPath, persistedSettings, persistedPlayerRole, persistedNarratorRole] = await Promise.all([
+        isBase64Image(rawCoverPath) ? saveBase64ImageToProject(rawCoverPath, Number(projectId), currentUserId) : Promise.resolve(rawCoverPath),
+        persistBase64ImagesDeep(settings, Number(projectId), currentUserId),
+        persistBase64ImagesDeep(playerRole, Number(projectId), currentUserId),
+        persistBase64ImagesDeep(narratorRole, Number(projectId), currentUserId),
+      ]);
+      if (persistedCoverPath !== rawCoverPath) {
+        console.log("[saveWorld] persisted base64 cover image to file");
+      }
+
+      const normalizedCoverPath = persistedCoverPath;
+      const normalizedSettings = normalizeWorldSettings(persistedSettings, {
         coverPath: normalizedCoverPath,
         publishStatus: normalizedPublishStatus,
       });
+      const rolePair = normalizeRolePair(persistedPlayerRole, persistedNarratorRole);
 
       const payload = {
         name: String(name || "").trim(),
