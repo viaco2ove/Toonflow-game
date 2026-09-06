@@ -13,6 +13,18 @@ NODE_ENV=local tower-pm2 start build/app.js --name toonflow-game --update-env
 # 保存服务列表（开机自启必需）
 tower-pm2 save`
 ```
+```aiexclude
+{
+  "name": "toonflow-game",
+  "cmd": "NODE_ENV=local node /opt/toonflow/toonflow-game-app/build/app.js",
+  "cwd": "/opt/toonflow/toonflow-game-app",
+  "stdout_log": "/var/log/tower/toonflow-game.out.log",
+  "stderr_log": "/var/log/tower/toonflow-game.err.log",
+  "keep_live": true,
+  "start_with_os": false,
+  "start_nginx_with_ubuntu": false
+}
+```
 # 正确查看后端运行日志命令（直接复制用）
 ## 1. 实时查看后端日志（最常用、必用）
 ```bash
