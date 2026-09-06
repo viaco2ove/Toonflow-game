@@ -30,7 +30,7 @@ source ./install.config.sh
 - 复制 [main.py](/mnt/d/users/viaco/tools/toonflow-game/toonflow-game-app/md/deploy/ubuntu/detail/main.py)
 - 在 `PANEL_DIR` 创建 Python 虚拟环境
 - 安装 `fastapi` 和 `uvicorn`
-- 用 `pm2` 启动管理页进程
+- 用 `tower-pm2` 启动管理页进程
 
 默认配置在：
 
@@ -42,7 +42,7 @@ source ./install.config.sh
 export PANEL_PORT="6008"
 export PANEL_NAME="toonflow-panel"
 export PANEL_DIR="$INSTALL_ROOT/panel"
-export PANEL_APP_NAME="$PM2_NAME"
+export PANEL_APP_NAME="$tower-pm2_NAME"
 export PANEL_APP_DIR="$INSTALL_ROOT/toonflow-game-app"
 export PANEL_WEB_PORT="$HTTP_PORT"
 export PANEL_APP_PORT="$APP_PORT"
@@ -67,9 +67,9 @@ http://你的服务器IP:6008/
 查看状态：
 
 ```bash
-pm2 status                                                                                                                                                                        
-pm2 logs toonflow-game                                                                                                                                                            
-pm2 logs toonflow-panel  
+tower-pm2 status                                                                                                                                                                        
+tower-pm2 logs toonflow-game                                                                                                                                                            
+tower-pm2 logs toonflow-panel  
 ```
 
 # nginx 配置
@@ -112,30 +112,30 @@ chmod +x /opt/toonflow/panel/main.py
   - 查看状态
 
 ```bash
-pm2 status
+tower-pm2 status
 ```
 
   - 重启主站
 
 ```bash
-pm2 restart toonflow-game
+tower-pm2 restart toonflow-game
 ```
 
   - 同时重启
 
 ```bash
-pm2 restart toonflow-game
+tower-pm2 restart toonflow-game
 ```
 
   - 停止
 
 ```bash
-pm2 stop toonflow-game
+tower-pm2 stop toonflow-game
 ```
 
   - 查看日志
 
 ```bash
-pm2 logs toonflow-game
+tower-pm2 logs toonflow-game
 ```
 [panel.readme.md](../modify/panel/panel.readme.bak1.md)

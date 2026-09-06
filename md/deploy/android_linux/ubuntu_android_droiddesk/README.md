@@ -59,7 +59,7 @@ source ./install.config.sh
 这一步会一起安装：
 - 主站
 - nginx
-- pm2
+- tower-pm2
 - `detail/main.py` 管理页
 
 打开主站：

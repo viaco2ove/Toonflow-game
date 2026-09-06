@@ -1,26 +1,26 @@
-后端是 **PM2 托管的 Node.js 服务**，不是 systemd，所以之前的 `journalctl` 命令完全没用。
+后端是 **tower-pm2 托管的 Node.js 服务**，不是 systemd，所以之前的 `journalctl` 命令完全没用。
 
 # 正确查看后端运行日志命令（直接复制用）
 ## 1. 实时查看后端日志（最常用、必用）
 ```bash
-pm2 logs toonflow-game
+tower-pm2 logs toonflow-game
 ```
 
 
 
 ## 2. 只看最近 100 行 + 实时追踪（不刷屏）
 ```bash
-pm2 logs toonflow-game --lines 100
+tower-pm2 logs toonflow-game --lines 100
 ```
 
 ## 3. 只查看历史日志（不实时刷新）
 ```bash
-pm2 logs toonflow-game --nostream
+tower-pm2 logs toonflow-game --nostream
 ```
 
 ## 4. 查看后端服务是否在线
 ```bash
-pm2 status
+tower-pm2 status
 ```
 
 ---
@@ -41,28 +41,28 @@ ls -lh /data/toonflow/logs/
 # 常用运维命令（你一定会用到）
 ## 重启后端
 ```bash
-pm2 restart toonflow-game
-pm2 restart toonflow-game --update-env
-pm2 save
+tower-pm2 restart toonflow-game
+tower-pm2 restart toonflow-game --update-env
+tower-pm2 save
 ```
 
 ## 停止后端
 ```bash
-pm2 stop toonflow-game
+tower-pm2 stop toonflow-game
 ```
 
 ## 查看后端资源占用
 ```bash
-pm2 monit
+tower-pm2 monit
 ```
 
 ---
 
 ### 总结
-1. **你们后端是 PM2 管理** → 用 `pm2 logs` 看日志
-2. **实时日志**：`pm2 logs toonflow-game`
-3. **服务状态**：`pm2 status`
-4. **重启服务**：`pm2 restart toonflow-game`
+1. **你们后端是 tower-pm2 管理** → 用 `tower-pm2 logs` 看日志
+2. **实时日志**：`tower-pm2 logs toonflow-game`
+3. **服务状态**：`tower-pm2 status`
+4. **重启服务**：`tower-pm2 restart toonflow-game`
 
 现在直接输入第一条命令就能看到后端日志了！
 
@@ -90,5 +90,5 @@ yarn build
 ps aux | grep "node /opt/toonflow" | grep -v grep
 看看有没有跑了多个线程
 
-ps aux | grep "PM2" | grep -v grep
-看看 pm2 自己有没有跑了多个线程
+ps aux | grep "tower-pm2" | grep -v grep
+看看 tower-pm2 自己有没有跑了多个线程

@@ -4,11 +4,11 @@ set -Eeuo pipefail
 # 手动启动 Ubuntu 管理页。
 # 用途：
 # 1. 本地/服务器前台调试 main.py；
-# 2. 作为 PM2 托管的稳定启动入口，避免 `bash -lc` 包长命令时出现换行与引号解析问题。
+# 2. 作为 tower-pm2 托管的稳定启动入口，避免 `bash -lc` 包长命令时出现换行与引号解析问题。
 
 cd /opt/toonflow/panel || exit 1
 
-# 显式导出管理页所依赖的环境变量，确保手动启动与 PM2 启动使用同一套参数。
+# 显式导出管理页所依赖的环境变量，确保手动启动与 tower-pm2 启动使用同一套参数。
 export PANEL_APP_NAME="toonflow-game"
 export PANEL_APP_DIR="/opt/toonflow/toonflow-game-app"
 export PANEL_APP_PORT="60002"

@@ -1,7 +1,7 @@
 # 管理面板更新与操作指南 (supervisor)
 
 > 适用于 Android proot Ubuntu / Termux / 普通 Ubuntu 环境。
-> 管理面板使用 **supervisor** 托管，不依赖 systemd，也不使用 PM2。
+> 管理面板使用 **supervisor** 托管，不依赖 systemd，也不使用 tower-pm2。
 
 ---
 
@@ -22,7 +22,7 @@ cp ~/ubuntu/detail/main.py /opt/toonflow/panel/main.py
 
 | 组件 | 进程名 |
 |------|--------|
-| 后端服务 | `toonflow-game`（PM2 托管） |
+| 后端服务 | `toonflow-game`（tower-pm2 托管） |
 | 管理面板 | `toonflow-panel`（supervisor 托管） |
 
 ---
@@ -30,12 +30,12 @@ cp ~/ubuntu/detail/main.py /opt/toonflow/panel/main.py
 ## 三、查看状态
 
 ```bash
-# 查看后端 PM2 状态
-pm2 status
+# 查看后端 tower-pm2 状态
+tower-pm2 status
 
-# 查看后端 PM2 日志
-pm2 logs toonflow-game --lines 100
-pm2 logs toonflow-game --nostream
+# 查看后端 tower-pm2 日志
+tower-pm2 logs toonflow-game --lines 100
+tower-pm2 logs toonflow-game --nostream
 
 # 查看管理面板 supervisor 状态
 supervisorctl status toonflow-panel

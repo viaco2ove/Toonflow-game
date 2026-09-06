@@ -28,18 +28,18 @@ WEB_BUILD_NODE_OPTIONS = os.environ.get("PANEL_WEB_BUILD_NODE_OPTIONS",
 START_APP_CMD = (
     f"cd {shlex.quote(APP_DIR)} && "
     "NODE_ENV=prod PREFER_PROCESS_ENV=1 "
-    f"pm2 start build/app.js --name {shlex.quote(APP_NAME)} --update-env"
+    f"tower-pm2 start build/app.js --name {shlex.quote(APP_NAME)} --update-env"
 )
 RESTART_OR_START_APP_CMD = (
     "set -e; "
     f"cd {shlex.quote(APP_DIR)} && "
-    # 线上运行依赖 env/.env.171.local，因此统一以 local 环境重启或启动 PM2 进程。
-    f"if pm2 describe {shlex.quote(APP_NAME)} >/dev/null 2>&1; then "
-    f"  NODE_ENV=local pm2 restart {shlex.quote(APP_NAME)} --update-env 2>&1; "
+    # 线上运行依赖 env/.env.171.local，因此统一以 local 环境重启或启动 tower-pm2 进程。
+    f"if tower-pm2 describe {shlex.quote(APP_NAME)} >/dev/null 2>&1; then "
+    f"  NODE_ENV=local tower-pm2 restart {shlex.quote(APP_NAME)} --update-env 2>&1; "
     "else "
-    f"  NODE_ENV=local pm2 start build/app.js --name {shlex.quote(APP_NAME)} --update-env 2>&1; "
+    f"  NODE_ENV=local tower-pm2 start build/app.js --name {shlex.quote(APP_NAME)} --update-env 2>&1; "
     "fi && "
-    "pm2 save 2>&1"
+    "tower-pm2 save 2>&1"
 )
 LAST_ACTION_LOG = "暂无操作记录"
 
@@ -72,7 +72,7 @@ def run_in_repo(cmd: str) -> str:
 
 
 def restart_or_start_app() -> str:
-    """重启已存在的 PM2 进程；如果进程不存在，则直接按构建产物启动。"""
+    """重启已存在的 tower-pm2 进程；如果进程不存在，则直接按构建产物启动。"""
     return run(RESTART_OR_START_APP_CMD)
 
 
@@ -202,7 +202,7 @@ def force_sync_repo_current_branch(repo_dir: str) -> str:
 
 
 def deploy_current_app() -> str:
-    """同步当前后端分支并重建运行产物，最后重启 PM2 使新代码立即生效。"""
+    """同步当前后端分支并重建运行产物，最后重启 tower-pm2 使新代码立即生效。"""
     return run(
         "set -e; "
         f"cd {shlex.quote(APP_DIR)} && "
@@ -216,12 +216,12 @@ def deploy_current_app() -> str:
         'git pull --ff-only origin "$current_branch" 2>&1 && '
         "yarn install --frozen-lockfile --ignore-engines 2>&1 && "
         "NODE_ENV=prod PREFER_PROCESS_ENV=1 yarn build 2>&1 && "
-        f"if pm2 describe {shlex.quote(APP_NAME)} >/dev/null 2>&1; then "
-        f"  NODE_ENV=local pm2 restart {shlex.quote(APP_NAME)} --update-env 2>&1; "
+        f"if tower-pm2 describe {shlex.quote(APP_NAME)} >/dev/null 2>&1; then "
+        f"  NODE_ENV=local tower-pm2 restart {shlex.quote(APP_NAME)} --update-env 2>&1; "
         "else "
-        f"  NODE_ENV=local pm2 start build/app.js --name {shlex.quote(APP_NAME)} --update-env 2>&1; "
+        f"  NODE_ENV=local tower-pm2 start build/app.js --name {shlex.quote(APP_NAME)} --update-env 2>&1; "
         "fi && "
-        "pm2 save 2>&1"
+        "tower-pm2 save 2>&1"
     )
 
 
@@ -281,14 +281,14 @@ def shell_text(text: str) -> str:
     return html.escape(text or "").replace("\n", "<br>")
 
 
-def detect_pm2_status(pm2_text: str) -> str:
-    if APP_NAME not in pm2_text:
+def detect_tower-pm2_status(tower-pm2_text: str) -> str:
+    if APP_NAME not in tower-pm2_text:
         return "missing"
-    if "online" in pm2_text:
+    if "online" in tower-pm2_text:
         return "online"
-    if "stopped" in pm2_text:
+    if "stopped" in tower-pm2_text:
         return "stopped"
-    if "errored" in pm2_text:
+    if "errored" in tower-pm2_text:
         return "errored"
     return "unknown"
 
@@ -309,8 +309,8 @@ def detect_http_ok(http_text: str) -> bool:
 def summarize_app_hint(status: dict) -> str:
     if status["app_listening"] and status["app_http_ok"]:
         return f"app 正在本机 {APP_PORT} 端口提供 HTTP 服务。"
-    if status["pm2_state"] == "online" and not status["app_listening"]:
-        return f"pm2 显示进程在线，但本机没有检测到 {APP_PORT} 监听。请检查 pm2 启动命令和环境变量。"
+    if status["tower-pm2_state"] == "online" and not status["app_listening"]:
+        return f"tower-pm2 显示进程在线，但本机没有检测到 {APP_PORT} 监听。请检查 tower-pm2 启动命令和环境变量。"
     if status["web_http_ok"] and not status["app_listening"]:
         return f"web 入口正常，但本机 {APP_PORT} 没监听。请检查 nginx upstream 和后端进程。"
     return "当前没有检测到 app 本机监听。"
@@ -378,20 +378,20 @@ def force_sync_all_current_branches() -> str:
 
 
 def service_status() -> dict:
-    pm2_list = run("pm2 jlist")
+    tower-pm2_list = run("tower-pm2 jlist")
     nginx_status = run("systemctl status nginx --no-pager 2>&1 || service nginx status 2>&1 || true")
     app_port = run(f"ss -lntp | grep ':{APP_PORT} ' || true")
     app_http = run(f"curl -i -sS --max-time 3 http://127.0.0.1:{APP_PORT}/ || true")
     web_port = run(f"ss -lntp | grep ':{WEB_PORT} ' || true")
     web_http = run(f"curl -I -sS --max-time 3 http://127.0.0.1:{WEB_PORT}/ || true")
     return {
-        "pm2_list": pm2_list,
+        "tower-pm2_list": tower-pm2_list,
         "nginx_status": nginx_status,
         "app_port": app_port,
         "app_http": app_http,
         "web_port": web_port,
         "web_http": web_http,
-        "pm2_state": detect_pm2_status(pm2_list),
+        "tower-pm2_state": detect_tower-pm2_status(tower-pm2_list),
         "nginx_running": detect_nginx_running(nginx_status),
         "app_listening": detect_listening(app_port, APP_PORT),
         "app_http_ok": detect_http_ok(app_http),
@@ -407,14 +407,14 @@ def home() -> str:
     web_branches = get_web_branches()
     web_current_branch = get_web_current_branch()
     app_branches = [b.strip().lstrip("* ") for b in git["branch_list"].splitlines() if b.strip()]
-    pm2_kind_map = {
+    tower-pm2_kind_map = {
         "online": ("运行中", "success"),
         "stopped": ("已停止", "warn"),
         "errored": ("异常", "danger"),
         "missing": ("未创建", "muted"),
         "unknown": ("未知", "warn"),
     }
-    pm2_label, pm2_kind = pm2_kind_map.get(status["pm2_state"], ("未知", "warn"))
+    tower-pm2_label, tower-pm2_kind = tower-pm2_kind_map.get(status["tower-pm2_state"], ("未知", "warn"))
     nginx_label = "运行中" if status["nginx_running"] else "未运行"
     nginx_kind = "success" if status["nginx_running"] else "danger"
     app_label = "正常" if status["app_listening"] and status["app_http_ok"] else "异常"
@@ -586,7 +586,7 @@ def home() -> str:
         </section>
 
         <section class="status-grid">
-          {status_card("PM2 进程", f"进程名：{APP_NAME}", pm2_label, pm2_kind)}
+          {status_card("tower-pm2 进程", f"进程名：{APP_NAME}", tower-pm2_label, tower-pm2_kind)}
           {status_card("Nginx", "Web 入口转发与静态页服务", nginx_label, nginx_kind)}
           {status_card("后端 HTTP", app_hint, app_label, app_kind)}
           {status_card("Web 入口", f"检测 127.0.0.1:{WEB_PORT}", web_label, web_kind)}
@@ -662,7 +662,7 @@ def app_restart():
 
 @app.get("/app/stop")
 def app_stop():
-    output = run(f"pm2 stop {shlex.quote(APP_NAME)} 2>&1 || true")
+    output = run(f"tower-pm2 stop {shlex.quote(APP_NAME)} 2>&1 || true")
     set_last_action_log("停止 app", output)
     return RedirectResponse("/", status_code=302)
 
@@ -724,7 +724,7 @@ def deploy_sync_web_code():
 
 @app.get("/deploy/sync-app")
 def deploy_sync_app():
-    """同步后端项目：拉代码、安装依赖、构建并重启 PM2。"""
+    """同步后端项目：拉代码、安装依赖、构建并重启 tower-pm2。"""
     output = deploy_current_app()
     set_last_action_log("同步后端（含构建）", output)
     return RedirectResponse("/", status_code=302)

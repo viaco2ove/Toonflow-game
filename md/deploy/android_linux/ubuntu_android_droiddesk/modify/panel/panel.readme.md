@@ -2,15 +2,15 @@
 直接看 [README.md](../../README.md)
 
 # 手动安装如下：
-`toonflow-panel` 建议使用 `systemd` 托管，不再使用 `pm2` 托管管理页。
+`toonflow-panel` 建议使用 `systemd` 托管，不再使用 `tower-pm2` 托管管理页。
 
 原因：
 
 - 管理页本身很轻量，但需要在按钮里触发 `yarn build`
-- 低配 Ubuntu 机器上，`pm2 -> bash -> uvicorn -> 子进程构建` 这条链更容易增加排查复杂度
+- 低配 Ubuntu 机器上，`tower-pm2 -> bash -> uvicorn -> 子进程构建` 这条链更容易增加排查复杂度
 - `systemd` 直接托管 `start-panel.sh`，路径与环境变量更稳定，便于排查
 
-pm2 守护进程                                                                                                                                                                    
+tower-pm2 守护进程                                                                                                                                                                    
   - python/uvicorn 常驻进程                                                                                                                                                         
   - 面板日志采集/重定向                                                                                                                                                             
   - HTTP 请求处理上下文                                                                                                                                                             
@@ -72,11 +72,11 @@ systemctl enable toonflow-panel.service
 
 # 启动
 
-启动前先清理旧的 `pm2` 管理页进程与 6008 端口占用：
+启动前先清理旧的 `tower-pm2` 管理页进程与 6008 端口占用：
 
 ```bash
 fuser -k 6008/tcp || true
-pm2 delete toonflow-panel || true
+tower-pm2 delete toonflow-panel || true
 systemctl daemon-reload
 systemctl restart toonflow-panel.service
 systemctl status toonflow-panel.service --no-pager

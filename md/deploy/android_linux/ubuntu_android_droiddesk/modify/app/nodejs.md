@@ -49,11 +49,11 @@ yarn install  --frozen-lockfile --ignore-engines
 yarn build
 
 ## 重启后端
-pm2 restart toonflow-game
+tower-pm2 restart toonflow-game
 
 ## 看日志
 只看最近 100 行 + 实时追踪（不刷屏）
-pm2 logs toonflow-game --lines 100
+tower-pm2 logs toonflow-game --lines 100
 
 
 ## 关于ai 说nodejs 22 与 安卓的proot 环境 的兼容问题
@@ -69,7 +69,7 @@ mkdir -p /tmp/test && cd /tmp/test && npm init -y && npm install express --no-sa
 三条都通过说明 Node 22 在 proot 里可正常使用。
 
 ### 直接运行 toonflow-panel
-pm2 stop toonflow-panel
+tower-pm2 stop toonflow-panel
 cd /opt/toonflow/panel
 ./start-panel.sh
 再次点击构建-构建成功。 结论弱智ai!

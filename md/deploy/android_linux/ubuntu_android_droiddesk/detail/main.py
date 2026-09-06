@@ -29,17 +29,17 @@ WEB_BUILD_NODE_OPTIONS = os.environ.get("PANEL_WEB_BUILD_NODE_OPTIONS",
 START_APP_CMD = (
     f"cd {shlex.quote(APP_DIR)} && "
     "NODE_ENV=prod PREFER_PROCESS_ENV=1 "
-    f"pm2 start build/app.js --name {shlex.quote(APP_NAME)} --update-env"
+    f"tower-pm2 start build/app.js --name {shlex.quote(APP_NAME)} --update-env"
 )
 RESTART_OR_START_APP_CMD = (
     "set -e; "
     f"cd {shlex.quote(APP_DIR)} && "
-    f"if pm2 describe {shlex.quote(APP_NAME)} >/dev/null 2>&1; then "
-    f"  NODE_ENV=local pm2 restart {shlex.quote(APP_NAME)} --update-env 2>&1; "
+    f"if tower-pm2 describe {shlex.quote(APP_NAME)} >/dev/null 2>&1; then "
+    f"  NODE_ENV=local tower-pm2 restart {shlex.quote(APP_NAME)} --update-env 2>&1; "
     "else "
-    f"  NODE_ENV=local pm2 start build/app.js --name {shlex.quote(APP_NAME)} --update-env 2>&1; "
+    f"  NODE_ENV=local tower-pm2 start build/app.js --name {shlex.quote(APP_NAME)} --update-env 2>&1; "
     "fi && "
-    "pm2 save 2>&1"
+    "tower-pm2 save 2>&1"
 )
 LAST_ACTION_LOG = "暂无操作记录"
 
@@ -105,15 +105,15 @@ def clear_app_logs() -> str:
         return f"清空失败：{str(e)}"
 
 
-def get_pm2_logs(lines: int = 500) -> str:
-    """获取PM2进程日志"""
-    result = run(f"pm2 logs {shlex.quote(APP_NAME)} --nostream --lines {lines} 2>&1")
+def get_tower-pm2_logs(lines: int = 500) -> str:
+    """获取tower-pm2进程日志"""
+    result = run(f"tower-pm2 logs {shlex.quote(APP_NAME)} --nostream --lines {lines} 2>&1")
     return result
 
 
-def clear_pm2_logs() -> str:
-    """清空PM2进程日志"""
-    return run(f"pm2 flush {shlex.quote(APP_NAME)} 2>&1")
+def clear_tower-pm2_logs() -> str:
+    """清空tower-pm2进程日志"""
+    return run(f"tower-pm2 flush {shlex.quote(APP_NAME)} 2>&1")
 
 
 @dataclass
@@ -255,7 +255,7 @@ def deploy_current_app() -> str:
         "rm -rf build && "
         "yarn install --frozen-lockfile --ignore-engines 2>&1 && "
         "NODE_ENV=prod PREFER_PROCESS_ENV=1 yarn build 2>&1 && "
-        f"pm2 restart {shlex.quote(APP_NAME)} --update-env 2>&1 && pm2 save 2>&1"
+        f"tower-pm2 restart {shlex.quote(APP_NAME)} --update-env 2>&1 && tower-pm2 save 2>&1"
     )
 
 
@@ -337,11 +337,11 @@ def shell_text(text: str) -> str:
     return html.escape(text or "").replace("\n", "<br>")
 
 
-def detect_pm2_status(pm2_text: str) -> str:
-    if APP_NAME not in pm2_text: return "missing"
-    if "online" in pm2_text: return "online"
-    if "stopped" in pm2_text: return "stopped"
-    if "errored" in pm2_text: return "errored"
+def detect_tower-pm2_status(tower-pm2_text: str) -> str:
+    if APP_NAME not in tower-pm2_text: return "missing"
+    if "online" in tower-pm2_text: return "online"
+    if "stopped" in tower-pm2_text: return "stopped"
+    if "errored" in tower-pm2_text: return "errored"
     return "unknown"
 
 
@@ -367,8 +367,8 @@ def detect_http_ok(http_text: str) -> bool:
 def summarize_app_hint(status: dict) -> str:
     if status["app_listening"] and status["app_http_ok"]:
         return f"app 正在本机 {APP_PORT} 端口提供 HTTP 服务。"
-    if status["pm2_state"] == "online" and not status["app_listening"]:
-        return f"pm2 进程在线，但 {APP_PORT} 端口未监听。"
+    if status["tower-pm2_state"] == "online" and not status["app_listening"]:
+        return f"tower-pm2 进程在线，但 {APP_PORT} 端口未监听。"
     return "未检测到后端服务监听"
 
 
@@ -407,17 +407,17 @@ def git_info() -> dict:
 
 
 def service_status() -> dict:
-    pm2_list = run("pm2 jlist")
+    tower-pm2_list = run("tower-pm2 jlist")
     nginx_status = run(_nginx_status_cmd())
     app_port = run(f"ss -lntp | grep ':{APP_PORT} ' || true")
     app_http = run(f"curl -i -sS --max-time 3 http://127.0.0.1:{APP_PORT}/ || true")
     web_port = run(f"ss -lntp | grep ':{WEB_PORT} ' || true")
     web_http = run(f"curl -I -sS --max-time 3 http://127.0.0.1:{WEB_PORT}/ || true")
     return {
-        "pm2_list": pm2_list, "nginx_status": nginx_status,
+        "tower-pm2_list": tower-pm2_list, "nginx_status": nginx_status,
         "app_port": app_port, "app_http": app_http,
         "web_port": web_port, "web_http": web_http,
-        "pm2_state": detect_pm2_status(pm2_list),
+        "tower-pm2_state": detect_tower-pm2_status(tower-pm2_list),
         "nginx_running": detect_nginx_running(nginx_status),
         "app_listening": detect_listening(app_port, APP_PORT),
         "app_http_ok": detect_http_ok(app_http),
@@ -434,9 +434,9 @@ def home() -> str:
     web_current_branch = get_web_current_branch()
     app_branches = [b.strip().lstrip("* ") for b in run_in_repo("git branch --list").splitlines() if b.strip()]
 
-    pm2_map = {"online": ("运行中", "success"), "stopped": ("已停止", "warn"), "errored": ("异常", "danger"),
+    tower-pm2_map = {"online": ("运行中", "success"), "stopped": ("已停止", "warn"), "errored": ("异常", "danger"),
                "missing": ("未创建", "muted")}
-    pm2_label, pm2_kind = pm2_map.get(status["pm2_state"], ("未知", "warn"))
+    tower-pm2_label, tower-pm2_kind = tower-pm2_map.get(status["tower-pm2_state"], ("未知", "warn"))
     nginx_label = "运行中" if status["nginx_running"] else "未运行"
     nginx_kind = "success" if status["nginx_running"] else "danger"
     app_label = "正常" if status["app_http_ok"] else "异常"
@@ -488,7 +488,7 @@ def home() -> str:
       <div class="page">
         <div class="hero"><h1>Toonflow 管理页</h1><p>目录：{APP_DIR}<br>端口：后端{APP_PORT} | Web{WEB_PORT}</p></div>
         <div class="status-grid">
-          {status_card("PM2进程", f"名称：{APP_NAME}", pm2_label, pm2_kind)}
+          {status_card("tower-pm2进程", f"名称：{APP_NAME}", tower-pm2_label, tower-pm2_kind)}
           {status_card("Nginx", "Web服务", nginx_label, nginx_kind)}
           {status_card("后端服务", f"端口{APP_PORT}", app_label, app_kind)}
           {status_card("Web入口", f"端口{WEB_PORT}", web_label, web_kind)}
@@ -506,7 +506,7 @@ def home() -> str:
             <a class="action" href="/nginx/restart">重启Nginx</a>
             <a class="action dark" href="/app/restart">重启后端</a>
             <a class="action dark" href="/app/logs">📜 查看日志</a>
-            <a class="action dark" href="/app/pm2-logs">📋 PM2日志</a>
+            <a class="action dark" href="/app/tower-pm2-logs">📋 tower-pm2日志</a>
             <br>
             <form action="/git/switch-branch" method="get" style="margin-top:10px">
               <label>切换Web分支：</label>
@@ -634,7 +634,7 @@ def view_app_logs():
       <div class="actions">
         <a href="/">返回管理页</a>
         <a href="/app/logs?refresh=1">刷新</a>
-        <a href="/app/pm2-logs">PM2日志</a>
+        <a href="/app/tower-pm2-logs">tower-pm2日志</a>
         <form action="/app/logs/clear" method="post" style="display:inline">
           <button class="btn-clear" type="submit" onclick="return confirm('确定要清空今日后端日志吗？')">🗑 清空日志</button>
         </form>
@@ -653,18 +653,18 @@ def clear_app_logs_handler():
     return RedirectResponse("/app/logs", status_code=303)
 
 
-@app.get("/app/pm2-logs", response_class=HTMLResponse)
-def view_pm2_logs():
-    """查看PM2进程日志"""
+@app.get("/app/tower-pm2-logs", response_class=HTMLResponse)
+def view_tower-pm2_logs():
+    """查看tower-pm2进程日志"""
     lines = 500
-    logs = get_pm2_logs(lines)
+    logs = get_tower-pm2_logs(lines)
     logs_escaped = html.escape(logs).replace("\n", "<br>")
 
     return f"""
     <html>
     <head>
       <meta charset="utf-8">
-      <title>PM2日志 - Toonflow</title>
+      <title>tower-pm2日志 - Toonflow</title>
       <style>
         body {{font-family:monospace;background:#0a0a0a;color:#4ade80;margin:0;padding:20px}}
         h1 {{color:#fff;margin-bottom:20px;display:flex;align-items:center;gap:10px}}
@@ -679,13 +679,13 @@ def view_pm2_logs():
       </style>
     </head>
     <body>
-      <h1>PM2日志 (最新{lines}行)</h1>
+      <h1>tower-pm2日志 (最新{lines}行)</h1>
       <div class="actions">
         <a href="/">返回管理页</a>
         <a href="/app/logs">应用日志</a>
-        <a href="/app/pm2-logs">刷新</a>
-        <form action="/app/pm2-logs/clear" method="post" style="display:inline">
-          <button class="btn-clear" type="submit" onclick="return confirm('确定要清空PM2日志吗？')">🗑 清空日志</button>
+        <a href="/app/tower-pm2-logs">刷新</a>
+        <form action="/app/tower-pm2-logs/clear" method="post" style="display:inline">
+          <button class="btn-clear" type="submit" onclick="return confirm('确定要清空tower-pm2日志吗？')">🗑 清空日志</button>
         </form>
       </div>
       <pre>{logs_escaped}</pre>
@@ -694,12 +694,12 @@ def view_pm2_logs():
     """
 
 
-@app.post("/app/pm2-logs/clear")
-def clear_pm2_logs_handler():
-    """清空PM2进程日志"""
-    output = clear_pm2_logs()
-    set_last_action_log("清空PM2日志", output)
-    return RedirectResponse("/app/pm2-logs", status_code=303)
+@app.post("/app/tower-pm2-logs/clear")
+def clear_tower-pm2_logs_handler():
+    """清空tower-pm2进程日志"""
+    output = clear_tower-pm2_logs()
+    set_last_action_log("清空tower-pm2日志", output)
+    return RedirectResponse("/app/tower-pm2-logs", status_code=303)
 
 
 @app.get("/tools/install-ffmpeg")
