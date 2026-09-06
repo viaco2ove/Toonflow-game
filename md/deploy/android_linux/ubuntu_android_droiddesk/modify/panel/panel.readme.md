@@ -39,35 +39,11 @@ source .venv/bin/activate
 /opt/toonflow/panel/.venv/bin/python -m pip install fastapi uvicorn
 ```
 
-## 3. 创建 systemd 服务
 
-写入 `/etc/systemd/system/toonflow-panel.service`：
-
-```bash
-cat >/etc/systemd/system/toonflow-panel.service <<'EOF'
-[Unit]
-Description=Toonflow Panel
-After=network.target
-
-[Service]
-Type=simple
-WorkingDirectory=/opt/toonflow/panel
-ExecStart=/opt/toonflow/panel/start-panel.sh
-Restart=always
-RestartSec=3
-User=root
-Environment=PYTHONUNBUFFERED=1
-
-[Install]
-WantedBy=multi-user.target
-EOF
-```
-
-## 4. 安装并启用服务
+## 安装并启用服务
 
 ```bash
-systemctl daemon-reload
-systemctl enable toonflow-panel.service
+
 ```
 
 # 启动
@@ -76,11 +52,7 @@ systemctl enable toonflow-panel.service
 
 ```bash
 fuser -k 6008/tcp || true
-tower-pm2 delete toonflow-panel || true
-systemctl daemon-reload
-systemctl restart toonflow-panel.service
-systemctl status toonflow-panel.service --no-pager
-journalctl -u toonflow-panel.service -n 50 --no-pager
+
 ```
 
 ## 5. 验证
@@ -99,17 +71,7 @@ http://你的服务器IP:6008/
 
 ## 6. 常用排查命令
 
-查看服务状态：
 
-```bash
-systemctl status toonflow-panel.service --no-pager
-```
-
-查看最近日志：
-
-```bash
-journalctl -u toonflow-panel.service -n 100 --no-pager
-```
 
 查看 6008 端口占用：
 
