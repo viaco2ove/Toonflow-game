@@ -4,16 +4,19 @@
 ```# 进入项目目录
 cd /opt/toonflow/toonflow-game-app
 
-# 确保环境变量文件存在
-# env/.env.local 已包含 PORT=60002 DB_PATH UPLOAD_DIR LOG_PATH OSSURL 等
+# 1. 注册服务（把完整启动命令写进 cmd）
+tower-pm2 add toonflow-game "NODE_ENV=local node /opt/toonflow/toonflow-game-app/build/app.js" \
+  --cwd /opt/toonflow/toonflow-game-app \
+  --keep-live
 
-# 启动 PM2 服务（首次）
-NODE_ENV=local tower-pm2 start build/app.js --name toonflow-game --update-env
+# 2. 启动
+tower-pm2 start toonflow-game
 
-# 保存服务列表（开机自启必需）
-tower-pm2 save`
+# 3. 可选：启用 PM2 模块让它随 Ubuntu 自启
+tower-pm2 on
 ```
-```aiexclude
+tower-pm2 的服务。
+```json
 {
   "name": "toonflow-game",
   "cmd": "NODE_ENV=local node /opt/toonflow/toonflow-game-app/build/app.js",
