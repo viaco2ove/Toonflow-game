@@ -1,5 +1,18 @@
 后端是 **tower-pm2 托管的 Node.js 服务**，不是 systemd，所以之前的 `journalctl` 命令完全没用。
 
+# 手动新增/启动 PM2 服务
+```# 进入项目目录
+cd /opt/toonflow/toonflow-game-app
+
+# 确保环境变量文件存在
+# env/.env.local 已包含 PORT=60002 DB_PATH UPLOAD_DIR LOG_PATH OSSURL 等
+
+# 启动 PM2 服务（首次）
+NODE_ENV=local tower-pm2 start build/app.js --name toonflow-game --update-env
+
+# 保存服务列表（开机自启必需）
+tower-pm2 save`
+```
 # 正确查看后端运行日志命令（直接复制用）
 ## 1. 实时查看后端日志（最常用、必用）
 ```bash

@@ -18,6 +18,15 @@ cp ~/ubuntu/detail/main.py /opt/toonflow/panel/main.py
 
 ---
 
+## 安装并启用服务:Toonflow管理页
+
+```bash
+#droiddesk-tower service list
+droiddesk-tower service add Toonflow管理页 /opt/toonflow/panel/start-panel.sh --nginx --keep-live
+# droiddesk-tower service delete Toonflow管理页
+#droiddesk-tower service config Toonflow管理页
+```
+
 ## 二、进程名
 
 | 组件 | 进程名 |

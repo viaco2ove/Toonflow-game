@@ -1,24 +1,6 @@
 # toonflow-panel.service 安装
 直接看 [README.md](../../README.md)
 
-# 手动安装如下：
-`toonflow-panel` 建议使用 `systemd` 托管，不再使用 `tower-pm2` 托管管理页。
-
-原因：
-
-- 管理页本身很轻量，但需要在按钮里触发 `yarn build`
-- 低配 Ubuntu 机器上，`tower-pm2 -> bash -> uvicorn -> 子进程构建` 这条链更容易增加排查复杂度
-- `systemd` 直接托管 `start-panel.sh`，路径与环境变量更稳定，便于排查
-
-tower-pm2 守护进程                                                                                                                                                                    
-  - python/uvicorn 常驻进程                                                                                                                                                         
-  - 面板日志采集/重定向                                                                                                                                                             
-  - HTTP 请求处理上下文                                                                                                                                                             
-  - 子进程输出被捕获并拼接到日志里                                                                                                                                                  
-                                                                                                                                                                                    
-  在大机器上这点开销不值一提。                                                                                                                                                      
-  在 1G 无 swap 的机器上，它足够把“本来刚好能过”的构建推到 OOM。
-
 ## 1. 准备目录与文件
  
 把管理页脚本和启动脚本放到服务器：
@@ -43,7 +25,10 @@ source .venv/bin/activate
 ## 安装并启用服务
 
 ```bash
-
+#droiddesk-tower service list
+droiddesk-tower service add Toonflow管理页 /opt/toonflow/panel/start-panel.sh --nginx --keep-live
+# droiddesk-tower service delete Toonflow管理页
+#droiddesk-tower service config Toonflow管理页
 ```
 
 # 启动
@@ -85,6 +70,5 @@ ss -lntp | grep 6008
 
 - 生成 `/opt/toonflow/panel/start-panel.sh`
 - 生成 `toonflow-panel.service`
-- 使用 `systemd` 启动管理页
 
 此时无需手工重复创建服务文件。
