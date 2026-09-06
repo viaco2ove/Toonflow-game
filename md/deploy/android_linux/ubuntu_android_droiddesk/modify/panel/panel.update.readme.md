@@ -22,9 +22,9 @@ cp ~/ubuntu/detail/main.py /opt/toonflow/panel/main.py
 
 ```bash
 #droiddesk-tower service list
-droiddesk-tower service add Toonflow管理页 /opt/toonflow/panel/start-panel.sh --nginx --keep-live
-# droiddesk-tower service delete Toonflow管理页
-#droiddesk-tower service config Toonflow管理页
+droiddesk-tower service add ToonflneowPanel /opt/toonflow/panel/start-panel.sh --nginx --keep-live
+# droiddesk-tower service delete "ToonflneowPanel"
+#droiddesk-tower service config ToonflneowPanel
 ```
 
 ## 二、进程名

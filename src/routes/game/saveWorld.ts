@@ -22,35 +22,67 @@ const router = express.Router();
 /** 匹配 data:image/xxx;base64, 前缀（含 webp/png/jpeg/gif） */
 const BASE64_IMAGE_RE = /^data:image\/([a-z0-9.+-]+);base64,/i;
 
-/**
- * 判断字符串是否为 base64 图片（data URL 形式）。
- */
-function isBase64Image(value: unknown): value is string {
-  return typeof value === "string" && BASE64_IMAGE_RE.test(value.trim()) && value.length > 128;
-}
+/** 文件头特征：WebP `UklGR` / PNG `iVBORw0KGgo` / JPEG `/9j/` / GIF `R0lGOD` */
+const RAW_BASE64_HEADER_RE = /^(UklGR[A-Za-z0-9+/=]{0,8}|iVBORw0KGgo[A-Za-z0-9+/=]{0,8}|\/9j\/[A-Za-z0-9+/=]{0,8}|R0lGOD[A-Za-z0-9+/=]{0,8})/;
 
 /**
- * 把 base64 图片落盘为文件，返回可访问的文件路径。
- * 复用 uploadImage 的存储约定：/{projectId}/game/world/{uuid}.{ext}
+ * 把字符串里的图片 base64（无论有无 data URL 头）落盘，返回文件 URL。
+ * 提取 base64 payload 时按"最后一个可能的图片文件头"为分界，
+ * 之前的部分是文件名/路径等元信息（保留），之后的全部落盘。
  */
-async function saveBase64ImageToProject(base64Data: string, projectId: number, userId: number): Promise<string> {
-  const value = base64Data.trim();
-  const mime = value.match(BASE64_IMAGE_RE)?.[1]?.toLowerCase() || "png";
+async function persistImageString(raw: string, projectId: number, userId: number): Promise<string> {
+  const value = raw.trim();
+  let mime = "";
+  let payload = "";
+  const dataMatch = value.match(BASE64_IMAGE_RE);
+  if (dataMatch) {
+    mime = String(dataMatch[1] || "").toLowerCase();
+    payload = value.replace(BASE64_IMAGE_RE, "");
+  } else {
+    // 裸 base64：从字符串开头找到文件头
+    const headerIdx = value.search(RAW_BASE64_HEADER_RE);
+    if (headerIdx < 0) return raw; // 真的不是图片
+    mime =
+      value.startsWith("UklGR") ? "webp" :
+      value.startsWith("iVBORw0KGgo") ? "png" :
+      value.startsWith("/9j/") ? "jpeg" :
+      value.startsWith("R0lGOD") ? "gif" : "";
+    if (!mime) return raw;
+    // 之前可能是一段无意义字符（一些字段名/JSON 残留），整体作 base64
+    payload = value.substring(headerIdx);
+  }
+  // 容错：base64 字符集
+  if (!/^[A-Za-z0-9+/=\s]+$/.test(payload)) return raw;
+  // 太短不像图片
+  if (payload.length < 256) return raw;
+
   const ext = mime === "jpeg" ? "jpg" : mime;
   const imagePath = projectId > 0
     ? `/${projectId}/game/world/${uuidv4()}.${ext}`
     : `/user/${userId}/game/world/${uuidv4()}.${ext}`;
-  const buffer = Buffer.from(value.replace(BASE64_IMAGE_RE, ""), "base64");
+  const buffer = Buffer.from(payload.replace(/\s+/g, ""), "base64");
+  if (buffer.length < 16) return raw;
   await u.oss.writeFile(imagePath, buffer);
   return await u.oss.getFileUrl(imagePath);
 }
 
 /**
- * 递归遍历对象/数组，把所有 base64 图片字符串替换为落盘后的文件 URL。
+ * 判断字符串是否包含图片 base64（data URL 或裸 base64）。
+ */
+function isImageBase64String(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  const trimmed = value.trim();
+  if (trimmed.length < 128) return false;
+  if (BASE64_IMAGE_RE.test(trimmed)) return true;
+  return RAW_BASE64_HEADER_RE.test(trimmed);
+}
+
+/**
+ * 递归遍历对象/数组，把所有 base64 图片字符串（data URL 或裸 base64）替换为落盘后的文件 URL。
  *
- * 兜底场景：前端偶尔会直接把 data:image/...;base64, 塞进 saveWorld 的
- * coverPath / settings / playerRole / narratorRole 里，导致巨大的 base64
- * 被原样存进 t_storyWorld 的 text 列，listWorlds/getWorld 全部被拖慢。
+ * 兜底场景：前端偶尔会直接把 base64 图片（甚至裸 base64 没 data URL 头）塞进
+ * saveWorld 的 coverPath / settings / playerRole / narratorRole 里，导致上 MB 的二进制
+ * 原样存进 t_storyWorld 的 text 列，listWorlds/getWorld 全部被拖慢。
  * 这里统一拦截，落盘为文件后仅保留 URL。
  */
 async function persistBase64ImagesDeep(
@@ -59,7 +91,18 @@ async function persistBase64ImagesDeep(
   userId: number,
 ): Promise<unknown> {
   if (typeof input === "string") {
-    return isBase64Image(input) ? await saveBase64ImageToProject(input, projectId, userId) : input;
+    if (isImageBase64String(input)) {
+      try {
+        return await persistImageString(input, projectId, userId);
+      } catch (err) {
+        console.warn("[saveWorld] persist base64 image failed, keep original string", {
+          message: (err as Error)?.message,
+          preview: input.slice(0, 60),
+        });
+        return input;
+      }
+    }
+    return input;
   }
   if (Array.isArray(input)) {
     const result: unknown[] = [];
@@ -132,7 +175,7 @@ export default router.post(
       // 兜底：把请求里的 base64 图片（coverPath/settings/playerRole/narratorRole 深处）落盘为文件。
       // 避免 data:image/... 原样写进 t_storyWorld 的 text 列，拖慢后续所有读取接口。
       const [persistedCoverPath, persistedSettings, persistedPlayerRole, persistedNarratorRole] = await Promise.all([
-        isBase64Image(rawCoverPath) ? saveBase64ImageToProject(rawCoverPath, Number(projectId), currentUserId) : Promise.resolve(rawCoverPath),
+        isImageBase64String(rawCoverPath) ? persistImageString(rawCoverPath, Number(projectId), currentUserId) : Promise.resolve(rawCoverPath),
         persistBase64ImagesDeep(settings, Number(projectId), currentUserId),
         persistBase64ImagesDeep(playerRole, Number(projectId), currentUserId),
         persistBase64ImagesDeep(narratorRole, Number(projectId), currentUserId),
