@@ -105,14 +105,14 @@ def clear_app_logs() -> str:
         return f"清空失败：{str(e)}"
 
 
-def get_tower-pm2_logs(lines: int = 500) -> str:
-    """获取tower-pm2进程日志"""
+def get_tower_pm2_logs(lines: int = 500) -> str:
+    """获取tower-tower-pm2进程日志"""
     result = run(f"tower-pm2 logs {shlex.quote(APP_NAME)} --nostream --lines {lines} 2>&1")
     return result
 
 
-def clear_tower-pm2_logs() -> str:
-    """清空tower-pm2进程日志"""
+def clear_tower_pm2_logs() -> str:
+    """清空tower-tower-pm2进程日志"""
     return run(f"tower-pm2 flush {shlex.quote(APP_NAME)} 2>&1")
 
 
@@ -337,11 +337,11 @@ def shell_text(text: str) -> str:
     return html.escape(text or "").replace("\n", "<br>")
 
 
-def detect_tower-pm2_status(tower-pm2_text: str) -> str:
-    if APP_NAME not in tower-pm2_text: return "missing"
-    if "online" in tower-pm2_text: return "online"
-    if "stopped" in tower-pm2_text: return "stopped"
-    if "errored" in tower-pm2_text: return "errored"
+def detect_tower_pm2_status(tower_pm2_text: str) -> str:
+    if APP_NAME not in tower_pm2_text: return "missing"
+    if "online" in tower_pm2_text: return "online"
+    if "stopped" in tower_pm2_text: return "stopped"
+    if "errored" in tower_pm2_text: return "errored"
     return "unknown"
 
 
@@ -367,7 +367,7 @@ def detect_http_ok(http_text: str) -> bool:
 def summarize_app_hint(status: dict) -> str:
     if status["app_listening"] and status["app_http_ok"]:
         return f"app 正在本机 {APP_PORT} 端口提供 HTTP 服务。"
-    if status["tower-pm2_state"] == "online" and not status["app_listening"]:
+    if status["tower_pm2_state"] == "online" and not status["app_listening"]:
         return f"tower-pm2 进程在线，但 {APP_PORT} 端口未监听。"
     return "未检测到后端服务监听"
 
@@ -407,17 +407,17 @@ def git_info() -> dict:
 
 
 def service_status() -> dict:
-    tower-pm2_list = run("tower-pm2 jlist")
+    tower_pm2_list = run("tower-pm2 jlist")
     nginx_status = run(_nginx_status_cmd())
     app_port = run(f"ss -lntp | grep ':{APP_PORT} ' || true")
     app_http = run(f"curl -i -sS --max-time 3 http://127.0.0.1:{APP_PORT}/ || true")
     web_port = run(f"ss -lntp | grep ':{WEB_PORT} ' || true")
     web_http = run(f"curl -I -sS --max-time 3 http://127.0.0.1:{WEB_PORT}/ || true")
     return {
-        "tower-pm2_list": tower-pm2_list, "nginx_status": nginx_status,
+        "tower_pm2_list": tower_pm2_list, "nginx_status": nginx_status,
         "app_port": app_port, "app_http": app_http,
         "web_port": web_port, "web_http": web_http,
-        "tower-pm2_state": detect_tower-pm2_status(tower-pm2_list),
+        "tower_pm2_state": detect_tower_pm2_status(tower_pm2_list),
         "nginx_running": detect_nginx_running(nginx_status),
         "app_listening": detect_listening(app_port, APP_PORT),
         "app_http_ok": detect_http_ok(app_http),
@@ -434,9 +434,9 @@ def home() -> str:
     web_current_branch = get_web_current_branch()
     app_branches = [b.strip().lstrip("* ") for b in run_in_repo("git branch --list").splitlines() if b.strip()]
 
-    tower-pm2_map = {"online": ("运行中", "success"), "stopped": ("已停止", "warn"), "errored": ("异常", "danger"),
+    tower_pm2_map = {"online": ("运行中", "success"), "stopped": ("已停止", "warn"), "errored": ("异常", "danger"),
                "missing": ("未创建", "muted")}
-    tower-pm2_label, tower-pm2_kind = tower-pm2_map.get(status["tower-pm2_state"], ("未知", "warn"))
+    tower_pm2_label, tower_pm2_kind = tower_pm2_map.get(status["tower_pm2_state"], ("未知", "warn"))
     nginx_label = "运行中" if status["nginx_running"] else "未运行"
     nginx_kind = "success" if status["nginx_running"] else "danger"
     app_label = "正常" if status["app_http_ok"] else "异常"
@@ -488,7 +488,7 @@ def home() -> str:
       <div class="page">
         <div class="hero"><h1>Toonflow 管理页</h1><p>目录：{APP_DIR}<br>端口：后端{APP_PORT} | Web{WEB_PORT}</p></div>
         <div class="status-grid">
-          {status_card("tower-pm2进程", f"名称：{APP_NAME}", tower-pm2_label, tower-pm2_kind)}
+          {status_card("tower-tower-pm2进程", f"名称：{APP_NAME}", tower_pm2_label, tower_pm2_kind)}
           {status_card("Nginx", "Web服务", nginx_label, nginx_kind)}
           {status_card("后端服务", f"端口{APP_PORT}", app_label, app_kind)}
           {status_card("Web入口", f"端口{WEB_PORT}", web_label, web_kind)}
@@ -654,10 +654,10 @@ def clear_app_logs_handler():
 
 
 @app.get("/app/tower-pm2-logs", response_class=HTMLResponse)
-def view_tower-pm2_logs():
-    """查看tower-pm2进程日志"""
+def view_tower_pm2_logs():
+    """查看tower-tower-pm2进程日志"""
     lines = 500
-    logs = get_tower-pm2_logs(lines)
+    logs = get_tower_pm2_logs(lines)
     logs_escaped = html.escape(logs).replace("\n", "<br>")
 
     return f"""
@@ -695,9 +695,9 @@ def view_tower-pm2_logs():
 
 
 @app.post("/app/tower-pm2-logs/clear")
-def clear_tower-pm2_logs_handler():
-    """清空tower-pm2进程日志"""
-    output = clear_tower-pm2_logs()
+def clear_tower_pm2_logs_handler():
+    """清空tower-tower-pm2进程日志"""
+    output = clear_tower_pm2_logs()
     set_last_action_log("清空tower-pm2日志", output)
     return RedirectResponse("/app/tower-pm2-logs", status_code=303)
 
