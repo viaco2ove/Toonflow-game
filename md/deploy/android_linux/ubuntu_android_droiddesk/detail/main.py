@@ -52,7 +52,7 @@ def _is_systemd() -> bool:
 def _nginx_reload_cmd() -> str:
     """返回适合当前环境的 nginx 重启命令"""
     if _is_systemd():
-        return "systemctl reload nginx && systemctl restart nginx"
+        return "droiddesk-tower nginx reload && droiddesk-tower nginx restart"
     # proot / 无 systemd 环境：直接 kill + 启动
     return "pkill nginx 2>/dev/null; nginx"
 
@@ -60,7 +60,7 @@ def _nginx_reload_cmd() -> str:
 def _nginx_status_cmd() -> str:
     """返回适合当前环境的 nginx 状态查询命令"""
     if _is_systemd():
-        return "systemctl status nginx --no-pager 2>&1 || true"
+        return "droiddesk-tower nginx status --no-pager 2>&1 || true"
     # 无 systemd：检查 nginx 进程是否存在
     return 'pgrep -a nginx || echo "nginx 未运行"'
 

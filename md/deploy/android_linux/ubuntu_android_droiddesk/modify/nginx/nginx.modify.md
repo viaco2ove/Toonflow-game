@@ -16,13 +16,9 @@ Nginx 配置由 `install.sh` 中的 `write_nginx_config()` 函数生成，路径
 cat /etc/nginx/sites-available/toonflow-game
 
 # 测试配置语法
-sudo nginx -t
+nginx -t
 
-# 重新加载配置（不中断现有连接）
-sudo systemctl reload nginx
-
-# 重启 Nginx（完全重启）
-sudo systemctl restart nginx
+droiddesk-tower nginx status/start/stop/restart/reload
 ```
 
 ## 手动修改 Nginx 配置
@@ -30,9 +26,9 @@ sudo systemctl restart nginx
 如果需要临时修改配置（如添加代理路径），可以直接编辑：
 
 ```bash
-sudo nano /etc/nginx/sites-available/toonflow-game
-sudo nginx -t
-sudo systemctl reload nginx
+nano /etc/nginx/sites-available/toonflow-game
+nginx -t
+droiddesk-tower nginx reload
 ```
 
 ## 重新生成 Nginx 配置
