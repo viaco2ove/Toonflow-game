@@ -28,6 +28,16 @@ tower-pm2 的服务。
   "start_nginx_with_ubuntu": false
 }
 ```
+
+# 重新添加进程
+```
+tower-pm2 delete toonflow-game 2>/dev/null
+tower-pm2 add toonflow-game "NODE_ENV=local node --max-old-space-size=384 /opt/toonflow/toonflow-game-app/build/app.js" \
+  --cwd /opt/toonflow/toonflow-game-app \
+  --keep-live
+
+```
+
 # 正确查看后端运行日志命令（直接复制用）
 ## 1. 实时查看后端日志（最常用、必用）
 ```bash

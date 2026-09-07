@@ -263,21 +263,25 @@ export interface AddSessionMessageResult {
   sessionId: string;
   status: string;
   chapterId: number | null;
-  chapter: Record<string, any> | null;
-  state: Record<string, any>;
-  currentEventDigest: RuntimeEventViewState["currentEventDigest"];
-  eventDigestWindow: RuntimeEventViewState["eventDigestWindow"];
-  eventDigestWindowText: RuntimeEventViewState["eventDigestWindowText"];
   message: Record<string, any> | null;
-  chapterSwitchMessage: Record<string, any> | null;
   narrativeMessage: Record<string, any> | null;
   generatedMessages: Record<string, any>[];
   narrativePlan: any | null;
-  triggered: TriggerHit[];
-  taskProgress: TaskProgressChange[];
-  deltas: AppliedDelta[];
-  snapshotSaved: boolean;
-  snapshotReason: string;
+  currentEventDigest: RuntimeEventViewState["currentEventDigest"];
+  eventDigestWindow: RuntimeEventViewState["eventDigestWindow"];
+  eventDigestWindowText: RuntimeEventViewState["eventDigestWindowText"];
+  /**
+   * 历史兼容字段：保留在类型里防止外部直接访问炸错；
+   * 当前 addMessage 实际已不再返回，前端应通过 /game/storyInfo 接力刷新 state。
+   */
+  chapter?: Record<string, any> | null;
+  state?: Record<string, any>;
+  chapterSwitchMessage?: Record<string, any> | null;
+  triggered?: TriggerHit[];
+  taskProgress?: TaskProgressChange[];
+  deltas?: AppliedDelta[];
+  snapshotSaved?: boolean;
+  snapshotReason?: string;
 }
 
 export type ContinueSessionNarrativeResult = AddSessionMessageResult;
@@ -2322,6 +2326,22 @@ async function addSessionMessageInner(input: AddSessionMessageInput, sessionId: 
   const narrativeMessageRows: any[] = [];  // 移到函数开头
   const db = getGameDb();
   const now = nowTs();
+  // 性能诊断：ADDSESSION_PROBE=1 时打印各阶段耗时
+  const probe = process.env.ADDSESSION_PROBE === "1";
+  const probeMarks: Array<[string, number]> = probe ? [["start", Date.now()]] : [];
+  const probeMark = (label: string) => {
+    if (probe) probeMarks.push([label, Date.now()]);
+  };
+  const probeFlush = (note: string) => {
+    if (!probe || probeMarks.length < 2) return;
+    const lines: string[] = [];
+    for (let i = 1; i < probeMarks.length; i += 1) {
+      const [label, t] = probeMarks[i];
+      const prev = probeMarks[i - 1][1];
+      lines.push(`${label}=${t - prev}ms`);
+    }
+    console.log(`[addMessage.probe] sessionId=${sessionId} ${note} ${lines.join(" ")} total=${Date.now() - probeMarks[0][1]}ms`);
+  };
   if (!DebugLogUtil.isDebugLogEnabled()) {
     console.log(`[story:streamlines:stats] sesionid=${sessionId}`);
   }
@@ -2335,6 +2355,13 @@ async function addSessionMessageInner(input: AddSessionMessageInput, sessionId: 
   }
 
   const world = await loadSessionWorld(db, Number(sessionRow.worldId || 0), Number(sessionRow.worldPublishId || 0));
+  probeMark("after_loadSessionWorld");
+  if (probe) {
+    const settingsLen = String((world as any)?.settings || "").length;
+    const stateLen = String((sessionRow as any)?.stateJson || "").length;
+    const recentCount = await db("t_sessionMessage").where({ sessionId }).count({ count: "id" }).first();
+    console.log(`[addMessage.probe] sizes sessionId=${sessionId} world.settings=${settingsLen}B session.stateJson=${stateLen}B messages=${Number((recentCount as any)?.count || 0)}`);
+  }
   const rolePair = normalizeRolePair(world?.playerRole, world?.narratorRole);
   const prevChapterId = Number(sessionRow.chapterId || 0) || null;
   const prevStatus = String(sessionRow.status || "active");
@@ -2346,6 +2373,7 @@ async function addSessionMessageInner(input: AddSessionMessageInput, sessionId: 
     rolePair,
     world,
   );
+  probeMark("after_normalizeState");
 
   // ★ 方向2：版本感知 + 确定性进度对齐。
   // session.worldVersion 落后于 published.version 时，把 state 对齐到新 outline（幂等、零 token）。
@@ -2456,7 +2484,9 @@ async function addSessionMessageInner(input: AddSessionMessageInput, sessionId: 
 
   if (roleTypeValue === "player" && eventTypeValue === "on_message" && messageContent.trim()) {
     const rawRecentMessages = await db("t_sessionMessage").where({ sessionId }).orderBy("id", "desc").limit(20);
+    probeMark("after_loadRecentMessages");
     const recentMessages = buildRecentMessages(rawRecentMessages, state);
+    probeMark("after_buildRecentMessages");
 
     // ★ AI 并行化优化: 将 trigger/task 引擎和 AI #2 预计算移到 AI #1 之前
     // 1. 先运行 trigger/task 引擎（快速，无 AI）
@@ -2483,6 +2513,7 @@ async function addSessionMessageInner(input: AddSessionMessageInput, sessionId: 
       currentStatus: triggerResult.sessionStatus,
       worldPublishId: Number(sessionRow.worldPublishId || 0),
     });
+    probeMark("after_runTaskProgressEngine");
 
     // 2. 检查是否需要 AI #2
     const needsAi2 = checkEventProgressAiNeeded(currentChapter, state, messageContent);
@@ -2524,6 +2555,7 @@ async function addSessionMessageInner(input: AddSessionMessageInput, sessionId: 
       playerMessage: messageContent,
       mode: "session",
     });
+    probeMark("after_handleMiniGameTurn");
 
     if (miniGameResult?.intercepted) {
       const pendingPlan = miniGameResult.pendingNarrativePlan;
@@ -3029,6 +3061,7 @@ async function addSessionMessageInner(input: AddSessionMessageInput, sessionId: 
 
     // ★ 并发等待: AI #2 和 AI #3 同时运行
     const [ai2Result, mergedOutcome] = await Promise.all([ai2Promise, ai3Promise]);
+    probeMark("after_ai2_ai3");
     sessionStatus = mergedOutcome.sessionStatus;
     nextChapterId = mergedOutcome.nextChapterId;
   }
@@ -3297,26 +3330,25 @@ async function addSessionMessageInner(input: AddSessionMessageInput, sessionId: 
     ? await loadPublishedChapter(Number(sessionRow.worldPublishId || 0), activeChapterId, db)
     : null;
   const eventView = buildEventView(state);
-  return {
+  // ★ addMessage 是高频 RPC：返回体积必须小。
+  //   不返回 state/chapter/snapshotSaved 等大字段（前端 addMessage 后会立刻调
+  //   /game/storyInfo 拿最新 state；此处返回的 state 会被立刻覆盖，造成双倍响应）。
+  //   不返回 taskProgress / deltas / chapterSwitchMessage / chapter / triggered：
+  //   前端已确认不消费这些字段。
+  const result = {
     sessionId,
     status: sessionStatus,
     chapterId: activeChapterId,
-    chapter: activeChapter,
-    state,
-    currentEventDigest: eventView.currentEventDigest,
-    eventDigestWindow: eventView.eventDigestWindow,
-    eventDigestWindowText: eventView.eventDigestWindowText,
     message: normalizeMessageOutput(messageRow),
-    chapterSwitchMessage: chapterSwitchMessageRow,
     narrativeMessage: narrativeMessageRow,
     generatedMessages,
     narrativePlan,
-    triggered,
-    taskProgress: taskResult?.taskProgressChanges ?? [],
-    deltas: appliedDeltas,
-    snapshotSaved: snapshotResult.snapshotSaved,
-    snapshotReason: snapshotResult.snapshotReason,
+    currentEventDigest: eventView.currentEventDigest,
+    eventDigestWindow: eventView.eventDigestWindow,
+    eventDigestWindowText: eventView.eventDigestWindowText,
   };
+  probeFlush("done");
+  return result;
 }
 
 // =============================================================================
