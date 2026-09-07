@@ -24,6 +24,7 @@ import {
   upsertRuntimeEventDigestState,
   normalizeWorldBookOutput,
   buildWorldKnowledgeText,
+  setChapterProgressState,
 } from "@/lib/gameEngine";
 import { ensureWorldRolesWithAiParameterCards } from "@/lib/roleParameterCard";
 import { applyExplicitMemoryDirectiveToPlayerCard } from "@/modules/game-runtime/services/PlayerMemoryDirectiveService";
@@ -594,6 +595,7 @@ function checkEventProgressAiNeeded(
   const outline = normalizeChapterRuntimeOutline(chapter?.runtimeOutline);
   const currentPhase = outline.phases.find((p) => p.id === currentProgress.phaseId) || null;
   const currentStage = currentPhase?.stages?.[currentProgress.stageIndex || 0] || null;
+  const nextStage = currentPhase?.stages?.[(currentProgress.stageIndex || 0) + 1] || null;
   const isUserPhase = currentPhase?.kind === "user" || currentStage?.kind === "user";
   const trimmedContent = String(messageContent || "").trim();
 
@@ -602,6 +604,8 @@ function checkEventProgressAiNeeded(
     stageIndex: currentProgress.stageIndex || 0,
     phaseKind: currentPhase?.kind || "unknown",
     stageKind: currentStage?.kind || "unknown",
+    nextStageKind: nextStage?.kind || "unknown",
+    nextStageLabel: nextStage?.label || "",
     isUserPhase,
     trimmedContentLength: trimmedContent.length,
     messagePreview: trimmedContent.slice(0, 60),
@@ -613,8 +617,31 @@ function checkEventProgressAiNeeded(
     return false;
   }
 
-  // 注: '.' 等占位消息不应跳过事件进度检测器 - 编排需要 AI 判定剧情是否推进
-  // 原快路径B 已移除，否则 scene 事件下 '.' 会卡住剧情
+  // Fast path 2 (新增): 玩家只发了占位字符（"嗯"/"哦"等），事件状态不可能被改变
+  if (trimmedContent.length === 0 || /^[\s.,。!?！？…\-_=~`'"]+$/.test(trimmedContent)) {
+    DebugLogUtil.log("story:ai_parallel", "[checkEventProgressAiNeeded] fast path: 占位消息，跳过 AI");
+    return false;
+  }
+
+  // Fast path 3 (新增): phase 没有 completionEventIds / requiredEventIds / advanceSignals
+  //                    → 没有具体完成条件，AI 没办法判"事件达成"，调用也是浪费
+  if (currentPhase && !(
+    (Array.isArray(currentPhase.completionEventIds) && currentPhase.completionEventIds.length > 0) ||
+    (Array.isArray(currentPhase.requiredEventIds) && currentPhase.requiredEventIds.length > 0) ||
+    (Array.isArray(currentPhase.advanceSignals) && currentPhase.advanceSignals.length > 0)
+  )) {
+    DebugLogUtil.log("story:ai_parallel", "[checkEventProgressAiNeeded] fast path: phase 无明确完成条件，跳过 AI");
+    return false;
+  }
+
+  // Fast path 4 (新增): 当前 stage 之后是 user-kind stage（用户发言阶段），
+  //                    说明当前 scene 的目的就是等用户回应一次然后推进到 user 阶段，
+  //                    用户的发言本身已经满足"场景 → 用户发言"的推进条件，
+  //                    让 recordChapterProgressSignals 标记完成即可，不需要 AI 复核。
+  if (nextStage && nextStage.kind === "user" && !isUserPhase) {
+    DebugLogUtil.log("story:ai_parallel", "[checkEventProgressAiNeeded] fast path: next stage 是 user kind，跳过 AI（用户发言已满足推进）");
+    return false;
+  }
 
   DebugLogUtil.log("story:ai_parallel", "[checkEventProgressAiNeeded] 需要调用 AI #2");
   return true;
@@ -686,6 +713,29 @@ async function applySessionUserEventProgress(params: {
     // 非 user phase：仅当是 "." 快路径 或 forceAi=true 时才调 AI
     const shouldSkipAi = trimmedContent !== "." && !params.forceAi;
     if (shouldSkipAi) {
+      // Fast path 加权: 如果当前 scene stage 之后紧跟 user stage（说明这一段 NPC 引导
+      // 之后需要让用户说话），用户的发言已经"对 NPC 引导的回应"——视作 current stage 完成，
+      // 直接把 stageIndex 推进到 user stage，让编排器把输入权交还用户。
+      const nextStage = currentPhase?.stages?.[(currentProgress.stageIndex || 0) + 1] || null;
+      if (currentStage && nextStage && nextStage.kind === "user" && !params.forceAi) {
+        setChapterProgressState(params.state, {
+          stageIndex: (currentProgress.stageIndex || 0) + 1,
+          eventSummary: nextStage.targetSummary || nextStage.label,
+          userNodeId: nextStage.userNodeId || "",
+          userNodeStatus: "waiting_input",
+          eventStatus: "waiting_input",
+          userSpeakCount: 0,
+        });
+        console.log("[applySessionUserEventProgress] scene→user stage 推进（fast path，无需 AI）", {
+          phaseId: currentProgress.phaseId,
+          fromStage: currentProgress.stageIndex,
+          toStage: (currentProgress.stageIndex || 0) + 1,
+          stageLabel: nextStage.label,
+        });
+        syncChapterProgressWithRuntime(params.chapter, params.state);
+        return;
+      }
+
       console.log("[applySessionUserEventProgress] 非 user phase + 非 '.' 快路径，跳过事件进度 AI，事件不推进", {
         phaseId: currentProgress.phaseId,
         phaseKind: currentPhase?.kind || "unknown",
@@ -701,7 +751,9 @@ async function applySessionUserEventProgress(params: {
     });
   }
 
-  // ★ 新增: 如果已预计算 AI #2，直接使用；否则调用 AI
+  // ★ 新增: 如果已预计算 AI #2，直接使用；否则 **不再调 AI**（addMessage 入口已用
+  //    checkEventProgressAiNeeded 决定是否预计算；如果没预计算就说明 fast path 命中，
+  //    此处直接走规则推进，不应该再花 5s 调一次 MiniMax）
   let resolution: AiEventProgressResolution | null = null;
   const currentPhaseId = readChapterProgressState(params.state)?.phaseId || null;
   if (params.precomputedAiResolution !== undefined) {
@@ -712,18 +764,7 @@ async function applySessionUserEventProgress(params: {
       phaseId: currentPhaseId,
     });
   } else {
-    resolution = await evaluateEventProgressByAi({
-      userId: params.userId,
-      world: params.world,
-      chapter: params.chapter,
-      state: params.state,
-      messageContent: params.messageContent,
-      messageRole: String(params.state.player?.name || "用户"),
-      messageRoleType: "player",
-      eventType: params.eventType,
-      recentMessages: params.recentMessages,
-      traceMeta: params.traceMeta,
-    });
+    DebugLogUtil.log("story:ai_parallel", "[applySessionUserEventProgress] AI #2 未预计算（fast path 命中），跳过 AI 走规则推进");
   }
   console.log("[applySessionUserEventProgress] resolution applied", {
     ended: resolution?.ended,
