@@ -117,7 +117,7 @@ rm -rf /opt/toonflow/toonflow-game-app/node_modules
 ###
 git pull --ff-only origin dev
 
-### 更新库
+### 更新库 (可以网络加速后再试)
 yarn install  --frozen-lockfile --ignore-engines
 
 ### 构建
