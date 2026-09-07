@@ -36,7 +36,7 @@ chown -R www-data:www-data /var/www/toonflow
 chmod -R 755 /var/www/toonflow
 
 # 重新加载 Nginx
-nginx -t && systemctl reload nginx
+nginx -t && droiddesk-tower nginx  reload
 ```
 
 ---
@@ -107,5 +107,5 @@ cd /opt/toonflow/Toonflow-game-web
   rsync -rlt --no-perms --delete dist/ /var/www/toonflow/                                                                                                                                        
   chown -R www-data:www-data /var/www/toonflow                                                                                                                                      
   chmod -R 755 /var/www/toonflow                                                                                                                                                    
-  nginx -t && systemctl reload nginx
+  nginx -t && systemctl reload reload
 ```
