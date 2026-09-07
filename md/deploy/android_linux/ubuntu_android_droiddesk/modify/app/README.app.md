@@ -106,15 +106,14 @@ tower-pm2 monit
 
 
 ## 维护
-
-### 清理库（没事不要清理）
 cd /opt/toonflow/toonflow-game-app
+### 清理库（没事不要清理）
 rm -rf /opt/toonflow/toonflow-game-app/node_modules
 
 ### nodejs 22 安装 与加速
 [nodejs.md](nodejs.md)
 
-###
+### 拉取代码
 git pull --ff-only origin dev
 
 ### 更新库 (可以网络加速后再试)
