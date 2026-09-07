@@ -460,23 +460,10 @@ PANELEOF
   run_sudo systemctl stop "${PANEL_NAME}.service" 2>/dev/null || true
   run_sudo systemctl disable "${PANEL_NAME}.service" 2>/dev/null || true
 
-  # 配置 supervisor
-  log "配置 supervisor 托管管理页"
+  # droiddesk-tower service
+  log "配置 droiddesk-tower service 托管管理页"
+  run_sudo droiddesk-tower service add ToonflneowPanel $PANEL_DIR/$panel_start_script --nginx --keep-live
   run_sudo tee "$panel_conf_file" > /dev/null <<EOF
-[program:${PANEL_NAME}]
-command=$panel_start_script
-directory=$PANEL_DIR
-autostart=true
-autorestart=true
-startretries=3
-stdout_logfile=$PANEL_DIR/supervisor.log
-stderr_logfile=$PANEL_DIR/supervisor.err.log
-environment=PYTHONUNBUFFERED="1"
-EOF
-
-  run_sudo supervisorctl reread 2>&1 || true
-  run_sudo supervisorctl update 2>&1 || true
-  run_sudo supervisorctl start "$PANEL_NAME" 2>&1 || true
 }
 
 write_nginx_config() {
@@ -566,7 +553,7 @@ EOF
   else
     # 非 systemd 环境直接启动 nginx
     pkill nginx 2>/dev/null || true
-    run_sudo nginx
+    run_sudo `droiddesk-tower nginx start
     log "Nginx 已启动（非 systemd 环境）"
   fi
 }
