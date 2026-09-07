@@ -80,3 +80,4 @@ conda update --all
 source ~/miniconda3/etc/profile.d/conda.sh
 # conda activate base
 ```
+conda activate base 命令会导致一些问题，所以注释了。
