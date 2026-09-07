@@ -69,7 +69,7 @@ pm2 monit
 
 ## 维护
 
-### 清理库
+### 清理库（没事不要清理）
 cd /opt/toonflow/toonflow-game-app
 rm -rf /opt/toonflow/toonflow-game-app/node_modules
 
