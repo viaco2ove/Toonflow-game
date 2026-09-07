@@ -52,6 +52,11 @@ tail -f /opt/toonflow/panel/supervisor.log
 tail -f /opt/toonflow/panel/supervisor.err.log
 ```
 
+清空日志
+tower-pm2 flush {APP_NAME}
+```
+tower-pm2 flush toonflow-game
+```
 ---
 
 
