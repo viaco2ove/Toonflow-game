@@ -2835,7 +2835,7 @@ async function addSessionMessageInner(input: AddSessionMessageInput, sessionId: 
     ...(triggerResult?.triggerHits || []),
     ...(taskResult?.triggerHit ? [taskResult.triggerHit] : []),
   ];
-  let nextChapterId = taskResult?.nextChapterId ?? prevChapterId ?? 0;
+  let nextChapterId: number | null = taskResult?.nextChapterId ?? prevChapterId ?? 0;
   let sessionStatus = taskResult?.sessionStatus ?? prevStatus;
   // ★ 兜底: 检测连续两次发 "." 且中间无 NPC/旁白说话
   //    连续 "." 说明前一次快路径没有推进剧情，此时禁用快路径，强制走 AI 完整链路。
@@ -2884,7 +2884,8 @@ async function addSessionMessageInner(input: AddSessionMessageInput, sessionId: 
        * 这样 [story:mini_game:task:completion:runtime/stats] 才会真正出现在日志里。
        * 不再在 addMessage 阶段直接 return on_task_resolution。
        */
-      const resolvedFreeChapterTask: { narration: string } | null = null;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- 历史死代码保留：类型用 any 避免 TS 把常量 narrow 到 never
+      const resolvedFreeChapterTask: any = null;
       if (resolvedFreeChapterTask) {
         setRuntimeTurnState(state, world, {
           canPlayerSpeak: true,
@@ -3510,7 +3511,7 @@ export async function generatePlayTips(sessionIdInput: string): Promise<{ tips: 
 export async function generateOrchestrateOptionsForSession(
   sessionIdInput: string,
   refresh: boolean,
-): Promise<{ options: Array<{ role: string; motive: string }>; source: "ai" | "fallback" }> {
+): Promise<{ options: Array<{ role: string; motive: string }>; source: "ai" | "fallback" | "ai_padded" }> {
   const sessionId = String(sessionIdInput || "").trim();
   if (!sessionId) {
     throw new SessionServiceError(400, "sessionId 不能为空");
