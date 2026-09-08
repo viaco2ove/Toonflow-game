@@ -541,12 +541,23 @@ async function _installEmbed(onProgress: (msg: string, percent?: number) => void
 
     if (!stOk) {
       onProgress("正在安装 sentence-transformers（首次需下载依赖，约 100MB）...", 20);
-      const pipOk = await runCommandAsync(
+      // --break-system-packages: Debian/Ubuntu 系（PEP 668）禁止 pip 直接写系统 Python，
+      // 服务器（Python 3.14）不带该参数会报 externally-managed-environment 退出码 1。
+      // Windows 的 pip 不认识该参数会报错，所以失败后去掉参数重试一次。
+      let pipOk = await runCommandAsync(
         getPipCmd(),
-        ["install", "sentence-transformers", "--quiet", "--no-cache-dir"],
+        ["install", "sentence-transformers", "--quiet", "--no-cache-dir", "--break-system-packages"],
         600000,
         onProgress,
       );
+      if (!pipOk) {
+        pipOk = await runCommandAsync(
+          getPipCmd(),
+          ["install", "sentence-transformers", "--quiet", "--no-cache-dir"],
+          600000,
+          onProgress,
+        );
+      }
       if (!pipOk) throw new Error("pip install sentence-transformers 失败");
     }
     onProgress("sentence-transformers 已就绪", 40);
@@ -555,9 +566,13 @@ async function _installEmbed(onProgress: (msg: string, percent?: number) => void
     await fsp.mkdir(MODELS_DIR, { recursive: true });
     onProgress("正在下载 m3e-small 模型（约 400MB）...", 50);
 
+    // 国内网络优先走 hf-mirror 镜像（env/.env.local 已有 HF_ENDPOINT 配置）
+    const hfEndpoint = String(process.env.HF_ENDPOINT || "https://hf-mirror.com").trim() || "https://hf-mirror.com";
     const dlScript = `
 import os
 import sys
+if not os.environ.get("HF_ENDPOINT"):
+    os.environ["HF_ENDPOINT"] = "${hfEndpoint}"
 from huggingface_hub import snapshot_download
 
 dest = r"${MODELS_DIR.replace(/\\/g, "\\\\")}"

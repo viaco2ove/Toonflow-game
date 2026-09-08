@@ -63,3 +63,4 @@ run.local.ps1
 /.claude/worktrees/agent-a4554f8deb76d473f/
 /.claude/worktrees/
 /toonflow-pkg-v1.0.2/
+/env/pyvenv.cfg

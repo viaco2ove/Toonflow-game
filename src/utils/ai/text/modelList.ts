@@ -24,7 +24,12 @@ function createResponsesProtocolFetch(reasoning?: { effort: "none" | "minimal" |
   const baseFetch = userFetch || fetch;
   return async (input, init) => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : (input as Request).url;
-    const newUrl = url.replace(/\/v1\/chat\/completions$/, "/v1/responses");
+    // 两种 baseURL 形态，SDK 都会在末尾拼 /chat/completions：
+    // - baseURL=https://xx/v1            → https://xx/v1/chat/completions → 改写为 /v1/responses
+    // - baseURL=https://xx/v1/responses  → https://xx/v1/responses/chat/completions → 去掉尾部 /chat/completions
+    const newUrl = url.endsWith("/responses/chat/completions")
+      ? url.replace(/\/chat\/completions$/, "")
+      : url.replace(/\/v1\/chat\/completions$/, "/v1/responses");
 
     const body = JSON.parse((init?.body as string) || "{}");
     const { model, messages, stream, ...rest } = body;
