@@ -145,7 +145,7 @@ async function findModelDir(): Promise<string | null> {
       const subPath = path.join(MODELS_DIR, sub);
       const stat = await fsp.stat(subPath).catch(() => null);
       if (!stat?.isDirectory()) continue;
-      const subFiles = await fsp.readdir(subPath).catch(() => []);
+      const subFiles: string[] = await fsp.readdir(subPath).catch(() => []);
       if (
         subFiles.some(f => f === "pytorch_model.bin" || f === "model.safetensors" || f === "modules.json")
         && subFiles.includes("config.json")
@@ -223,8 +223,14 @@ async function ensurePythonReady(): Promise<void> {
   // 构建 Python 脚本
   const scriptContent = `
 import sys
+import io
 import json
 import threading
+
+# Windows 下 stdin/stdout 默认 GBK，必须强制 UTF-8，否则中文变乱码
+sys.stdin = io.TextIOWrapper(sys.stdin.buffer, encoding="utf-8")
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
+
 try:
     from sentence_transformers import SentenceTransformer
     import numpy as np
@@ -258,8 +264,11 @@ def handle_request(data):
             print(json.dumps({"type": "result", "id": req_id, "vectors": []}), flush=True)
         elif action == "ready":
             print(json.dumps({"type": "result", "id": req_id, "vectors": []}), flush=True)
+        else:
+            print(json.dumps({"type": "error", "id": req_id, "msg": f"未知 action: {action}"}), flush=True)
     except Exception as e:
-        print(json.dumps({"type": "error", "id": req_id, "msg": str(e)}), flush=True, file=sys.stderr)
+        # 带 id 的错误必须走 stdout，Node 端按 id 路由到挂起的请求
+        print(json.dumps({"type": "error", "id": req_id, "msg": str(e)}), flush=True)
 
 # 加载模型
 try:
@@ -292,40 +301,76 @@ for line in sys.stdin:
     windowsHide: true,
   });
 
-  let initDone = false;
+let initDone = false;
+  let initResolve: (() => void) | null = null;
+  let initReject: ((e: Error) => void) | null = null;
   const initPromise = new Promise<void>((resolve, reject) => {
-    pythonProc!.stdout!.on("data", (chunk: Buffer) => {
-      const lines = chunk.toString("utf8").split("\n");
-      for (const line of lines) {
-        if (!line.trim()) continue;
-        try {
-          const msg = JSON.parse(line);
-          if (msg.type === "ready") {
-            initDone = true;
-            embeddingReady = true;
-            resolve();
-          } else if (msg.type === "error") {
-            console.error("[m3e-small] Python 进程错误:", msg.msg);
-            if (!initDone) reject(new Error(msg.msg));
-          }
-        } catch {
-          // non-JSON 输出（debug）
-        }
+    initResolve = resolve;
+    initReject = reject;
+  });
+
+  // 统一行缓冲：stdout 可能一个 chunk 里有多行或半行
+  let stdoutBuffer = "";
+  const handleLine = (line: string): void => {
+    const trimmed = line.trim();
+    if (!trimmed) return;
+    let msg: any;
+    try {
+      msg = JSON.parse(trimmed);
+    } catch {
+      dlog("[m3e-small][stdout:raw]", trimmed.slice(0, 200));
+      return;
+    }
+    if (msg.type === "ready") {
+      initDone = true;
+      embeddingReady = true;
+      initResolve?.();
+    } else if (msg.type === "error" && msg.id === undefined) {
+      // 无 id 的 error 是加载期错误
+      console.error("[m3e-small] Python 进程错误:", msg.msg);
+      if (!initDone) initReject?.(new Error(msg.msg));
+    } else if (msg.type === "error" && msg.id !== undefined) {
+      // 带 id 的 error 对应挂起的请求
+      const pending = pendingRequests.get(Number(msg.id));
+      if (pending) {
+        pendingRequests.delete(Number(msg.id));
+        pending.reject(new Error(String(msg.msg || "encode 失败")));
       }
-    });
-    pythonProc!.stderr!.on("data", (chunk: Buffer) => {
-      const txt = chunk.toString("utf8").trim();
-      if (txt) dlog("[m3e-small][stderr]", txt);
-    });
-    pythonProc!.on("error", (err) => {
-      console.error("[m3e-small] subprocess error:", err.message);
-      if (!initDone) reject(err);
-    });
-    pythonProc!.on("close", (code) => {
-      console.log(`[m3e-small] subprocess exited with code ${code}`);
-      pythonProc = null;
-      embeddingReady = false;
-    });
+    } else if (msg.type === "result" && msg.id !== undefined) {
+      const pending = pendingRequests.get(Number(msg.id));
+      if (pending) {
+        pendingRequests.delete(Number(msg.id));
+        pending.resolve(Array.isArray(msg.vectors) ? msg.vectors : []);
+      }
+    }
+  };
+
+  pythonProc!.stdout!.setEncoding("utf8");
+  pythonProc!.stdout!.on("data", (chunk: string) => {
+    stdoutBuffer += chunk;
+    const lines = stdoutBuffer.split("\n");
+    stdoutBuffer = lines.pop() || "";
+    for (const line of lines) handleLine(line);
+  });
+  pythonProc!.stderr!.setEncoding("utf8");
+  pythonProc!.stderr!.on("data", (chunk: string) => {
+    const txt = chunk.trim();
+    if (txt) dlog("[m3e-small][stderr]", txt.slice(0, 300));
+  });
+  pythonProc!.on("error", (err) => {
+    console.error("[m3e-small] subprocess error:", err.message);
+    if (!initDone) initReject?.(err);
+    // 进程级错误：拒绝所有挂起请求
+    for (const [, pending] of pendingRequests) pending.reject(err);
+    pendingRequests.clear();
+  });
+  pythonProc!.on("close", (code) => {
+    console.log(`[m3e-small] subprocess exited with code ${code}`);
+    pythonProc = null;
+    embeddingReady = false;
+    if (!initDone) initReject?.(new Error(`Python 进程退出（code=${code}）`));
+    for (const [, pending] of pendingRequests) pending.reject(new Error("Python 进程已退出"));
+    pendingRequests.clear();
   });
 
   // 20s 启动超时：超过 20s 说明 sentence-transformers 没装好 / 模型路径不对
