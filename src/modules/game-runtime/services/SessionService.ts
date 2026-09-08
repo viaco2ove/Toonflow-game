@@ -901,7 +901,14 @@ async function applySessionPreOrchestrationEventProgress(params: {
       nextEventSummary: readNextEventProgressHint(params.chapter, params.state)?.summary,
     });
   }
-  if (progressApplied.enteredUserPhase || resolution.eventStatus === "waiting_input") {
+  // ★ BUG 修复：只在上轮发言人不是玩家时才交还输入权。
+  //   旧逻辑里，只要 AI #2 判定 eventStatus="waiting_input" 就 allowPlayerTurn，
+  //   但 free-mode 动态事件初始 eventStatus 就是 waiting_input，
+  //   AI 大概率也回 "still waiting" → 永远停在等用户循环。
+  //   现在多一条 guard：如果最新发言是玩家（on_message），跳过 allowPlayerTurn，
+  //   让编排器真去生成 NPC 回复，而不是硬编码 "等待用户输入下一步行动"。
+  const lastSpeakerIsPlayer = latestRoleType === "player" && latestEventType === "on_message";
+  if (!lastSpeakerIsPlayer && (progressApplied.enteredUserPhase || resolution.eventStatus === "waiting_input")) {
     allowPlayerTurn(
       params.state,
       params.world,
