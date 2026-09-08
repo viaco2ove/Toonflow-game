@@ -3,7 +3,8 @@ import { generateText, streamText, Output, stepCountIs, ModelMessage, LanguageMo
 import { wrapLanguageModel } from "ai";
 import { devToolsMiddleware } from "@ai-sdk/devtools";
 import { parse } from "best-effort-json-parser";
-import { getModelList, normalizeTextModelName } from "./modelList";
+import { getModelList, normalizeTextModelName, createResponsesProtocolFetch } from "./modelList";
+import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { z } from "zod";
 import { writeAiTokenUsageLog } from "@/lib/aiTokenUsageLog";
 import type { LanguageModelUsage } from "ai";
@@ -335,7 +336,11 @@ const buildOptions = async (input: AIInput<any>, config: AIConfig = {}) => {
   const minimaxReasoning = isMinimaxManufacturer
     ? { reasoning: { effort: config?.reasoningEffort || "low" } }
     : {};
-  const modelInstance = owned.instance({
+  // ★ openai 透传厂商：baseURL 以 /responses 结尾时复刻 MiniMax 的做法
+  //   （createOpenAICompatible + responses 协议 fetch 改写），绕过条目自带的 createOpenAI
+  const isOpenaiResponsesProtocol = String(manufacturer || "").trim().toLowerCase() === "openai"
+    && /\/responses\/?$/.test(String(baseURL || "").trim());
+  const instanceOptions: any = {
     apiKey,
     baseURL: baseURL!,
     name: "xixixi",
@@ -345,7 +350,13 @@ const buildOptions = async (input: AIInput<any>, config: AIConfig = {}) => {
         ? { fetch: createDebugFetch(`${owned.manufacturer}:${model}`, (input as any)?.usageType || (input as any)?.usageRemark || undefined) }
         : {}
     ),
-  } as any);
+  };
+  const modelInstance = isOpenaiResponsesProtocol
+    ? createOpenAICompatible({
+        ...instanceOptions,
+        fetch: createResponsesProtocolFetch(undefined, instanceOptions.fetch),
+      })
+    : owned.instance(instanceOptions);
 
   const maxStep = input.maxStep ?? (input.tools ? Object.keys(input.tools).length * 5 : undefined);
   const outputBuilders: Record<string, (schema: any) => any> = {

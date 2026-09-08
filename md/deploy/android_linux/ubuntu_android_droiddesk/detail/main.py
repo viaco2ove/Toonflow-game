@@ -2,16 +2,22 @@ from __future__ import annotations
 
 from datetime import datetime
 from dataclasses import dataclass
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
 import html
 import os
 import shlex
 import subprocess
+from urllib.parse import quote
 
 app = FastAPI()
 
-APP_NAME = os.environ.get("PANEL_APP_NAME", "../modify/toonflow-game").strip() or "toonflow-game"
+# 可选的简单访问口令：设置环境变量 PANEL_TOKEN 后，
+# 打开管理页需要带 ?token=xxx，且所有操作按钮都会校验。
+# 不设置则不启用鉴权（内网自用场景）。
+PANEL_TOKEN = os.environ.get("PANEL_TOKEN", "").strip()
+
+APP_NAME = os.environ.get("PANEL_APP_NAME", "toonflow-game").strip() or "toonflow-game"
 APP_DIR = os.environ.get("PANEL_APP_DIR",
                          "/opt/toonflow/toonflow-game-app").strip() or "/opt/toonflow/toonflow-game-app"
 APP_PORT = int(os.environ.get("PANEL_APP_PORT", "60002").strip() or "60002")
@@ -26,11 +32,6 @@ if not WEB_PROJECT_DIR:
     WEB_PROJECT_DIR = "/opt/toonflow/Toonflow-game-web"
 WEB_BUILD_NODE_OPTIONS = os.environ.get("PANEL_WEB_BUILD_NODE_OPTIONS",
                                         "--max-old-space-size=512").strip() or "--max-old-space-size=512"
-START_APP_CMD = (
-    f"cd {shlex.quote(APP_DIR)} && "
-    "NODE_ENV=prod PREFER_PROCESS_ENV=1 "
-    f"tower-pm2 start build/app.js --name {shlex.quote(APP_NAME)} --update-env"
-)
 RESTART_OR_START_APP_CMD = (
     "set -e; "
     f"cd {shlex.quote(APP_DIR)} && "
@@ -63,9 +64,6 @@ def _nginx_status_cmd() -> str:
         return "droiddesk-tower nginx status --no-pager 2>&1 || true"
     # 无 systemd：检查 nginx 进程是否存在
     return 'pgrep -a nginx || echo "nginx 未运行"'
-
-
-APP_LOG_FILE = f"{APP_LOG_DIR}/app-$(date +%Y-%m-%d).log"
 
 
 def get_app_logs(lines: int = 2000) -> str:
@@ -106,13 +104,13 @@ def clear_app_logs() -> str:
 
 
 def get_tower_pm2_logs(lines: int = 500) -> str:
-    """获取tower-tower-pm2进程日志"""
+    """获取tower-pm2进程日志"""
     result = run(f"tower-pm2 logs {shlex.quote(APP_NAME)} --nostream --lines {lines} 2>&1")
     return result
 
 
 def clear_tower_pm2_logs() -> str:
-    """清空tower-tower-pm2进程日志"""
+    """清空tower-pm2进程日志"""
     return run(f"tower-pm2 flush {shlex.quote(APP_NAME)} 2>&1")
 
 
@@ -127,7 +125,9 @@ class CommandResult:
 
 
 def run_result(cmd: str) -> CommandResult:
-    process = subprocess.run(cmd, shell=True, text=True, capture_output=True)
+    # 显式 UTF-8：git/yarn 输出可能含非本地编码字节，避免面板进程直接崩溃
+    process = subprocess.run(cmd, shell=True, text=True, capture_output=True,
+                             encoding="utf-8", errors="replace")
     output = (process.stdout or "") + (process.stderr or "")
     return CommandResult(output=output, returncode=process.returncode)
 
@@ -302,6 +302,43 @@ def set_last_action_log(title: str, output: str) -> None:
     LAST_ACTION_LOG = f"[{timestamp}] {title}\n{body}"
 
 
+def qs(token: str = "") -> str:
+    """拼查询串：启用 PANEL_TOKEN 时给站内链接自动带上 token。"""
+    return f"?token={quote(token)}" if PANEL_TOKEN and token else ""
+
+
+def auth_ok(request: Request) -> bool:
+    """校验请求是否带正确的 token（未配置 PANEL_TOKEN 时始终放行）。"""
+    if not PANEL_TOKEN:
+        return True
+    return request.query_params.get("token") == PANEL_TOKEN
+
+
+def auth_page(title: str = "需要访问口令") -> HTMLResponse:
+    return HTMLResponse(f"""
+    <html><head><meta charset="utf-8"><title>{html.escape(title)}</title></head>
+    <body style="font-family:system-ui;display:flex;justify-content:center;padding-top:80px">
+      <form method="get" action="/" style="border:1px solid #dbe4f0;border-radius:12px;padding:24px">
+        <p>请输入访问口令（安装配置里的 PANEL_TOKEN）：</p>
+        <input name="token" type="password" style="padding:8px;width:240px">
+        <button style="padding:8px 16px" type="submit">进入</button>
+      </form>
+    </body></html>
+    """, status_code=401)
+
+
+def redirect_home(request: Request) -> RedirectResponse:
+    """操作完成后回首页：启用 token 时把 token 带回去，避免被踢回口令页。"""
+    token = request.query_params.get("token", "") if PANEL_TOKEN else ""
+    return RedirectResponse(f"/{qs(token)}", status_code=303)
+
+
+def redirect_logs(request: Request, path: str) -> RedirectResponse:
+    token = request.query_params.get("token", "") if PANEL_TOKEN else ""
+    suffix = f"?token={quote(token)}" if token else ""
+    return RedirectResponse(f"{path}{suffix}", status_code=303)
+
+
 # ========== 修复：强制同步后 自动构建+重启，源码立即生效 ==========
 def force_sync_current_branch() -> str:
     result = force_sync_repo_current_branch(APP_DIR)
@@ -326,10 +363,11 @@ def force_sync_all_current_branches() -> str:
 
 
 def install_ffmpeg() -> str:
-    return run("apt update && apt install ffmpeg -y")
-
-def install_ffmpeg_sudo() -> str:
-    return run("sudo apt update && sudo apt install ffmpeg -y")
+    # 无 systemd 环境（proot/Termux）通常就是 root，直接 apt；
+    # 普通 Ubuntu 非 root 时才走 sudo。
+    if _is_systemd() and os.geteuid() != 0:
+        return run("sudo apt update && sudo apt install -y ffmpeg 2>&1")
+    return run("apt update && apt install -y ffmpeg 2>&1")
 
 
 # ====================== 以下代码无需修改 ======================
@@ -427,7 +465,9 @@ def service_status() -> dict:
 
 
 @app.get("/", response_class=HTMLResponse)
-def home() -> str:
+def home(request: Request, token: str = ""):
+    if not auth_ok(request):
+        return auth_page()
     status = service_status()
     git = git_info()
     web_branches = get_web_branches()
@@ -488,7 +528,7 @@ def home() -> str:
       <div class="page">
         <div class="hero"><h1>Toonflow 管理页</h1><p>目录：{APP_DIR}<br>端口：后端{APP_PORT} | Web{WEB_PORT}</p></div>
         <div class="status-grid">
-          {status_card("tower-tower-pm2进程", f"名称：{APP_NAME}", tower_pm2_label, tower_pm2_kind)}
+          {status_card("tower-pm2进程", f"名称：{APP_NAME}", tower_pm2_label, tower_pm2_kind)}
           {status_card("Nginx", "Web服务", nginx_label, nginx_kind)}
           {status_card("后端服务", f"端口{APP_PORT}", app_label, app_kind)}
           {status_card("Web入口", f"端口{WEB_PORT}", web_label, web_kind)}
@@ -497,25 +537,41 @@ def home() -> str:
         <div class="layout">
           <div class="panel">
             <h2>服务操作</h2>
-            <a class="action dark" href="/tools/install-ffmpeg">📦 安装 ffmpeg</a>
-            <a class="action danger" href="/git/force-sync-all">🔥 强制全量更新&重启（推荐）</a>
-            <a class="action danger" href="/git/force-sync">强制更新后端</a>
-            <a class="action danger" href="/git/force-sync-web">强制更新Web</a>
+            <form action="/tools/install-ffmpeg{qs(token)}" method="post" style="display:inline">
+              <button class="action dark" type="submit">📦 安装 ffmpeg</button>
+            </form>
+            <form action="/git/force-sync-all{qs(token)}" method="post" style="display:inline" onsubmit="return confirm('将强制覆盖本地代码并重建重启，确定？')">
+              <button class="action danger" type="submit">🔥 强制全量更新&重启（推荐）</button>
+            </form>
+            <form action="/git/force-sync{qs(token)}" method="post" style="display:inline" onsubmit="return confirm('将强制覆盖后端本地代码并重建重启，确定？')">
+              <button class="action danger" type="submit">强制更新后端</button>
+            </form>
+            <form action="/git/force-sync-web{qs(token)}" method="post" style="display:inline" onsubmit="return confirm('将强制覆盖Web本地代码并重建发布，确定？')">
+              <button class="action danger" type="submit">强制更新Web</button>
+            </form>
             <br>
-            <a class="action dark" href="/deploy/sync-web">构建Web端</a>
-            <a class="action" href="/nginx/restart">重启Nginx</a>
-            <a class="action dark" href="/app/restart">重启后端</a>
-            <a class="action dark" href="/app/logs">📜 查看日志</a>
-            <a class="action dark" href="/app/tower-pm2-logs">📋 tower-pm2日志</a>
+            <form action="/deploy/sync-web{qs(token)}" method="post" style="display:inline">
+              <button class="action dark" type="submit">构建Web端</button>
+            </form>
+            <form action="/nginx/restart{qs(token)}" method="post" style="display:inline">
+              <button class="action" type="submit">重启Nginx</button>
+            </form>
+            <form action="/app/restart{qs(token)}" method="post" style="display:inline">
+              <button class="action dark" type="submit">重启后端</button>
+            </form>
+            <a class="action dark" href="/app/logs{qs(token)}">📜 查看日志</a>
+            <a class="action dark" href="/app/tower-pm2-logs{qs(token)}">📋 tower-pm2日志</a>
             <br>
-            <form action="/git/switch-branch" method="get" style="margin-top:10px">
+            <form action="/git/switch-branch{qs(token)}" method="get" style="margin-top:10px">
               <label>切换Web分支：</label>
               <select name="branch">{''.join(f'<option value="{b}"{"selected" if b == web_current_branch else ""}>{b}</option>' for b in web_branches)}</select>
+              {f'<input type="hidden" name="token" value="{html.escape(token, quote=True)}">' if PANEL_TOKEN else ''}
               <button class="action dark" type="submit">切换并构建</button>
             </form>
-            <form action="/git/switch-app-branch" method="get" style="margin-top:10px">
+            <form action="/git/switch-app-branch{qs(token)}" method="get" style="margin-top:10px">
               <label>切换后端分支：</label>
               <select name="branch">{''.join(f'<option value="{b}"{"selected" if b == git["current_branch"] else ""}>{b}</option>' for b in app_branches)}</select>
+              {f'<input type="hidden" name="token" value="{html.escape(token, quote=True)}">' if PANEL_TOKEN else ''}
               <button class="action dark" type="submit">切换并发布</button>
             </form>
           </div>
@@ -530,70 +586,86 @@ def home() -> str:
     """
 
 
-@app.get("/app/restart")
-def app_restart():
+@app.post("/app/restart")
+def app_restart(request: Request):
+    if not auth_ok(request):
+        return auth_page()
     output = run(build_app_project_command()) + "\n\n" + restart_or_start_app()
     set_last_action_log("重启后端（全新构建）", output)
-    return RedirectResponse("/")
+    return redirect_home(request)
 
 
-@app.get("/nginx/restart")
-def nginx_restart():
+@app.post("/nginx/restart")
+def nginx_restart(request: Request):
+    if not auth_ok(request):
+        return auth_page()
     nginx_reload = _nginx_reload_cmd()
     output = run(f"nginx -t && {nginx_reload}")
     set_last_action_log("重启Nginx", output)
-    return RedirectResponse("/")
+    return redirect_home(request)
 
 
-@app.get("/deploy/sync-web")
-def deploy_sync_web():
+@app.post("/deploy/sync-web")
+def deploy_sync_web(request: Request):
+    if not auth_ok(request):
+        return auth_page()
     build = run_result(build_web_project_command())
     if not build.ok:
         set_last_action_log("Web构建失败", build.output)
-        return RedirectResponse("/")
+        return redirect_home(request)
     nginx_reload = _nginx_reload_cmd()
     publish = run_result(
-        f"rsync -rlt --no-perms --delete {WEB_SOURCE_DIR}/ {WEB_PUBLISH_DIR}/ && {nginx_reload}"
+        f"rsync -rlt --no-perms --delete {shlex.quote(WEB_SOURCE_DIR)}/ {shlex.quote(WEB_PUBLISH_DIR)}/ && {nginx_reload}"
     )
     set_last_action_log("Web构建+发布成功", build.output + "\n" + publish.output)
-    return RedirectResponse("/")
+    return redirect_home(request)
 
 
 @app.get("/git/switch-branch")
-def git_switch_branch(branch: str = ""):
-    if not branch: return RedirectResponse("/")
+def git_switch_branch(request: Request, branch: str = "", token: str = ""):
+    if not auth_ok(request):
+        return auth_page()
+    if not branch: return redirect_home(request)
     output = switch_web_branch(branch) + "\n\n" + build_web_project() + "\n\n" + sync_web_publish_dir()
     set_last_action_log(f"Web切换分支：{branch}", output)
-    return RedirectResponse("/")
+    return redirect_home(request)
 
 
 @app.get("/git/switch-app-branch")
-def git_switch_app_branch(branch: str = ""):
-    if not branch: return RedirectResponse("/")
+def git_switch_app_branch(request: Request, branch: str = "", token: str = ""):
+    if not auth_ok(request):
+        return auth_page()
+    if not branch: return redirect_home(request)
     output = switch_app_branch(branch) + "\n\n" + run(build_app_project_command()) + "\n\n" + restart_or_start_app()
     set_last_action_log(f"后端切换分支：{branch}", output)
-    return RedirectResponse("/")
+    return redirect_home(request)
 
 
-@app.get("/git/force-sync")
-def git_force_sync():
+@app.post("/git/force-sync")
+def git_force_sync(request: Request):
+    if not auth_ok(request):
+        return auth_page()
     output = force_sync_current_branch()
     set_last_action_log("后端：强制同步+构建+重启", output)
-    return RedirectResponse("/")
+    return redirect_home(request)
 
 
-@app.get("/git/force-sync-web")
-def git_force_sync_web():
+@app.post("/git/force-sync-web")
+def git_force_sync_web(request: Request):
+    if not auth_ok(request):
+        return auth_page()
     output = force_sync_web_current_branch()
     set_last_action_log("Web：强制同步+构建+发布", output)
-    return RedirectResponse("/")
+    return redirect_home(request)
 
 
-@app.get("/git/force-sync-all")
-def git_force_sync_all():
+@app.post("/git/force-sync-all")
+def git_force_sync_all(request: Request):
+    if not auth_ok(request):
+        return auth_page()
     output = force_sync_all_current_branches()
     set_last_action_log("🔥 全量更新：同步+构建+重启+发布", output)
-    return RedirectResponse("/")
+    return redirect_home(request)
 
 
 @app.get("/healthz", response_class=PlainTextResponse)
@@ -602,8 +674,10 @@ def healthz():
 
 
 @app.get("/app/logs", response_class=HTMLResponse)
-def view_app_logs():
+def view_app_logs(request: Request):
     """查看后端应用日志"""
+    if not auth_ok(request):
+        return auth_page()
     lines = 2000
     logs = get_app_logs(lines)
     logs_escaped = html.escape(logs).replace("\n", "<br>")
@@ -646,16 +720,20 @@ def view_app_logs():
 
 
 @app.post("/app/logs/clear")
-def clear_app_logs_handler():
+def clear_app_logs_handler(request: Request):
     """清空后端应用日志"""
+    if not auth_ok(request):
+        return auth_page()
     output = clear_app_logs()
     set_last_action_log("清空后端日志", output)
-    return RedirectResponse("/app/logs", status_code=303)
+    return redirect_logs(request, "/app/logs")
 
 
 @app.get("/app/tower-pm2-logs", response_class=HTMLResponse)
-def view_tower_pm2_logs():
-    """查看tower-tower-pm2进程日志"""
+def view_tower_pm2_logs(request: Request):
+    """查看tower-pm2进程日志"""
+    if not auth_ok(request):
+        return auth_page()
     lines = 500
     logs = get_tower_pm2_logs(lines)
     logs_escaped = html.escape(logs).replace("\n", "<br>")
@@ -695,19 +773,20 @@ def view_tower_pm2_logs():
 
 
 @app.post("/app/tower-pm2-logs/clear")
-def clear_tower_pm2_logs_handler():
-    """清空tower-tower-pm2进程日志"""
+def clear_tower_pm2_logs_handler(request: Request):
+    """清空tower-pm2进程日志"""
+    if not auth_ok(request):
+        return auth_page()
     output = clear_tower_pm2_logs()
     set_last_action_log("清空tower-pm2日志", output)
-    return RedirectResponse("/app/tower-pm2-logs", status_code=303)
+    return redirect_logs(request, "/app/tower-pm2-logs")
 
 
-@app.get("/tools/install-ffmpeg")
-def tools_install_ffmpeg():
+@app.post("/tools/install-ffmpeg")
+def tools_install_ffmpeg(request: Request):
     """安装 ffmpeg"""
+    if not auth_ok(request):
+        return auth_page()
     output = install_ffmpeg()
     set_last_action_log("安装 ffmpeg", output)
-
-    output = install_ffmpeg_sudo()
-    set_last_action_log("安装 ffmpeg", output)
-    return RedirectResponse("/")
+    return redirect_home(request)

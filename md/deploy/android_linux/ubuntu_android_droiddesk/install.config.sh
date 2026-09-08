@@ -35,7 +35,8 @@ export WEB_BRANCH="dev"
 export NODE_MAJOR="20"
 export APP_PORT="60002"
 export HTTP_PORT="8088"
-export tower-pm2_NAME="toonflow-game"
+# tower-pm2 里注册的服务名（bash 变量名不能带连字符，所以叫 PM2_NAME）
+export PM2_NAME="toonflow-game"
 export SERVER_NAME="_"
 
 # 必填：这里写你最终给浏览器访问的地址。
@@ -53,8 +54,13 @@ export SKIP_FRONTEND="0"
 export PANEL_PORT="6008"
 export PANEL_NAME="toonflow-panel"
 export PANEL_DIR="${INSTALL_ROOT}/panel"
-export PANEL_APP_NAME="$tower-pm2_NAME"
+export PANEL_APP_NAME="$PM2_NAME"
 export PANEL_APP_DIR="${INSTALL_ROOT}/toonflow-game-app"
 export PANEL_WEB_PORT="$HTTP_PORT"
 export PANEL_APP_PORT="$APP_PORT"
-export PANEL_WEB_PUBLISH_DIR="${INSTALL_ROOT}/www"
+# 前端发布目录：Ubuntu 用文档统一的 /var/www/toonflow；Termux 没有可写的 /var，放安装目录下。
+if [ -d "/data/data/com.termux" ] || [ -f "$PREFIX/bin/pkg" ]; then
+  export PANEL_WEB_PUBLISH_DIR="${INSTALL_ROOT}/www"
+else
+  export PANEL_WEB_PUBLISH_DIR="/var/www/toonflow"
+fi

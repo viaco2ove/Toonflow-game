@@ -37,7 +37,9 @@ WEB_BRANCH="${WEB_BRANCH:-}"
 NODE_MAJOR="${NODE_MAJOR:-22}"
 APP_PORT="${APP_PORT:-60002}"
 HTTP_PORT="${HTTP_PORT:-8088}"
-tower-pm2_NAME="${tower-pm2_NAME:-toonflow-game}"
+# 服务名固定叫 toonflow-game（tower-pm2 里注册的名字）。
+# 注意：不能把变量名起成 tower-pm2_NAME，bash 变量名不允许带连字符。
+PM2_NAME="${PM2_NAME:-toonflow-game}"
 SERVER_NAME="${SERVER_NAME:-_}"
 PUBLIC_URL="${PUBLIC_URL:-}"
 TEMP_OSS="${TEMP_OSS:-}"
@@ -45,7 +47,7 @@ SKIP_FRONTEND="${SKIP_FRONTEND:-0}"
 PANEL_PORT="${PANEL_PORT:-6008}"
 PANEL_NAME="${PANEL_NAME:-toonflow-panel}"
 PANEL_DIR="${PANEL_DIR:-$INSTALL_ROOT/panel}"
-PANEL_APP_NAME="${PANEL_APP_NAME:-$tower-pm2_NAME}"
+PANEL_APP_NAME="${PANEL_APP_NAME:-$PM2_NAME}"
 PANEL_APP_DIR="${PANEL_APP_DIR:-$APP_DIR}"
 PANEL_WEB_PORT="${PANEL_WEB_PORT:-$HTTP_PORT}"
 PANEL_APP_PORT="${PANEL_APP_PORT:-$APP_PORT}"
@@ -239,7 +241,8 @@ install_node_yarn() {
     fi
   fi
 
-  log "安装 Yarn（不再安装 tower-pm2，改用 DroidDesk Tower 自研 tower-pm2）"
+  # 只装 Yarn；tower-pm2 是 DroidDesk Tower 自带命令，不通过 npm 安装。
+  log "安装 Yarn"
   npm install -g yarn@1.22.22
   node -v
   yarn -v
@@ -324,10 +327,11 @@ build_backend() {
 }
 
 start_tower() {
+  # 用 DroidDesk Tower 自带的 tower-pm2 CLI 注册并启动后端。
+  # 命令口径与 modify/app/README.app.md、管理页 main.py 保持一致。
   log "启动 toonflow-game via Tower PM2"
   local tower_dir="/opt/droiddesk/tower"
-  local tower_api="http://127.0.0.1:7088"
-  local svc_name="$tower-pm2_NAME"
+  local svc_name="$PM2_NAME"
   local svc_cmd="NODE_ENV=local node $APP_DIR/build/app.js"
 
   # ── 1. 确保 Tower daemon 在跑 ──
@@ -345,74 +349,50 @@ start_tower() {
     bash "$tower_dir/tower-start" || true
   fi
 
-  # 等待 Tower daemon 就绪
-  sleep 2
-  if ! curl -s -m 3 "$tower_api/api/system" 2>/dev/null | grep -q '"ok"'; then
+  # 等待 tower-pm2 就绪（能响应 status 即视为就绪）
+  local ready=0
+  for _ in 1 2 3 4 5; do
+    sleep 2
+    if tower-pm2 status >/dev/null 2>&1; then
+      ready=1
+      break
+    fi
+  done
+  if [ "$ready" != "1" ]; then
     die "Tower daemon 启动失败，请检查 /var/log/tower/tower-pm2.log"
   fi
   log "Tower daemon is ready"
 
-  # ── 2. 启用 Tower PM2 模块 ──
-  local pm2_status
-  pm2_status=$(curl -s -m 5 "$tower_api/api/pm2/status" 2>/dev/null || echo '{}')
-  if ! echo "$pm2_status" | grep -q '"enabled":true'; then
-    log "启用 Tower PM2 模块..."
-    curl -s -X POST "$tower_api/api/pm2/enable" 2>/dev/null || true
-    sleep 1
-  fi
-
-  # ── 3. 注册服务（如果已存在会返回 "already exists"，无害） ──
-  log "注册服务 $svc_name 到 Tower PM2..."
-  local add_resp
-  add_resp=$(curl -s -X POST "$tower_api/api/pm2/add" \
-    -H "Content-Type: application/json" \
-    -d "{\"name\":\"$svc_name\",\"cmd\":\"$svc_cmd\",\"cwd\":\"$APP_DIR\",\"keep_live\":true,\"start_with_os\":false}" \
-    2>/dev/null || echo '{"ok":false}')
-  if echo "$add_resp" | grep -q '"ok":true'; then
-    log "服务已注册"
-  elif echo "$add_resp" | grep -q 'already exists'; then
-    log "服务已存在，跳过注册"
+  # ── 2. 注册服务（已存在则跳过） ──
+  if tower-pm2 describe "$svc_name" >/dev/null 2>&1; then
+    log "服务 $svc_name 已存在，跳过注册"
   else
-    log "注册响应: $add_resp"
+    log "注册服务 $svc_name 到 Tower PM2..."
+    tower-pm2 add "$svc_name" "$svc_cmd" --cwd "$APP_DIR" --keep-live
   fi
 
-  # ── 4. 重启服务（确保用最新代码） ──
+  # ── 3. 重启服务（确保用最新构建产物） ──
   log "通过 Tower PM2 重启 $svc_name..."
-  local start_resp
-  start_resp=$(curl -s -X POST "$tower_api/api/pm2/restart/$svc_name" 2>/dev/null || echo '{"ok":false}')
-  if echo "$start_resp" | grep -q '"ok":true'; then
-    log "toonflow-game 已通过 Tower PM2 启动"
-  else
-    log "Tower PM2 restart 响应: $start_resp"
-    # 尝试 stop + start
-    curl -s -X POST "$tower_api/api/pm2/stop/$svc_name" 2>/dev/null || true
-    sleep 1
-    start_resp=$(curl -s -X POST "$tower_api/api/pm2/start/$svc_name" 2>/dev/null || echo '{"ok":false}')
-    if echo "$start_resp" | grep -q '"ok":true'; then
-      log "toonflow-game 已通过 Tower PM2 start 启动"
-    else
-      die "Tower PM2 启动失败: $start_resp"
-    fi
+  if ! tower-pm2 restart "$svc_name" --update-env; then
+    tower-pm2 start "$svc_name"
   fi
 
-  # ── 5. 验证 ──
+  # ── 4. 验证 ──
   sleep 2
-  local list_resp
-  list_resp=$(curl -s -m 5 "$tower_api/api/pm2/status" 2>/dev/null || echo '{}')
-  log "Tower PM2 服务列表: $list_resp"
+  tower-pm2 status
+  log "toonflow-game 已通过 Tower PM2 启动"
 }
 
 install_panel() {
-  # 部署 FastAPI 管理页，用 supervisor 托管（不依赖 systemd）。
-  # 为什么不用 tower-pm2：
+  # 部署 FastAPI 管理页，用 droiddesk-tower service 托管（不依赖 systemd / supervisor）。
+  # 为什么不用 tower-pm2 托管：
   #   tower-pm2 -> bash -> uvicorn -> subprocess -> yarn build
-  #   这条链在某些环境下会导致 libuv epoll 断言崩溃，直接运行 ./start-panel.sh 就正常。
-  #   supervisor 直接跑 start-panel.sh，不经过 tower-pm2 进程树。
+  #   这条链在某些环境下会导致 libuv epoll 断言崩溃，直接运行 start-panel.sh 就正常。
+  #   droiddesk-tower service 直接跑 start-panel.sh，不经过 tower-pm2 进程树。
   local panel_source="$SCRIPT_DIR/detail/main.py"
   local panel_target="$PANEL_DIR/main.py"
   local panel_start_script="$PANEL_DIR/start-panel.sh"
   local panel_python="$PANEL_DIR/.venv/bin/python"
-  local panel_conf_file="/etc/supervisor/conf.d/${PANEL_NAME}.conf"
 
   [ -f "$panel_source" ] || die "找不到管理页脚本：$panel_source"
 
@@ -427,43 +407,36 @@ install_panel() {
   "$panel_python" -m pip install --upgrade pip
   "$panel_python" -m pip install fastapi uvicorn
 
-  # 生成独立启动脚本，用单引号 EOF 防止变量被 install.sh 提前展开
-  cat > "$panel_start_script" <<'PANELEOF'
+  # 生成启动脚本：把本次安装的实际配置直接写进去。
+  # droiddesk-tower 拉起服务时不继承安装会话的环境变量，所以不能靠 ${VAR:-默认值}。
+  cat > "$panel_start_script" <<PANELEOF
 #!/bin/bash
 set -Euo nounset
 
-# 启动 Toonflow 管理页
-PANEL_DIR="$(dirname "$(readlink -f "$0")")"
+# 启动 Toonflow 管理页（由 install.sh 生成）
 cd "$PANEL_DIR" || exit 1
 
-PANEL_PYTHON="$PANEL_DIR/.venv/bin/python"
+export PANEL_APP_NAME="$PANEL_APP_NAME"
+export PANEL_APP_DIR="$PANEL_APP_DIR"
+export PANEL_APP_PORT="$PANEL_APP_PORT"
+export PANEL_WEB_PORT="$PANEL_WEB_PORT"
+export PANEL_WEB_PUBLISH_DIR="$PANEL_WEB_PUBLISH_DIR"
+export PANEL_WEB_PROJECT_DIR="$PANEL_WEB_PROJECT_DIR"
+export PANEL_WEB_BUILD_NODE_OPTIONS="$PANEL_WEB_BUILD_NODE_OPTIONS"
 
-export PANEL_APP_NAME="${PANEL_APP_NAME:-toonflow-game}"
-export PANEL_APP_DIR="${PANEL_APP_DIR:-/opt/toonflow/toonflow-game-app}"
-export PANEL_APP_PORT="${PANEL_APP_PORT:-60002}"
-export PANEL_WEB_PORT="${PANEL_WEB_PORT:-8088}"
-export PANEL_WEB_PUBLISH_DIR="${PANEL_WEB_PUBLISH_DIR:-/opt/toonflow/www}"
-export PANEL_WEB_PROJECT_DIR="${PANEL_WEB_PROJECT_DIR:-/opt/toonflow/Toonflow-game-web}"
-export PANEL_WEB_BUILD_NODE_OPTIONS="${PANEL_WEB_BUILD_NODE_OPTIONS:---max-old-space-size=512}"
-
-exec "$PANEL_PYTHON" -m uvicorn main:app --host 0.0.0.0 --port "${PANEL_PORT:-6008}"
+exec "$panel_python" -m uvicorn main:app --host 0.0.0.0 --port "$PANEL_PORT"
 PANELEOF
   chmod +x "$panel_start_script"
 
-  # 清理可能残留的 tower-pm2 / systemd / Tower 管理页进程，避免端口冲突
-  # tower-pm2 已废弃，改为通过 Tower API 或直接 kill
-  if command -v curl >/dev/null 2>&1; then
-    curl -s -X POST "http://127.0.0.1:7088/api/stop/$PANEL_NAME" 2>/dev/null || true
-  fi
-  # 直接 kill 残留进程
+  # 清理残留的旧管理页进程，避免 6008 端口冲突
   pkill -f "uvicorn main:app.*--port.*$PANEL_PORT" 2>/dev/null || true
-  run_sudo systemctl stop "${PANEL_NAME}.service" 2>/dev/null || true
-  run_sudo systemctl disable "${PANEL_NAME}.service" 2>/dev/null || true
 
-  # droiddesk-tower service
-  log "配置 droiddesk-tower service 托管管理页"
-  run_sudo droiddesk-tower service add ToonflneowPanel $PANEL_DIR/$panel_start_script --nginx --keep-live
-  run_sudo tee "$panel_conf_file" > /dev/null <<EOF
+  # 用 droiddesk-tower service 托管（与 modify/panel/panel.readme.md 一致）
+  log "配置 droiddesk-tower service 托管管理页（服务名：$PANEL_NAME）"
+  droiddesk-tower service add "$PANEL_NAME" "$panel_start_script" --nginx --keep-live || {
+    log "droiddesk-tower service add 失败，可手动执行："
+    log "  droiddesk-tower service add $PANEL_NAME $panel_start_script --nginx --keep-live"
+  }
 }
 
 write_nginx_config() {
@@ -553,7 +526,7 @@ EOF
   else
     # 非 systemd 环境直接启动 nginx
     pkill nginx 2>/dev/null || true
-    run_sudo `droiddesk-tower nginx start
+    run_sudo droiddesk-tower nginx start
     log "Nginx 已启动（非 systemd 环境）"
   fi
 }
@@ -575,17 +548,14 @@ print_result() {
   $(printf '%s' "$public_url" | sed 's#/$##'):$PANEL_PORT/
 
 常用命令：
-  droiddesk-tower panel status            # 面板状态
-  droiddesk-tower service list            # 服务列表
-  droiddesk-tower service start <name>    # 启动服务
-  tower-pm2 list                          # tower-pm2 风格服务列表
-  tower-pm2 monit                         # 实时监控
-  curl -s http://127.0.0.1:7088/api/list  # Tower HTTP API
-  # Tower Web UI: http://127.0.0.1:7088
-  bash /opt/droiddesk/tower/tower-start    # 启动面板
-  bash /opt/droiddesk/tower/tower-stop     # 停止面板
-  supervisorctl status $PANEL_NAME        # 旧版管理页（如还在用）
-  sudo nginx -t
+  droiddesk-tower service list            # 服务列表（管理页由 $PANEL_NAME 托管）
+  droiddesk-tower service start $PANEL_NAME
+  droiddesk-tower service stop $PANEL_NAME
+  tower-pm2 status                        # 后端服务状态
+  tower-pm2 logs toonflow-game            # 后端实时日志
+  tower-pm2 monit                         # 后端实时监控
+  nginx -t                                # Nginx 配置检查
+  droiddesk-tower nginx reload            # Nginx 重载
 
 数据目录：
   $DATA_DIR

@@ -19,8 +19,9 @@ interface Owned {
 }
 
 // 把 OpenAI chat.completions 协议的请求/响应改写为 responses 协议。
-// MiniMax 默认走该通道；openai 厂商在 baseURL 以 /responses 结尾时复用同一逻辑。
-function createResponsesProtocolFetch(reasoning?: { effort: "none" | "minimal" | "low" | "medium" | "high" }, userFetch?: typeof fetch): typeof fetch {
+// MiniMax 默认走该通道；openai 透传厂商在 baseURL 以 /responses 结尾时复用同一逻辑
+// （选择逻辑在 text/index.ts 的 buildOptions，此处只提供改写器）。
+export function createResponsesProtocolFetch(reasoning?: { effort: "none" | "minimal" | "low" | "medium" | "high" }, userFetch?: typeof fetch): typeof fetch {
   const baseFetch = userFetch || fetch;
   return async (input, init) => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : (input as Request).url;
@@ -57,7 +58,23 @@ function createResponsesProtocolFetch(reasoning?: { effort: "none" | "minimal" |
     if (!response.ok) return response;
 
     const responseData = await response.clone().json();
-    const outputText = responseData.output_text || "";
+    // responses 协议的标准输出位置是 top-level `output_text`，
+    // 但 AGNES-3.0-flash 等第三方实现把文本放在 `output[].content[].text` 数组里，
+    // 同时还会混入 `type:reasoning` 段（应跳过）。两种形态都兼容。
+    let outputText = String(responseData.output_text || "");
+    if (!outputText && Array.isArray(responseData.output)) {
+      const parts: string[] = [];
+      for (const item of responseData.output) {
+        if (!Array.isArray(item?.content)) continue;
+        for (const part of item.content) {
+          if (part?.type === "output_text" && typeof part.text === "string") {
+            parts.push(part.text);
+          }
+          // 跳过 reasoning 段
+        }
+      }
+      outputText = parts.join("");
+    }
     const usage = responseData.usage || {};
 
     const chatFormat = {
@@ -94,20 +111,7 @@ const instanceMap = {
       fetch: createResponsesProtocolFetch(reasoning, userFetch),
     } as any);
   },
-  openai: (rawOptions: OpenAIProviderSettings) => {
-    // baseURL 以 /responses 结尾 → 走 responses 协议（如 https://api.agnes-ai.cn/v1/responses）
-    // 否则默认 /v1/chat/completions（createOpenAI 原生行为）
-    const baseURL = String(rawOptions.baseURL || "").trim();
-    if (/\/responses\/?$/.test(baseURL)) {
-      const { fetch: userFetch, ...options } = rawOptions as any;
-      return createOpenAICompatible({
-        ...options,
-        baseURL: options.baseURL || "",
-        fetch: createResponsesProtocolFetch(undefined, userFetch),
-      } as any);
-    }
-    return createOpenAI(rawOptions);
-  },
+  openai: createOpenAI,
   lmstudio: (options: OpenAIProviderSettings) =>
     createOpenAICompatible({
       ...options,

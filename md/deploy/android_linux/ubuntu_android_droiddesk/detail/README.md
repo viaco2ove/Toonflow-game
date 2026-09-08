@@ -6,7 +6,7 @@ LOG_PATH=/data/toonflow/logs
 
 # 环境配置
 `install.sh` 会自动生成：
-[本地头像分离模型安装.md](../../../../modeapi/image/本地头像分离模型安装.md)
+
 ```text
 /opt/toonflow/toonflow-game-app/env/.env.local
 ```
@@ -27,14 +27,13 @@ source ./install.config.sh
 `install.sh` 会自动做这些事：
 
 - 安装 `python3`、`python3-pip`、`python3-venv`
-- 复制 [main.py](/mnt/d/users/viaco/tools/toonflow-game/toonflow-game-app/md/deploy/ubuntu/detail/main.py)
+- 复制 `detail/main.py` 到 `PANEL_DIR/main.py`
 - 在 `PANEL_DIR` 创建 Python 虚拟环境
 - 安装 `fastapi` 和 `uvicorn`
-- 用 `tower-pm2` 启动管理页进程
+- 生成 `PANEL_DIR/start-panel.sh`
+- 用 `droiddesk-tower service add` 托管管理页（服务名 `PANEL_NAME`，默认 `toonflow-panel`）
 
-默认配置在：
-
-[install.config.sh](/mnt/d/users/viaco/tools/toonflow-game/toonflow-game-app/md/deploy/ubuntu/install.config.sh)
+默认配置在：[install.config.sh](../install.config.sh)
 
 主要变量：
 
@@ -42,12 +41,16 @@ source ./install.config.sh
 export PANEL_PORT="6008"
 export PANEL_NAME="toonflow-panel"
 export PANEL_DIR="$INSTALL_ROOT/panel"
-export PANEL_APP_NAME="$tower-pm2_NAME"
+export PANEL_APP_NAME="$PM2_NAME"
 export PANEL_APP_DIR="$INSTALL_ROOT/toonflow-game-app"
 export PANEL_WEB_PORT="$HTTP_PORT"
 export PANEL_APP_PORT="$APP_PORT"
 export PANEL_WEB_PUBLISH_DIR="/var/www/toonflow"
 ```
+
+可选安全项：设置 `PANEL_TOKEN` 后管理页需要口令访问（不带 token 的请求返回口令页）。
+在 `install.config.sh` 里 `export PANEL_TOKEN="你的口令"` 即可，`install.sh`
+会把它写进生成的 `start-panel.sh`。
 
 安装完成后访问：
 
@@ -67,45 +70,44 @@ http://你的服务器IP:6008/
 查看状态：
 
 ```bash
-tower-pm2 status                                                                                                                                                                        
-tower-pm2 logs toonflow-game                                                                                                                                                            
-tower-pm2 logs toonflow-panel  
+tower-pm2 status                     # 后端服务状态
+tower-pm2 logs toonflow-game         # 后端日志
+droiddesk-tower service list         # 管理页服务状态
 ```
 
 # nginx 配置
 /etc/nginx/sites-available/toonflow-game
 [nginx.conf](../modify/toonflow-game)
-修改命令                                                                                                                                                                          
-                                                                                                                                                                                  
-sudo nano /etc/nginx/sites-available/toonflow-game                                                                                                                                
-sudo nginx -t                                                                                                                                                                     
-sudo systemctl reload nginx   
+修改命令
+
+sudo nano /etc/nginx/sites-available/toonflow-game
+sudo nginx -t
+droiddesk-tower nginx reload
 
 # 清理环境&安装
 ```
-  cd /opt/toonflow/toonflow-game-app                                                                                                                                                
-  rm -rf node_modules build                                                                                                                                                         
-                                                                                                                                                                                    
-  cd ~/ubuntu                                                                                                                                                                       
-  source ./install.config.sh                                                                                                                                                        
-  ./install.sh  
+  cd /opt/toonflow/toonflow-game-app
+  rm -rf node_modules build
+
+  cd ~/ubuntu_android_droiddesk
+  source ./install.config.sh
+  ./install.sh
 ```
 
 # 服务器上先加 swap，至少 2G 
 ```
-sudo fallocate -l 2G /swapfile                                                                                                                                                    
-  sudo chmod 600 /swapfile                                                                                                                                                          
-  sudo mkswap /swapfile                                                                                                                                                             
-  sudo swapon /swapfile                                                                                                                                                             
-  echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab                                                                                                                        
+sudo fallocate -l 2G /swapfile
+  sudo chmod 600 /swapfile
+  sudo mkswap /swapfile
+  sudo swapon /swapfile
+  echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
   free -h   
 ```
 cd /opt/toonflow/Toonflow-game-web/
-yarn bulid
+yarn build
 
 # 授权
-chmod +x ~/ubuntu/install.sh
-chmod +x /opt/toonflow/panel/main.py
+chmod +x ~/ubuntu_android_droiddesk/install.sh
 # 重启
 - 方法1：http://你的服务器IP:6008/ 中操作
 - 方法2：命令行
@@ -116,12 +118,6 @@ tower-pm2 status
 ```
 
   - 重启主站
-
-```bash
-tower-pm2 restart toonflow-game
-```
-
-  - 同时重启
 
 ```bash
 tower-pm2 restart toonflow-game
@@ -138,4 +134,11 @@ tower-pm2 stop toonflow-game
 ```bash
 tower-pm2 logs toonflow-game
 ```
-[panel.readme.md](../modify/panel/panel.readme.bak1.md)
+
+  - 管理页服务
+
+```bash
+droiddesk-tower service list
+droiddesk-tower service start toonflow-panel
+droiddesk-tower service stop toonflow-panel
+```
