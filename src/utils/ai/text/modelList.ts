@@ -18,6 +18,62 @@ interface Owned {
   instance: (options?: any) => any;
 }
 
+// 把 OpenAI chat.completions 协议的请求/响应改写为 responses 协议。
+// MiniMax 默认走该通道；openai 厂商在 baseURL 以 /responses 结尾时复用同一逻辑。
+function createResponsesProtocolFetch(reasoning?: { effort: "none" | "minimal" | "low" | "medium" | "high" }, userFetch?: typeof fetch): typeof fetch {
+  const baseFetch = userFetch || fetch;
+  return async (input, init) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : (input as Request).url;
+    const newUrl = url.replace(/\/v1\/chat\/completions$/, "/v1/responses");
+
+    const body = JSON.parse((init?.body as string) || "{}");
+    const { model, messages, stream, ...rest } = body;
+
+    const systemMsg = (messages as any[])?.find((m: any) => m.role === "system");
+    const userMsgs = (messages as any[])?.filter((m: any) => m.role !== "system") || [];
+
+    const instructions = systemMsg?.content || "";
+    const userContent = userMsgs.map((m: any) => (typeof m.content === "string" ? m.content : JSON.stringify(m.content))).join("\n");
+
+    // 优先用闭包里的配置值（来自 modelConfig.reasoningEffort），SDK 内部会默认填 "none"，必须覆盖
+    const finalReasoning = reasoning || body.reasoning || { effort: "low" };
+    const newBody: any = {
+      model,
+      ...(instructions ? { instructions } : {}),
+      ...(userContent ? { input: userContent } : {}),
+      ...(finalReasoning ? { reasoning: finalReasoning } : {}),
+      ...(rest.temperature != null && rest.temperature !== 0 ? { temperature: rest.temperature } : { temperature: 0.3 }),
+      ...(rest.top_p != null && rest.top_p !== 0 ? { top_p: rest.top_p } : { top_p: 0.5 }),
+    };
+
+    const newInit = { ...init, body: JSON.stringify(newBody) };
+    const response = await baseFetch(newUrl, newInit);
+
+    if (!response.ok) return response;
+
+    const responseData = await response.clone().json();
+    const outputText = responseData.output_text || "";
+    const usage = responseData.usage || {};
+
+    const chatFormat = {
+      id: responseData.id,
+      choices: [{ finish_reason: "stop", index: 0, message: { content: outputText, role: "assistant" } }],
+      created: responseData.created_at || Math.floor(Date.now() / 1000),
+      model: responseData.model,
+      object: "chat.completion",
+      usage: {
+        total_tokens: usage.total_tokens || 0,
+        prompt_tokens: usage.input_tokens || 0,
+        completion_tokens: usage.output_tokens || 0,
+        prompt_tokens_details: { cached_tokens: usage.input_tokens_details?.cached_tokens || 0 },
+        completion_tokens_details: { reasoning_tokens: usage.output_tokens_details?.reasoning_tokens || 0 },
+      },
+    };
+
+    return new Response(JSON.stringify(chatFormat), { status: response.status, headers: response.headers });
+  };
+}
+
 const instanceMap = {
   deepSeek: createDeepSeek,
   deepseek: createDeepSeek,
@@ -26,66 +82,27 @@ const instanceMap = {
   minimax: (rawOptions: OpenAIProviderSettings & { reasoning?: { effort: "none" | "minimal" | "low" | "medium" | "high" } }) => {
     const reasoning = rawOptions.reasoning;
     const { reasoning: _omit, fetch: userFetch, ...options } = rawOptions as any;
-    const baseFetch = (userFetch as typeof fetch | undefined) || fetch;
-
-    const customFetch: typeof fetch = async (input, init) => {
-      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : (input as Request).url;
-      const newUrl = url.replace(/\/v1\/chat\/completions$/, "/v1/responses");
-
-      const body = JSON.parse((init?.body as string) || "{}");
-      const { model, messages, stream, ...rest } = body;
-
-      const systemMsg = (messages as any[])?.find((m: any) => m.role === "system");
-      const userMsgs = (messages as any[])?.filter((m: any) => m.role !== "system") || [];
-
-      const instructions = systemMsg?.content || "";
-      const userContent = userMsgs.map((m: any) => (typeof m.content === "string" ? m.content : JSON.stringify(m.content))).join("\n");
-
-      // 优先用闭包里的配置值（来自 modelConfig.reasoningEffort），SDK 内部会默认填 "none"，必须覆盖
-      const finalReasoning = reasoning || body.reasoning || { effort: "low" };
-      const newBody: any = {
-        model,
-        ...(instructions ? { instructions } : {}),
-        ...(userContent ? { input: userContent } : {}),
-        ...(finalReasoning ? { reasoning: finalReasoning } : {}),
-        ...(rest.temperature != null && rest.temperature !== 0 ? { temperature: rest.temperature } : { temperature: 0.3 }),
-        ...(rest.top_p != null && rest.top_p !== 0 ? { top_p: rest.top_p } : { top_p: 0.5 }),
-      };
-
-      const newInit = { ...init, body: JSON.stringify(newBody) };
-      const response = await baseFetch(newUrl, newInit);
-
-      if (!response.ok) return response;
-
-      const responseData = await response.clone().json();
-      const outputText = responseData.output_text || "";
-      const usage = responseData.usage || {};
-
-      const chatFormat = {
-        id: responseData.id,
-        choices: [{ finish_reason: "stop", index: 0, message: { content: outputText, role: "assistant" } }],
-        created: responseData.created_at || Math.floor(Date.now() / 1000),
-        model: responseData.model,
-        object: "chat.completion",
-        usage: {
-          total_tokens: usage.total_tokens || 0,
-          prompt_tokens: usage.input_tokens || 0,
-          completion_tokens: usage.output_tokens || 0,
-          prompt_tokens_details: { cached_tokens: usage.input_tokens_details?.cached_tokens || 0 },
-          completion_tokens_details: { reasoning_tokens: usage.output_tokens_details?.reasoning_tokens || 0 },
-        },
-      };
-
-      return new Response(JSON.stringify(chatFormat), { status: response.status, headers: response.headers });
-    };
 
     return createOpenAICompatible({
       ...options,
       baseURL: options.baseURL || "",
-      fetch: customFetch,
+      fetch: createResponsesProtocolFetch(reasoning, userFetch),
     } as any);
   },
-  openai: createOpenAI,
+  openai: (rawOptions: OpenAIProviderSettings) => {
+    // baseURL 以 /responses 结尾 → 走 responses 协议（如 https://api.agnes-ai.cn/v1/responses）
+    // 否则默认 /v1/chat/completions（createOpenAI 原生行为）
+    const baseURL = String(rawOptions.baseURL || "").trim();
+    if (/\/responses\/?$/.test(baseURL)) {
+      const { fetch: userFetch, ...options } = rawOptions as any;
+      return createOpenAICompatible({
+        ...options,
+        baseURL: options.baseURL || "",
+        fetch: createResponsesProtocolFetch(undefined, userFetch),
+      } as any);
+    }
+    return createOpenAI(rawOptions);
+  },
   lmstudio: (options: OpenAIProviderSettings) =>
     createOpenAICompatible({
       ...options,

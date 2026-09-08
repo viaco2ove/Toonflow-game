@@ -296,8 +296,16 @@ const buildOptions = async (input: AIInput<any>, config: AIConfig = {}) => {
   const model = normalizeTextModelName(manufacturer, requestedModel);
   let owned;
   const modelList = await getModelList();
-  if (manufacturer == "other") {
+  // ★ openai / other 是透传厂商：不限制模型名，用户填什么就调什么（OpenAI 兼容协议），
+  //   只要服务端（含各种代理/网关）能接受即可。查表仅用于拿默认配置（responseFormat 等）。
+  const isPassthroughManufacturer = manufacturer === "other" || manufacturer === "openai";
+  if (isPassthroughManufacturer) {
     owned = modelList.find((m) => m.manufacturer === manufacturer);
+    // 透传厂商遇到未注册的模型名，responseFormat 降级为 "object"（json_object 模式），
+    // 相比 "schema"（structured outputs）兼容性更好，绝大多数 OpenAI 兼容网关都支持
+    if (owned && !modelList.some((m) => m.manufacturer === manufacturer && m.model === model)) {
+      owned = { ...owned, model, responseFormat: "object" };
+    }
   } else {
     owned = modelList.find((m) => m.model === model && m.manufacturer === manufacturer);
   }
