@@ -652,8 +652,8 @@ except Exception as e:
 }
 
 /** 异步执行 python 命令（带超时），返回 exit code 是否为 0 */
-function runPythonAsync(args: string[], timeoutMs: number): Promise<boolean> {
-  return runCommandAsync(getPythonCmd(), args, timeoutMs);
+async function runPythonAsync(args: string[], timeoutMs: number): Promise<boolean> {
+  return runCommandAsync(await getPythonCmd(), args, timeoutMs);
 }
 
 /** 异步执行命令，收集 stdout/stderr 到日志，timeout 超时则 kill。 */

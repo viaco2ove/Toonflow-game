@@ -1,5 +1,6 @@
+# Ubuntu/安卓 Ubuntu（proot）环境的 Python 解释器配置
+# 复制本文件为 env/pyvenv.cfg.ubuntu 并按实际路径修改
 home = /root/miniconda3
 include-system-site-packages = false
 version = 3.13.5
 executable = /root/miniconda3/bin/python
-command = /root/miniconda3/python -m venv data/toonflow/tools/avatar-matting/birefnet/venv
