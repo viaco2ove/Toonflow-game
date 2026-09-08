@@ -576,7 +576,7 @@ def home(request: Request, token: str = ""):
             </form>
           </div>
           <div class="panel">
-            <h2>操作日志</h2>
+            <h2>操作日志_tower_v_2026.09.09.1</h2>
             <pre>{html.escape(LAST_ACTION_LOG)}</pre>
           </div>
         </div>
