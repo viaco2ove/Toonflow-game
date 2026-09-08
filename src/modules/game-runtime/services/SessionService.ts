@@ -847,9 +847,10 @@ async function applySessionPreOrchestrationEventProgress(params: {
   if (latestEventType === "on_opening") {
     return;
   }
-  if (latestRoleType === "player" && latestEventType === "on_message") {
-    return;
-  }
+  // ★ player 消息（on_message）也交给编排阶段的 AI #2 评估
+  // 此前跳过是因为 addMessage 内会做事件进度检测；该检测已迁移到本函数，
+  // 若继续跳过，用户发言的事件推进将无人处理。
+  // 幂等由下方 orchestrationEventProgressMessageId 游标保证，不会重复评估。
   const progressCursor = Number(params.state?.orchestrationEventProgressMessageId || 0);
   if (progressCursor === latestMessageId) {
     return;
@@ -1970,6 +1971,8 @@ async function runConcurrentSessionJudgeAndNarrative(params: {
   sessionStatus: string;
   fallbackChapterId: number | null;
   traceMeta: Record<string, unknown>;
+  /** 章节判定是否跳过 AI（默认 false）。true 时走纯规则 fallback，不调章节判定 AI */
+  skipChapterJudgeAi?: boolean;
 }) {
   const candidateState = cloneSessionRuntimeValue(params.state);
   const candidateRecentMessages = cloneSessionRuntimeValue(params.recentMessages);
@@ -2004,6 +2007,9 @@ async function runConcurrentSessionJudgeAndNarrative(params: {
     fallbackStatus: params.sessionStatus,
     fallbackChapterId: params.fallbackChapterId,
     applyToState: true,
+    // 章节判定是否调 MiniMax 取决于 skipChapterJudgeAi。
+    // addSessionMessage 路径传 true（章节判定已在编排阶段做）；编排路由传 false。
+    skipAi: params.skipChapterJudgeAi,
     traceMeta: {
       ...params.traceMeta,
       judgeMode: "primary",
@@ -2518,8 +2524,7 @@ async function addSessionMessageInner(input: AddSessionMessageInput, sessionId: 
   // 当 player 消息走 AI #1 拦截路径时，这些变量会在 player 块内被设置
   let triggerResult: Awaited<ReturnType<typeof runTriggerEngine>> | undefined = undefined;
   let taskResult: Awaited<ReturnType<typeof runTaskProgressEngine>> | undefined = undefined;
-  let ai2Promise: Promise<AiEventProgressResolution | null> | null = null;
-  // ★ 作用域提升: 供并发块使用（precomputedAiResolution / recentMessagesForProgress）
+  // ★ AI #2（事件进度检测）已迁移至 /game/orchestration 阶段，addMessage 内不再预计算
   let precomputedAiResolution: AiEventProgressResolution | null | undefined = undefined;
   let recentMessagesForProgress: RuntimeMessageInput[] = [];
 
@@ -2556,33 +2561,17 @@ async function addSessionMessageInner(input: AddSessionMessageInput, sessionId: 
     });
     probeMark("after_runTaskProgressEngine");
 
-    // 2. 检查是否需要 AI #2
+    // 2. 检查是否需要 AI #2（仅用于日志观察；判定本身已迁移到编排阶段）
     const needsAi2 = checkEventProgressAiNeeded(currentChapter, state, messageContent);
 
-    // 3. 如果需要 AI #2，预计算（与 AI #1 并发）
-    //    如果走 fast path，清空旧的 ai2Promise，避免跨请求复用陈旧结果
-    if (!needsAi2) {
-      ai2Promise = null;
-      DebugLogUtil.log("story:ai_parallel", "[addSessionMessage] AI #2 走 fast path，清空旧预计算结果");
-    } else {
-      DebugLogUtil.log("story:ai_parallel", "[addSessionMessage] 开始预计算 AI #2 (evaluateEventProgressByAi)");
-      ai2Promise = evaluateEventProgressByAi({
-        userId: currentUserId,
-        world,
-        chapter: currentChapter,
-        state,
-        messageContent,
-        messageRole: String(state.player?.name || "用户"),
-        messageRoleType: "player",
-        eventType: eventTypeValue,
-        recentMessages,
-        traceMeta: {
-          route: "/game/addMessage",
-          sessionId,
-          chapterId: Number(currentChapter?.id || 0),
-          userId: currentUserId,
-        },
-      });
+    // ★ 事件进度检测（AI #2）已迁移到 /game/orchestration 阶段
+    // （applySessionPreOrchestrationEventProgress 不再跳过 player 消息）
+    // addMessage 只保留纯规则的 fast path（user phase 完成 / scene→user 推进），
+    // 命中不了 fast path 的场景由编排阶段的 AI #2 兜底判定。
+    // 原因：AI #2 调 MiniMax 约 5s，是 addMessage 最大的串行开销；编排请求
+    // 紧跟 addMessage 由前端发起，事件推进延后 ~1s 用户无感知。
+    if (needsAi2) {
+      DebugLogUtil.log("story:ai_parallel", "[addSessionMessage] AI #2 需要判定但已迁移至编排阶段，跳过（fast path 规则仍生效）");
     }
 
     // 4. 并发运行 AI #1 (handleMiniGameTurn)
@@ -2840,16 +2829,9 @@ async function addSessionMessageInner(input: AddSessionMessageInput, sessionId: 
   // ★ 兜底: 检测连续两次发 "." 且中间无 NPC/旁白说话
   //    连续 "." 说明前一次快路径没有推进剧情，此时禁用快路径，强制走 AI 完整链路。
   let forceAi = false;
-  // ★ 预计算 AI #2 结果: 等待已创建的 ai2Promise（与 AI #1 并发生成）
-  //    只有当 ai2Promise 非 null 时才有预计算；否则为 undefined，由 applySessionUserEventProgress 自行调用 AI
-  if (ai2Promise) {
-    DebugLogUtil.log("story:ai_parallel", "[addSessionMessage] 等待 AI #2 预计算结果");
-    precomputedAiResolution = await ai2Promise;
-    DebugLogUtil.log("story:ai_parallel", "[addSessionMessage] AI #2 预计算完成", {
-      ended: precomputedAiResolution?.ended,
-      eventStatus: precomputedAiResolution?.eventStatus,
-    });
-  }
+  // ★ AI #2（事件进度检测）已迁移至 /game/orchestration 阶段。
+  //    precomputedAiResolution 保持 undefined，applySessionUserEventProgress 走纯规则 fast path。
+  precomputedAiResolution = undefined;
   if (currentChapter) {
     if (roleTypeValue === "player" && eventTypeValue === "on_message" && messageContent.trim()) {
       const rawRecentMessagesForProgress = await db("t_sessionMessage").where({ sessionId }).orderBy("id", "desc").limit(5);
@@ -3084,6 +3066,13 @@ async function addSessionMessageInner(input: AddSessionMessageInput, sessionId: 
     })();
     DebugLogUtil.log("story:orchestrator:runtime", "[worldClock] pre")
     DebugLogUtil.log("story:memory:storyInfo",`addSessionMessage nextChapterId: ${nextChapterId || prevChapterId}`);
+    // ★ 章节判定（AI #3）已迁移到 /game/orchestration 阶段负责
+    // 原因：
+    //   - 章节结束条件通常是自然语言，规则无法短路 → 必须调 AI（~3-5s）
+    //   - 编排阶段（/game/orchestration）会再调一次章节判定（合并 runConcurrentSessionJudgeAndNarrative）
+    //   - 同一轮 addMessage 内做两次 AI 章节判定是冗余，且会拉长用户感知延迟
+    // 副作用：用户发言触发章节完成的检测会延迟到下一轮编排（编排通常由前端紧跟 addMessage 调用）
+    // 兜底：forceAi=true 时仍调 AI，处理"连续 . 中间无 NPC"的卡死场景
     const ai3Promise = evaluateRuntimeOutcome({
       chapter: currentChapter,
       world,
@@ -3095,10 +3084,7 @@ async function addSessionMessageInner(input: AddSessionMessageInput, sessionId: 
       fallbackStatus: sessionStatus,
       fallbackChapterId: nextChapterId || prevChapterId,
       applyToState: true,
-      // skipAi=true: 跳过 AI #3，用规则 fallback（"." 等无实质内容消息）
-      // 规则门控在 evaluateRuntimeOutcome 内部: 规则说 continue 时也跳过 AI
-      // forceAi=true: 兜底检测到连续 "." 时强制调 AI
-      skipAi: !forceAi,
+      skipAi: true, // 章节判定完全交给 /game/orchestration；forceAi 已不再需要
     });
 
     // ★ 并发等待: AI #2 和 AI #3 同时运行
@@ -4628,6 +4614,8 @@ async function orchestrateSessionTurnInner(sessionId: string): Promise<SessionOr
     latestRecentMessage,
     sessionStatus,
     fallbackChapterId: realNextChapterId || null,
+    // ★ 章节判定交给 /game/orchestration，addMessage 内不再调 MiniMax
+    skipChapterJudgeAi: true,
     traceMeta: {
       ...requestTrace,
       chapterId: Number(chapter.id || 0),

@@ -18,6 +18,7 @@ import { syncBundledVoicePresetSeeds } from "@/lib/voicePresetSeeds";
 import { dbBootstrapReady } from "@/utils/db";
 import { startMossTtsServe, isMossTtsServeEnabled, stopMossTtsServe } from "@/lib/localMossTts";
 import { startQwen060OnBoot, isQwen060BootEnabled } from "@/lib/localQwen060";
+import { startEmbedOnBoot, isEmbedBootEnabled } from "@/lib/localEmbed";
 
 function ensureNoProxyForLocalhost() {
   const localHosts = ["127.0.0.1", "localhost", "::1"];
@@ -90,6 +91,12 @@ export default async function startServe(randomPort: Boolean = false) {
   if (isQwen060BootEnabled()) {
     console.log("[qwen3-0.6b] LOCAL_CHAT_MODEL_RUN_START=true，启动自动安装/加载流程");
     void startQwen060OnBoot();
+  }
+
+  // 本地向量模型 m3e-small：程序启动时预热（LOCAL_EMBED_MODEL_RUN_START=true）
+  if (isEmbedBootEnabled()) {
+    console.log("[m3e-small] LOCAL_EMBED_MODEL_RUN_START=true，启动预热流程");
+    void startEmbedOnBoot();
   }
 
   app.use(express.static(rootDir));

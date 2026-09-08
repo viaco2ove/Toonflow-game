@@ -1,5 +1,15 @@
-web_project: /mnt/d/users/xxx/PycharmProjects/Toonflow-web
-current_project: /mnt/d/users/xxx/tools/toonflow-app-run
+web_project: /mnt/d/users/xxx/tools/Toonflow-game/Toonflow-game-web
+web_project_windows: D:\Users\xxx\tools\Toonflow-game\Toonflow-game-web
+current_project: /mnt/d/users/xxx/tools/Toonflow-game/toonflow-game-app
+current_project_windows: D:\Users\xxx\tools\Toonflow-game\toonflow-game-app
+voice_project_windows: D:\Users\xxx\tools\voice
+voice_project: /mnt/d/users/xxx/tools/voice
+android_project: /mnt/d/users/xxx/tools/Toonflow-game/Toonflow-game-android
+android_project_windows: D:\Users\xxx\tools\Toonflow-game\Toonflow-game-android
+h5_project: /mnt/d/users/xxx/tools/Toonflow-game/Toonflow-game-android-h5
+h5_project_windows: D:\Users\xxx\tools\Toonflow-game\Toonflow-game-android-h5
+vedio_web_project: /mnt/d/users/xxx/tools/Toonflow-game/Toonflow-vedio-web
+vedio_web_project_windows: D:\Users\xxx\tools\Toonflow-game\Toonflow-vedio-web
 current_project_modifications:
   - env/README.md
   - scripts/web/READEME.md

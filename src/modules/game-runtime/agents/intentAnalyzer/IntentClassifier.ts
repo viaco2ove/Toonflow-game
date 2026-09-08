@@ -36,7 +36,7 @@ export interface IntentResult {
   confidence: number; // 0-1
   reasoning: string; // 1-2 句话推理
   params: Record<string, unknown>;
-  path: "ai" | "fallback"; // 调用路径
+  path: "embed" | "ai" | "fallback"; // 调用路径
 }
 
 // AI 返回的 JSON 结构
@@ -136,6 +136,34 @@ function extractJsonObject(text: string): string | null {
 
 export async function classifyIntentWithAi(ctx: IntentContext): Promise<IntentResult | null> {
   try {
+    // ★ 快速路径：向量模型（m3e-small）优先，~100ms 出结果
+    // 硬超时 2s：超过 2s 说明向量引擎没就绪（未安装/Python 缺失/进程卡死），立即降级到 AI 路径
+    const embedModelName = process.env.LOCAL_EMBED_MODEL;
+    if (embedModelName) {
+      try {
+        const { classifyIntentByEmbedding } = await import("@/lib/localEmbed");
+        const embedPromise = classifyIntentByEmbedding(ctx.playerMessage);
+        const timeoutPromise = new Promise<null>((resolve) => setTimeout(() => resolve(null), 2000));
+        const embedResult = await Promise.race([embedPromise, timeoutPromise]);
+        if (embedResult && embedResult.confidence >= 0.4) {
+          const validIntents: IntentType[] = ["create_task", "exit_task", "query_progress", "game_action", "memory_update", "normal_dialog"];
+          const intent = validIntents.includes(embedResult.intent as IntentType)
+            ? (embedResult.intent as IntentType)
+            : "normal_dialog";
+          console.log(`[story:intent:analysis:stats] path=embed intent=${intent} confidence=${embedResult.confidence}`);
+          return {
+            intent,
+            confidence: embedResult.confidence,
+            reasoning: embedResult.reasoning,
+            params: {},
+            path: "embed",
+          };
+        }
+      } catch {
+        // 向量模型不可用，继续走 AI 路径
+      }
+    }
+
     const modelConfig = await u.getPromptAi(INTENT_MODEL_KEY, ctx.userId) as any;
 
     if (!modelConfig || !modelConfig.model) {

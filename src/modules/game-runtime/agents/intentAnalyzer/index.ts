@@ -32,7 +32,7 @@ export interface IntentAnalyzerResult {
   confidence: number;
   params: Record<string, string | null | unknown>;
   reasoning?: string;
-  path: "command" | "ai" | "fallback";
+  path: "command" | "embed" | "ai" | "fallback";
 }
 
 /**
