@@ -172,29 +172,51 @@ async function findModelDir(): Promise<string | null> {
 // Python subprocess 管理
 // ============================================================================
 
-function getPythonCmd(): string {
-  // 优先用 conda 的 python（环境里通常有 sentence-transformers）
-  const condaPy = "D:\\ProgramData\\miniconda3\\python.exe";
+/**
+ * 解析 env/pyvenv.cfg（可选，格式同 venv 的 pyvenv.cfg）：
+ *   home = D:\ProgramData\miniconda3          ← Python 安装根目录
+ *   executable = D:\ProgramData\miniconda3\python.exe
+ *
+ * Windows 用 env/pyvenv.cfg，Linux 用 env/pyvenv.cfg.ubuntu（参考 pyvenv.cfg.ubuntu.example）。
+ * home 提供后：python = <home>/python.exe（win）或 <home>/bin/python3（linux）。
+ * 文件缺失或解析失败时回退 PATH 上的 python/python3。
+ */
+async function resolveConfiguredPython(): Promise<string | null> {
+  const cfgName = process.platform === "win32" ? "pyvenv.cfg" : "pyvenv.cfg.ubuntu";
+  const cfgPath = path.join(process.cwd(), "env", cfgName);
   try {
-    require("node:fs").accessSync(condaPy);
-    return condaPy;
-  } catch { /* fallback to PATH */ }
-  if (process.platform === "win32") {
-    return "python";
-  }
-  return "python3";
+    const content = await fsp.readFile(cfgPath, "utf8");
+    const entries: Record<string, string> = {};
+    for (const line of content.split(/\r?\n/)) {
+      const idx = line.indexOf("=");
+      if (idx <= 0) continue;
+      const key = line.slice(0, idx).trim().toLowerCase();
+      entries[key] = line.slice(idx + 1).trim();
+    }
+    const executable = entries["executable"];
+    if (executable && await fileExists(executable)) return executable;
+    const home = entries["home"];
+    if (home) {
+      const candidate = process.platform === "win32"
+        ? path.join(home, "python.exe")
+        : path.join(home, "bin", "python3");
+      if (await fileExists(candidate)) return candidate;
+    }
+  } catch { /* 配置缺失或解析失败，走 fallback */ }
+  return null;
 }
 
-function getPipCmd(): string {
-  const condaPip = "D:\\ProgramData\\miniconda3\\Scripts\\pip.exe";
-  try {
-    require("node:fs").accessSync(condaPip);
-    return condaPip;
-  } catch { /* fallback */ }
-  if (process.platform === "win32") {
-    return "pip";
-  }
-  return "pip3";
+async function getPythonCmd(): Promise<string> {
+  // 优先 env/pyvenv.cfg 指定的解释器（Windows: miniconda；Ubuntu: /root/miniconda3）
+  const configured = await resolveConfiguredPython();
+  if (configured) return configured;
+  return process.platform === "win32" ? "python" : "python3";
+}
+
+async function getPipCmd(): Promise<string> {
+  // pip 优先用 python -m pip 形式（跨平台一致，避免 PATH 上 pip 缺失）
+  const python = await getPythonCmd();
+  return python; // 调用方统一用 [pipPath, "-m", "pip", ...] 的形式
 }
 
 let requestId = 0;
@@ -296,7 +318,7 @@ for line in sys.stdin:
   await fsp.writeFile(scriptPath, scriptContent, "utf8");
 
   dlog("[m3e-small] 启动 Python subprocess...");
-  pythonProc = spawn(getPythonCmd(), [scriptPath, modelDir], {
+  pythonProc = spawn(await getPythonCmd(), [scriptPath, modelDir], {
     stdio: ["pipe", "pipe", "pipe"],
     windowsHide: true,
   });
@@ -541,19 +563,21 @@ async function _installEmbed(onProgress: (msg: string, percent?: number) => void
 
     if (!stOk) {
       onProgress("正在安装 sentence-transformers（首次需下载依赖，约 100MB）...", 20);
+      // 统一用 `python -m pip`：跨平台一致，且避免 PATH 上找不到独立 pip 可执行文件
       // --break-system-packages: Debian/Ubuntu 系（PEP 668）禁止 pip 直接写系统 Python，
       // 服务器（Python 3.14）不带该参数会报 externally-managed-environment 退出码 1。
       // Windows 的 pip 不认识该参数会报错，所以失败后去掉参数重试一次。
+      const pipBase = await getPipCmd();
       let pipOk = await runCommandAsync(
-        getPipCmd(),
-        ["install", "sentence-transformers", "--quiet", "--no-cache-dir", "--break-system-packages"],
+        pipBase,
+        ["-m", "pip", "install", "sentence-transformers", "--quiet", "--no-cache-dir", "--break-system-packages"],
         600000,
         onProgress,
       );
       if (!pipOk) {
         pipOk = await runCommandAsync(
-          getPipCmd(),
-          ["install", "sentence-transformers", "--quiet", "--no-cache-dir"],
+          pipBase,
+          ["-m", "pip", "install", "sentence-transformers", "--quiet", "--no-cache-dir"],
           600000,
           onProgress,
         );
