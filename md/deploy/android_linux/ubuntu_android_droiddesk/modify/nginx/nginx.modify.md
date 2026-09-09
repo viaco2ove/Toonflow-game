@@ -67,3 +67,26 @@ Nginx 会将以下路径的请求代理到 FastAPI 后端 (`127.0.0.1:60002`)：
 ```
 
 Web 构建后的文件会 rsync 到此目录，由 Nginx 直接提供静态服务。
+
+
+## 监控
+```
+#看看有没有跑了多个线程
+ps aux | grep "nginx" | grep -v grep
+
+
+# 只查 master 进程
+ps aux | grep 'nginx: master' | grep -v grep
+
+# 僵尸进程的状态字段（STAT 列）以 Z 开头：
+ps aux | grep nginx | awk '$8 ~ /^Z/'
+
+# 查正常 worker 进程
+worker 进程的状态是 S（睡眠）或 R（运行），不是 Z：
+ps aux | grep 'nginx: worker' | grep -v grep
+```
+
+```
+# 强制杀死 nginx 进程
+pkill -9 nginx
+```
