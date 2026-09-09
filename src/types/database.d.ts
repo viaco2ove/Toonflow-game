@@ -1,4 +1,4 @@
-// @db-hash 01eaaad21564bab953761c737c8a72ce
+// @db-hash 2e68b67466eb685ad63fdd81f901b904
 //该文件由脚本自动生成，请勿手动修改
 
 export interface knex_migrations {
@@ -187,6 +187,21 @@ export interface t_prompts {
   'name'?: string | null;
   'parentCode'?: string | null;
   'type'?: string | null;
+}
+export interface t_role_memory {
+  'chapterId'?: string | null;
+  'content': string;
+  'createdAt'?: number | null;
+  'hitCount'?: number | null;
+  'id'?: number;
+  'importance'?: number | null;
+  'lastHitAt'?: number | null;
+  'sessionId': string;
+  'sourceTurn'?: number | null;
+  'storyId': string;
+  'subjectId'?: string | null;
+  'subjectType'?: string | null;
+  'vec'?: string | null;
 }
 export interface t_roleAvatarTask {
   'backgroundFilePath'?: string | null;
@@ -451,6 +466,7 @@ export interface DB {
   "t_outline": t_outline;
   "t_project": t_project;
   "t_prompts": t_prompts;
+  "t_role_memory": t_role_memory;
   "t_roleAvatarTask": t_roleAvatarTask;
   "t_script": t_script;
   "t_scriptSegment": t_scriptSegment;

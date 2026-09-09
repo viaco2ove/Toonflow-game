@@ -40,6 +40,12 @@ import {
 } from "@/modules/game-runtime/engines/ChapterProgressEngine";
 import { resolveRuleNarrativePlan } from "@/modules/game-runtime/engines/RuleOrchestrator";
 import { evaluateEventProgressByAi } from "@/modules/game-runtime/services/EventProgressRuntimeService";
+// ★ P1: 角色专属记忆读写（t_role_memory）
+// ★ P2: 向量召回（recallRoleMemories）
+import {
+  loadRoleMemoriesForSpeaker,
+  recallRoleMemories,
+} from "@/modules/game-runtime/services/RoleMemoryService";
 import {
   resolveSpeakerModeDecision,
 } from "@/modules/game-runtime/engines/SpeakerRouteEngine";
@@ -292,6 +298,8 @@ type SpeakerPromptPayload = {
   memoryFacts: string[];
   /** 当前事件消化后的记忆摘要 */
   memorySummary: string;
+  // ★ P1: 从 t_role_memory 查出的角色专属记忆（按说话人过滤，防串戏）
+  roleSpecificMemories?: string[];
 };
 
 type RecentDialogueTurn = {
@@ -2773,6 +2781,8 @@ function buildSpeakerUserPrompt(payload: {
   memoryFacts: string[];
   /** 当前事件消化后的记忆摘要 */
   memorySummary: string;
+  // ★ P1: 角色专属记忆（t_role_memory 按说话人过滤后渲染好的行）
+  roleSpecificMemories?: string[];
 }): string {
   const worldLines = buildSpeakerWorldLines(payload);
   const chapterLines = buildSpeakerChapterLines(payload);
@@ -2831,6 +2841,10 @@ function buildSpeakerUserPrompt(payload: {
       : []),
     ...(payload.memorySummary
       ? ["[角色记忆摘要]", payload.memorySummary, ""]
+      : []),
+    // ★ P1: 角色专属记忆注入（t_role_memory 按说话人过滤，无数据不出块）
+    ...(payload.roleSpecificMemories?.length
+      ? ["[角色专属记忆]", ...payload.roleSpecificMemories, ""]
       : []),
     "[最近对话(JSON数组)]",
     stringifyRecentDialogue(payload.recentDialogue),
@@ -4502,6 +4516,7 @@ export async function runStorySpeakerContent(input: {
     (digest.memorySummary || "").trim(),
     speakerMemorySummaryLimit,
   );
+  // ★ P1+P2: roleSpecificMemories 向量召回异步，payload 先同步构建，后 patch
   const payload: SpeakerPromptPayload = {
     worldName: normalizeScalarText(input.world?.name),
     // 全局背景所有模式都注入，区别只是长度限额（fast/compact/full）
@@ -4587,8 +4602,43 @@ export async function runStorySpeakerContent(input: {
     // ★ P0: 记忆事实注入发言器（解决"写了但没送"的断链问题）
     memoryFacts: payloadMemoryFacts,
     memorySummary: payloadMemorySummary,
+    // ★ P1+P2: 角色专属记忆
+    // - fast/compact 模式：跳过（省延迟）
+    // - 标准模式：P2 向量召回优先（用记忆事实作 query），失败降级 P1 SQL 排序
+    // - 上限 3 条/200 token，防止挤占 L0/L1 预算
+    roleSpecificMemories: undefined,
   };
-  // 只在 prompt payload 层切换当前/下一事件上下文，不改运行态原始事件信息，避免 UI 和回溯链失真。
+  // 单独异步召回，避免 payload 整体 async 导致后续调用方类型错配
+  if (!compactMode && !useFastSpeakerPrompt) {
+    const speakerName = normalizeScalarText(input.currentRole.name);
+    const storyId = String(input.world?.id || "");
+    const recallQueries = payloadMemoryFacts.length
+      ? payloadMemoryFacts
+      : [payloadMemorySummary].filter(Boolean);
+    const currentTurn = (input.state as any)?.currentEventIndex ?? 0;
+    const rows = await recallRoleMemories({
+      storyId,
+      speakerName,
+      recallQueries,
+      currentTurn,
+      limit: 3,
+      tokenBudget: 200,
+    }).catch(() =>
+      loadRoleMemoriesForSpeaker({ storyId, speakerName, limit: 8 })
+    );
+    payload.roleSpecificMemories = rows
+      .map((row) => {
+        const scope = row.subjectType === "user"
+          ? "关于用户"
+          : row.subjectType === "npc_self"
+            ? "关于自己"
+            : row.subjectType === "relation"
+              ? "关系"
+              : "世界";
+        return `【${scope}】${row.content}`;
+      }).filter(Boolean);
+  }
+  // 无论快路由还是标准路由，都统一使用完整版 speaker prompt。
   // 无论快路由还是标准路由，都统一使用完整版 speaker prompt。
   // 区别只保留在模型槽位和上下文裁剪，不再分裂成另一套缺少章节/事件信息的 prompt 结构。
   // ★ P4: 任务模式上下文注入 —— 任务激活时把 task 上下文喂给角色发言器

@@ -430,6 +430,26 @@ function pythonRequest(action: string, texts?: string[]): Promise<number[][]> {
 }
 
 // ============================================================================
+// 纯向量编码（P2 角色记忆向量召回用）
+// ============================================================================
+
+/**
+ * 将文本列表编码为 m3e-small 512d 向量列表。
+ * 失败时返回空数组，绝不抛异常。
+ * 注意：必须先确保模型已安装（调用前检查 getEmbedInstallStatus）。
+ */
+export async function encodeTexts(texts: string[]): Promise<number[][]> {
+  if (!texts || texts.length === 0) return [];
+  try {
+    await ensurePythonReady();
+    return await pythonRequest("encode", texts);
+  } catch (err) {
+    console.warn("[m3e-small] encodeTexts failed:", (err as Error).message);
+    return [];
+  }
+}
+
+// ============================================================================
 // 向量意图分析
 // ============================================================================
 

@@ -52,6 +52,8 @@ import {
   canPlayerSpeakNow,
   resolveOpeningMessage,
   refreshStoryMemoryBestEffort,
+  runtimeStoryRoles,
+  normalizeScalarText,
   runNarrativePlan,
   runNarrativeOrchestrator,
   setRuntimeTurnState,
@@ -69,6 +71,8 @@ import {
 } from "@/modules/game-runtime/engines/ChapterProgressEngine";
 import { handleMiniGameTurn, isMiniGameActiveState, readActiveTaskStateFromState } from "@/modules/game-runtime/engines/MiniGameController";
 import { evaluateTaskProgress } from "@/modules/game-runtime/agents/taskMode/TaskProgressAgent";
+// ★ P1: 记忆凝练完成后写入 t_role_memory，供角色发言器按角色过滤读取
+import { persistRoleMemoryFacts } from "@/modules/game-runtime/services/RoleMemoryService";
 import { directTaskNarrative } from "@/modules/game-runtime/agents/taskMode/TaskDirectorAgent";
 import { evaluateTaskCompletion } from "@/modules/game-runtime/agents/taskMode/TaskCompletionAgent";
 import { analyzeIntentWithAi as analyzeTaskIntent } from "@/modules/game-runtime/agents/intentAnalyzer/IntentClassifier";
@@ -2313,6 +2317,23 @@ function scheduleSessionMemoryRefresh(params: {
       await getGameDb()("t_gameSession").where({ sessionId: params.sessionId }).update({
         stateJson: toJsonText(latestState, {}),
         updateTime: nowTs(),
+      });
+      // ★ P1: 记忆凝练完成后写入角色专属记忆表（异步、带去重、失败不影响主链路）
+      void persistRoleMemoryFacts({
+        sessionId: params.sessionId,
+        storyId: String(row.worldId ?? params.world?.id ?? ""),
+        chapterId: latestState.chapterId ?? null,
+        roleNames: runtimeStoryRoles(params.world, latestState)
+          .filter((r) => !["player", "narrator"].includes(r.roleType))
+          .map((r) => normalizeScalarText(r.name))
+          .filter(Boolean),
+        playerRoleName: normalizeScalarText(
+          runtimeStoryRoles(params.world, latestState).find((r) => r.roleType === "player")?.name,
+        ),
+        memoryFacts: Array.isArray(memory.facts)
+          ? memory.facts.map((item) => String(item || "").trim()).filter(Boolean)
+          : [],
+        sourceTurn: currentEventDigest.eventIndex ?? null,
       });
     },
   });
