@@ -1,25 +1,53 @@
 /**
- * RoleMemoryService —— 角色专属记忆的写入与查询（P1）
+ * RoleMemoryService —— 角色长期记忆池（L2）的写入与查询
  *
- * 问题背景：
- *   memoryFacts 存在 session state JSON 里，12 条硬截断、全员共享同一本账：
- *   - 旧事实被新事实挤出，NPC 几十轮后“失忆”；
- *   - 张三的隐私李四也读得到，角色认知无法隔离。
+ * # 这张表是干嘛的
  *
- * 方案：
- *   建表 t_role_memory（见 src/migrations/20260909_000001_add_role_memory_table.js），
- *   记忆凝练完成后（scheduleSessionMemoryRefresh.onResolved）异步写入，
- *   角色发言（NarrativeOrchestrator.buildSpeakerUserPrompt 组装 payload 时）
- *   按 storyId + speakerName 过滤查询，注入「角色专属记忆」块。
+ * 它是【每个角色各自的长期私人笔记本】，用来补两个洞：
  *
- * 归属判定（按角色名匹配事实句）：
- *   - fact 含某角色名 → subjectType=npc_self, subjectId=角色名
- *   - fact 含用户角色名/「用户」→ subjectType=user, subjectId='user'
- *   - 其余 → subjectType=world, subjectId=''（全局共享）
+ *   state.memoryFacts 只有 8 条、全员共享一本账 ——
+ *     · 洞一（容量）：新事实进来就把旧事实挤出去，NPC 几十轮后必然失忆；
+ *     · 洞二（隔离）：张三的秘密李四也读得到，角色认知没法区分。
  *
- * 查询纪律（防串戏）：
- *   发言器只取 subjectId IN (说话人名, 'user', '') 的记忆，
- *   且按 importance DESC + createdAt DESC 排序，limit 8。
+ * t_role_memory 就是被挤出去之后仍能按角色各自索回来的那部分。
+ *
+ * # 一行记什么（唯一判据）
+ *
+ *   一个角色在毫无上下文的情况下读到这句话，
+ *   能不能明白「我知道了一件什么事」？
+ *
+ *   能 → 记。不能 → 不记。
+ *
+ * | ✅ 该记（脱离上下文仍成立） | ❌ 不该记（依赖上下文 / 不是事实） |
+ * |---|---|
+ * | 赤眉老人答应替白锦儿担保 | 他点了点头 |
+ * | 白锦儿已炼化第三层火种 | 更新全部人的当前行为 |
+ * | 用户持有玄铁重剑 | 状态更新：「xxx」 |
+ * | 黑风寨与云火月结下梁子 | 那个东西拿走了 |
+ *
+ * 关键区别在于【主体】与【可理解性】：
+ * - 必须带明确主体（谁对谁做了什么），不能是"他""它""那个东西"；
+ * - 必须是已发生过的事，不是元指令、不是操作请求、不是对话片段。
+ *
+ * # 内容由谁产出
+ *
+ * 一律由记忆管理器 AI 凝练产出（`scheduleSessionMemoryRefresh` →
+ * `onResolved` → `persistRoleMemoryFacts`）。
+ * 代码侧【不许】用关键词穷举拼句子往里写 —— 那样既丢了语境，也不成事实。
+ * 历史上这么干过，产出过 `状态更新：「更新全部人的当前行为」` 这种谁都看不懂的记录。
+ *
+ * # 归属判定（按角色名匹配事实句）
+ *   - fact 含用户角色名 → subjectType=user, subjectId='user'（谁都能读）
+ *   - fact 含某 NPC 名   → subjectType=npc_self, subjectId=角色名（仅本人可读）
+ *   - 谁的名字都没有     → subjectType=world, subjectId='__world__'（世界共享）
+ *
+ *   ⚠️ 空串曾被用来表示"世界共享"，但它同时也是"归属判定失败"的兜底值，
+ *      两者共用同一个值导致漏判记录对全体角色广播。现统一用 __world__ 显式占位，
+ *      读取侧绝不放行空串。
+ *
+ * # 查询纪律（防串戏）
+ *   发言器只取 subjectId IN (说话人名, 'user', '__world__') 的记忆，
+ *   且限制 sourceTurn <= lastMessageId（回溯截止线），防止读到回溯点之后的事。
  */
 
 import { getGameDb } from "@/lib/gameEngine";
@@ -44,6 +72,48 @@ export interface RoleMemoryRow {
 const MAX_CONTENT_LEN = 80;
 const MAX_WRITE_PER_TURN = 3;
 
+/**
+ * 世界级主体的显式占位符。
+ *
+ * 不能再用空字符串标识"世界事实"：读取条件 whereIn("subjectId", [角色名, "user", ""])
+ * 里空串既表示"世界共享"，又可能表示"漏判兜底"，两者语义完全不同却共用同一个值，
+ * 导致任何一条归属判定失败的事实都会自动广播给全体角色 —— 这跟防串戏的初衷相悖。
+ */
+export const WORLD_SUBJECT_ID = "__world__";
+
+/**
+ * 写入准入阀：判断一句话值不值得作为"角色长期记忆"存下来。
+ *
+ * t_role_memory 的定位是【角色的长期私人笔记本】——每一行都必须是
+ * 脱离上下文后仍能独立成立的叙事事实。判据只有一条：
+ *
+ *   角色在毫无上下文的情况下读到这句话，能不能明白"我知道了一件什么事"？
+ *
+ * 以下三类一律拒收：
+ *   1. 元操作指令 —— 用户在 @记忆管理 后面写的"更新全部人的当前行为""刷新面板"，
+ *      这不是发生过的事，是对系统的操作请求，写进记忆等于污染。
+ *   2. 过短碎片 —— 低于 6 字的残句（多为 AI 截断或列表符号），语义不成立。
+ *   3. 结构垃圾 —— 含字段名、JSON 括号等机器格式，说明上游没解析干净。
+ *
+ * 正则里的宾语部分必须【必选】。写成「清理\s+(记忆|缓存|数据)?」会让量词把整个分组
+ * 变成可选，正则退化成裸的单词匹配，把"负责清理藏书阁的杂役"这类正常叙事也一并误杀。
+ */
+const META_OPERATION_PATTERNS = [
+  /@\s*记忆管理/,
+  /(更新|刷新|重置|同步|重算)\s*(一下|一次|下)?\s*(全部|所有|全体)?\s*(人|角色|人员|NPC|npc|面板|状态|记忆|数据)/,
+  /(重置|清理)\s*(一下|一次|下)?\s*(面板|状态|记忆|数据|缓存)/,
+  /重新\s*(计算|生成|统计|整理|汇总)/,
+  /^\s*(刷新|重置|同步)\s*$/,
+];
+
+function isWorthyRoleMemoryFact(fact: string): boolean {
+  const text = String(fact || "").trim();
+  if (text.length < 6) return false;
+  if (/[{}\[\]"']|\\\\|playerCardPatch|player_card_patch|summary\s*[:：]|facts\s*[:：]/.test(text)) return false;
+  if (META_OPERATION_PATTERNS.some((re) => re.test(text))) return false;
+  return true;
+}
+
 /** 归属判定：fact 里出现谁的名字就算谁的 */
 function detectSubject(
   fact: string,
@@ -54,11 +124,15 @@ function detectSubject(
   if (playerRoleName && text.includes(playerRoleName)) {
     return { subjectType: "user", subjectId: "user" };
   }
-  const hit = roleNames.find((name) => name && text.includes(name));
+  // 长名字优先匹配，避免"云火月"里的"火月"先被短名命中导致归属错人
+  const hit = [...roleNames]
+    .filter((name) => name)
+    .sort((a, b) => b.length - a.length)
+    .find((name) => text.includes(name));
   if (hit) {
     return { subjectType: "npc_self", subjectId: hit };
   }
-  return { subjectType: "world", subjectId: "" };
+  return { subjectType: "world", subjectId: WORLD_SUBJECT_ID };
 }
 
 /**
@@ -82,6 +156,8 @@ export async function persistRoleMemoryFacts(params: {
     const facts = (params.memoryFacts || [])
       .map((f) => String(f || "").trim())
       .filter(Boolean)
+      // ★ 写入准入阀：元操作指令 / 碎片 / 结构垃圾一律不落表
+      .filter(isWorthyRoleMemoryFact)
       .slice(0, MAX_WRITE_PER_TURN);
     if (!facts.length) return 0;
 
@@ -138,9 +214,11 @@ export async function loadRoleMemoriesForSpeaker(params: {
     if (!storyId || !db || !params.speakerName) return [];
     const limit = Math.min(Math.max(Number(params.limit || 8), 1), 12);
     // ★ 回溯保护：只读回溯点之前产生的记忆（按全局消息 ID 水位）
+    // ★ 归属可见性：自己的(np) + 关于用户的(user) + 世界共享的(__world__)
+    //   注意不能放行空串，否则归属判定失败的漏网记录会对全体角色广播。
     const q = db("t_role_memory")
       .where({ storyId })
-      .whereIn("subjectId", [params.speakerName, "user", ""]);
+      .whereIn("subjectId", [params.speakerName, "user", WORLD_SUBJECT_ID]);
     if (Number.isFinite(params.sourceTurnCap) && params.sourceTurnCap! > 0) {
       q.where("sourceTurn", "<=", params.sourceTurnCap);
     }
@@ -251,7 +329,7 @@ export async function recallRoleMemories(params: {
     const validCap = Number.isFinite(sourceTurnCap) && sourceTurnCap! > 0 ? sourceTurnCap! : null;
     const q = db("t_role_memory")
       .where({ storyId: sid })
-      .whereIn("subjectId", [speakerName, "user", ""])
+      .whereIn("subjectId", [speakerName, "user", WORLD_SUBJECT_ID])
       .whereNotNull("vec");
     if (validCap !== null) {
       q.where("sourceTurn", "<=", validCap);
@@ -321,6 +399,184 @@ export async function vectorizeExistingRow(rowId: number, content: string): Prom
   } catch (err) {
     console.warn(`[role-memory] vectorize row ${rowId} failed:`, (err as any)?.message || String(err));
   }
+}
+
+/** 写入一行（含异步向量化），失败返回 false */
+async function insertMemoryRow(input: {
+  db: any;
+  sessionId: string;
+  storyId: string;
+  chapterId: string | null;
+  subjectType: string;
+  subjectId: string;
+  content: string;
+  importance: number;
+  sourceTurn: number | null;
+}): Promise<boolean> {
+  const now = Date.now();
+  try {
+    const [{ id: rowId }] = await input.db("t_role_memory")
+      .insert({
+        sessionId: input.sessionId,
+        storyId: input.storyId,
+        chapterId: input.chapterId,
+        subjectType: input.subjectType,
+        subjectId: input.subjectId,
+        content: input.content,
+        importance: input.importance,
+        sourceTurn: input.sourceTurn,
+        createdAt: now,
+        lastHitAt: now,
+        hitCount: 0,
+      })
+      .returning("id");
+    void vectorizeExistingRow(Number(rowId), input.content);
+    return true;
+  } catch (err) {
+    console.warn("[role-memory] insert row failed:", (err as any)?.message || String(err));
+    return false;
+  }
+}
+
+/** 参数卡文本清洗：去掉易变的【当前行为】段，压平换行与空白 */
+function sanitizeBootstrapText(input: unknown): string {
+  return String(input ?? "")
+    .replace(/【当前行为】[\s\S]*$/, "")
+    .replace(/[\r\n]+/g, " ")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
+
+function toTextList(input: unknown): string[] {
+  if (!Array.isArray(input)) return [];
+  return input.map((item) => String(item ?? "").trim()).filter(Boolean);
+}
+
+/**
+ * 从角色参数卡合成一条冷启动事实。
+ *
+ * 优先级：已发生的事（技能/装备/物品/长期状态） > 身份备注。
+ * 理由：参数卡里的 skills/items 记录的是"凭本事攒下来的东西"，
+ * 才是真正有叙事价值的事实；身份备注在角色卡里已经有了，
+ * 只在完全没有前者时才退化用它兜底（至少让这个角色不是"零记忆"）。
+ */
+function synthesizeBootstrapFact(name: string, card: Record<string, any>): string | null {
+  if (!name || !card) return null;
+  const identity = sanitizeBootstrapText(card.role_key_information || card.information);
+  const acquired: string[] = [];
+  const skills = toTextList(card.skills).slice(0, 2);
+  const equipment = toTextList(card.equipment).slice(0, 2);
+  const items = toTextList(card.items).slice(0, 3);
+  const other = toTextList(card.other).slice(0, 2);
+  if (skills.length) acquired.push(`掌握技能：${skills.join("、")}`);
+  if (equipment.length) acquired.push(`装备着：${equipment.join("、")}`);
+  if (items.length) acquired.push(`持有：${items.join("、")}`);
+  if (other.length) acquired.push(`当前状况：${other.join("；")}`);
+
+  const segments: string[] = [];
+  if (acquired.length) segments.push(...acquired);
+  if (identity) segments.push(identity);
+  if (!segments.length) return null;
+
+  const content = `${name}：${segments.join("；")}`;
+  return content.length > MAX_CONTENT_LEN ? content.slice(0, MAX_CONTENT_LEN) : content;
+}
+
+/**
+ * 冷启动兜底：给"还没有任何记忆"的在场角色补一条基础记忆。
+ *
+ * # 为什么要这东西
+ *
+ * t_role_memory 的内容一律由记忆管理器 AI 凝练产出，而凝练是【增量】的 ——
+ * 它只写"本轮新发生的事"。于是：
+ *
+ *   - 本功能上线前就存在的会话（老存档），角色从一开始就有的已知事实
+ *     （掌握什么技能、持有什么东西、是什么身份）永远不会被补写；
+ *   - 这些角色的召回结果恒为空，等于整套记忆功能对老会话完全失效，
+ *     而且会一直失效下去 —— 除非剧情里碰巧又发生了新事。
+ *
+ * # 做法
+ *
+ * 每次记忆刷新链路跑完兜一次底：查出当前 story 下哪些在场角色还是"零记忆"，
+ * 从各自参数卡合成一条事实写进去。
+ *
+ * # 幂等性
+ *
+ * 已有记忆的角色直接跳过（按 storyId + subjectId 判断存在性），
+ * 所以重复调用不会产生噪音。
+ */
+export async function bootstrapRoleMemoriesFromCards(params: {
+  sessionId: string;
+  storyId: string | number;
+  chapterId?: string | number | null;
+  state: Record<string, any>;
+  sourceTurn?: number | null;
+}): Promise<number> {
+  let written = 0;
+  try {
+    const db = getGameDb();
+    const storyId = String(params.storyId || "");
+    if (!storyId || !db) return 0;
+
+    // 1) 收集在场角色（用户 + NPC）的「名字 → 参数卡」映射
+    const candidates: Array<{ name: string; card: Record<string, any>; subjectType: string; subjectId: string }> = [];
+    const player = (params.state?.player && typeof params.state.player === "object")
+      ? (params.state.player as Record<string, any>)
+      : {};
+    const playerName = String(player?.name || "").trim();
+    const playerCard = (player?.parameterCardJson && typeof player.parameterCardJson === "object")
+      ? (player.parameterCardJson as Record<string, any>)
+      : {};
+    if (playerName) {
+      candidates.push({ name: playerName, card: playerCard, subjectType: "user", subjectId: "user" });
+    }
+    const npcBag = (params.state?.npcs && typeof params.state.npcs === "object")
+      ? (params.state.npcs as Record<string, any>)
+      : {};
+    for (const npc of Object.values(npcBag)) {
+      const bag = (npc && typeof npc === "object") ? (npc as Record<string, any>) : {};
+      const name = String(bag?.name || "").trim();
+      if (!name) continue;
+      const card = (bag?.parameterCardJson && typeof bag.parameterCardJson === "object")
+        ? (bag.parameterCardJson as Record<string, any>)
+        : {};
+      candidates.push({ name, card, subjectType: "npc_self", subjectId: name });
+    }
+    if (!candidates.length) return 0;
+
+    // 2) 一次查清哪些主体已经有记忆了
+    const existingRows: Array<{ subjectId: string }> = await db("t_role_memory")
+      .where({ storyId })
+      .whereIn("subjectId", candidates.map((item) => item.subjectId))
+      .select("subjectId")
+      .catch(() => []);
+    const alreadyHave = new Set(existingRows.map((row) => String(row.subjectId || "")));
+
+    // 3) 只有"零记忆"的角色才补写
+    const chapterId = params.chapterId != null ? String(params.chapterId) : null;
+    const sourceTurn = params.sourceTurn ?? null;
+    for (const item of candidates) {
+      if (alreadyHave.has(item.subjectId)) continue;
+      const content = synthesizeBootstrapFact(item.name, item.card);
+      if (!content) continue;
+      const ok = await insertMemoryRow({
+        db,
+        sessionId: params.sessionId,
+        storyId,
+        chapterId,
+        subjectType: item.subjectType,
+        subjectId: item.subjectId,
+        content,
+        // 冷启动事实是"常驻底噪"，重要性低于剧情事实但不为零
+        importance: 2,
+        sourceTurn,
+      });
+      if (ok) written += 1;
+    }
+  } catch (err) {
+    console.warn("[role-memory] bootstrap failed:", (err as any)?.message || String(err));
+  }
+  return written;
 }
 
 /** 渲染为 prompt 文本块（有内容才有块，绝不输出空标题） */

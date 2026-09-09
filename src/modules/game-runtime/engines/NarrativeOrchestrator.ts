@@ -4627,7 +4627,16 @@ export async function runStorySpeakerContent(input: {
     }).catch(() =>
       loadRoleMemoriesForSpeaker({ storyId, speakerName, limit: 8, sourceTurnCap })
     );
+    // ★ 去重：[角色记忆事实] 已经把本轮记忆讲过一遍了，
+    //   t_role_memory 里那些是同一个源头（记忆凝练）写进去的，很可能就是同一句话。
+    //   再注入一次等于同一条信息占两处注意力，纯浪费 token —— 只补增量部分。
+    const knownFacts = new Set(
+      payloadMemoryFacts
+        .map((item) => normalizeScalarText(item).replace(/[，。；、\s]/g, ""))
+        .filter(Boolean),
+    );
     payload.roleSpecificMemories = rows
+      .filter((row) => !knownFacts.has(normalizeScalarText(row.content).replace(/[，。；、\s]/g, "")))
       .map((row) => {
         const scope = row.subjectType === "user"
           ? "关于用户"

@@ -72,7 +72,10 @@ import {
 import { handleMiniGameTurn, isMiniGameActiveState, readActiveTaskStateFromState } from "@/modules/game-runtime/engines/MiniGameController";
 import { evaluateTaskProgress } from "@/modules/game-runtime/agents/taskMode/TaskProgressAgent";
 // ★ P1: 记忆凝练完成后写入 t_role_memory，供角色发言器按角色过滤读取
-import { persistRoleMemoryFacts } from "@/modules/game-runtime/services/RoleMemoryService";
+import {
+  bootstrapRoleMemoriesFromCards,
+  persistRoleMemoryFacts,
+} from "@/modules/game-runtime/services/RoleMemoryService";
 import { directTaskNarrative } from "@/modules/game-runtime/agents/taskMode/TaskDirectorAgent";
 import { evaluateTaskCompletion } from "@/modules/game-runtime/agents/taskMode/TaskCompletionAgent";
 import { analyzeIntentWithAi as analyzeTaskIntent } from "@/modules/game-runtime/agents/intentAnalyzer/IntentClassifier";
@@ -2319,9 +2322,10 @@ function scheduleSessionMemoryRefresh(params: {
         updateTime: nowTs(),
       });
       // ★ P1: 记忆凝练完成后写入角色专属记忆表（异步、带去重、失败不影响主链路）
+      const roleMemoryStoryId = String(row.worldId ?? params.world?.id ?? "");
       void persistRoleMemoryFacts({
         sessionId: params.sessionId,
-        storyId: String(row.worldId ?? params.world?.id ?? ""),
+        storyId: roleMemoryStoryId,
         chapterId: latestState.chapterId ?? null,
         roleNames: runtimeStoryRoles(params.world, latestState)
           .filter((r) => !["player", "narrator"].includes(r.roleType))
@@ -2333,6 +2337,16 @@ function scheduleSessionMemoryRefresh(params: {
         memoryFacts: Array.isArray(memory.facts)
           ? memory.facts.map((item) => String(item || "").trim()).filter(Boolean)
           : [],
+        sourceTurn: params.lastMessageId ?? null,
+      });
+      // ★ 冷启动兜底：AI 凝练是增量的，只写"本轮新发生的事"。
+      //   本功能上线前的老会话，角色从一开始就有的已知事实永远补不上，
+      //   召回恒为空、功能等于失效。这里给"零记忆"的在场角色从参数卡补一条。
+      void bootstrapRoleMemoriesFromCards({
+        sessionId: params.sessionId,
+        storyId: roleMemoryStoryId,
+        chapterId: latestState.chapterId ?? null,
+        state: latestState,
         sourceTurn: params.lastMessageId ?? null,
       });
     },
@@ -2544,8 +2558,16 @@ async function addSessionMessageInner(input: AddSessionMessageInput, sessionId: 
 
   // 显式 @记忆管理 指令要在正式会话里同步写回用户参数卡，
   // 不能只停留在记忆摘要层，否则用户详情面板看不到新增物品/装备/技能。
+  //
+  // ★ 注意：这里【不】手写 t_role_memory 的事实句。
+  //   "@记忆管理" 在系统提示词里的定义是「交给记忆管理器 AI 的直接管理指令」，
+  //   facts 必须由 AI 从上下文凝练产出，代码侧穷举关键词拼出来的句子
+  //   （学会了技能「X」/ 状态更新：「Y」）既丢语境也不成事实。
+  //   这里只负责「参数卡立刻可见」+「标记需要早触发记忆刷新」，
+  //   真正的写表在函数末尾由 scheduleSessionMemoryRefresh 链路完成。
+  let explicitMemoryDirectiveApplied = false;
   if (roleTypeValue === "player" && eventTypeValue === "on_message" && messageContent.trim()) {
-    applyExplicitMemoryDirectiveToPlayerCard(state, messageContent);
+    explicitMemoryDirectiveApplied = applyExplicitMemoryDirectiveToPlayerCard(state, messageContent).applied;
   }
 
   // ★ AI 并行化优化: 声明 triggerResult 和 taskResult，使其在整个函数范围内可用
@@ -3349,6 +3371,29 @@ async function addSessionMessageInner(input: AddSessionMessageInput, sessionId: 
       recentMessages: recentMessagesForMemory,
       lastMessageId: lastMemoryMessageId,
     });
+    }
+  }
+
+  // ★ @记忆管理 早触发：不等后续 /game/orchestration。
+  //   用户发 "@记忆管理 xxx" 时前端不一定再走编排，
+  //   而编排链路才是原本唯一的记忆刷新入口 —— 断在这里 t_role_memory 就永远是空的。
+  //   补一次同级触发；facts 仍由记忆管理器 AI 凝练产出，代码侧不代写内容。
+  if (explicitMemoryDirectiveApplied && !asyncMemoryRefreshRequested) {
+    const directiveMessages = await loadIncrementalMessagesForMemory(db, sessionId, state);
+    const directiveLastMessageId = directiveMessages.reduce((max, item) => {
+      const currentId = Number(item?.messageId || 0);
+      return Number.isFinite(currentId) && currentId > max ? currentId : max;
+    }, 0);
+    if (directiveMessages.length) {
+      scheduleSessionMemoryRefresh({
+        sessionId,
+        userId: currentUserId,
+        world,
+        chapter: currentChapter ?? asyncMemoryRefreshChapter,
+        state,
+        recentMessages: directiveMessages,
+        lastMessageId: directiveLastMessageId,
+      });
     }
   }
   scheduleSessionRoleParameterCardRefresh({
