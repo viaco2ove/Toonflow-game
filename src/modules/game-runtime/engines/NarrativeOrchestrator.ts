@@ -4624,7 +4624,7 @@ export async function runStorySpeakerContent(input: {
       limit: 3,
       tokenBudget: 200,
     }).catch(() =>
-      loadRoleMemoriesForSpeaker({ storyId, speakerName, limit: 8 })
+      loadRoleMemoriesForSpeaker({ storyId, speakerName, limit: 8, currentEventIndex: currentTurn })
     );
     payload.roleSpecificMemories = rows
       .map((row) => {

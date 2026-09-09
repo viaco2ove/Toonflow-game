@@ -120,21 +120,31 @@ export async function persistRoleMemoryFacts(params: {
 
 /**
  * 发言器读取：说话人可见的记忆 = 自己的 + 关于用户的 + 全局的。
- * 返回带命中信息（P2 向量召回可复用同一出口）。
+ * sourceTurn 过滤保证回溯后只能读到回溯点之前的记忆，防止"穿越"。
+ *
+ * @param currentEventIndex 当前事件索引（从 session state 恢复），
+ *                          回溯时自动还原成旧值；undefined/0 表示无限制。
  */
 export async function loadRoleMemoriesForSpeaker(params: {
   storyId: string | number;
   speakerName: string;
   limit?: number;
+  /** 当前事件索引，未定义时不限制 sourceTurn */
+  currentEventIndex?: number;
 }): Promise<RoleMemoryRow[]> {
   try {
     const db = getGameDb();
     const storyId = String(params.storyId || "");
     if (!storyId || !db || !params.speakerName) return [];
     const limit = Math.min(Math.max(Number(params.limit || 8), 1), 12);
-    const rows: RoleMemoryRow[] = await db("t_role_memory")
+    // ★ 回溯保护：只读回溯点之前产生的记忆
+    const q = db("t_role_memory")
       .where({ storyId })
-      .whereIn("subjectId", [params.speakerName, "user", ""])
+      .whereIn("subjectId", [params.speakerName, "user", ""]);
+    if (Number.isFinite(params.currentEventIndex) && params.currentEventIndex! > 0) {
+      q.where("sourceTurn", "<=", params.currentEventIndex);
+    }
+    const rows: RoleMemoryRow[] = await q
       .orderBy("importance", "desc")
       .orderBy("createdAt", "desc")
       .limit(limit);
@@ -236,12 +246,16 @@ export async function recallRoleMemories(params: {
     }
     if (!queryVec) return [];
 
-    // 2. 拉全表向量数据（只看有 vec 的行）
-    const allRows: RoleMemoryRow[] = await db("t_role_memory")
+    // 2. 拉全表向量数据（只看有 vec 的行，★ 回溯保护：只读回溯点之前的记忆）
+    const validTurn = Number.isFinite(currentTurn) && currentTurn! > 0 ? currentTurn! : null;
+    const q = db("t_role_memory")
       .where({ storyId: sid })
       .whereIn("subjectId", [speakerName, "user", ""])
-      .whereNotNull("vec")
-      .select("*");
+      .whereNotNull("vec");
+    if (validTurn !== null) {
+      q.where("sourceTurn", "<=", validTurn);
+    }
+    const allRows: RoleMemoryRow[] = await q.select("*");
 
     if (!allRows.length) return [];
 
