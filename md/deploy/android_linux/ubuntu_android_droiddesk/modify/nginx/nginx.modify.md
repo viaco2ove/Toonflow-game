@@ -90,3 +90,13 @@ ps aux | grep 'nginx: worker' | grep -v grep
 # 强制杀死 nginx 进程
 pkill -9 nginx
 ```
+
+# 查看谁占了 8088(nginx 端口)
+```
+# 可能没有 -tlnp
+# ss -tlnp | grep 8088
+# grep -r "8088" /proc/*/net/tcp6 2>/dev/null
+# 安装net-tools
+# apt install net-tools -y
+netstat -tlnp | grep 8088
+```
