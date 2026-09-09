@@ -48,6 +48,7 @@ export const logTagList = [
   "story:memory:runtime", // AI 故事-记忆管理 agent 运行态日志
   "story:memory:stats", // AI 故事-记忆管理 agent token 统计
   "story:memory_directive:stats", // 显式 @记忆管理 参数卡写回日志
+  "story:role_memory:persist", // t_role_memory 写表运行态（facts 写入 / 准入拦截 / 冷启动补写）
 
   // ===== 小游戏 =====
   "story:mini_game:agent", // 小游戏 agent 日志（识别 / 拦截 / 退出状态）

@@ -135,9 +135,31 @@ function detectSubject(
   return { subjectType: "world", subjectId: WORLD_SUBJECT_ID };
 }
 
+/** 一次写表的完整流水账，给上层打日志用 */
+export interface RoleMemoryWriteStats {
+  /** 记忆管理器 AI 产出的原始事实数 */
+  received: number;
+  /** 被写入准入阀拦掉的（元指令 / 碎片 / 结构垃圾） */
+  rejected: number;
+  /** 超过单轮上限被丢弃的 */
+  truncated: number;
+  /** 库里已存在、去重跳过的 */
+  duplicated: number;
+  /** 真正写入的 */
+  written: number;
+  /** 写入行的归属，看一眼就知道是落在谁头上 */
+  subjects: string[];
+}
+
 /**
  * 记忆凝练完成后调用：把事实句写入 t_role_memory（带去重）。
  * 任何失败只打日志，绝不影响主链路。
+ *
+ * 返回流水账而不是简单的写入行数：这条链路是 fire-and-forget 的异步任务，
+ * 出问题不会有任何报错，只能靠日志归因。四个计数能直接区分最关键的三种故障：
+ *   received=0            → AI 压根没产出 facts（上游问题）
+ *   rejected≈received     → 产出了但被准入阀全拦了（<｜hy_place▁holder▁no▁813｜>阀太严的误杀）
+ *   written=0 && 其他>0   → 库里都已有 / 写入失败（DB 问题）
  */
 export async function persistRoleMemoryFacts(params: {
   sessionId: string;
@@ -147,19 +169,29 @@ export async function persistRoleMemoryFacts(params: {
   playerRoleName: string;
   memoryFacts: string[];
   sourceTurn?: number | null;
-}): Promise<number> {
-  let written = 0;
+}): Promise<RoleMemoryWriteStats> {
+  const stats: RoleMemoryWriteStats = {
+    received: 0,
+    rejected: 0,
+    truncated: 0,
+    duplicated: 0,
+    written: 0,
+    subjects: [],
+  };
   try {
     const db = getGameDb();
     const storyId = String(params.storyId || "");
-    if (!storyId || !db) return 0;
-    const facts = (params.memoryFacts || [])
+    if (!storyId || !db) return stats;
+    const trimmed = (params.memoryFacts || [])
       .map((f) => String(f || "").trim())
-      .filter(Boolean)
+      .filter(Boolean);
       // ★ 写入准入阀：元操作指令 / 碎片 / 结构垃圾一律不落表
-      .filter(isWorthyRoleMemoryFact)
-      .slice(0, MAX_WRITE_PER_TURN);
-    if (!facts.length) return 0;
+    const worthy = trimmed.filter(isWorthyRoleMemoryFact);
+    const facts = worthy.slice(0, MAX_WRITE_PER_TURN);
+    stats.received = trimmed.length;
+    stats.rejected = trimmed.length - worthy.length;
+    stats.truncated = worthy.length - facts.length;
+    if (!facts.length) return stats;
 
     const now = Date.now();
     for (const fact of facts) {
@@ -170,7 +202,10 @@ export async function persistRoleMemoryFacts(params: {
         .where({ storyId, subjectId, content })
         .first()
         .catch(() => null);
-      if (exists) continue;
+      if (exists) {
+        stats.duplicated += 1;
+        continue;
+      }
       const [{ id: rowId }] = await db("t_role_memory").insert({
         sessionId: params.sessionId,
         storyId,
@@ -186,12 +221,13 @@ export async function persistRoleMemoryFacts(params: {
       }).returning("id");
       // ★ P2: 写入后异步生成向量（失败不影响写入，vectorizeExistingRow 有 try/catch）
       void vectorizeExistingRow(Number(rowId), content);
-      written += 1;
+      stats.written += 1;
+      stats.subjects.push(subjectId);
     }
   } catch (err) {
     console.warn("[role-memory] persist failed:", (err as any)?.message || String(err));
   }
-  return written;
+  return stats;
 }
 
 /**
@@ -505,18 +541,38 @@ function synthesizeBootstrapFact(name: string, card: Record<string, any>): strin
  * 已有记忆的角色直接跳过（按 storyId + subjectId 判断存在性），
  * 所以重复调用不会产生噪音。
  */
+/** 冷启动补写的流水账，给上层打日志用 */
+export interface RoleMemoryBootstrapStats {
+  /** 扫到的在场角色数（含用户） */
+  scanned: number;
+  /** 已有记忆、跳过的 */
+  skipped: number;
+  /** 参数卡没内容可提炼、跳过 */
+  empty: number;
+  /** 实际补写的 */
+  written: number;
+  /** 补写了谁 */
+  writtenNames: string[];
+}
+
 export async function bootstrapRoleMemoriesFromCards(params: {
   sessionId: string;
   storyId: string | number;
   chapterId?: string | number | null;
   state: Record<string, any>;
   sourceTurn?: number | null;
-}): Promise<number> {
-  let written = 0;
+}): Promise<RoleMemoryBootstrapStats> {
+  const stats: RoleMemoryBootstrapStats = {
+    scanned: 0,
+    skipped: 0,
+    empty: 0,
+    written: 0,
+    writtenNames: [],
+  };
   try {
     const db = getGameDb();
     const storyId = String(params.storyId || "");
-    if (!storyId || !db) return 0;
+    if (!storyId || !db) return stats;
 
     // 1) 收集在场角色（用户 + NPC）的「名字 → 参数卡」映射
     const candidates: Array<{ name: string; card: Record<string, any>; subjectType: string; subjectId: string }> = [];
@@ -542,7 +598,8 @@ export async function bootstrapRoleMemoriesFromCards(params: {
         : {};
       candidates.push({ name, card, subjectType: "npc_self", subjectId: name });
     }
-    if (!candidates.length) return 0;
+    stats.scanned = candidates.length;
+    if (!candidates.length) return stats;
 
     // 2) 一次查清哪些主体已经有记忆了
     const existingRows: Array<{ subjectId: string }> = await db("t_role_memory")
@@ -556,9 +613,15 @@ export async function bootstrapRoleMemoriesFromCards(params: {
     const chapterId = params.chapterId != null ? String(params.chapterId) : null;
     const sourceTurn = params.sourceTurn ?? null;
     for (const item of candidates) {
-      if (alreadyHave.has(item.subjectId)) continue;
+      if (alreadyHave.has(item.subjectId)) {
+        stats.skipped += 1;
+        continue;
+      }
       const content = synthesizeBootstrapFact(item.name, item.card);
-      if (!content) continue;
+      if (!content) {
+        stats.empty += 1;
+        continue;
+      }
       const ok = await insertMemoryRow({
         db,
         sessionId: params.sessionId,
@@ -571,12 +634,15 @@ export async function bootstrapRoleMemoriesFromCards(params: {
         importance: 2,
         sourceTurn,
       });
-      if (ok) written += 1;
+      if (ok) {
+        stats.written += 1;
+        stats.writtenNames.push(item.name);
+      }
     }
   } catch (err) {
     console.warn("[role-memory] bootstrap failed:", (err as any)?.message || String(err));
   }
-  return written;
+  return stats;
 }
 
 /** 渲染为 prompt 文本块（有内容才有块，绝不输出空标题） */

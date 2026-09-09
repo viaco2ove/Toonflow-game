@@ -72,10 +72,6 @@ import {
 import { handleMiniGameTurn, isMiniGameActiveState, readActiveTaskStateFromState } from "@/modules/game-runtime/engines/MiniGameController";
 import { evaluateTaskProgress } from "@/modules/game-runtime/agents/taskMode/TaskProgressAgent";
 // ★ P1: 记忆凝练完成后写入 t_role_memory，供角色发言器按角色过滤读取
-import {
-  bootstrapRoleMemoriesFromCards,
-  persistRoleMemoryFacts,
-} from "@/modules/game-runtime/services/RoleMemoryService";
 import { directTaskNarrative } from "@/modules/game-runtime/agents/taskMode/TaskDirectorAgent";
 import { evaluateTaskCompletion } from "@/modules/game-runtime/agents/taskMode/TaskCompletionAgent";
 import { analyzeIntentWithAi as analyzeTaskIntent } from "@/modules/game-runtime/agents/intentAnalyzer/IntentClassifier";
@@ -2321,34 +2317,9 @@ function scheduleSessionMemoryRefresh(params: {
         stateJson: toJsonText(latestState, {}),
         updateTime: nowTs(),
       });
-      // ★ P1: 记忆凝练完成后写入角色专属记忆表（异步、带去重、失败不影响主链路）
-      const roleMemoryStoryId = String(row.worldId ?? params.world?.id ?? "");
-      void persistRoleMemoryFacts({
-        sessionId: params.sessionId,
-        storyId: roleMemoryStoryId,
-        chapterId: latestState.chapterId ?? null,
-        roleNames: runtimeStoryRoles(params.world, latestState)
-          .filter((r) => !["player", "narrator"].includes(r.roleType))
-          .map((r) => normalizeScalarText(r.name))
-          .filter(Boolean),
-        playerRoleName: normalizeScalarText(
-          runtimeStoryRoles(params.world, latestState).find((r) => r.roleType === "player")?.name,
-        ),
-        memoryFacts: Array.isArray(memory.facts)
-          ? memory.facts.map((item) => String(item || "").trim()).filter(Boolean)
-          : [],
-        sourceTurn: params.lastMessageId ?? null,
-      });
-      // ★ 冷启动兜底：AI 凝练是增量的，只写"本轮新发生的事"。
-      //   本功能上线前的老会话，角色从一开始就有的已知事实永远补不上，
-      //   召回恒为空、功能等于失效。这里给"零记忆"的在场角色从参数卡补一条。
-      void bootstrapRoleMemoriesFromCards({
-        sessionId: params.sessionId,
-        storyId: roleMemoryStoryId,
-        chapterId: latestState.chapterId ?? null,
-        state: latestState,
-        sourceTurn: params.lastMessageId ?? null,
-      });
+      // ★ t_role_memory 的写入已下沉到 refreshStoryMemoryBestEffort 内部
+      //   （NarrativeOrchestrator.scheduleRoleMemoryPersist），
+      //   覆盖全部触发路径，这里不再重复写——避免双份写入逻辑各漏一半。
     },
   });
 }

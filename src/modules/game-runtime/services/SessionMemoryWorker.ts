@@ -7,15 +7,7 @@ import {
   parseJsonSafe,
   toJsonText,
 } from "@/lib/gameEngine";
-import {
-  refreshStoryMemoryBestEffort,
-  normalizeScalarText,
-  runtimeStoryRoles,
-} from "@/modules/game-runtime/engines/NarrativeOrchestrator";
-import {
-  bootstrapRoleMemoriesFromCards,
-  persistRoleMemoryFacts,
-} from "@/modules/game-runtime/services/RoleMemoryService";
+import { refreshStoryMemoryBestEffort } from "@/modules/game-runtime/engines/NarrativeOrchestrator";
 import { loadPublishedChapter, loadPublishedWorld } from "@/modules/game-runtime/services/publishedRuntime";
 
 type JsonRecord = Record<string, any>;
@@ -125,33 +117,8 @@ async function processSessionMemory(row: any) {
       recentMessages,
     });
 
-    // ★ 本 worker 是记忆链路的另一半：编排链路（SessionService）之外，
-    //   这里是唯一会主动跑记忆管理器 AI 的后台线程，必须同样落在 t_role_memory 上，
-    //   否则走 worker 刷新的会话（用户静默 / 编排没跑）会一直写不进角色记忆表。
-    void persistRoleMemoryFacts({
-      sessionId,
-      storyId: String(worldId),
-      chapterId,
-      roleNames: runtimeStoryRoles(worldResult.world, state)
-        .filter((item) => !["player", "narrator"].includes(item.roleType))
-        .map((item) => normalizeScalarText(item.name))
-        .filter(Boolean),
-      playerRoleName: normalizeScalarText(
-        runtimeStoryRoles(worldResult.world, state).find((item) => item.roleType === "player")?.name,
-      ),
-      memoryFacts: Array.isArray(memory?.facts)
-        ? memory.facts.map((item) => String(item || "").trim()).filter(Boolean)
-        : [],
-      sourceTurn: latestMessageId > 0 ? latestMessageId : null,
-    });
-    // ★ 冷启动兜底同上：给"零记忆"的在场角色从参数卡补一条
-    void bootstrapRoleMemoriesFromCards({
-      sessionId,
-      storyId: String(worldId),
-      chapterId,
-      state,
-      sourceTurn: latestMessageId > 0 ? latestMessageId : null,
-    });
+    // ★ t_role_memory 的写入由 refreshStoryMemoryBestEffort 内部统一负责
+    //   （NarrativeOrchestrator.scheduleRoleMemoryPersist），这里不重复写。
 
     state.memoryWorker = {
       ...workerState,

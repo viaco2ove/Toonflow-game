@@ -42,8 +42,11 @@ import { resolveRuleNarrativePlan } from "@/modules/game-runtime/engines/RuleOrc
 import { evaluateEventProgressByAi } from "@/modules/game-runtime/services/EventProgressRuntimeService";
 // ★ P1: 角色专属记忆读写（t_role_memory）
 // ★ P2: 向量召回（recallRoleMemories）
+// ★ 冷启动兜底（bootstrapRoleMemoriesFromCards）
 import {
+  bootstrapRoleMemoriesFromCards,
   loadRoleMemoriesForSpeaker,
+  persistRoleMemoryFacts,
   recallRoleMemories,
 } from "@/modules/game-runtime/services/RoleMemoryService";
 import {
@@ -5749,6 +5752,85 @@ export function applyNarrativeMemoryHintsToState(state: JsonRecord, hints: unkno
   return mergedFacts;
 }
 
+/**
+ * ★ t_role_memory 写入的【唯一入口】。
+ *
+ * 为什么放在这一层而不是各个调用点：
+ *   记忆管理器的触发路径有 4 大类、实际调用点 9 处
+ *   （编排师判定 2 / @记忆管理 1 / 后台轮询 1 / 任务接取·结算 3 / 会话开场 1 / 调试 1）。
+ *   写表逻辑若挂在某条路径专属的包装器里，每新增一条触发路径就漏一处，
+ *   且漏了之后没有任何报错 —— 表现为"某些会话的角色永远没记忆"，极难排查。
+ *   下沉到所有路径的共同汇聚点 `refreshStoryMemoryBestEffort`，一次覆盖。
+ *
+ * fire-and-forget：写表失败绝不影响记忆凝练主链路。
+ */
+function scheduleRoleMemoryPersist(input: {
+  sessionId: string;
+  world: any;
+  state: JsonRecord;
+  memory: MemoryManagerResult;
+  sourceTurn: number | null;
+}) {
+  const storyId = String(input.world?.id ?? "");
+  if (!storyId) return;
+  const roles = runtimeStoryRoles(input.world, input.state);
+  const roleNames = roles
+    .filter((item) => !["player", "narrator"].includes(item.roleType))
+    .map((item) => normalizeScalarText(item.name))
+    .filter(Boolean);
+  const playerRoleName = normalizeScalarText(
+    roles.find((item) => item.roleType === "player")?.name,
+  );
+  const chapterId = input.state?.chapterId ?? null;
+  void (async () => {
+    const persistStats = await persistRoleMemoryFacts({
+      sessionId: input.sessionId,
+      storyId,
+      chapterId,
+      roleNames,
+      playerRoleName,
+      memoryFacts: Array.isArray(input.memory?.facts)
+        ? input.memory.facts.map((item) => String(item || "").trim()).filter(Boolean)
+        : [],
+      sourceTurn: input.sourceTurn,
+    });
+    const bootStats = await bootstrapRoleMemoriesFromCards({
+      sessionId: input.sessionId,
+      storyId,
+      chapterId,
+      state: input.state,
+      sourceTurn: input.sourceTurn,
+    });
+    // 这条链路完全异步且失败静默，务必留下归因依据。
+    // 三个最常见的故障靠这条日志一眼可辨：
+    //   facts.received = 0                      → 记忆管理器 AI 没产出 facts（上游问题）
+    //   facts.rejected ≈ facts.received         → 产出被准入阀全拦了（阈值误杀）
+    //   facts.written = 0 但 duplicated > 0     → 正常，库里已有，不是故障
+    DebugLogUtil.log("story:role_memory:persist", JSON.stringify({
+      sessionId: input.sessionId,
+      storyId,
+      chapterId,
+      sourceTurn: input.sourceTurn,
+      roleNames,
+      facts: {
+        received: persistStats.received,
+        rejected: persistStats.rejected,
+        truncated: persistStats.truncated,
+        duplicated: persistStats.duplicated,
+        written: persistStats.written,
+        subjects: persistStats.subjects,
+      },
+      bootstrap: {
+        scanned: bootStats.scanned,
+        skipped: bootStats.skipped,
+        empty: bootStats.empty,
+        written: bootStats.written,
+        writtenNames: bootStats.writtenNames,
+      },
+    }));
+  })();
+}
+
 // 尝试刷新记忆，失败则静默降级，不影响主剧情。
 export async function refreshStoryMemoryBestEffort(input: {
   userId: number;
@@ -5758,6 +5840,11 @@ export async function refreshStoryMemoryBestEffort(input: {
   recentMessages: RuntimeMessageInput[];
   /** ★ 阶段2:世界书条目（调用方已预加载则复用，否则本函数内读 DB） */
   worldBookEntries?: WorldBookEntry[];
+  /**
+   * ★ 会话 ID。t_role_memory 每行要记录来源会话便于追溯。
+   *   调用方有就传，没有时从 state.sessionId 兜底；都拿不到则留空（不影响写表）。
+   */
+  sessionId?: string;
 }): Promise<MemoryManagerResult | null> {
   const recentMessages = Array.isArray(input.recentMessages) ? input.recentMessages.filter(Boolean) : [];
   if (!recentMessages.length) return null;
@@ -5805,6 +5892,16 @@ export async function refreshStoryMemoryBestEffort(input: {
       return null;
     }
     applyMemoryResultToState(input.state, memory);
+    // ★ 所有触发路径汇聚到这里统一写 t_role_memory（此时参数卡已 apply，bootstrap 能读到最新值）
+    scheduleRoleMemoryPersist({
+      sessionId: normalizeScalarText(input.sessionId || input.state?.sessionId),
+      world: input.world,
+      state: input.state,
+      memory,
+      // 回溯截止线必须用全局单调递增的消息 ID，不能用 chapterProgress.eventIndex
+      //（跨章节会重置、自由章节不推进）
+      sourceTurn: Number(input.state?.lastMessageId || 0) || null,
+    });
     const nextPlayerCard = asRecord(asRecord(input.state.player).parameterCardJson);
     const nextNpcBag = asRecord(input.state.npcs);
     const npcCardAppliedTargets = (Array.isArray(memory.npcCardPatches) ? memory.npcCardPatches : [])
@@ -5862,6 +5959,8 @@ export function triggerStoryMemoryRefreshInBackground(input: {
   state: JsonRecord;
   recentMessages: RuntimeMessageInput[];
   debugRuntimeKey?: string;
+  /** ★ 会话 ID，透传给 refreshStoryMemoryBestEffort 用于 t_role_memory 落表追溯 */
+  sessionId?: string;
   onResolved?: ((memory: MemoryManagerResult, stateSnapshot: JsonRecord) => Promise<void> | void) | null;
 }): Promise<void> {
   const recentMessages = (Array.isArray(input.recentMessages) ? input.recentMessages : []).map((item) => ({
@@ -5883,6 +5982,7 @@ export function triggerStoryMemoryRefreshInBackground(input: {
         chapter: input.chapter,
         state: stateSnapshot,
         recentMessages,
+        sessionId: input.sessionId,
       });
       if (!memory) return;
 
@@ -5901,6 +6001,7 @@ export function triggerStoryMemoryRefreshInBackground(input: {
       chapter: input.chapter,
       state: stateSnapshot,
       recentMessages,
+      sessionId: input.sessionId,
     });
     if (!memory) return;
 
