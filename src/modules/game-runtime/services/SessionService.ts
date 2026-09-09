@@ -2333,7 +2333,7 @@ function scheduleSessionMemoryRefresh(params: {
         memoryFacts: Array.isArray(memory.facts)
           ? memory.facts.map((item) => String(item || "").trim()).filter(Boolean)
           : [],
-        sourceTurn: currentEventDigest.eventIndex ?? null,
+        sourceTurn: params.lastMessageId ?? null,
       });
     },
   });

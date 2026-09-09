@@ -122,27 +122,27 @@ export async function persistRoleMemoryFacts(params: {
  * 发言器读取：说话人可见的记忆 = 自己的 + 关于用户的 + 全局的。
  * sourceTurn 过滤保证回溯后只能读到回溯点之前的记忆，防止"穿越"。
  *
- * @param currentEventIndex 当前事件索引（从 session state 恢复），
- *                          回溯时自动还原成旧值；undefined/0 表示无限制。
+ * @param sourceTurnCap 全局消息 ID 上限（lastMessageId），回溯时自动还原成旧值。
+ *                       undefined/null 表示无限制（自由发言等场景）。
  */
 export async function loadRoleMemoriesForSpeaker(params: {
   storyId: string | number;
   speakerName: string;
   limit?: number;
-  /** 当前事件索引，未定义时不限制 sourceTurn */
-  currentEventIndex?: number;
+  /** 全局消息 ID 上限，未定义时不限制 sourceTurn */
+  sourceTurnCap?: number | null;
 }): Promise<RoleMemoryRow[]> {
   try {
     const db = getGameDb();
     const storyId = String(params.storyId || "");
     if (!storyId || !db || !params.speakerName) return [];
     const limit = Math.min(Math.max(Number(params.limit || 8), 1), 12);
-    // ★ 回溯保护：只读回溯点之前产生的记忆
+    // ★ 回溯保护：只读回溯点之前产生的记忆（按全局消息 ID 水位）
     const q = db("t_role_memory")
       .where({ storyId })
       .whereIn("subjectId", [params.speakerName, "user", ""]);
-    if (Number.isFinite(params.currentEventIndex) && params.currentEventIndex! > 0) {
-      q.where("sourceTurn", "<=", params.currentEventIndex);
+    if (Number.isFinite(params.sourceTurnCap) && params.sourceTurnCap! > 0) {
+      q.where("sourceTurn", "<=", params.sourceTurnCap);
     }
     const rows: RoleMemoryRow[] = await q
       .orderBy("importance", "desc")
@@ -195,14 +195,14 @@ function blobToVector(blob: Buffer | Buffer[] | null | undefined): number[] | nu
 /**
  * P2 向量召回：
  * 1. 用 recallQueries 编码 query 向量（多个 query 取 max pooling）
- * 2. 扫全表（storyId 下所有有 vec 的行）
+ * 2. 扫全表（storyId 下所有有 vec 的行，★ sourceTurnCap 过滤回溯保护）
  * 3. score = 0.5*cos + 0.3*importance/5 + 0.2*timeDecay（timeDecay = 0.5^(Δturn/50)）
  * 4. 取 top N，按 subjectId 过滤（防串戏），上限 3 条/最高 200 token
  * 5. 失败时降级回 SQL 排序
  *
  * @param recallQueries  召回查询语句（多个则 max pooling）
  * @param speakerName    当前说话人角色名
- * @param currentTurn    当前 eventIndex（算时间衰减）
+ * @param sourceTurnCap  全局消息 ID 上限（算时间衰减 + 回溯过滤）
  * @param topK           取 topN（默认 3）
  * @param tokenBudget    最高 token 预算（默认 200，约 3 条 x ~60 字）
  */
@@ -210,7 +210,8 @@ export async function recallRoleMemories(params: {
   storyId: string | number;
   recallQueries: string[];
   speakerName: string;
-  currentTurn?: number | null;
+  /** 全局消息 ID 上限（lastMessageId），undefined/null 表示无限制 */
+  sourceTurnCap?: number | null;
   limit?: number;
   tokenBudget?: number;
 }): Promise<RoleMemoryRow[]> {
@@ -218,7 +219,7 @@ export async function recallRoleMemories(params: {
     storyId,
     recallQueries,
     speakerName,
-    currentTurn = 0,
+    sourceTurnCap,
     limit = 3,
     tokenBudget = 200,
   } = params;
@@ -247,13 +248,13 @@ export async function recallRoleMemories(params: {
     if (!queryVec) return [];
 
     // 2. 拉全表向量数据（只看有 vec 的行，★ 回溯保护：只读回溯点之前的记忆）
-    const validTurn = Number.isFinite(currentTurn) && currentTurn! > 0 ? currentTurn! : null;
+    const validCap = Number.isFinite(sourceTurnCap) && sourceTurnCap! > 0 ? sourceTurnCap! : null;
     const q = db("t_role_memory")
       .where({ storyId: sid })
       .whereIn("subjectId", [speakerName, "user", ""])
       .whereNotNull("vec");
-    if (validTurn !== null) {
-      q.where("sourceTurn", "<=", validTurn);
+    if (validCap !== null) {
+      q.where("sourceTurn", "<=", validCap);
     }
     const allRows: RoleMemoryRow[] = await q.select("*");
 
@@ -267,7 +268,8 @@ export async function recallRoleMemories(params: {
         if (!vec) return null;
         const cos = cosineScore(queryVec!, vec);
         const importance = (row.importance ?? 3) / 5;
-        const turnDelta = Math.abs((row.sourceTurn ?? 0) - (currentTurn ?? 0));
+        const cap = validCap ?? (row.sourceTurn ?? 0);
+        const turnDelta = Math.abs((row.sourceTurn ?? 0) - cap);
         const timeDecay = Math.pow(0.5, turnDelta / 50);
         const score = 0.5 * cos + 0.3 * importance + 0.2 * timeDecay;
         return { row, score };

@@ -4615,16 +4615,17 @@ export async function runStorySpeakerContent(input: {
     const recallQueries = payloadMemoryFacts.length
       ? payloadMemoryFacts
       : [payloadMemorySummary].filter(Boolean);
-    const currentTurn = (input.state as any)?.currentEventIndex ?? 0;
+    // ★ 回溯保护用全局消息 ID 水位（lastMessageId 单调递增，回溯时自动回退）
+    const sourceTurnCap = (input.state as any)?.lastMessageId ?? null;
     const rows = await recallRoleMemories({
       storyId,
       speakerName,
       recallQueries,
-      currentTurn,
+      sourceTurnCap,
       limit: 3,
       tokenBudget: 200,
     }).catch(() =>
-      loadRoleMemoriesForSpeaker({ storyId, speakerName, limit: 8, currentEventIndex: currentTurn })
+      loadRoleMemoriesForSpeaker({ storyId, speakerName, limit: 8, sourceTurnCap })
     );
     payload.roleSpecificMemories = rows
       .map((row) => {
