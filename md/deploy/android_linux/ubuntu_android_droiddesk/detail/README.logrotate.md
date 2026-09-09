@@ -37,7 +37,8 @@ droiddesk-tower service add run_logrotate /opt/toonflow/panel/run_logrotate.sh -
 
 # /etc/nginx/nginx.conf
 参考配置。
-worker_processes 改为3，error_log 改为 emerg，缺点很大错误看不见，好处就是错误日志减少许多 。 特别是proot
+worker_processes 改为3，error_log 改为 emerg，缺点是很多错误看不见，好处就是错误日志减少许多 。 
+特别是proot 会疯狂报缺少工具，改为emerg 防爆
 ```bash
 user www-data;
 # worker_processes auto;
