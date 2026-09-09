@@ -1,0 +1,1 @@
+knex 取代fixdb initdb，fixdb initdb 将会被删除！！！！

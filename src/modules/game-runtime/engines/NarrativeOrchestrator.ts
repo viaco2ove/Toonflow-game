@@ -288,6 +288,10 @@ type SpeakerPromptPayload = {
   worldContext?: {
     worldKnowledge: string[];
   } | null;
+  /** 当前事件消化后沉淀的记忆事实句（SessionMemoryWorker 每 30s 写入，发言器补上下文用） */
+  memoryFacts: string[];
+  /** 当前事件消化后的记忆摘要 */
+  memorySummary: string;
 };
 
 type RecentDialogueTurn = {
@@ -2765,6 +2769,10 @@ function buildSpeakerUserPrompt(payload: {
   worldContext?: {
     worldKnowledge: string[];
   } | null;
+  /** 当前事件消化后沉淀的记忆事实句（SessionMemoryWorker 每 30s 写入，发言器补上下文用） */
+  memoryFacts: string[];
+  /** 当前事件消化后的记忆摘要 */
+  memorySummary: string;
 }): string {
   const worldLines = buildSpeakerWorldLines(payload);
   const chapterLines = buildSpeakerChapterLines(payload);
@@ -2779,6 +2787,10 @@ function buildSpeakerUserPrompt(payload: {
     worldGlobalBackground: payload.worldGlobalBackground || "无",
     dynamicWorldGlobalBackground: payload.dynamicWorldGlobalBackground || "无",
     hasTaskContext: !!payload.taskContext,
+    // ★ P0: 记忆事实日志
+    memoryFactsCount: payload.memoryFacts.length,
+    memoryFactsSample: payload.memoryFacts.slice(0, 2),
+    memorySummary: payload.memorySummary || "无",
   }));
   return [
     ...worldLines,
@@ -2813,6 +2825,13 @@ function buildSpeakerUserPrompt(payload: {
     "[剧情摘要]",
     payload.storyState || "暂无额外摘要",
     "",
+    // ★ P0: 记忆事实注入发言器——SessionMemoryWorker 每 30s 写，发言器开口前必翻
+    ...(payload.memoryFacts.length
+      ? ["[角色记忆事实]", payload.memoryFacts.join("；") + "。", ""]
+      : []),
+    ...(payload.memorySummary
+      ? ["[角色记忆摘要]", payload.memorySummary, ""]
+      : []),
     "[最近对话(JSON数组)]",
     stringifyRecentDialogue(payload.recentDialogue),
     "",
@@ -4471,6 +4490,18 @@ export async function runStorySpeakerContent(input: {
       normalizeScalarText(nextEventHint.transitionHint),
     ], speakerNextEventFactsLimit)
     : promptEventFacts;
+  // ★ P0: 从 digest 读 SessionMemoryWorker 沉淀的记忆事实，供角色发言器补上下文
+  const digest = readRuntimeCurrentEventDigestState(input.state);
+  const speakerMemoryFactsLimit = compactMode ? 6 : 12;
+  const speakerMemorySummaryLimit = compactMode ? 50 : 120;
+  const payloadMemoryFacts = (digest.memoryFacts || [])
+    .slice(0, speakerMemoryFactsLimit)
+    .map((f) => String(f || "").trim())
+    .filter(Boolean);
+  const payloadMemorySummary = shortText(
+    (digest.memorySummary || "").trim(),
+    speakerMemorySummaryLimit,
+  );
   const payload: SpeakerPromptPayload = {
     worldName: normalizeScalarText(input.world?.name),
     // 全局背景所有模式都注入，区别只是长度限额（fast/compact/full）
@@ -4553,6 +4584,9 @@ export async function runStorySpeakerContent(input: {
       const matched = selectWorldBookForInjection(input.worldBookEntries, scanText, budget, "story_speaker");
       return matched.length ? { worldKnowledge: matched.map((e) => e.content).filter(Boolean) } : null;
     })(),
+    // ★ P0: 记忆事实注入发言器（解决"写了但没送"的断链问题）
+    memoryFacts: payloadMemoryFacts,
+    memorySummary: payloadMemorySummary,
   };
   // 只在 prompt payload 层切换当前/下一事件上下文，不改运行态原始事件信息，避免 UI 和回溯链失真。
   // 无论快路由还是标准路由，都统一使用完整版 speaker prompt。
