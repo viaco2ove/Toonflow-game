@@ -382,7 +382,7 @@ export PANEL_APP_NAME="${PANEL_APP_NAME:-toonflow-game}"
 export PANEL_APP_DIR="${PANEL_APP_DIR:-/opt/toonflow/toonflow-game-app}"
 export PANEL_APP_PORT="${PANEL_APP_PORT:-60002}"
 export PANEL_WEB_PORT="${PANEL_WEB_PORT:-8088}"
-export PANEL_WEB_PUBLISH_DIR="${PANEL_WEB_PUBLISH_DIR:-/opt/toonflow/www}"
+export PANEL_WEB_PUBLISH_DIR="${PANEL_WEB_PUBLISH_DIR:-/var/www/toonflow}"
 export PANEL_WEB_PROJECT_DIR="${PANEL_WEB_PROJECT_DIR:-/opt/toonflow/Toonflow-game-web}"
 export PANEL_WEB_BUILD_NODE_OPTIONS="${PANEL_WEB_BUILD_NODE_OPTIONS:---max-old-space-size=512}"
 
