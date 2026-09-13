@@ -4713,8 +4713,17 @@ async function orchestrateSessionTurnInner(sessionId: string): Promise<SessionOr
 
     DebugLogUtil.log("story:orchestrator:chapter_switch"," 编排结果章节判定resolvedNextChapterId", {resolvedNextChapterId: resolvedNextChapterId});
     if (resolvedNextChapterId && resolvedNextChapterId !== Number(chapter.id || 0)) {
-      const resolvedNextChapter = await loadPublishedChapter(Number(sessionRow.worldPublishId || 0), resolvedNextChapterId, db);
-      DebugLogUtil.log("story:orchestrator:chapter_switch"," 编排结果章节判定 resolvedNextChapter", {resolvedNextChapter: resolvedNextChapter});
+      let resolvedNextChapter = await loadPublishedChapter(Number(sessionRow.worldPublishId || 0), resolvedNextChapterId, db);
+      DebugLogUtil.log("story:orchestrator:chapter_switch"," 编排结果章节判定 resolvedNextChapter (发布表)", {resolvedNextChapter: resolvedNextChapter});
+      // ★ BUG 修复：发布表查不到时，尝试从草稿表加载。
+      //   本地调试/未发布世界 sessionRow.worldPublishId=0，loadPublishedChapter 直接返回 null，
+      //   导致章节切换失败 → plan 为空 → orchestration_failed。
+      //   草稿表也查不到时（章节真不存在），才落到编排错误分支。
+      if (!resolvedNextChapter && resolvedNextChapterId) {
+        const draftChapter = await db("t_storyChapter").where({ id: resolvedNextChapterId }).first();
+        resolvedNextChapter = draftChapter || null;
+        DebugLogUtil.log("story:orchestrator:chapter_switch"," 编排结果章节判定 resolvedNextChapter (草稿表)", {found: resolvedNextChapter !== null});
+      }
       if (resolvedNextChapter) {
           if (String(plan?.role || "").trim()) {
             setPendingSessionChapterId(state, resolvedNextChapterId);
