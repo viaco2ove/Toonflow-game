@@ -3459,8 +3459,12 @@ export async function generatePlayTips(sessionIdInput: string): Promise<{ tips: 
     rolePair,
     world,
   );
+  // ★ BUG 修复：session.worldPublishId=NULL 时 loadPublishedChapter 因前置检查直接 return null。
+  //   此时回退查草稿表（按 worldId+id 锁定，避免跨世界）。
+  //   storyInfo.ts:162 已有同等 fallback，主编排路径之前漏了。
   const chapter = currentChapterId
-    ? await loadPublishedChapter(Number(sessionRow.worldPublishId || 0), currentChapterId, db)
+    ? (await loadPublishedChapter(Number(sessionRow.worldPublishId || 0), currentChapterId, db))
+      ?? normalizeChapterOutput(await db("t_storyChapter").where({ id: currentChapterId, worldId: Number(sessionRow.worldId || 0) }).first())
     : null;
 
   const rawRecentMessages = await db("t_sessionMessage").where({ sessionId }).orderBy("id", "desc").limit(10);
@@ -3567,8 +3571,12 @@ export async function generateOrchestrateOptionsForSession(
     rolePair,
     world,
   );
+  // ★ BUG 修复：session.worldPublishId=NULL 时 loadPublishedChapter 因前置检查直接 return null。
+  //   此时回退查草稿表（按 worldId+id 锁定，避免跨世界）。
+  //   storyInfo.ts:162 已有同等 fallback，主编排路径之前漏了。
   const chapter = currentChapterId
-    ? await loadPublishedChapter(Number(sessionRow.worldPublishId || 0), currentChapterId, db)
+    ? (await loadPublishedChapter(Number(sessionRow.worldPublishId || 0), currentChapterId, db))
+      ?? normalizeChapterOutput(await db("t_storyChapter").where({ id: currentChapterId, worldId: Number(sessionRow.worldId || 0) }).first())
     : null;
 
   const rawRecentMessages = await db("t_sessionMessage").where({ sessionId }).orderBy("id", "desc").limit(10);
@@ -4720,7 +4728,9 @@ async function orchestrateSessionTurnInner(sessionId: string): Promise<SessionOr
       //   导致章节切换失败 → plan 为空 → orchestration_failed。
       //   草稿表也查不到时（章节真不存在），才落到编排错误分支。
       if (!resolvedNextChapter && resolvedNextChapterId) {
-        const draftChapter = await db("t_storyChapter").where({ id: resolvedNextChapterId }).first();
+        const draftChapter = await db("t_storyChapter")
+          .where({ id: resolvedNextChapterId, worldId: Number(sessionRow.worldId || 0) })
+          .first();
         resolvedNextChapter = draftChapter || null;
         DebugLogUtil.log("story:orchestrator:chapter_switch"," 编排结果章节判定 resolvedNextChapter (草稿表)", {found: resolvedNextChapter !== null});
       }

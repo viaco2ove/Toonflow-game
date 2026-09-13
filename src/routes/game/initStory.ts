@@ -85,6 +85,12 @@ export default router.post(
         return res.status(403).send(error("故事未发布，无法开始游玩"));
       }
 
+      // ★ 取该 world 的发布快照 worldPublishId（与 t_storyWorld.id 数值一致但走发布表更稳）
+      //   session 必须回填这个值，否则后续 /game/orchestration 等路径用 loadPublishedChapter
+      //   会因 worldPublishId <= 0 提前 return null，导致章节/cut 错误地走草稿表 fallback。
+      const publishedWorldRow = await db("t_storyWorld_published").where({ worldId }).first();
+      const worldPublishId = Number(publishedWorldRow?.id || 0) || 0;
+
       // 2. 获取章节
       let chapter: any = null;
       if (chapterId > 0) {
@@ -135,6 +141,9 @@ export default router.post(
         sessionId,
         userId,
         worldId,
+        // ★ 回填 worldPublishId：runtime 路径（loadPublishedChapter）依赖它。
+        //   没填则发布表查询恒返回 null，章节/cut 会落草稿表 fallback。
+        worldPublishId: worldPublishId || null,
         // 正式会话后续的 /game/introduction、/game/orchestration 都依赖 session.chapterId
         // 来恢复当前章节。这里不落库会导致正式游玩开场白阶段查章节得到 null。
         chapterId: Number(chapter.id || 0) || null,
