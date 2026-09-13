@@ -17,6 +17,7 @@
 cd /opt/toonflow/Toonflow-game-web
 rm -rf node_modules
 yarn cache clean
+git pull --ff-only origin dev
 yarn install --frozen-lockfile --force
 export NODE_OPTIONS=--max-old-space-size=512
 yarn build
