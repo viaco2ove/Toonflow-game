@@ -26,11 +26,11 @@ const MODEL_MIRROR_URL = "https://hf-mirror.com/moka-ai/m3e-small";
 
 // 6 类意图 exemplar（与 litter_llama/__main__.py:223-270 一致）
 const INTENT_EXEMPLARS: Array<{ intent: string; exemplars: string[] }> = [
-  { intent: "create_task", exemplars: ["任务为：找到舍友", "接受任务：去探索地图", "我来帮你做这个任务", "没问题，我去做", "开启任务：收集材料", "开任务：打boss"] },
+  { intent: "create_task", exemplars: ["创建任务 护送物资","任务为：找到舍友", "接受任务：去探索地图", "我来帮你做这个任务", "没问题，我去做", "开启任务：收集材料", "开任务：打boss"] },
   { intent: "exit_task", exemplars: ["算了不做了", "退出任务", "放弃这个任务", "不做了", "取消任务"] },
   { intent: "query_progress", exemplars: ["任务进度怎么样了", "完成了多少", "还差什么", "任务进展如何", "现在什么进展"] },
   { intent: "game_action", exemplars: ["攻击怪物", "打开背包", "使用道具", "和NPC对话", "查看装备"] },
-  { intent: "memory_update", exemplars: ["把物品放入物品栏", "记录在记忆中", "加入背包", "装备上这把剑", "学会了技能", "升级到10级", "获得物品：钥匙"] },
+  { intent: "memory_update", exemplars: ["@记忆管理 我到达了宗门","@记忆管理 更新记忆/更新物品/领取任务奖励","@记忆管理 更新所有人的当前行为","@记忆管理 睡觉恢复","@记忆管理 睡觉恢复","把物品放入物品栏", "记录在记忆中", "加入背包", "装备上这把剑", "学会了技能", "升级到10级", "获得物品：钥匙"] },
   { intent: "normal_dialog", exemplars: ["老板你好", "今天天气真好", "你好啊", "早上好", "最近怎么样", "嗨"] },
 ];
 
