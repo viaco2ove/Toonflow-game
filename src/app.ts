@@ -103,7 +103,7 @@ export default async function startServe(randomPort: Boolean = false) {
 
   app.use(async (req, res, next) => {
     // 白名单路径
-    if (req.path === "/other/login" || req.path === "/other/register") return next();
+    if (req.path === "/other/login" || req.path === "/other/register" || req.path === "/other/version") return next();
 
     // 从 header 或 query 参数获取 token
     const rawToken = req.headers.authorization || (req.query.token as string) || "";
@@ -134,6 +134,13 @@ export default async function startServe(randomPort: Boolean = false) {
 
   const router = await import("@/router");
   await router.default(app);
+
+  // 版本号接口（无需认证）
+  app.get("/other/version", (_req, res) => {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const pkg = require("../package.json") as { version?: string };
+    res.json({ version: pkg.version || "" });
+  });
 
   // 404 处理
   app.use((_, res, next: NextFunction) => {
