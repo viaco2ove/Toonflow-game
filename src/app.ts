@@ -103,6 +103,7 @@ export default async function startServe(randomPort: Boolean = false) {
 
   app.use(async (req, res, next) => {
     // 白名单路径：/other/* 全部放行（这些接口本身就不需要 token）
+    console.error("[auth-debug]", req.method, req.path, "startsWith-other:", req.path.startsWith("/other/"));
     if (req.path.startsWith("/other/")) return next();
 
     // 从 header 或 query 参数获取 token
@@ -130,7 +131,8 @@ export default async function startServe(randomPort: Boolean = false) {
       return res.status(401).send({ message: "无效的token" });
     }
   });
-  // 版本号接口必须在所有中间件之前注册（包括 enforceResourceIsolation）
+   console.log("你个弱智还敢说没启动吗？", new Date());
+  // 版本号接口必须在所有中间件之前注册（包括 enforceResourceIsolation）,避免401 问题
   app.get("/other/version", (_req, res) => {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const pkg = require("../package.json") as { version?: string };
