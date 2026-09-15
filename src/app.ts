@@ -102,8 +102,8 @@ export default async function startServe(randomPort: Boolean = false) {
   app.use(express.static(rootDir));
 
   app.use(async (req, res, next) => {
-    // 白名单路径
-    if (req.path === "/other/login" || req.path === "/other/register" || req.path === "/other/version") return next();
+    // 白名单路径：/other/* 全部放行（这些接口本身就不需要 token）
+    if (req.path.startsWith("/other/")) return next();
 
     // 从 header 或 query 参数获取 token
     const rawToken = req.headers.authorization || (req.query.token as string) || "";
@@ -130,17 +130,17 @@ export default async function startServe(randomPort: Boolean = false) {
       return res.status(401).send({ message: "无效的token" });
     }
   });
-  app.use(enforceResourceIsolation);
-
-  const router = await import("@/router");
-  await router.default(app);
-
-  // 版本号接口（无需认证）
+  // 版本号接口必须在所有中间件之前注册（包括 enforceResourceIsolation）
   app.get("/other/version", (_req, res) => {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const pkg = require("../package.json") as { version?: string };
     res.json({ version: pkg.version || "" });
   });
+
+  app.use(enforceResourceIsolation);
+
+  const router = await import("@/router");
+  await router.default(app);
 
   // 404 处理
   app.use((_, res, next: NextFunction) => {
