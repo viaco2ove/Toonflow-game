@@ -4440,7 +4440,23 @@ async function orchestrateSessionTurnInner(sessionId: string): Promise<SessionOr
       route: "/game/orchestration",
     },
   });
-  if (canPlayerSpeakNow(state, world)) {
+  // 小游戏/任务活跃时，必须让编排走到 mini-game 判定器（task-mode-plan / fishing-judge 等），
+  // 不能因为旧轮次的 canPlayerSpeak=true 就直接 return waiting_input。
+  if (isMiniGameActiveState(state)) {
+    setRuntimeTurnState(state, world, {
+      canPlayerSpeak: false,
+      expectedRoleType: "narrator",
+      expectedRole: String(state.narrator?.name || "旁白"),
+      lastSpeakerRoleType: "player",
+      lastSpeaker: String(state.player?.name || "用户"),
+    });
+    DebugLogUtil.log("story:orchestrator:runtime", "小游戏活跃，锁定 canPlayerSpeak=false，强制进入编排", JSON.stringify({
+      sessionId,
+      miniGameStatus: ((state.miniGame as any)?.session?.status) || null,
+      miniGameType: ((state.miniGame as any)?.session?.game_type) || null,
+    }));
+    // 不 return，继续往下走编排
+  } else if (canPlayerSpeakNow(state, world)) {
     DebugLogUtil.log("story:orchestrator:runtime", "判断为不走到模型。原因：canPlayerSpeakNow", JSON.stringify({
       sessionId,
       chapterId: Number(chapter?.id || 0),
@@ -4452,7 +4468,6 @@ async function orchestrateSessionTurnInner(sessionId: string): Promise<SessionOr
       expectedRole: "",
       expectedRoleType: "",
       command: null,
-      // 命中 waiting_input 时，要明确告诉前端"现在轮到用户"，不能再回空 plan。
       plan: buildWaitingForUserSessionPlan(state),
     });
   }

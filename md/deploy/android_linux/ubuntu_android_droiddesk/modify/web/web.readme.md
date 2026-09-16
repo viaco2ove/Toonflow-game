@@ -19,7 +19,7 @@ rm -rf node_modules
 yarn cache clean
 git pull --ff-only origin dev
 yarn install --frozen-lockfile --force
-export NODE_OPTIONS=--max-old-space-size=512
+export NODE_OPTIONS=--max-old-space-size=1512
 yarn build
 ```
 

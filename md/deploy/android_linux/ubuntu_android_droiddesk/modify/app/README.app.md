@@ -122,6 +122,9 @@ yarn install  --frozen-lockfile --ignore-engines
 ### 构建
 yarn build
 
+tower-pm2 stop toonflow-game
+ps aux | grep "node /opt/toonflow" | grep -v grep
+tower-pm2 start toonflow-game
 
 ## 监控
 ps aux | grep "node /opt/toonflow" | grep -v grep
@@ -131,3 +134,4 @@ ps aux | grep "node toonflow-game-app" | grep -v grep
 
 ps aux | grep "tower-pm2" | grep -v grep
 看看 tower-pm2 自己有没有跑了多个线程
+

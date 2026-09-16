@@ -15,6 +15,6 @@ export PANEL_APP_PORT="60002"
 export PANEL_WEB_PORT="8088"
 export PANEL_WEB_PUBLISH_DIR="/var/www/toonflow"
 export PANEL_WEB_PROJECT_DIR="/opt/toonflow/Toonflow-game-web"
-export PANEL_WEB_BUILD_NODE_OPTIONS="--max-old-space-size=512"
+export PANEL_WEB_BUILD_NODE_OPTIONS="--max-old-space-size=1512"
 
 exec /opt/toonflow/panel/.venv/bin/python -m uvicorn main:app --host 0.0.0.0 --port 6008

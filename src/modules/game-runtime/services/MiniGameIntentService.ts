@@ -236,7 +236,10 @@ export async function resolveMiniGameIntentByAi(input: ResolveMiniGameIntentInpu
     );
     const invokeFinishedAt = Date.now();
     const rawResponse = String((result as any)?.text || "").trim();
-    const parsedObject = rawResponse ? parse(rawResponse) : null;
+    // 模型有时会用 ```json ... ``` 代码块包裹返回，去掉后再喂给 best-effort-json-parser，
+    // 否则它会把代码块围栏当成字符串前缀，提取出字符串而不是对象，导致识别结果被丢。
+    const strippedResponse = rawResponse.replace(/^\s*```(?:json)?\s*/i, "").replace(/```\s*$/i, "").trim();
+    const parsedObject = strippedResponse ? parse(strippedResponse) : null;
     const rawObject = parsedObject && typeof parsedObject === "object"
       ? (parsedObject as Record<string, unknown>)
       : null;

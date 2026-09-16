@@ -3810,12 +3810,12 @@ function fishingOptions(session: JsonRecord): MiniGameActionOption[] {
   }
   if (phase === "waiting") {
     return [
-      { action_id: "wait_more", label: "收杆看结果", desc: "立即查看这一竿有没有收获", aliases: ["收杆", "起竿", "看结果"] },
+      { action_id: "wait_more", label: "收杆看结果", desc: "立即查看这一竿有没有收获", aliases: ["收杆", "起竿", "看结果", "提上岸", "收线", "收鱼", "提鱼", "拉竿"] },
       { action_id: "finish", label: "#退出结束", desc: "输入 #退出 结束当前钓鱼", aliases: ["结束钓鱼", "离开水边"] },
     ];
   }
   return [
-    { action_id: "cast", label: "继续钓鱼", desc: "继续下一轮垂钓", aliases: ["继续", "再来一竿", "继续抛竿", "抛竿", "甩竿", "下钩"] },
+    { action_id: "cast", label: "继续钓鱼", desc: "继续下一轮垂钓", aliases: ["继续", "再来一竿", "继续抛竿", "抛竿", "甩竿", "下钩", "提上岸", "收线", "收鱼", "提鱼", "拉竿","刺鱼","扬竿", "飞鱼", "飞鱼上岸"] },
     { action_id: "finish", label: "#退出结束", desc: "输入 #退出 结束当前钓鱼", aliases: ["结束钓鱼", "离开水边"] },
   ];
 }
@@ -5829,7 +5829,9 @@ export async function handleMiniGameTurn(input: MiniGameControllerInput): Promis
       if (created) return created;
     }
 
-    if (aiIntentResult.intent === "exit_task" && aiIntentResult.confidence >= 0.7) {
+    // 只有在有活跃任务时才响应 exit_task；没有任务时忽略，避免 embedding 模型对 "#钓鱼" 等标签的误判
+    // 把任务误判为"退出任务"导致 activeTaskId 被清空、任务永远无法推进。
+    if (aiIntentResult.intent === "exit_task" && aiIntentResult.confidence >= 0.7 && hasActiveTask) {
       console.log("[story:mini_game:task] AI 触发退出任务（T4.x 待实现）", {
         confidence: aiIntentResult.confidence,
         reasoning: String(aiIntentResult.reasoning || "").slice(0, 80),
