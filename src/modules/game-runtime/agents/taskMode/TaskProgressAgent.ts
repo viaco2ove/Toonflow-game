@@ -10,6 +10,7 @@ import { z } from "zod";
 import { IntentType } from "../intentAnalyzer/IntentClassifier";
 import { loadTaskPrompt } from "./loadTaskPrompt";
 import { buildWorldKnowledgeText, normalizeWorldBookOutput } from "@/lib/gameEngine";
+import {DebugLogUtil} from "@/utils/debugLogUtil";
 
 const FALLBACK_SYSTEM = `你是任务推进判定器。输出严格JSON。
 
@@ -184,7 +185,7 @@ function evalKeyword(intent: IntentType, msg: string, currentPhases: string[]): 
     };
   }
 
-  if (DOWN_QUERY.some(k => m === k)) {
+  if (DOWN_QUERY.some(k => m.startsWith(k))) {
     return {
       level: "maintain", tier: "keyword",
       reason: "降级为查询",
@@ -355,9 +356,16 @@ export async function evaluateTaskProgress(
   const phases = task?.process ?? [];
 
   const s = evalStatic(intent.intent, phases);
+  DebugLogUtil.log("story:mini_game:runtime"," evalStatic", JSON.stringify({
+    s: s,
+  }));
   if (s) return s;
 
   const k = evalKeyword(intent.intent, message, phases);
+
+  DebugLogUtil.log("story:mini_game:runtime"," evalKeyword", JSON.stringify({
+     k: k,
+  }));
   if (k) return k;
 
   const hist = dialogue.slice(-10).map(d => `${d.role}:${String(d.content || "").slice(0, 80)}`).join("|");
