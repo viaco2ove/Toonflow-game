@@ -169,10 +169,11 @@ export default router.post(
   validateFields({
     sessionId: z.string(),
     messageLimit: z.number().optional().nullable(),
+    beforeMessageId: z.number().optional().nullable(),
   }),
   async (req, res) => {
     try {
-      const { sessionId, messageLimit } = req.body;
+      const { sessionId, messageLimit, beforeMessageId } = req.body;
       const db = getGameDb();
       const currentUserId = Number((req as any)?.user?.id || 0);
       if (!Number.isFinite(currentUserId) || currentUserId <= 0) {
@@ -231,11 +232,23 @@ export default router.post(
           : normalizeChapterOutput(await db("t_storyChapter").where({ id: activeChapterId }).first()))
         : null;
       const snapshot = await db("t_sessionStateSnapshot").where({ sessionId: sessionIdValue }).orderBy("id", "desc").first();
-      let rawMessages = await db("t_sessionMessage").where({ sessionId: sessionIdValue }).orderBy("id", "desc").limit(limit);
+      let rawMessages;
+      if (beforeMessageId && Number.isFinite(beforeMessageId)) {
+        // 瀑布式加载：只取 beforeMessageId 之前的消息（更早的）
+        rawMessages = await db("t_sessionMessage")
+          .where({ sessionId: sessionIdValue })
+          .where("id", "<", beforeMessageId)
+          .orderBy("id", "desc")
+          .limit(limit);
+      } else {
+        // 首次加载：取最新的 limit 条
+        rawMessages = await db("t_sessionMessage").where({ sessionId: sessionIdValue }).orderBy("id", "desc").limit(limit);
+      }
 
       // 某些历史路径会把消息表清空，或者残留旧 opening / opening 后的错误自动续写。
       // 对仍停留在章节开局的会话，这里直接按当前章节配置校正初始消息。
-      if (chapter && Number(state.round || 0) <= 0) {
+      // 仅首次加载（无 beforeMessageId）时执行；瀑布式加载历史时跳过。
+      if (!beforeMessageId && chapter && Number(state.round || 0) <= 0) {
         const repairedMessages = buildRecoveredOpeningMessages(world, chapter, state);
         const shouldRepair = shouldRepairInitialSessionMessages({
           state,
