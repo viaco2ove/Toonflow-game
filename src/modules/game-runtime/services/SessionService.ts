@@ -1551,7 +1551,10 @@ async function tryBuildTaskModePlan(input: {
   console.log("[task-mode-plan] Intent:", intentResult.intent, intentResult.confidence, "| reasoning:", intentResult.reasoning?.slice(0, 50));
 
   // 退出/放弃 → Completion 评估，写为 narrator preset 落库（不需要 streamlines）
-  if (intentResult.intent === "exit_task" && intentResult.confidence >= 0.7) {
+  // 注意：embedding 模型对短句（"到了"、"完成"、"结束"等）容易误判为 exit_task，
+  // 把 confidence 阈值从 0.7 抬到 0.85，避免任务推进中的用户发言被误判成放弃。
+  if (intentResult.intent === "exit_task" && intentResult.confidence >= 0.9) {
+     console.log("[story:mini_game:task] AI 触发退出任务 r4");
     const completion = await evaluateTaskCompletion(
       "abandon",
       taskState,

@@ -5831,8 +5831,8 @@ export async function handleMiniGameTurn(input: MiniGameControllerInput): Promis
 
     // 只有在有活跃任务时才响应 exit_task；没有任务时忽略，避免 embedding 模型对 "#钓鱼" 等标签的误判
     // 把任务误判为"退出任务"导致 activeTaskId 被清空、任务永远无法推进。
-    if (aiIntentResult.intent === "exit_task" && aiIntentResult.confidence >= 0.7 && hasActiveTask) {
-      console.log("[story:mini_game:task] AI 触发退出任务（T4.x 待实现）", {
+    if (aiIntentResult.intent === "exit_task" && aiIntentResult.confidence >= 0.9 && hasActiveTask) {
+      console.log("[story:mini_game:task] AI 触发退出任务 r3（T4.x 待实现）", {
         confidence: aiIntentResult.confidence,
         reasoning: String(aiIntentResult.reasoning || "").slice(0, 80),
       });

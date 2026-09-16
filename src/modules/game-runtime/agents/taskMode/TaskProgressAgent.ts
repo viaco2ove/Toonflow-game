@@ -143,6 +143,7 @@ export function applyProcessUpdateToPhases(
 
 function evalStatic(intent: IntentType, currentPhases: string[]): ProgressResult {
   if (intent === "exit_task") {
+    console.log("[story:mini_game:task] AI 触发退出任务 r1 evalStatic");
     return {
       level: "abandon", tier: "static",
       reason: "意图为放弃，直接触发任务放弃",

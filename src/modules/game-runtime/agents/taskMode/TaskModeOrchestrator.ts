@@ -58,7 +58,8 @@ export async function orchestrateTaskMode(ctx: TaskModeContext): Promise<TaskMod
   console.log("[TaskMode] Step1 意图：", intentResult.intent, intentResult.confidence);
 
   // 退出意图 → 直接评估完成
-  if (intentResult.intent === "exit_task" && intentResult.confidence >= 0.7) {
+  if (intentResult.intent === "exit_task" && intentResult.confidence >= 0.9) {
+    console.log("[story:mini_game:task] AI 触发退出任务 r2");
     return handleTaskCompletion(ctx, "abandon", intentResult);
   }
 
@@ -152,7 +153,11 @@ async function analyzeTaskIntent(ctx: TaskModeContext): Promise<IntentResult & {
     chapterTitle: ctx.chapterTitle,
   });
 
-  if (result) {
+  let isNormal =false;
+  if (result.intent === "exit_task" && result.confidence < 0.9) {
+    isNormal =true;
+  }
+  if (result && !isNormal ) {
     return result as IntentResult & { confidence: number };
   }
 
