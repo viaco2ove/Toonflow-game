@@ -215,6 +215,26 @@ def build_web_project() -> str:
     return run(build_web_project_command())
 
 
+def build_faster_web_project_command() -> str:
+    """轻量Web构建：不删 node_modules/.cache，直接 install + build + 同步产物。"""
+    safe_dir = shlex.quote(WEB_PROJECT_DIR)
+    safe_output_dir = shlex.quote(WEB_SOURCE_DIR)
+    safe_node_options = shlex.quote(WEB_BUILD_NODE_OPTIONS)
+    return (
+        "set -e; "
+        f'echo "[deploy] 轻量构建Web（保留缓存）..." && '
+        f"cd {safe_dir} && "
+        "yarn install --frozen-lockfile --ignore-engines 2>&1 && "
+        f"export NODE_OPTIONS={safe_node_options} && "
+        "yarn build 2>&1 && "
+        f"rsync -rlt --no-perms --delete dist/ {safe_output_dir}/ 2>&1"
+    )
+
+
+def build_faster_web_project() -> str:
+    return run(build_faster_web_project_command())
+
+
 def build_app_project_command() -> str:
     safe_dir = shlex.quote(APP_DIR)
     return (
@@ -396,6 +416,14 @@ def force_sync_web_current_branch() -> str:
     result = force_sync_repo_current_branch(WEB_PROJECT_DIR)
     # 同步后自动构建Web + 发布
     build_result = build_web_project()
+    publish_result = sync_web_publish_dir()
+    return f"{result}\n\n构建结果：\n{build_result}\n\n发布结果：\n{publish_result}"
+
+
+def faster_sync_web_current_branch() -> str:
+    result = faster_sync_repo_current_branch(WEB_PROJECT_DIR)
+    # 同步后轻量构建Web + 发布
+    build_result = build_faster_web_project()
     publish_result = sync_web_publish_dir()
     return f"{result}\n\n构建结果：\n{build_result}\n\n发布结果：\n{publish_result}"
 
@@ -596,6 +624,9 @@ def home(request: Request, token: str = ""):
             <form action="/git/force-sync-web{qs(token)}" method="post" style="display:inline" onsubmit="return confirm('将强制覆盖Web本地代码并重建发布，确定？')">
               <button class="action danger" type="submit">强制更新Web</button>
             </form>
+            <form action="/git/faster-sync-web{qs(token)}" method="post" style="display:inline" onsubmit="return confirm('将轻量更新部署Web，确定？')">
+              <button class="action danger" type="submit">轻量更部Web</button>
+            </form>
             <br>
             <form action="/deploy/sync-web{qs(token)}" method="post" style="display:inline">
               <button class="action dark" type="submit">构建Web端</button>
@@ -710,6 +741,15 @@ def git_force_sync_web(request: Request):
         return auth_page()
     output = force_sync_web_current_branch()
     set_last_action_log("Web：强制同步+构建+发布", output)
+    return redirect_home(request)
+
+
+@app.post("/git/faster-sync-web")
+def git_faster_sync_web(request: Request):
+    if not auth_ok(request):
+        return auth_page()
+    output = faster_sync_web_current_branch()
+    set_last_action_log("Web：轻量同步+构建+发布", output)
     return redirect_home(request)
 
 
