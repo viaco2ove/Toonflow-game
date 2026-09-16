@@ -42,6 +42,12 @@ RESTART_OR_START_APP_CMD = (
     "fi && "
     "tower-pm2 save 2>&1"
 )
+FASTET_RESTART_OR_START_APP_CMD = (
+    "set -e; "
+    f"cd {shlex.quote(APP_DIR)} && "
+    f"NODE_ENV=local tower-pm2 restart {shlex.quote(APP_NAME)} --update-env 2>&1; "
+    "tower-pm2 save 2>&1;"
+)
 LAST_ACTION_LOG = "暂无操作记录"
 
 
@@ -143,6 +149,10 @@ def run_in_repo(cmd: str) -> str:
 def restart_or_start_app() -> str:
     return run(RESTART_OR_START_APP_CMD)
 
+def faster_restart_or_start_app() -> str:
+    return run(FASTET_RESTART_OR_START_APP_CMD)
+
+
 
 def git_pull_current_branch(repo_dir: str) -> str:
     safe_dir = shlex.quote(repo_dir)
@@ -217,6 +227,16 @@ def build_app_project_command() -> str:
         "NODE_ENV=prod PREFER_PROCESS_ENV=1 yarn build 2>&1"
     )
 
+def build_faster_app_project_command() -> str:
+    safe_dir = shlex.quote(APP_DIR)
+    return (
+        "set -e; "
+        f'echo "[deploy] 清理旧构建产物..." && '
+        f"cd {safe_dir} && "
+        "yarn install  --frozen-lockfile --ignore-engines 2>&1 && "
+         "NODE_ENV=prod PREFER_PROCESS_ENV=1 yarn build 2>&1"
+    )
+
 
 def sync_app_project_code() -> str:
     return git_pull_current_branch(APP_DIR)
@@ -243,6 +263,23 @@ def force_sync_repo_current_branch(repo_dir: str) -> str:
         "git clean -fd 2>&1"
     )
 
+def faster_sync_repo_current_branch(repo_dir: str) -> str:
+    safe_dir = shlex.quote(repo_dir)
+    try:
+        branch = run(f"cd {safe_dir} && git rev-parse --abbrev-ref HEAD").strip()
+    except Exception:
+        return f"无法识别仓库当前分支：{repo_dir}"
+
+    if not branch or branch == "HEAD":
+        return f"无法识别仓库当前分支：{repo_dir}"
+
+    return run(
+        "set -e; "
+        f"cd {safe_dir} && "
+        f'echo "[deploy] pull --ff-only 同步分支：{branch}" && '
+        # --ff-only：只能快进，不能合并；失败直接退出
+        f"git pull --ff-only origin {branch} 2>&1"
+    )
 
 def deploy_current_app() -> str:
     return run(
@@ -345,6 +382,13 @@ def force_sync_current_branch() -> str:
     # 同步后自动构建后端 + 重启
     build_result = run(build_app_project_command())
     restart_result = restart_or_start_app()
+    return f"{result}\n\n构建结果：\n{build_result}\n\n重启结果：\n{restart_result}"
+
+def faster_sync_current_branch() -> str:
+    result = faster_sync_repo_current_branch(APP_DIR)
+    # 同步后自动构建后端 + 重启
+    build_result = run(build_faster_app_project_command())
+    restart_result = faster_restart_or_start_app()
     return f"{result}\n\n构建结果：\n{build_result}\n\n重启结果：\n{restart_result}"
 
 
@@ -546,6 +590,9 @@ def home(request: Request, token: str = ""):
             <form action="/git/force-sync{qs(token)}" method="post" style="display:inline" onsubmit="return confirm('将强制覆盖后端本地代码并重建重启，确定？')">
               <button class="action danger" type="submit">强制更新后端</button>
             </form>
+           <form action="/git/faster-sync{qs(token)}" method="post" style="display:inline" onsubmit="return confirm('将轻量更新部署后端，确定？')">
+              <button class="action danger" type="submit">轻量更部后端</button>
+            </form>
             <form action="/git/force-sync-web{qs(token)}" method="post" style="display:inline" onsubmit="return confirm('将强制覆盖Web本地代码并重建发布，确定？')">
               <button class="action danger" type="submit">强制更新Web</button>
             </form>
@@ -649,6 +696,13 @@ def git_force_sync(request: Request):
     set_last_action_log("后端：强制同步+构建+重启", output)
     return redirect_home(request)
 
+@app.post("/git/faster-sync")
+def git_faster_sync(request: Request):
+    if not auth_ok(request):
+        return auth_page()
+    output = faster_sync_current_branch()
+    set_last_action_log("后端：轻量同步+构建+重启", output)
+    return redirect_home(request)
 
 @app.post("/git/force-sync-web")
 def git_force_sync_web(request: Request):
