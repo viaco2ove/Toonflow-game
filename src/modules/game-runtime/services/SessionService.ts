@@ -2689,6 +2689,9 @@ async function addSessionMessageInner(input: AddSessionMessageInput, sessionId: 
         }
         // 不再直接插入旁白消息，小游戏旁白由 /game/streamlines 生成
       } else {
+        // 任务/小游戏开始时，清除可能残留的 pendingNarrativePlan，
+        // 防止旧轮次的 waiting_input plan 挡住当前编排，导致 tryBuildTaskModePlan 等判定器永远跑不到。
+        setPendingSessionNarrativePlan(state, null);
         allowPlayerTurn(
           state,
           world,

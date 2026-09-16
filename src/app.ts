@@ -103,7 +103,7 @@ export default async function startServe(randomPort: Boolean = false) {
 
   app.use(async (req, res, next) => {
     // 白名单路径：/other/* 全部放行（这些接口本身就不需要 token）
-    console.error("[auth-debug]", req.method, req.path, "startsWith-other:", req.path.startsWith("/other/"));
+    console.debug("[auth-debug]", req.method, req.path, "startsWith-other:", req.path.startsWith("/other/"));
     if (req.path.startsWith("/other/")) return next();
 
     // 从 header 或 query 参数获取 token
