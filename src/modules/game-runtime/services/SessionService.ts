@@ -1468,9 +1468,16 @@ async function tryBuildTaskModePlan(input: {
   const latestPlayerMsg = [...input.recentMessages]
     .reverse()
     .find((m) => String((m as any).roleType || "").trim() === "player");
-  // 优先用 latestRecentMessage（addMessage 接口最新一条）；其次用最近的 player 消息
-  let playerMessage = String((input.latestRecentMessage as any)?.content || "").trim()
-    || String((latestPlayerMsg as any)?.content || "").trim();
+  // ★ 只把玩家真实发言（roleType=player）当作本轮输入。
+  //   系统生成的旁白消息（如任务开启提示"…输入 #退出 可放弃当前任务"）含"放弃"等关键词，
+  //   混进 evaluateTaskProgress 的 evalKeyword 会被误判为 abandon，任务刚开启就被放弃。
+  const latestIsPlayerInput = String((input.latestRecentMessage as any)?.roleType || "").trim() === "player";
+  let playerMessage = latestIsPlayerInput
+    ? String((input.latestRecentMessage as any)?.content || "").trim()
+    : "";
+  if (!playerMessage) {
+    playerMessage = String((latestPlayerMsg as any)?.content || "").trim();
+  }
   if (!playerMessage) {
     // 没有任何用户输入时，task 模式继续主动推进：给 AI 一个占位文本
     playerMessage = "（任务继续推进）";

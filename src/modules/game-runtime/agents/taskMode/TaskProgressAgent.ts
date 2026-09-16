@@ -83,7 +83,7 @@ const TIER_MAP: Record<string, ProgressTier> = {
 
 const QUERY_KW = ["进度", "状态", "规则", "目标", "怎么样了", "完成了多少", "还差什么"];
 const DOWN_QUERY = ["问问", "想了解", "说说", "怎么回事"];
-const DOWN_ABANDON = ["跳过", "不管了", "算了", "不做了", "放弃"];
+const DOWN_ABANDON = ["放弃任务"];
 
 /** 解析带标记的阶段文本，返回 { text, status } */
 function parsePhase(text: string): { text: string; status: "idle" | "active" | "complete" | "failed" } {
@@ -171,7 +171,11 @@ function evalKeyword(intent: IntentType, msg: string, currentPhases: string[]): 
     };
   }
 
-  if (DOWN_ABANDON.some(k => m.includes(k))) {
+  // ★ abandon 关键词只对短促的用户口令生效：整句超过一定长度（如系统生成的
+  //   "任务【…】已开启。目标：…输入 #退出 可放弃当前任务"开场白）含"放弃"二字
+  //   属于正常文案，直接判 abandon 会让任务刚开启就被自动放弃。
+  const isShortUserUtterance = m.length <= 12;
+  if (isShortUserUtterance && DOWN_ABANDON.some(k => m === k)) {
     return {
       level: "abandon", tier: "keyword",
       reason: "包含放弃关键词",
@@ -180,7 +184,7 @@ function evalKeyword(intent: IntentType, msg: string, currentPhases: string[]): 
     };
   }
 
-  if (DOWN_QUERY.some(k => m.includes(k))) {
+  if (DOWN_QUERY.some(k => m === k)) {
     return {
       level: "maintain", tier: "keyword",
       reason: "降级为查询",
