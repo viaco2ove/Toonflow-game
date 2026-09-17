@@ -400,7 +400,7 @@ export async function enforceResourceIsolation(req: Request, res: Response, next
   try {
     const path = String(req.path || "");
     // 登录 / 注册属于公开入口，资源隔离不应再要求已有登录态。
-    if (path === "/other/login" || path === "/other/register") {
+    if (path.startsWith("/other/")) {
       return next();
     }
     const userId = toPositiveInt((req as any)?.user?.id);
