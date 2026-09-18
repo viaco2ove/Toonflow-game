@@ -2410,12 +2410,45 @@ function buildSpeakerIdentityLines(payload: {
   speakerName: string;
   speakerRoleType: string;
   speakerProfile: string;
+  /** 角色卡快照列表（MemoryRoleCardSnapshot：roleName/roleType 在外层，属性在 card 里） */
+  roleCardSnapshots: JsonRecord[];
 }): string[] {
+  // 把 MemoryRoleCardSnapshot { roleId, roleName, roleType, card } 解出渲染用的名字和属性卡
+  const snapshots = payload.roleCardSnapshots.map((item) => {
+    const card = asRecord(item.card);
+    return {
+      name: normalizeScalarText(card.name) || normalizeScalarText(item.roleName),
+      roleType: normalizeScalarText(item.roleType),
+      card,
+    };
+  });
+
+  // 用户动态卡：固定取 player 类型那张，不管说话人是谁
+  const playerSnapshot = snapshots.find((item) => item.roleType === "player") ?? null;
+  const playerCardLine = playerSnapshot
+    ? (summarizeParameterCardText({ ...playerSnapshot.card, name: playerSnapshot.name }) || "无")
+    : "无";
+
+  // 其他角色关键信息：排除用户卡（已单独渲染）和说话人自身，只保留有关键信息的，最多 8 条
+  const otherRoleLines = snapshots
+    .filter((item) => item.roleType !== "player" && item.name !== payload.speakerName)
+    .map((item) => {
+      const keyInfo = normalizeScalarText(item.card.role_key_information || item.card.information);
+      return keyInfo ? `${item.name || "未命名角色"}：${keyInfo}` : "";
+    })
+    .filter(Boolean)
+    .slice(0, 8);
+
   return [
+    "[用户信息]",
+    playerCardLine,
     "[当前说话人]",
     `name: ${payload.speakerName}`,
     `role_type: ${payload.speakerRoleType}`,
     payload.speakerProfile || "",
+    ...(otherRoleLines.length
+      ? ["[其他角色关键信息]", ...otherRoleLines]
+      : ["[其他角色关键信息]", "无"]),
   ];
 }
 
@@ -2792,7 +2825,14 @@ function buildSpeakerUserPrompt(payload: {
   const phaseLines = buildSpeakerPhaseLines(payload);
   const currentEventLines = buildSpeakerCurrentEventLines(payload);
   const nextEventLines = buildSpeakerNextEventLines(payload);
-  const speakerIdentityLines = buildSpeakerIdentityLines(payload);
+  const speakerIdentityLines = buildSpeakerIdentityLines({
+    speakerName: payload.speakerName,
+    speakerRoleType: payload.speakerRoleType,
+    speakerProfile: payload.speakerProfile,
+    // MemoryRoleCardSnapshot 格式：{ roleId, roleName, roleType, card }
+    // npcCards 由上方构建时填入（player/narrator/npc/system/general 五类全部在内）
+    roleCardSnapshots: payload.npcCards as JsonRecord[],
+  });
   const visibleRolesText = payload.otherRoles.length ? payload.otherRoles.join("、") : "无";
   const taskContextLines = payload.taskContext ? buildTaskContextLines(payload.taskContext) : [];
 

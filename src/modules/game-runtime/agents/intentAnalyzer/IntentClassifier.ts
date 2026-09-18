@@ -94,7 +94,7 @@ exit_task > memory_update > create_task > query_progress > game_action > normal_
 
 function buildUserPrompt(ctx: IntentContext, worldKnowledge?: string): string {
   const hasActiveTask = !!ctx.activeTaskId;
-  const base = `输入：${ctx.playerMessage}\n（${hasActiveTask ? "当前有进行中任务" : "当前无进行中任务"}）\n输出 JSON：`;
+  const base = `用户输入：${ctx.playerMessage}\n（${hasActiveTask ? "当前有进行中任务" : "当前无进行中任务"}）\n输出 JSON：`;
   return worldKnowledge ? `${base}\n\n【世界知识】\n${worldKnowledge}` : base;
 }
 

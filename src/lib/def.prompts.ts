@@ -4720,6 +4720,9 @@ const _PROMPT_STORY_ORCHESTRATOR_COMPACT = `
 - event_status: active / waiting_input / completed
 
 ## 记忆：
+触发记忆管理器
+当用户获得物品，获得经验，获得金钱和一些重大信息变化时触发记忆管理器
+其他角色有了信息变化也要触发记忆管理器
 - 有新信息或变化 → trigger_memory_agent=true
 - 否则 false
 - 用户信息发生变化，等级，物品，技能 等→ trigger_memory_agent=true
@@ -4959,6 +4962,9 @@ const _PROMPT_STORY_ORCHESTRATOR_ADVANCED = `
 - event_status: active / waiting_input / completed
 
 ## 记忆：
+触发记忆管理器
+当用户获得物品，获得经验，获得金钱和一些重大信息变化时触发记忆管理器
+其他角色有了信息变化也要触发记忆管理器
 - 有新信息或变化 → trigger_memory_agent=true
 - 否则 false
 - 用户信息发生变化，等级，物品，技能 等→ trigger_memory_agent=true
@@ -5434,6 +5440,10 @@ const _PROMPT_INTENT_ANALYZER = `
 - 用户输入："让我去调查一下"
 - 用户输入："创建任务,寻找诡器"
 - 用户输入："创建任务 寻找诡器"
+
+负面示例：
+- 用户输入："好的" 这是一个模糊的输入，无法确定用户意图
+
 
 ### 2. exit_task（退出/放弃任务）
 **触发条件**：用户明确表示要放弃、退出、终止当前任务
