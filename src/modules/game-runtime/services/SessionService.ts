@@ -865,6 +865,19 @@ async function applySessionPreOrchestrationEventProgress(params: {
     return;
   }
 
+  // ★ 小游戏激活中：让位给小游戏本身的事件状态机，
+  //   事件进度检测器是主线编排阶段的判定器，不该在小游戏期间运行，
+  //   否则会让主线的 current_event 等状态被无意义地"修正"或误推进。
+  const miniGameActive = isMiniGameActiveState(params.state as any);
+  if (miniGameActive) {
+    DebugLogUtil.log("story:event_progress:runtime", "小游戏激活中，跳过事件进度检测", JSON.stringify({
+      latestMessageId,
+      latestRoleType,
+      latestEventType,
+    }));
+    return;
+  }
+
   const resolution = await evaluateEventProgressByAi({
     userId: params.userId,
     world: params.world,
@@ -4685,6 +4698,28 @@ async function orchestrateSessionTurnInner(sessionId: string): Promise<SessionOr
     DebugLogUtil.log("story:orchestrator:chapter_switch","如果当前章节是自由章节，没有结束条件的不应该有跳过操作啊",hasPendingEndingGuide);
     realNextChapterId =currentChapterId;
   }
+  // ★ 小游戏激活时（task 复用小游戏状态机除外），不要走主线 runConcurrentSessionJudgeAndNarrative，
+  //   否则会让编排师/角色发言都在小游戏回合里被错误触发。
+  //   真要走编排也应只消费 mini-game step 已经写入的 pendingNarrativePlan。
+  const miniGameType = String(((state.miniGame as any)?.session?.game_type) || "");
+  if (isMiniGameActiveState(state as any) && miniGameType !== "task") {
+    const pendingPlan = getPendingSessionNarrativePlan(state);
+    DebugLogUtil.log("story:orchestrator:runtime", "小游戏激活（非 task），让位给小游戏自身的 plan", JSON.stringify({
+      sessionId,
+      miniGameType,
+      hasPendingPlan: !!pendingPlan,
+    }));
+    return finalizeOrchestrationResult({
+      sessionId,
+      status: sessionStatus,
+      chapterId: Number(chapter.id || 0) || null,
+      expectedRole: "",
+      expectedRoleType: "",
+      command: null,
+      plan: pendingPlan ? buildSessionPlanResult(pendingPlan) : null,
+    });
+  }
+
   const arbitration = await runConcurrentSessionJudgeAndNarrative({
     userId: currentUserId,
     world,

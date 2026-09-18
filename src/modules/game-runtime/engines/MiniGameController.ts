@@ -16,6 +16,7 @@ import {
   type MiniGameIntentLogMeta,
 } from "@/modules/game-runtime/services/MiniGameIntentService";
 import { resolveSellIntent } from "@/modules/game-runtime/services/MiniGameSellService";
+import { getPromptByCode } from "@/lib/promptHelper";
 import { abandonActiveFreeChapterTaskEvent, createTaskFromUserRequest } from "@/modules/game-runtime/services/FreeChapterTaskService";
 import { analyzeIntent, analyzeIntentWithAiFallback, type IntentResult } from "@/modules/game-runtime/agents/intentAnalyzer";
 // 任务模式 Agent 由 SessionService.orchestrateSessionTurn / streamlines 调用，
@@ -409,11 +410,18 @@ function buildMiniGameMeta(root: JsonRecord): JsonRecord {
   };
 }
 
-function summarizePublicState(publicState: JsonRecord): string {
+function summarizePublicState(publicState: JsonRecord, inventory?: JsonRecord[]): string {
   const entries = Object.entries(publicState)
     .filter(([, value]) => value !== null && value !== undefined && `${value}`.trim() !== "")
-    .slice(0, 6)
+    .slice(0, 5)
     .map(([key, value]) => `${key}:${Array.isArray(value) ? value.join("/") : value}`);
+  if (inventory && inventory.length) {
+    const itemNames = inventory
+      .map((item) => scalarText(item.name || item.itemName || item.title))
+      .filter(Boolean)
+      .slice(0, 10);
+    if (itemNames.length) entries.push(`物品栏:${itemNames.join("、")}`);
+  }
   return entries.join("，");
 }
 
@@ -806,6 +814,59 @@ const miniGameMentorSpeechSchema = {
  * - 小游戏状态机只负责计算结果和写回；
  * - 角色台词在统一出口生成，避免把固定模板散落到每个玩法里。
  */
+
+/**
+ * 统一处理消耗品（丹药、药物、能量物质等）的消耗逻辑。
+ * 由修炼小游戏动作解析器（AI）根据用户输入和物品栏决定消耗目标名称和数量，
+ * 这里只负责从物品栏扣除并返回播报文本。
+ */
+function handleConsumable(
+  session: JsonRecord,
+  targetName: string,
+  ctx: MiniGameControllerInput,
+): MiniGameStepResult {
+  const inventory = asArray<JsonRecord>(ctx.state.inventory);
+  const narratorName = scalarText(ctx?.world?.narratorRole?.name) || "旁白";
+  const playerName = scalarText(ctx?.world?.playerRole?.name) || "用户";
+
+  // 查找匹配的物品：精确匹配优先，其次包含匹配
+  const matchingItems = inventory.filter((item) => {
+    const name = scalarText(item.name || item.itemName || item.title);
+    return name === targetName || name.includes(targetName) || targetName.includes(name);
+  });
+
+  if (!matchingItems.length) {
+    return {
+      narration: `你的背包里没有「${targetName}」，无法使用。`,
+      resultTags: ["invalid"],
+    };
+  }
+
+  // 从物品栏移除第一个匹配的物品（每次只消耗一个，支持多次调用）
+  const removed = matchingItems[0];
+  const removedName = scalarText(removed.name || removed.itemName || removed.title);
+  const idx = inventory.indexOf(removed);
+  inventory.splice(idx, 1);
+  ctx.state.inventory = inventory;
+
+  // 同步参数卡 items 列表
+  const player = asRecord(ctx.state.player);
+  const card = asRecord(player.parameterCardJson);
+  const items = uniqueTexts(asArray<string>(card.items).filter((n) => n !== removedName));
+  card.items = items;
+  player.parameterCardJson = card;
+  ctx.state.player = player;
+
+  session.round = Number(session.round || 1) + 1;
+
+  const narration = `你使用了「${removedName}」，感受到灵气涌动。`;
+  return {
+    narration,
+    resultTags: ["consume", "consumable"],
+    pendingNarrativePlan: buildMiniGameNarrativePlan(`修炼播报：使用${removedName}`, narration, false, narratorName, playerName),
+  };
+}
+
 function buildMentorMiniGameSpeechRequest(
   mentor: string,
   gameType: string,
@@ -1047,6 +1108,10 @@ async function generateMiniGameMentorSpeech(
       }
     }
     const prompt = buildMiniGameMentorSpeechPrompt(ctx, rulebook, root, request) + (worldKnowledge ? `\n\n【世界知识】\n${worldKnowledge}` : "");
+    // 提示词从 t_prompts.customValue 读取，未配置则用 def.prompts.ts 的默认值
+    //   （维护位置："story-mini-game-speech" 标签页），空值兜底用最小提示串保证服务可用。
+    const systemPrompt = (await getPromptByCode("story-mini-game-speech")).trim()
+      || "你是互动故事小游戏的角色台词生成器。必须严格基于输入的小游戏规则、近期台词、角色参数卡和全局背景，生成指定角色的一句自然回应。你不能改动程序结算事实。";
     const result = await u.ai.text.invoke(
       {
         usageType: "小游戏角色台词",
@@ -1061,7 +1126,7 @@ async function generateMiniGameMentorSpeech(
         messages: [
           {
             role: "system",
-            content: "你是互动故事小游戏的角色台词生成器。必须严格基于输入的小游戏规则、近期台词、角色参数卡和全局背景，生成指定角色的一句自然回应。你不能改动程序结算事实。",
+            content: systemPrompt,
           },
           { role: "user", content: prompt },
         ],
@@ -4004,7 +4069,6 @@ function cultivationOptions(session?: JsonRecord): MiniGameActionOption[] {
     { action_id: "breathe", label: "吐纳", desc: "修炼基础功法并积攒灵气", aliases: ["吸收灵气", "运转灵气"] },
     { action_id: "visualize", label: "观想", desc: "修炼基础冥想并提升感悟", aliases: ["冥想", "参悟"] },
     { action_id: "steady", label: "稳息", desc: "修炼基础体术并稳定心神", aliases: ["稳固气息", "稳住心神"] },
-    { action_id: "take_pill", label: "服丹", desc: "短时提高灵气", aliases: ["吃丹药", "服用丹药"] },
     { action_id: "breakthrough", label: "冲关", desc: "尝试突破当前瓶颈", aliases: ["突破", "尝试突破"] },
     { action_id: "finish", label: "收功", desc: "安全结束本轮修炼", aliases: ["结束修炼", "停下修炼"] },
   ];
@@ -4118,14 +4182,10 @@ function cultivationStep(session: JsonRecord, actionId: string, ctx: MiniGameCon
     add("stability", 18); addHidden("deviation_risk", -12);
     return trainTarget("基础体术", `你收束气息，心境重新稳定。稳定度上升到 ${publicState.stability}。`, "steady");
   }
-  if (actionId === "take_pill") {
-    if (hidden.pill_used) {
-      return { narration: "本局你已经服过一次丹药了，药力无法再次叠加。", resultTags: ["invalid"] };
-    }
-    hidden.pill_used = true;
-    add("qi", 25); add("stability", -5); addHidden("deviation_risk", 8); session.round = Number(session.round || 1) + 1;
-    const pillNarration = `丹药化开，你的灵气暴涨，但也让经脉承受了更多压力。`;
-    return { narration: pillNarration, resultTags: ["take_pill"], pendingNarrativePlan: buildMiniGameNarrativePlan("修炼播报：服用丹药", pillNarration, false, narratorName, playerName) };
+  // 消耗品/丹药/药物：统一由 AI 解析器根据物品栏和输入决定消耗数量
+  if (actionId.startsWith("consume:")) {
+    const consumeTarget = scalarText(actionId.slice("consume:".length));
+    return handleConsumable(session, consumeTarget, ctx);
   }
   if (actionId === "breakthrough") {
     const qi = Number(publicState.qi || 0);
@@ -6382,7 +6442,7 @@ export async function handleMiniGameTurn(input: MiniGameControllerInput): Promis
     gameType: rulebook.gameType,
     phase: scalarText(activeSession.phase),
     status: scalarText(activeSession.status),
-    publicStateSummary: summarizePublicState(asRecord(activeSession.public_state)),
+    publicStateSummary: summarizePublicState(asRecord(activeSession.public_state), asArray(input.state.inventory)),
     latestNarration: scalarText(asRecord(root.ui).narration),
     userInput: input.playerMessage,
     options: options.map((item) => ({

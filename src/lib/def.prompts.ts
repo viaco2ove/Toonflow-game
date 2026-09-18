@@ -5380,10 +5380,40 @@ const _PROMPT_STORY_MINI_GAME_WEREWOLF = `
 你是狼人杀小游戏动作解析器。重点识别发言、进入投票、投票目标、查验目标、救人、毒人、查看记录。请结合当前阶段，只在合法动作里选择。
 `;
 
+/** story-mini-game-speech */
+const _PROMPT_STORY_MINI_GAME_SPEECH = `你是互动故事小游戏的角色台词生成器。
+必须严格基于输入的小游戏规则、近期台词、角色参数卡和全局背景，生成指定角色的一句自然回应。
+你应该关注当前小游戏是什么。回答与小游戏有关的内容。
+你不能改动程序结算事实。`;
+
 /** story-mini-game-cultivation */
 const _PROMPT_STORY_MINI_GAME_CULTIVATION = `你是修炼小游戏动作解析器。
 重点识别吐纳、观想、稳息、服丹、冲关、收功，也要识别修炼目标、功法/技能名、陪练或指导角色名。
-像"云韵陪练""运行炼炎决""让云韵指导炼炎决""先稳一手""我想突破一下"这类输入，要归一到当前合法动作里的角色、目标或动作。`;
+像"云韵陪练""运行炼炎决""让云韵指导炼炎决""先稳一手""我想突破一下"这类输入，要归一到当前合法动作里的角色、目标或动作。
+必须说明的是修炼不是特指
+## 服丹
+吸收xxx,吞入xxxx
+消耗 用户物品栏的丹药物品消耗品等
+如 吸收暗核,吞入丹药，服用大还丹。
+## 消耗品动作（consume:）
+当用户提到使用丹药、药物、能量物质等消耗品时（如"吸收暗核""服下丹药""吃回气丹""吸收三个暗核"），一律生成 consume:目标名称 格式的 action_id。
+- consume:暗核（用户说"吸收暗核"或"服一个暗核"等，默认为1个）
+- consume:暗核 x3（用户明确说要3个，如"吸收三个暗核"）
+- consume:回气丹（用户说"吃回气丹""服下回气丹"）
+- consume:聚灵草（用户说"吸收聚灵草"）
+
+AI 解析器需要根据用户输入中的数量词（"一个"/"三个"/"全部"/"所有"）决定 count：
+- 无数量词或"一个"/"单个" → count: 1
+- "三个"/"三颗"/"三枚" → count: 3
+- "全部"/"所有"/"所有暗核" → count: 999（表示全部）
+
+action_id 格式固定为 consume:物品名称（不要带 x 或数量）。
+target_name 字段填物品名称。
+reason 字段简述消耗原因。
+
+## 物品栏
+当前公开状态摘要里的"物品栏:xxx"列出了用户背包里的所有道具。
+请优先从物品栏中选择消耗目标，如果用户提到的物品不在物品栏中，action_id 应为空串。`;
 
 /** story-mini-game-mining */
 const _PROMPT_STORY_MINI_GAME_MINING = `
@@ -6092,6 +6122,7 @@ export const PROMPT_STORY_MINI_GAME = _normalize(_PROMPT_STORY_MINI_GAME);
 export const PROMPT_STORY_MINI_GAME_BATTLE = _normalize(_PROMPT_STORY_MINI_GAME_BATTLE);
 export const PROMPT_STORY_MINI_GAME_FISHING = _normalize(_PROMPT_STORY_MINI_GAME_FISHING);
 export const PROMPT_STORY_MINI_GAME_WEREWOLF = _normalize(_PROMPT_STORY_MINI_GAME_WEREWOLF);
+export const PROMPT_STORY_MINI_GAME_SPEECH = _normalize(_PROMPT_STORY_MINI_GAME_SPEECH);
 export const PROMPT_STORY_MINI_GAME_CULTIVATION = _normalize(_PROMPT_STORY_MINI_GAME_CULTIVATION);
 export const PROMPT_STORY_MINI_GAME_MINING = _normalize(_PROMPT_STORY_MINI_GAME_MINING);
 export const PROMPT_STORY_MINI_GAME_RESEARCH_SKILL = _normalize(_PROMPT_STORY_MINI_GAME_RESEARCH_SKILL);
@@ -6165,6 +6196,7 @@ export const DEFAULT_PROMPTS: Record<string, string> = {
   "story-chapter": PROMPT_STORY_CHAPTER,
   "story-event-progress": PROMPT_STORY_EVENT_PROGRESS,
   "story-mini-game": PROMPT_STORY_MINI_GAME,
+  "story-mini-game-speech": PROMPT_STORY_MINI_GAME_SPEECH,
   "story-mini-game-battle": PROMPT_STORY_MINI_GAME_BATTLE,
   "story-mini-game-fishing": PROMPT_STORY_MINI_GAME_FISHING,
   "story-mini-game-werewolf": PROMPT_STORY_MINI_GAME_WEREWOLF,
