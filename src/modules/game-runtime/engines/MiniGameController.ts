@@ -2308,17 +2308,13 @@ function evaluateResearchSkillInput(session: JsonRecord, input: MiniGameControll
   });
   const currentMoney = readMiniGamePlayerMoney(input.state);
   if (currentMoney < 5) {
-    session.status = "finished";
-    session.phase = "settling";
-    session.result = "failed";
-    session.finish_reason = "金币不足";
-    publicState.last_result = "研发失败：金币不足";
+    // 修复：金币不足时不再自动 finish 小游戏（擅自结束会打断用户节奏）。
+    //   改为仅返回一条 invalid 提示，让用户继续输入或自行 #退出。
     publicState.last_advice = "研发技能每次会消耗 5 金币，先准备足够资金再来。";
     return {
-      narration: "我检查了你的研发准备。当前金币不足 5，无法继续研发技能。",
-      resultTags: ["failed", "insufficient_money"],
-      memorySummary: "研发技能失败：金币不足",
-      pendingNarrativePlan: buildMiniGameNarrativePlan("研发技能：金币不足", "金币不足，无法继续研发技能", true, narratorName, playerName, "on_mini_game_finish"),
+      narration: "我检查了你的研发准备。当前金币不足 5，无法继续研发技能。可输入 #退出 结束小游戏，或继续描述研发方案。",
+      resultTags: ["insufficient_money"],
+      pendingNarrativePlan: buildMiniGameNarrativePlan("研发技能：金币不足提示", "金币不足，无法继续研发技能", true, narratorName, playerName),
     };
   }
   const synergyHits = countAssetSynergyHits(
@@ -2400,31 +2396,21 @@ function evaluateAlchemyInput(session: JsonRecord, input: MiniGameControllerInpu
   const inferredRecipeLevel = Math.max(1, Number((formula.match(/(?:lv|LV|等级)\s*(\d+)/u)?.[1]) || 1));
   const currentMoney = readMiniGamePlayerMoney(input.state);
   if (currentMoney < 1) {
-    session.status = "finished";
-    session.phase = "settling";
-    session.result = "failed";
-    session.finish_reason = "金币不足";
-    publicState.last_result = "炼药失败：金币不足";
+    // 修复：金币不足不再自动 finish。让用户自行决定 #退出 或继续输入药方。
     publicState.last_advice = "炼药每次至少消耗 1 金币，先准备炉火开销再来。";
     return withMentorMessages({
-      narration: "我检查了你的炼药准备。当前金币不足 1，无法开炉炼药。",
-      resultTags: ["failed", "insufficient_money"],
-      memorySummary: "炼药失败：金币不足",
-      pendingNarrativePlan: buildMiniGameNarrativePlan("炼药：金币不足", "金币不足，无法开炉炼药", true, narratorName, playerName, "on_mini_game_finish"),
+      narration: "我检查了你的炼药准备。当前金币不足 1，无法开炉炼药。可输入 #退出 结束小游戏，或继续描述药方。",
+      resultTags: ["insufficient_money"],
+      pendingNarrativePlan: buildMiniGameNarrativePlan("炼药：金币不足提示", "金币不足，无法开炉炼药", true, narratorName, playerName),
     });
   }
   if (inferredRecipeLevel > userLevel) {
-    session.status = "finished";
-    session.phase = "settling";
-    session.result = "failed";
-    session.finish_reason = "丹药等级过高";
-    publicState.last_result = "炼药失败：丹药等级过高";
+    // 修复：等级限制不再自动 finish，仅提示让用户调整药方。
     publicState.last_advice = `当前只能炼制不高于用户等级的丹药。你现在是 lv${userLevel}。`;
     return withMentorMessages({
-      narration: `我检查了你的炼药方案。当前丹药等级 lv${inferredRecipeLevel} 超过了你自身等级 lv${userLevel}，本次无法成炉。`,
-      resultTags: ["failed", "level_limited"],
-      memorySummary: "炼药失败：超出等级限制",
-      pendingNarrativePlan: buildMiniGameNarrativePlan("炼药：丹药等级过高", `丹药等级 lv${inferredRecipeLevel} 超出自身等级 lv${userLevel}`, true, narratorName, playerName, "on_mini_game_finish"),
+      narration: `我检查了你的炼药方案。当前丹药等级 lv${inferredRecipeLevel} 超过了你自身等级 lv${userLevel}，本次无法成炉。可调整药方等级后继续输入，或 #退出。`,
+      resultTags: ["level_limited"],
+      pendingNarrativePlan: buildMiniGameNarrativePlan("炼药：丹药等级过高提示", `丹药等级 lv${inferredRecipeLevel} 超出自身等级 lv${userLevel}`, true, narratorName, playerName),
     });
   }
   const herbSkillLevel = readNamedPracticeLevel(input.state, "药草提纯术", 1);
@@ -2486,14 +2472,12 @@ function evaluateEquipmentInput(session: JsonRecord, input: MiniGameControllerIn
     session.status = "finished";
     session.phase = "settling";
     session.result = "failed";
-    session.finish_reason = "金币不足";
-    publicState.last_result = "锻造/强化装备失败：金币不足";
+    // 修复：金币不足不再自动 finish，让用户自行 #退出 或继续输入方案。
     publicState.last_advice = "锻造/强化装备每次会消耗 8 金币，先准备足够资金再来。";
     return {
-      narration: `我检查了你的锻造/强化方案。当前金币不足 8，无法继续。`,
-      resultTags: ["failed", "insufficient_money"],
-      memorySummary: "锻造/强化装备失败：金币不足",
-      pendingNarrativePlan: buildMiniGameNarrativePlan("装备升级：金币不足", "金币不足 8，无法继续", true, narratorName, playerName, "on_mini_game_finish"),
+      narration: `我检查了你的锻造/强化方案。当前金币不足 8，无法继续。可输入 #退出 结束小游戏，或调整方案。`,
+      resultTags: ["insufficient_money"],
+      pendingNarrativePlan: buildMiniGameNarrativePlan("装备升级：金币不足提示", "金币不足 8，无法继续", true, narratorName, playerName),
     };
   }
   const strengthenSkillLevel = readNamedPracticeLevel(input.state, "装备强化术", 1);
@@ -2504,22 +2488,22 @@ function evaluateEquipmentInput(session: JsonRecord, input: MiniGameControllerIn
   }) || "";
   if (matchedSkill) {
     if (currentMoney < 20) {
-      const skillMoneyNarration = "我检查了你的升级方案。升级技能需要 20 金币，你当前资金不足。";
+      // 修复：金币不足不再自动 finish。
+      const skillMoneyNarration = "我检查了你的升级方案。升级技能需要 20 金币，你当前资金不足。可输入 #退出 结束小游戏。";
       return {
         narration: skillMoneyNarration,
-        resultTags: ["failed", "insufficient_money"],
-        memorySummary: "升级技能失败：金币不足",
-        pendingNarrativePlan: buildMiniGameNarrativePlan("装备升级：升级技能金币不足", skillMoneyNarration, false, narratorName, playerName),
+        resultTags: ["insufficient_money"],
+        pendingNarrativePlan: buildMiniGameNarrativePlan("装备升级：升级技能金币不足提示", skillMoneyNarration, false, narratorName, playerName),
       };
     }
     const parsedSkill = parseLeveledPracticeName(matchedSkill);
     if (parsedSkill.level >= userLevel) {
-      const skillLevelNarration = `我检查了你的升级方案。${parsedSkill.name} 已达到你当前等级上限 lv${userLevel}，暂时无法继续升级。`;
+      // 修复：等级已满不再自动 finish，让用户继续输入其他方案。
+      const skillLevelNarration = `我检查了你的升级方案。${parsedSkill.name} 已达到你当前等级上限 lv${userLevel}，暂时无法继续升级。可选择其他目标。`;
       return {
         narration: skillLevelNarration,
-        resultTags: ["failed", "level_limited"],
-        memorySummary: "升级技能失败：达到等级上限",
-        pendingNarrativePlan: buildMiniGameNarrativePlan("装备升级：技能等级已满", skillLevelNarration, false, narratorName, playerName),
+        resultTags: ["level_limited"],
+        pendingNarrativePlan: buildMiniGameNarrativePlan("装备升级：技能等级已满提示", skillLevelNarration, false, narratorName, playerName),
       };
     }
     const nextSkillName = formatLeveledPracticeName(parsedSkill.name, parsedSkill.level + 1);
