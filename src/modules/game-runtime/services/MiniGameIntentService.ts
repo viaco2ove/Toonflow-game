@@ -151,13 +151,25 @@ function normalizeMiniGameIntentResult(
   logMeta?: MiniGameIntentLogMeta | null,
 ): MiniGameIntentResult | null {
   const actionId = String(rawObject?.action_id || "").trim();
-  if (!actionId) return null;
+  const reason = String(rawObject?.reason || "").trim();
+  // 修复：当 actionId 为空但 reason 有内容时（AI 识别出"目标不在物品栏""不是有效动作"等），
+  //   仍要保留 reason 返回给调用方，避免硬编码"非法动作"提示。
+  //   调用方拿到这个 reason 后，会用 AI 的自然语言直接回复用户。
+  if (!actionId) {
+    if (!reason) return null;
+    return {
+      actionId: "",
+      targetName: String(rawObject?.target_name || "").trim(),
+      reason,
+      logMeta: logMeta || null,
+    };
+  }
   const matched = options.find((item) => item.actionId === actionId);
   if (!matched) return null;
   return {
     actionId,
     targetName: String(rawObject?.target_name || "").trim(),
-    reason: String(rawObject?.reason || "").trim(),
+    reason,
     logMeta: logMeta || null,
   };
 }

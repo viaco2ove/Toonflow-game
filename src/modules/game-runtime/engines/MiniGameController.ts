@@ -6467,7 +6467,11 @@ export async function handleMiniGameTurn(input: MiniGameControllerInput): Promis
       tokenUsage: aiIntent?.logMeta?.tokenUsage || null,
       timing: aiIntent?.logMeta?.timing || null,
     });
-    const narration = `当前仍在 ${rulebook.displayName} 中，请先完成、暂停或退出小游戏。当前合法动作：${options.map((item) => item.label).join("、")}。`;
+    // AI 已经识别出原因（如"暗核不在物品栏中"），直接用 AI 的自然语言回复用户，
+    //   而不是硬编码"合法动作列表"提示。这样用户得到贴合上下文的具体原因。
+    const narration = (aiIntent?.reason && aiIntent.reason.trim())
+      ? aiIntent.reason.trim()
+      : `当前仍在 ${rulebook.displayName} 中，请先完成、暂停或退出小游戏。`;
     refreshRuntimeUi(root, narration, rulebook);
     return {
       intercepted: true,
