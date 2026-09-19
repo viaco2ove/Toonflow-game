@@ -17,6 +17,7 @@ import u from "@/utils";
 import { z } from "zod";
 import { loadTaskPrompt } from "../taskMode/loadTaskPrompt";
 import { buildWorldKnowledgeText, normalizeWorldBookOutput } from "@/lib/gameEngine";
+import { parseModelJsonArray } from "@/utils/ai/jsonParserUtils";
 
 const STORY_FALLBACK_SYSTEM = `你是剧情编排选项生成器。
 
@@ -235,16 +236,9 @@ export async function generateOrchestrateOptions(ctx: OrchestrateOptionsContext)
     }
     console.log(`[story:orchestrate_options:stats] response_chars=${rawText.length} latency_ms=${latencyMs}`);
 
-    const jsonMatch = rawText.match(/\[[\s\S]*\]/);
-    if (!jsonMatch) {
+    const arr = parseModelJsonArray(rawText);
+    if (!arr) {
       console.warn("[OrchestrateOptionsAgent] AI 未返回 JSON 数组");
-      return { options: buildFallbackOptions(ctx), source: "fallback", latencyMs };
-    }
-    let arr: any;
-    try {
-      arr = JSON.parse(jsonMatch[0]);
-    } catch (e) {
-      console.warn("[OrchestrateOptionsAgent] JSON 解析失败：", e);
       return { options: buildFallbackOptions(ctx), source: "fallback", latencyMs };
     }
     const parsed = OPTION_SCHEMA.safeParse(arr);

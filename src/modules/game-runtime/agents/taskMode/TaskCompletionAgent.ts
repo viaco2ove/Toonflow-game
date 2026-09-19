@@ -16,6 +16,7 @@ import u from "@/utils";
 import { z } from "zod";
 import { loadTaskPrompt } from "./loadTaskPrompt";
 import { buildWorldKnowledgeText, normalizeWorldBookOutput } from "@/lib/gameEngine";
+import { parseModelJsonObject } from "@/utils/ai/jsonParserUtils";
 
 const FALLBACK_SYSTEM = `你是任务完成评估器。输出严格JSON。
 
@@ -151,18 +152,10 @@ ${worldKnowledge ? `\n\n【世界知识】\n${worldKnowledge}` : ""}
       latencyMs,
     }));
 
-    const jsonMatch = rawText.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) {
+    const obj = parseModelJsonObject(rawText) as any;
+    if (!obj) {
       console.warn("[TaskCompletionAgent] AI 未返回 JSON：", rawText.slice(0, 200));
       console.log(`[story:mini_game:task:completion:stats] status=json_not_found decision=continue latency_ms=${latencyMs}`);
-      return buildContinueDefault();
-    }
-    let obj: any;
-    try {
-      obj = JSON.parse(jsonMatch[0]);
-    } catch (e) {
-      console.warn("[TaskCompletionAgent] JSON 解析失败：", e);
-      console.log(`[story:mini_game:task:completion:stats] status=parse_error decision=continue latency_ms=${latencyMs}`);
       return buildContinueDefault();
     }
     const parsed = AI_SCHEMA.safeParse(obj);

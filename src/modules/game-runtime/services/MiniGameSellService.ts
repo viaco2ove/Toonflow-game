@@ -1,13 +1,20 @@
 import { z } from "zod";
-import { parse } from "best-effort-json-parser";
 import u from "@/utils";
 import { DebugLogUtil } from "@/utils/debugLogUtil";
 import { buildWorldKnowledgeText, normalizeWorldBookOutput } from "@/lib/gameEngine";
 import { getPromptByCode } from "@/lib/promptHelper";
 import { PROMPT_STORY_SELL_ITEM } from "@/lib/def.prompts";
+import { parseModelJsonObject } from "@/utils/ai/jsonParserUtils";
+
+/** 从三种可能字段中提取物品显示名称，与 MiniGameController 的同步逻辑保持一致 */
+function getItemDisplayName(item: InventoryItem): string {
+  return String(item.name || (item as any).itemName || (item as any).title || "").trim();
+}
 
 export interface InventoryItem {
-  name: string;
+  name?: string;
+  itemName?: string;
+  title?: string;
   kind?: string;
   amount?: number;
   rarity?: string;
@@ -93,9 +100,10 @@ export const SELL_PRICING_RULES = {
 
 function buildSellPrompt(userInput: string, inventory: InventoryItem[]): string {
   const inventoryList = inventory.map((item, idx) => {
+    const displayName = getItemDisplayName(item);
     const amount = item.amount || 1;
     const rarity = item.rarity || "normal";
-    return `[${idx + 1}] ${item.name} | 种类: ${item.kind || "other"} | 数量: ${amount} | 稀有度: ${rarity}`;
+    return `[${idx + 1}] ${displayName} | 种类: ${item.kind || "other"} | 数量: ${amount} | 稀有度: ${rarity}`;
   }).join("\n");
 
   const pricingDesc = Object.values(SELL_PRICING_RULES).map((r: any) => r.desc).join("\n");
@@ -135,7 +143,7 @@ function normalizeSellIntentResult(
   const inventoryAmountMap = new Map<string, number>();
   const inventoryNameMap = new Map<string, InventoryItem>();
   inventory.forEach((item) => {
-    const name = item.name;
+    const name = getItemDisplayName(item);
     const amount = item.amount || 1;
     // 累加同名物品的数量
     inventoryAmountMap.set(name, (inventoryAmountMap.get(name) || 0) + amount);
@@ -243,10 +251,10 @@ ${worldKnowledge}` : "");
     const rawResponse = String((result as any)?.text || "").trim();
     if (!rawResponse) return null;
 
-    const parsedObject = rawResponse ? parse(rawResponse) : null;
-    const rawObject = parsedObject && typeof parsedObject === "object"
-      ? (parsedObject as Record<string, unknown>)
-      : null;
+    const rawObject = parseModelJsonObject(rawResponse);
+    if (!rawObject) {
+      console.warn("[SellService] 无法解析响应为 JSON:", rawResponse.slice(0, 200));
+    }
 
     // 提取 token usage
     const usage = (result as any)?.usage;

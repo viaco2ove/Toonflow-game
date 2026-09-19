@@ -3,6 +3,7 @@ import { generateText, streamText, Output, stepCountIs, ModelMessage, LanguageMo
 import { wrapLanguageModel } from "ai";
 import { devToolsMiddleware } from "@ai-sdk/devtools";
 import { parse } from "best-effort-json-parser";
+import { parseModelJsonObject, parseModelJsonArray } from "../jsonParserUtils";
 import { getModelList, normalizeTextModelName, createResponsesProtocolFetch } from "./modelList";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { z } from "zod";
@@ -531,10 +532,13 @@ ai.invoke = async (input: AIInput<any>, config: AIConfig) => {
       if (!rawText) {
         throw new Error("模型返回为空，无法解析结构化结果（text/object 均为空）");
       }
-      const parsed = JSON.parse(rawText);
+      // 优先解析为对象，失败时尝试数组（schema 可能要求 array 类型）
+      const parsed = parseModelJsonObject(rawText)
+        ?? parseModelJsonArray(rawText)
+        ?? JSON.parse(rawText);
       debugLog("invoke:parsedSchema", {
         source: "text",
-        keys: parsed && typeof parsed === "object" ? Object.keys(parsed) : [],
+        keys: parsed && typeof parsed === "object" ? Object.keys(parsed as object) : [],
       });
       return parsed;
     }

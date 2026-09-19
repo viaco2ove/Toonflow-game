@@ -8,6 +8,7 @@ import u from "@/utils";
 import { z } from "zod";
 import { ProgressLevel } from "./TaskProgressAgent";
 import { loadTaskPrompt } from "./loadTaskPrompt";
+import { parseModelJsonObject } from "@/utils/ai/jsonParserUtils";
 
 const FALLBACK_SYSTEM = `你是任务剧情编排师。输出严格JSON。
 
@@ -142,18 +143,10 @@ ${worldKnowledge ? `\n【世界知识】（本轮匹配的静态世界设定，�
       latencyMs,
     }));
 
-    const jsonMatch = rawText.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) {
+    const obj = parseModelJsonObject(rawText) as any;
+    if (!obj) {
       console.warn("[TaskDirectorAgent] AI 未返回 JSON：", rawText.slice(0, 200));
       console.log(`[story:mini_game:task:orchestrator:stats] status=json_not_found latency_ms=${latencyMs}`);
-      return fallbackDirector(progressLevel, npcList);
-    }
-    let obj: any;
-    try {
-      obj = JSON.parse(jsonMatch[0]);
-    } catch (e) {
-      console.warn("[TaskDirectorAgent] JSON 解析失败：", e);
-      console.log(`[story:mini_game:task:orchestrator:stats] status=parse_error latency_ms=${latencyMs}`);
       return fallbackDirector(progressLevel, npcList);
     }
     const parsed = AI_SCHEMA.safeParse(obj);

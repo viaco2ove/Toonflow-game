@@ -11,6 +11,7 @@ import { IntentType } from "../intentAnalyzer/IntentClassifier";
 import { loadTaskPrompt } from "./loadTaskPrompt";
 import { buildWorldKnowledgeText, normalizeWorldBookOutput } from "@/lib/gameEngine";
 import {DebugLogUtil} from "@/utils/debugLogUtil";
+import { parseModelJsonObject } from "@/utils/ai/jsonParserUtils";
 
 const FALLBACK_SYSTEM = `你是任务推进判定器。输出严格JSON。
 
@@ -281,23 +282,13 @@ ${worldKnowledge ? `\n\n【世界知识】\n${worldKnowledge}` : ""}
       latencyMs,
     }));
 
-    const jsonMatch = rawText.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) {
+    const obj = parseModelJsonObject(rawText) as any;
+    if (!obj) {
       console.warn("[TaskProgressAgent] AI 未返回 JSON：", rawText.slice(0, 200));
       console.log(`[story:mini_game:task:progress:stats] status=json_not_found latency_ms=${latencyMs} response_chars=${rawText.length} response_preview=${rawText.slice(0, 150)}`);
       console.log(`[story:mini_game:task:progress:stats] | System Prompt | ${systemPrompt.replace(/\n/g, "↩").slice(0, 120)} | ${systemPrompt.length} |`);
       console.log(`[story:mini_game:task:progress:stats] | User Prompt | ${userPrompt.replace(/\n/g, "↩").slice(0, 120)} | ${userPrompt.length} |`);
       return { level: "maintain", tier: "ai", reason: "AI 未返回 JSON", needClarify: false, processUpdate: { action: "none", phaseIndex: null, newPhase: null } };
-    }
-    let obj: any;
-    try {
-      obj = JSON.parse(jsonMatch[0]);
-    } catch (e) {
-      console.warn("[TaskProgressAgent] JSON 解析失败：", e);
-      console.log(`[story:mini_game:task:progress:stats] status=parse_error latency_ms=${latencyMs} response_chars=${rawText.length} response_preview=${rawText.slice(0, 150)}`);
-      console.log(`[story:mini_game:task:progress:stats] | System Prompt | ${systemPrompt.replace(/\n/g, "↩").slice(0, 120)} | ${systemPrompt.length} |`);
-      console.log(`[story:mini_game:task:progress:stats] | User Prompt | ${userPrompt.replace(/\n/g, "↩").slice(0, 120)} | ${userPrompt.length} |`);
-      return { level: "maintain", tier: "ai", reason: "AI JSON 解析失败", needClarify: false, processUpdate: { action: "none", phaseIndex: null, newPhase: null } };
     }
     const parsed = AI_SCHEMA.safeParse(obj);
     if (!parsed.success) {

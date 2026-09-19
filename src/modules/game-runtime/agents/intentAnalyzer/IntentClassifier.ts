@@ -12,6 +12,7 @@
 import u from "@/utils";
 import { z } from "zod";
 import { buildWorldKnowledgeText, normalizeWorldBookOutput } from "@/lib/gameEngine";
+import { parseModelJsonObject } from "@/utils/ai/jsonParserUtils";
 
 // ============================================================================
 // 类型定义
@@ -110,28 +111,8 @@ const INTENT_MODEL_KEY = "intentClassifierModel";
  * 使用括号配平算法，跳过字符串内的括号。
  */
 function extractJsonObject(text: string): string | null {
-  if (!text) return null;
-  let i = text.indexOf("{");
-  if (i < 0) return null;
-
-  let depth = 0;
-  let inString = false;
-  let escapeNext = false;
-  for (; i < text.length; i++) {
-    const ch = text[i];
-    if (escapeNext) { escapeNext = false; continue; }
-    if (ch === "\\") { escapeNext = true; continue; }
-    if (ch === '"' && !escapeNext) { inString = !inString; continue; }
-    if (inString) continue;
-    if (ch === "{") depth++;
-    else if (ch === "}") {
-      depth--;
-      if (depth === 0) {
-        return text.slice(text.indexOf("{"), i + 1);
-      }
-    }
-  }
-  return null;
+  const obj = parseModelJsonObject(text);
+  return obj ? JSON.stringify(obj) : null;
 }
 
 export async function classifyIntentWithAi(ctx: IntentContext): Promise<IntentResult | null> {
@@ -243,16 +224,8 @@ export async function classifyIntentWithAi(ctx: IntentContext): Promise<IntentRe
       rawTextPreview: rawText.slice(0, 200),
     }));
 
-    const jsonStr = extractJsonObject(rawText);
-    if (!jsonStr) {
-      console.log("[story:intent:analysis:stats] path=qwen060 status=json_not_found latency_ms=" + latencyMs);
-      return null;
-    }
-
-    let parsed: any;
-    try {
-      parsed = JSON.parse(jsonStr);
-    } catch {
+    const parsed = extractJsonObject(rawText) as any;
+    if (!parsed) {
       console.log("[story:intent:analysis:stats] path=qwen060 status=json_parse_error latency_ms=" + latencyMs);
       return null;
     }

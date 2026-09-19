@@ -1,10 +1,10 @@
 import { z } from "zod";
-import { parse } from "best-effort-json-parser";
 import u from "@/utils";
 import { miniGamePromptCodeByType } from "@/agents/story/mini_game/index";
 import { DebugLogUtil } from "@/utils/debugLogUtil";
 import { getPromptByCode } from "@/lib/promptHelper";
 import { buildWorldKnowledgeText, normalizeWorldBookOutput } from "@/lib/gameEngine";
+import { parseModelJsonObject } from "@/utils/ai/jsonParserUtils";
 
 export interface MiniGameIntentOptionInput {
   actionId: string;
@@ -248,13 +248,8 @@ export async function resolveMiniGameIntentByAi(input: ResolveMiniGameIntentInpu
     );
     const invokeFinishedAt = Date.now();
     const rawResponse = String((result as any)?.text || "").trim();
-    // 模型有时会用 ```json ... ``` 代码块包裹返回，去掉后再喂给 best-effort-json-parser，
-    // 否则它会把代码块围栏当成字符串前缀，提取出字符串而不是对象，导致识别结果被丢。
-    const strippedResponse = rawResponse.replace(/^\s*```(?:json)?\s*/i, "").replace(/```\s*$/i, "").trim();
-    const parsedObject = strippedResponse ? parse(strippedResponse) : null;
-    const rawObject = parsedObject && typeof parsedObject === "object"
-      ? (parsedObject as Record<string, unknown>)
-      : null;
+    // 走 jsonParserUtils 统一处理：剥离 markdown 围栏 + 多策略解析
+    const rawObject = parseModelJsonObject(rawResponse);
     const tokenUsage = readMiniGameIntentTokenUsage(result);
     const logMeta: MiniGameIntentLogMeta = {
       systemPrompt,

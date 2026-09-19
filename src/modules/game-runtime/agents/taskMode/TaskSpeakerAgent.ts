@@ -8,6 +8,7 @@ import u from "@/utils";
 import { z } from "zod";
 import { DirectorResult } from "./TaskDirectorAgent";
 import { loadTaskPrompt } from "./loadTaskPrompt";
+import { parseModelJsonObject } from "@/utils/ai/jsonParserUtils";
 
 const FALLBACK_SYSTEM = `你是任务角色发言器。生成符合角色的台词。
 
@@ -116,16 +117,9 @@ ${worldKnowledge ? `\n【世界知识】（本轮匹配的静态世界设定，�
     }
     // 去掉可能的 markdown 代码围栏 / JSON 包装
     let content = rawText;
-    const jsonMatch = rawText.match(/\{[\s\S]*\}/);
-    if (jsonMatch) {
-      try {
-        const obj = JSON.parse(jsonMatch[0]);
-        if (obj && typeof obj.content === "string" && obj.content.trim()) {
-          content = obj.content.trim();
-        }
-      } catch {
-        // 忽略，使用原文
-      }
+    const obj = parseModelJsonObject(rawText);
+    if (obj && typeof obj.content === "string" && obj.content.trim()) {
+      content = obj.content.trim();
     }
     // 去掉常见前缀
     content = content

@@ -13,6 +13,7 @@ import u from "@/utils";
 import { z } from "zod";
 import { loadTaskPrompt } from "../taskMode/loadTaskPrompt";
 import { buildWorldKnowledgeText, normalizeWorldBookOutput } from "@/lib/gameEngine";
+import { parseModelJsonObject } from "@/utils/ai/jsonParserUtils";
 
 const FALLBACK_SYSTEM = `你是玩家行动建议器。基于当前剧情/任务上下文，为玩家生成 3 条不同方向的可执行行动提示，让玩家可以直接复制到输入框发送。
 
@@ -147,18 +148,10 @@ ${ctx.worldKnowledge ? `\n\n【世界知识】\n${ctx.worldKnowledge}` : ""}`;
       latencyMs,
     }));
 
-    const jsonMatch = rawText.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) {
+    const obj = parseModelJsonObject(rawText) as any;
+    if (!obj) {
       console.warn("[PlayTipAgent] AI 未返回 JSON：", rawText.slice(0, 200));
       console.log(`[story:play_tip:stats] status=json_not_found latency_ms=${latencyMs}`);
-      return { tips: buildFallbackTips(ctx), source: "fallback", latencyMs };
-    }
-    let obj: any;
-    try {
-      obj = JSON.parse(jsonMatch[0]);
-    } catch (e) {
-      console.warn("[PlayTipAgent] JSON 解析失败：", e);
-      console.log(`[story:play_tip:stats] status=parse_error latency_ms=${latencyMs}`);
       return { tips: buildFallbackTips(ctx), source: "fallback", latencyMs };
     }
     const parsed = AI_SCHEMA.safeParse(obj);

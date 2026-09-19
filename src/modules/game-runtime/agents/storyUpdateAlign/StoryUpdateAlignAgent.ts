@@ -16,6 +16,7 @@ import { z } from "zod";
 import { loadTaskPrompt } from "../taskMode/loadTaskPrompt";
 import { ProgressAlignReport } from "@/modules/game-runtime/services/progressAlign";
 import { buildWorldKnowledgeText, normalizeWorldBookOutput } from "@/lib/gameEngine";
+import { parseModelJsonObject } from "@/utils/ai/jsonParserUtils";
 
 const FALLBACK_SYSTEM = `你是故事存档迁移专家。任务：把用户在旧版故事中的存档进度对齐到新版章节，重点做阶段语义匹配和事件摘要重生成。
 
@@ -149,16 +150,9 @@ ${JSON.stringify(input.currentProgress, null, 2)}
     const rawText = String(result?.text || "").trim();
     const latencyMs = Date.now() - startedAt;
 
-    const jsonMatch = rawText.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) {
+    const obj = parseModelJsonObject(rawText) as any;
+    if (!obj) {
       console.warn("[StoryUpdateAlignAgent] AI 未返回 JSON：", rawText.slice(0, 200));
-      return fallback(input, latencyMs);
-    }
-    let obj: any;
-    try {
-      obj = JSON.parse(jsonMatch[0]);
-    } catch (e) {
-      console.warn("[StoryUpdateAlignAgent] JSON 解析失败：", e);
       return fallback(input, latencyMs);
     }
     const parsed = AI_SCHEMA.safeParse(obj);
