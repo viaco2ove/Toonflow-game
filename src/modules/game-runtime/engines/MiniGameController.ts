@@ -4579,7 +4579,7 @@ function miningStep(session: JsonRecord, actionId: string, ctx: MiniGameControll
   }
   // 改矿品
   if (actionId === "change_mineral") {
-    const target = scalarText(input.playerMessage);
+    const target = scalarText(ctx.playerMessage);
     const mentionMap: Record<string, string> = {
       "铁": "铁矿", "金": "金矿", "铜": "铜矿", "银": "银矿",
       "煤": "煤矿", "灵石": "灵石", "宝石": "宝石", "植物": "植物",
