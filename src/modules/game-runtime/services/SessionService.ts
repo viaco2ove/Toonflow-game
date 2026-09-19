@@ -1239,13 +1239,14 @@ function buildSessionPlanResult(plan: ({
       if (typeof raw === "number" && Number.isFinite(raw) && raw > 0) return Math.floor(raw);
       return undefined;
     })(),
-    // ★ 阶段2 debug:透传激活的世界书条目（title+category+constant+content），供前端"激活的世界书"面板展示
+    // ★ 阶段2 debug:透传激活的世界书条目（title+category+constant+content+sticky），供前端"激活的世界书"面板展示
     activatedWorldBook: Array.isArray(plan.activatedWorldBook)
       ? (plan.activatedWorldBook as any[]).map((item) => ({
         title: String(item?.title || "").trim(),
         category: String(item?.category || "").trim(),
         constant: Boolean(item?.constant),
         content: String(item?.content || "").trim(),
+        sticky: typeof item?.sticky === "number" ? item.sticky : undefined,
       })).filter((item) => item.title || item.content)
       : undefined,
   };

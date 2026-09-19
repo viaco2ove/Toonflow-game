@@ -44,6 +44,7 @@ function readActivatedWorldBookFromState(state: Record<string, any>): { title: s
     category: String(item?.category || "").trim(),
     constant: Boolean(item?.constant),
     content: String(item?.content || "").trim(),
+    sticky: typeof item?.sticky === "number" ? item.sticky : undefined,
   })).filter((item: { title: string; content: string }) => item.title || item.content);
 }
 

@@ -27,9 +27,12 @@ import {
   realHourToSlot,
   selectWorldBookForInjection,
   buildWorldKnowledgeText,
+  buildWorldKnowledgeTextWithSticky,
+  getWorldBookStickyMap,
   normalizeWorldBookOutput,
   getGameDb,
   type WorldBookEntry,
+  type WorldBookStickyMap,
 } from "@/lib/gameEngine";
 import {
   advanceChapterProgressAfterNarrative,
@@ -4131,12 +4134,17 @@ function buildOrchestratorPromptPayload(input: {
       ...(payload.recentDialogue || []).map((turn) => String(turn?.content || "")),
     ].join("\n");
     const tokenBudget = input.compactMode ? 800 : 2000;
-    const matched = selectWorldBookForInjection(input.worldBookEntries, scanText, tokenBudget, "narrative_orchestrator");
+    const stickyMap = getWorldBookStickyMap(asRecord(asRecord(input.state).vars));
+    const { entries: matched, stickyMap: nextSticky } = selectWorldBookForInjection(
+      input.worldBookEntries, scanText, tokenBudget, "narrative_orchestrator", stickyMap,
+    );
     payload.worldContext = {
       ...(breathing || {}),
       worldKnowledge: matched.map((entry) => entry.content).filter(Boolean),
       worldBookMatched: matched,
     };
+    // 把本轮更新后的粘性表挂到 payload，供 applyOrchestratorResultToState 写回 state.vars。
+    (payload as any).__worldBookStickyNext = nextSticky;
     logOrchestratorKeyNode("worldBook:injected", input.traceMeta, {
       flowType: input.currentEvent.eventFlowType,
       totalEntries: input.worldBookEntries.length,
@@ -4639,7 +4647,13 @@ export async function runStorySpeakerContent(input: {
         ...input.recentMessages.map((m) => normalizeScalarText((m as any)?.content)),
       ].join("\n");
       const budget = compactMode ? 800 : 2000;
-      const matched = selectWorldBookForInjection(input.worldBookEntries, scanText, budget, "story_speaker");
+      const stickyMap = getWorldBookStickyMap(asRecord(asRecord(input.state).vars));
+      const { entries: matched, stickyMap: nextSticky } = selectWorldBookForInjection(
+        input.worldBookEntries, scanText, budget, "story_speaker", stickyMap,
+      );
+      // 把 nextSticky 也写回 state.vars，供下次发言器复用
+      const vars = asRecord(input.state.vars) || (input.state.vars = {} as any);
+      (vars as Record<string, any>).worldBookSticky = nextSticky;
       return matched.length ? { worldKnowledge: matched.map((e) => e.content).filter(Boolean) } : null;
     })(),
     // ★ P0: 记忆事实注入发言器（解决"写了但没送"的断链问题）
@@ -5019,9 +5033,17 @@ async function doRunNarrativePlan(input: OrchestratorInput): Promise<NarrativePl
       plan: ruleDecision.plan,
       currentEvent,
       orchestratorRuntime,
-      activatedWorldBook: payload.worldContext?.worldBookMatched?.map((e) => ({
-        title: e.title, category: e.category, constant: e.constant, content: e.content,
-      })),
+      activatedWorldBook: payload.worldContext?.worldBookMatched?.map((e) => {
+        const eid = String(e.entryId || (e as any).id || e.title || "");
+        const sticky = (payload as any).__worldBookStickyNext?.[eid];
+        return {
+          title: e.title,
+          category: e.category,
+          constant: e.constant,
+          content: e.content,
+          sticky: typeof sticky === "number" ? sticky : (e.constant ? 3 : undefined),
+        };
+      }),
     });
   }
 
@@ -5097,9 +5119,18 @@ async function doRunNarrativePlan(input: OrchestratorInput): Promise<NarrativePl
       isSkip,
     });
     // ★ 阶段2 debug:把本轮激活的世界书条目挂到 plan result，供前端实时观察
-    planResult.activatedWorldBook = payload.worldContext?.worldBookMatched?.map((e) => ({
-      title: e.title, category: e.category, constant: e.constant, content: e.content,
-    }));
+    //   sticky = 当前轮次该条目剩余的"激活延续轮数"（命中后为 3，每轮 -1）
+    planResult.activatedWorldBook = payload.worldContext?.worldBookMatched?.map((e) => {
+      const eid = String(e.entryId || (e as any).id || e.title || "");
+      const sticky = (payload as any).__worldBookStickyNext?.[eid];
+      return {
+        title: e.title,
+        category: e.category,
+        constant: e.constant,
+        content: e.content,
+        sticky: typeof sticky === "number" ? sticky : (e.constant ? 3 : undefined),
+      };
+    });
     return planResult;
   } catch (err) {
     // 第五段：模型失败时，尽量保住剧情继续运行。
@@ -5275,7 +5306,12 @@ export async function runStoryMemoryManager(input: {
         ...memoryInputs.dialogueMessages.map((m: any) => normalizeScalarText(m?.content)),
       ].join("\n");
       const budget = compactMode ? 800 : 2000;
-      const matched = selectWorldBookForInjection(input.worldBookEntries, scanText, budget, "story_memory_manager");
+      const stickyMap = getWorldBookStickyMap(asRecord(asRecord(input.state).vars));
+      const { entries: matched, stickyMap: nextSticky } = selectWorldBookForInjection(
+        input.worldBookEntries, scanText, budget, "story_memory_manager", stickyMap,
+      );
+      const vars = asRecord(input.state.vars) || (input.state.vars = {} as any);
+      (vars as Record<string, any>).worldBookSticky = nextSticky;
       return matched.length ? { worldKnowledge: matched.map((e) => e.content).filter(Boolean) } : null;
     })(),
   };
@@ -6056,6 +6092,15 @@ export function applyOrchestratorResultToState(state: JsonRecord, result: Narrat
   applyStateDelta(state, sanitizeNarrativeStateDelta(result.stateDelta || {}, {
     allowStateDelta: true,
   }));
+  // ★ 世界书粘性表回写：main 编排路径里 buildPayload 把 nextSticky 挂在 result.__worldBookStickyNext，
+  //   这里写回 state.vars.worldBookSticky，供下一轮编排、小游戏、发言器复用。
+  const nextSticky = (result as any)?.__worldBookStickyNext;
+  if (nextSticky && typeof nextSticky === "object") {
+    if (!state.vars || typeof state.vars !== "object") {
+      state.vars = {};
+    }
+    (state.vars as Record<string, any>).worldBookSticky = nextSticky;
+  }
   const eventFacts = Array.isArray(result.eventFacts)
     ? result.eventFacts.map((item) => normalizeScalarText(item)).filter(Boolean)
     : [];

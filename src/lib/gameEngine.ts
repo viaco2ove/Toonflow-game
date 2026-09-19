@@ -3047,6 +3047,13 @@ export interface WorldBookEntry {
   updateTime?: number;
   /** 允许注入的 Agent Key 列表；空或含 "all" 表示全部 Agent */
   agentList?: string[];
+  /**
+   * 粘性轮数（被命中后保持激活的编排轮数）。
+   * - 默认 3（常驻条目）；也可显式 0（命中即用、不粘）
+   * - 范围 [0, 99]，超出会被 normalizeWorldBookEntry 截到合法范围
+   * - 缺失或 null/undefined 时回退到 WORLD_BOOK_STICKINESS_DEFAULT
+   */
+  stickiness?: number;
 }
 
 /** 合法类目白名单（导入时容错：非法值归到 "world"） */
@@ -3091,6 +3098,13 @@ export function normalizeWorldBookEntry(raw: any): WorldBookEntry {
     createTime: Number.isFinite(Number(source.createTime)) ? Number(source.createTime) : undefined,
     updateTime: Number.isFinite(Number(source.updateTime)) ? Number(source.updateTime) : undefined,
     agentList: parseKeys(source.agentList),
+    stickiness: (() => {
+      const raw = source.stickiness;
+      if (raw === null || raw === undefined || raw === "") return WORLD_BOOK_STICKINESS_DEFAULT;
+      const n = Math.floor(Number(raw));
+      if (!Number.isFinite(n)) return WORLD_BOOK_STICKINESS_DEFAULT;
+      return Math.max(0, Math.min(99, n));
+    })(),
   };
 }
 
@@ -3124,6 +3138,9 @@ export function serializeWorldBookEntry(entry: Partial<WorldBookEntry>, worldId:
     content: normalized.content,
     sort: normalized.sort,
     agentList: JSON.stringify(normalized.agentList || []),
+    stickiness: typeof normalized.stickiness === "number"
+      ? normalized.stickiness
+      : WORLD_BOOK_STICKINESS_DEFAULT,
   };
 }
 
@@ -3184,29 +3201,107 @@ function worldBookEntryVisibleToAgent(entry: WorldBookEntry, agentKey: string): 
   return list.includes(agentKey);
 }
 
+/**
+ * 世界书注入条目单条大小上限（字符数）。
+ *
+ * 用途：
+ * - 防止单个常驻条目因体积过大把整轮 token 预算吃光；
+ * - 同时给前端"激活的世界书"面板一个合理的单条展示上限。
+ */
+export const WORLD_BOOK_ENTRY_MAX_CHARS = 20000;
+
+/**
+ * 激活世界书条目数上限。
+ *
+ * 用途：
+ * - 编排一轮最多注入 30 条世界书条目；
+ * - 防止匹配过多条目把上下文塞爆 + 给前端面板一个稳定数量上限。
+ */
+export const WORLD_BOOK_ACTIVATED_MAX_ENTRIES = 30;
+
+/**
+ * 常驻条目默认粘性（编排轮数）。
+ *
+ * 含义：
+ * - 一个条目被命中（keys 匹配）后，"保持激活"3 轮编排；
+ * - 这 3 轮里即使 keys 不再命中，它仍出现在激活列表里（保证上下文连贯）；
+ * - 3 轮内仍未再命中，粘性归零，下一轮从激活列表里移除。
+ */
+export const WORLD_BOOK_STICKINESS_DEFAULT = 3;
+
+/** 按上限截断单个条目的 content（仅做安全网；正常条目应在编辑时控长度） */
+function truncateEntryContent(content: string): string {
+  const text = String(content || "");
+  if (text.length <= WORLD_BOOK_ENTRY_MAX_CHARS) return text;
+  return text.slice(0, WORLD_BOOK_ENTRY_MAX_CHARS);
+}
+
 export function selectWorldBookForInjection(
   entries: WorldBookEntry[],
   scanText: string,
   tokenBudget: number,
   agentKey?: string,
-): WorldBookEntry[] {
-  if (!Array.isArray(entries) || !entries.length) return [];
+  /**
+   * 上轮激活粘性表 {entryId -> 剩余轮数}。用于在 keys 不命中时仍保持条目激活。
+   * - 命中（constant 或 keys 匹配）的条目：粘性重置为 WORLD_BOOK_STICKINESS_DEFAULT
+   * - 仅靠粘性撑住、未在本轮 keys 命中的条目：粘性 -1，归零则本轮不返回
+   * - 本轮未出现、但粘性 > 0 的条目：不返回（粘性只在前一轮 active 集合上递减）
+   */
+  stickyMap?: WorldBookStickyMap,
+): { entries: WorldBookEntry[]; stickyMap: WorldBookStickyMap } {
+  if (!Array.isArray(entries) || !entries.length) {
+    return { entries: [], stickyMap: {} };
+  }
   const text = String(scanText || "");
 
-  // 1. 筛选：constant 全收；非 constant 仅允许类目 + keys 命中 + agentKey 过滤
-  const matched = entries.filter((entry) => {
-    if (!entry || !entry.content) return false;
-    if (agentKey && !worldBookEntryVisibleToAgent(entry, agentKey)) return false; // agentKey 过滤
-    if (entry.constant) return true; // 常驻条目始终注入
-    if (!WORLD_BOOK_INJECTABLE_CATEGORIES.has(entry.category)) return false; // characters/factions/items 跳过
-    if (!Array.isArray(entry.keys) || !entry.keys.length) return false; // 非常驻必须有 keys
-    return entry.keys.some((key) => matchWorldBookKey(key, text));
-  });
+  // 1. 筛选：分两层 ——
+  //    (a) 本轮 keys 命中 / constant：刷新粘性，进入"本轮匹配"集合
+  //    (b) sticky > 0 且本轮 keys 未命中：粘性 -1，归零丢弃；未归零仍保留
+  const sticky = stickyMap && typeof stickyMap === "object" ? stickyMap : {};
+  const matched: WorldBookEntry[] = [];
+  const hitIds = new Set<string>();
+  const nextSticky: Record<string, number> = {};
+
+  for (const entry of entries) {
+    if (!entry || !entry.content) continue;
+    if (agentKey && !worldBookEntryVisibleToAgent(entry, agentKey)) continue;
+    const entryId = String(entry.entryId || entry.id || entry.title || "").trim();
+    if (!entryId) continue;
+
+    // (a) 常驻条目 / keys 命中 → 立即注入 + 粘性重置
+    const isConstant = !!entry.constant;
+    const keyHit = !isConstant
+      && WORLD_BOOK_INJECTABLE_CATEGORIES.has(entry.category)
+      && Array.isArray(entry.keys)
+      && entry.keys.length > 0
+      && entry.keys.some((key) => matchWorldBookKey(key, text));
+
+    if (isConstant || keyHit) {
+      matched.push({ ...entry, content: truncateEntryContent(entry.content) });
+      hitIds.add(entryId);
+      // 用条目自身配置的 stickiness（默认 3），允许常驻条目单独配更长/更短粘性
+      nextSticky[entryId] = typeof entry.stickiness === "number"
+        ? entry.stickiness
+        : WORLD_BOOK_STICKINESS_DEFAULT;
+      continue;
+    }
+
+    // (b) sticky 撑住：本轮 keys 未命中，但上轮激活粘性 > 0，递减后保留
+    const prior = Number(sticky[entryId] || 0);
+    if (prior > 0) {
+      const remaining = prior - 1;
+      nextSticky[entryId] = remaining;
+      // 仅当 remaining > 0 时本轮保留；归零就丢弃（不再激活）
+      if (remaining > 0) {
+        matched.push({ ...entry, content: truncateEntryContent(entry.content) });
+      }
+    }
+  }
 
   // 2. 按 order 升序排序（order 大的靠后，对输出影响大；预算紧时截断 order 小的）
   matched.sort((a, b) => (a.order || 0) - (b.order || 0));
 
-  // 3. token 预算截断
+  // 3. token 预算截断（已通过 truncateEntryContent 单条限长，这里只控总预算）
   const kept: WorldBookEntry[] = [];
   let used = 0;
   for (const entry of matched) {
@@ -3218,7 +3313,43 @@ export function selectWorldBookForInjection(
     kept.push(entry);
     used += cost;
   }
-  return kept;
+
+  // 4. 条目数上限（最大 30 条）。超出按 order 升序保留前面的，丢弃后面的。
+  //    常驻条目已按 order 排好；超 cap 就直接截。
+  const capped = kept.slice(0, WORLD_BOOK_ACTIVATED_MAX_ENTRIES);
+
+  // 5. 清理粘性表：仅保留本轮还在用（命中或粘性仍 > 0）的 entryId，
+  //    归零/未参与的条目直接删除，避免 state 无限增长。
+  for (const id of Object.keys(nextSticky)) {
+    const stillActive = hitIds.has(id) || capped.some((e) => String(e.entryId || e.id || e.title || "") === id);
+    if (!stillActive || nextSticky[id] <= 0) {
+      delete nextSticky[id];
+    }
+  }
+
+  return { entries: capped, stickyMap: nextSticky };
+}
+
+/**
+ * 读取/写入激活世界书粘性表的辅助类型。
+ *
+ * 调用方模式：
+ * - 调用前：getStickyMap(state.vars.worldBookSticky)
+ * - 调用后：state.vars.worldBookSticky = updatedMap
+ *
+ * 这样 sticky 跨编排轮次保留在 state 里，常驻/命中条目"保持激活"WORLD_BOOK_STICKINESS_DEFAULT 轮。
+ */
+export type WorldBookStickyMap = Record<string, number>;
+export function getWorldBookStickyMap(vars: unknown): WorldBookStickyMap {
+  if (!vars || typeof vars !== "object") return {};
+  const raw = (vars as Record<string, unknown>).worldBookSticky;
+  if (!raw || typeof raw !== "object") return {};
+  const result: WorldBookStickyMap = {};
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+    const n = Number(v);
+    if (Number.isFinite(n) && n > 0) result[k] = Math.floor(n);
+  }
+  return result;
 }
 
 /**
@@ -3233,13 +3364,40 @@ export function buildWorldKnowledgeText(
   scanText: string,
   tokenBudget: number,
   agentKey?: string,
+  stickyMap?: WorldBookStickyMap,
 ): string {
-  if (!Array.isArray(entries) || !entries.length) return "";
-  const matched = selectWorldBookForInjection(entries, scanText, tokenBudget, agentKey);
-  if (!matched.length) return "";
-  return matched.map((entry) => entry.content).filter(Boolean).join("\n\n");
+  const { text } = buildWorldKnowledgeTextWithSticky(entries, scanText, tokenBudget, agentKey, stickyMap);
+  return text;
 }
 
+/**
+ * 与 buildWorldKnowledgeText 相同，但额外返回本轮更新后的粘性表。
+ *
+ * 用途：
+ * - 调用方应把返回的 stickyMap 写回 state.vars.worldBookSticky，供下一轮编排沿用；
+ * - 这样常驻条目在 keys 不命中时仍能在 WORLD_BOOK_STICKINESS_DEFAULT 轮编排里保持激活。
+ */
+export function buildWorldKnowledgeTextWithSticky(
+  entries: WorldBookEntry[] | null | undefined,
+  scanText: string,
+  tokenBudget: number,
+  agentKey?: string,
+  stickyMap?: WorldBookStickyMap,
+): { text: string; matched: WorldBookEntry[]; stickyMap: WorldBookStickyMap } {
+  if (!Array.isArray(entries) || !entries.length) {
+    return { text: "", matched: [], stickyMap: {} };
+  }
+  const { entries: matched, stickyMap: nextSticky } = selectWorldBookForInjection(
+    entries, scanText, tokenBudget, agentKey, stickyMap,
+  );
+  if (!matched.length) {
+    return { text: "", matched: [], stickyMap: nextSticky };
+  }
+  const text = matched.map((entry) => entry.content).filter(Boolean).join("\n\n");
+
+
+  return { text, matched, stickyMap: nextSticky };
+}
 // 归一化章节输出，并同步构建 runtimeOutline。
 export function normalizeChapterOutput(row: any): JsonRecord | null {
   if (!row) return null;
