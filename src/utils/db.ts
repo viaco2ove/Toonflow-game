@@ -3,8 +3,6 @@ import u from "@/utils";
 import fs from "fs";
 import path from "path";
 import knex from "knex";
-import initDB from "@/lib/initDB";
-import fixDB from "@/lib/fixDB";
 import type { DB } from "@/types/database";
 import crypto from "crypto";
 import { getDbPath } from "@/lib/runtimePaths";
@@ -94,14 +92,15 @@ const isTypeGenerationRuntime = ["dev", "local"].includes((process.env.NODE_ENV 
 
 export const dbBootstrapReady = (async () => {
   await withSqliteBusyRetry("configureSqlite", () => configureSqlite(db));
-  await withSqliteBusyRetry("initDB", () => initDB(db));
 
-  // Knex Migrations：先清理 knex_migrations 里与 directory 不匹配的孤儿记录，
-  // 再伪造 base 版本已执行（让 migrate.latest() 跳过 base）
+  // Knex Migrations 完全取代旧的 initDB/fixDB 流程：
+  //   - base migration (20260901_000000_base.js) 建所有基表（幂等）
+  //   - 后续 migration（含 20260901_000002_seed_initial_data.js）填初始数据
+  // 老库已有表时，migrate.latest() 检测 knex_migrations 状态，只跑尚未记录的新迁移。
+  // 注意：之前 fakeBaseMigration 的逻辑已删除 —— base migration 现在会真正建表。
+  //   老库（initDB 已建过表的）需要先一次性跑 base，但 base 内部用 hasTable 幂等检查，
+  //   所以即使表已存在，迁移也能"成功但 no-op"。
   await withSqliteBusyRetry("pruneOrphanMigrations", () => pruneOrphanMigrations(db));
-  await withSqliteBusyRetry("fakeBaseMigration", () => fakeBaseMigration(db));
-
-  // 执行 src/migrations/ 中新增的迁移（base 会被跳过）
   await withSqliteBusyRetry("migrate", async () => {
     const { error, results } = await db.migrate.latest();
     if (error) throw error;
@@ -110,36 +109,10 @@ export const dbBootstrapReady = (async () => {
     }
   });
 
-  await withSqliteBusyRetry("fixDB", () => fixDB(db));
   if (isTypeGenerationRuntime) {
     await withSqliteBusyRetry("initKnexType", () => initKnexType(db));
   }
 })();
-
-async function fakeBaseMigration(knexDb: any): Promise<void> {
-  // knex_migrations 表可能尚不存在（migrate.latest 首次运行时会自动建），
-  // 所以先检查存在性，不存在就跳过——首次 migrate.latest() 会建表并执行迁移。
-  const tableExists = await knexDb.schema.hasTable("knex_migrations");
-  if (!tableExists) return;
-
-  const hasBase = await knexDb("knex_migrations")
-    .where("name", "20260901_000000_base.js")
-    .first()
-    .catch(() => null);
-  if (hasBase) return;
-
-  // 插入伪造的 base 记录
-  const now = new Date();
-  const maxIdRow = (await knexDb("knex_migrations").max("id as maxId").first()) as { maxId?: number } | undefined;
-  const nextId = (maxIdRow?.maxId ?? 0) + 1;
-  await knexDb("knex_migrations").insert({
-    id: nextId,
-    name: "20260901_000000_base.js",
-    batch: 1,
-    migration_time: now,
-  });
-  console.log("[db] fakeBaseMigration: recorded 20260901_000000_base.js");
-}
 
 /**
  * 清理 knex_migrations 表里的孤儿记录：
