@@ -4578,28 +4578,37 @@ function miningStep(session: JsonRecord, actionId: string, ctx: MiniGameControll
     });
   }
   // 改矿品
-  if (actionId === "change_mineral") {
-    const target = scalarText(ctx.playerMessage);
-    const mentionMap: Record<string, string> = {
-      "铁": "铁矿", "金": "金矿", "铜": "铜矿", "银": "银矿",
-      "煤": "煤矿", "灵石": "灵石", "宝石": "宝石", "植物": "植物",
-      "药草": "药草", "化石": "化石", "宝箱": "宝箱", "水晶": "水晶", "玉石": "玉石",
-    };
-    let newMineral = "";
-    const patterns = [
-      /(?:改挖?|挖|采)(铁|金|铜|银|煤|灵石|宝石|植物|药草|化石|宝箱|水晶|玉石)/,
-      /(?:目标|矿物|矿种)[是为:]\s*(\S+)/,
-      /(铁|金|铜|银|煤|灵石|宝石|植物|药草|化石|宝箱|水晶|玉石)矿/,
+  // actionId 可能是 "change_mineral:金矿"（AI 解析出的目标矿物编进 actionId，参照 battle 的 attack:目标id 模式），
+  // 也可能是纯 "change_mineral"（精确规则命中），此时再从玩家原文兜底解析。
+  if (actionId.startsWith("change_mineral")) {
+    const KNOWN_MINERALS = [
+      "铁矿", "金矿", "铜矿", "银矿", "煤矿",
+      "灵石", "宝石", "水晶", "玉石",
+      "植物", "药草", "化石", "宝箱", "技能书",
     ];
-    for (const p of patterns) {
-      const m = target.match(p);
-      if (m && m[1]) {
-        newMineral = mentionMap[m[1]] || m[1] + "矿";
-        break;
-      }
+    const normalizeMineral = (text: string): string => {
+      const cleaned = String(text || "").trim();
+      if (!cleaned) return "";
+      const hit = KNOWN_MINERALS.find((m) => cleaned.includes(m));
+      if (hit) return hit;
+      // 单字别名兜底（铁 -> 铁矿）
+      const singleAlias: Record<string, string> = { "铁": "铁矿", "金": "金矿", "铜": "铜矿", "银": "银矿", "煤": "煤矿" };
+      const hitSingle = Object.keys(singleAlias).find((k) => cleaned.includes(k));
+      return hitSingle ? singleAlias[hitSingle] : "";
+    };
+    // 1) 优先用 AI 编进 actionId 的目标名（change_mineral:金矿）
+    const fromAi = normalizeMineral(actionId.slice("change_mineral:".length));
+    let newMineral = fromAi;
+    // 2) AI 没给时，从玩家原文兜底（剥掉命令前缀再匹配）
+    if (!newMineral) {
+      const cleaned = scalarText(ctx.playerMessage)
+        .replace(/^#?(改矿品|改矿|换矿|切矿)/, "")
+        .replace(/(?:改挖?|挖|采)/g, "")
+        .trim();
+      newMineral = normalizeMineral(cleaned);
     }
     if (!newMineral) {
-      const narration = "当前支持改挖：铁矿、金矿、铜矿、银矿、煤矿、灵石、宝石、植物、药草、化石、宝箱、水晶、玉石。请重新输入目标矿物。";
+      const narration = `当前支持改挖：${KNOWN_MINERALS.join("、")}。请重新输入目标矿物。`;
       return withMentorMessages({
         narration,
         resultTags: ["change_mineral_failed"],
@@ -6488,9 +6497,14 @@ export async function handleMiniGameTurn(input: MiniGameControllerInput): Promis
   });
   // AI 结果优先于模糊规则匹配，但精确匹配（按钮、别名、角色名）优先于 AI，
   // 避免"云韵"这类明确的角色名输入被模型误判。
-  const actionId = isExactRuleMatch
+  let actionId = isExactRuleMatch
     ? ruleActionId
     : (aiIntent?.actionId || ruleActionId || "");
+  // change_mineral 需要 AI 解析出的目标矿物名，编进 actionId 传给 step 函数
+  // （参照 battle 的 attack:目标id 模式）
+  if (actionId === "change_mineral" && aiIntent?.targetName) {
+    actionId = `change_mineral:${aiIntent.targetName.trim()}`;
+  }
   if (!actionId) {
     logMiniGameAction({
       normalizedInput: normalizeMiniGameActionText(input.playerMessage),
