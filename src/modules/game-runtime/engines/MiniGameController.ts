@@ -4390,6 +4390,7 @@ function miningOptions(session?: JsonRecord): MiniGameActionOption[] {
     { action_id: "choose_mentor", label: "需要陪练", desc: "查看可选协助角色", aliases: ["需要陪练", "找陪练", "需要协助", "找人帮忙"] },
     { action_id: "no_mentor", label: "不需要陪练", desc: "独自挖矿", aliases: ["不用陪练", "不需要陪练", "自己挖", "独自挖矿"] },
     ...mentorOptions,
+    { action_id: "change_mineral", label: "改矿品", desc: "切换目标矿物", aliases: ["改矿", "换矿物", "改挖", "改挖铁矿", "改挖金矿", "改挖灵石", "改挖煤矿", "改挖宝石", "改挖植物", "改挖药草", "改挖化石", "改挖宝箱"] },
     { action_id: "survey", label: "勘探", desc: "寻找矿脉弱点", aliases: ["探矿", "查看矿脉"] },
     { action_id: "excavate", label: "开采", desc: "稳定开采矿脉", aliases: ["挖矿", "挖掘"] },
     { action_id: "careful_excavate", label: "精挖", desc: "提高稀有掉率", aliases: ["精细开采", "慢慢挖"] },
@@ -4569,6 +4570,55 @@ function miningStep(session: JsonRecord, actionId: string, ctx: MiniGameControll
       resultTags: ["mentor_skipped"],
       pendingNarrativePlan: buildMiniGameNarrativePlan(
         "挖矿：选择独自挖矿",
+        narration,
+        false,
+        narratorName,
+        playerName,
+      ),
+    });
+  }
+  // 改矿品
+  if (actionId === "change_mineral") {
+    const target = scalarText(input.playerMessage);
+    const mentionMap: Record<string, string> = {
+      "铁": "铁矿", "金": "金矿", "铜": "铜矿", "银": "银矿",
+      "煤": "煤矿", "灵石": "灵石", "宝石": "宝石", "植物": "植物",
+      "药草": "药草", "化石": "化石", "宝箱": "宝箱", "水晶": "水晶", "玉石": "玉石",
+    };
+    let newMineral = "";
+    const patterns = [
+      /(?:改挖?|挖|采)(铁|金|铜|银|煤|灵石|宝石|植物|药草|化石|宝箱|水晶|玉石)/,
+      /(?:目标|矿物|矿种)[是为:]\s*(\S+)/,
+      /(铁|金|铜|银|煤|灵石|宝石|植物|药草|化石|宝箱|水晶|玉石)矿/,
+    ];
+    for (const p of patterns) {
+      const m = target.match(p);
+      if (m && m[1]) {
+        newMineral = mentionMap[m[1]] || m[1] + "矿";
+        break;
+      }
+    }
+    if (!newMineral) {
+      const narration = "当前支持改挖：铁矿、金矿、铜矿、银矿、煤矿、灵石、宝石、植物、药草、化石、宝箱、水晶、玉石。请重新输入目标矿物。";
+      return withMentorMessages({
+        narration,
+        resultTags: ["change_mineral_failed"],
+        pendingNarrativePlan: buildMiniGameNarrativePlan(
+          "挖矿：改矿品失败",
+          narration,
+          false,
+          narratorName,
+          playerName,
+        ),
+      });
+    }
+    publicState.target_mineral = newMineral;
+    const narration = `已将目标矿物切换为 ${newMineral}。矿脉剩余 ${publicState.vein_hp}，危险度 ${publicState.danger}。`;
+    return withMentorMessages({
+      narration,
+      resultTags: ["mineral_changed"],
+      pendingNarrativePlan: buildMiniGameNarrativePlan(
+        `挖矿：改矿品为${newMineral}`,
         narration,
         false,
         narratorName,
