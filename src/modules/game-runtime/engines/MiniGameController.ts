@@ -4613,7 +4613,7 @@ function miningStep(session: JsonRecord, actionId: string, ctx: MiniGameControll
       narration,
       resultTags: [actionId],
       rewardSummary: { ore: oreAmount },
-      writeback: inventoryAdd.length ? { inventoryAdd } : {},
+      writeback: inventoryAdd.length ? { inventoryAdd, parameterCardItemAdd: itemNames } : {},
       pendingNarrativePlan: buildMiniGameNarrativePlan(
         `挖矿播报：获得${targetOre}×${oreAmount}`,
         narration,
@@ -4623,7 +4623,7 @@ function miningStep(session: JsonRecord, actionId: string, ctx: MiniGameControll
         "on_mini_game",
         { ore: oreAmount },
         itemNames,
-        inventoryAdd.length ? { inventoryAdd } : null,
+        inventoryAdd.length ? { inventoryAdd, parameterCardItemAdd: itemNames } : null,
       ),
     });
   } else if (actionId === "careful_excavate") {
@@ -4643,7 +4643,7 @@ function miningStep(session: JsonRecord, actionId: string, ctx: MiniGameControll
       narration,
       resultTags: [actionId],
       rewardSummary: { ore: oreAmount },
-      writeback: inventoryAdd.length ? { inventoryAdd } : {},
+      writeback: inventoryAdd.length ? { inventoryAdd, parameterCardItemAdd: itemNames } : {},
       pendingNarrativePlan: buildMiniGameNarrativePlan(
         `挖矿播报：精细开采获得${targetOre}×${oreAmount}`,
         narration,
@@ -4653,7 +4653,7 @@ function miningStep(session: JsonRecord, actionId: string, ctx: MiniGameControll
         "on_mini_game",
         { ore: oreAmount },
         itemNames,
-        inventoryAdd.length ? { inventoryAdd } : null,
+        inventoryAdd.length ? { inventoryAdd, parameterCardItemAdd: itemNames } : null,
       ),
     });
   } else if (actionId === "support") {
