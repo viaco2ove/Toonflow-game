@@ -3,7 +3,7 @@ import u from "@/utils";
 import { DebugLogUtil } from "@/utils/debugLogUtil";
 import { buildWorldKnowledgeText, normalizeWorldBookOutput } from "@/lib/gameEngine";
 import { getPromptByCode } from "@/lib/promptHelper";
-import { PROMPT_STORY_SELL_ITEM } from "@/lib/def.prompts";
+import { PROMPT_STORY_SELL_ITEM, PROMPT_STORY_MINI_GAME_SHOP } from "@/lib/def.prompts";
 import { parseModelJsonObject } from "@/utils/ai/jsonParserUtils";
 
 /** 从三种可能字段中提取物品显示名称，与 MiniGameController 的同步逻辑保持一致 */
@@ -30,6 +30,25 @@ export interface SellItem {
 export interface SellIntentResult {
   sellItems: SellItem[];
   totalMoney: number;
+  narration: string;
+  tokenUsage?: { inputTokens?: number; outputTokens?: number; reasoningTokens?: number } | null;
+  timing?: { buildMs?: number; invokeMs?: number; totalMs?: number } | null;
+  requestPreview?: string;
+  responsePreview?: string;
+  _systemPrompt?: string;
+}
+
+/**
+ * 商城意图解析结果：玩家输入 #打开商城 / 查看短刀多少钱 等指令时返回。
+ *
+ * 用途：
+ * - 复用 sell-item prompt 的"系统商城"分支，避免再写一份并行 agent；
+ * - 返回类别列表（categories）+ 单品价格（items）+ 询问语（narration），供前端渲染商城面板。
+ */
+export interface ShopIntentResult {
+  action: "list_categories" | "show_items" | "confirm_purchase" | "free_chat";
+  categories: Array<{ key: string; label: string; sampleItems?: string[] }>;
+  items: Array<{ category: string; name: string; price: number; desc?: string }>;
   narration: string;
   tokenUsage?: { inputTokens?: number; outputTokens?: number; reasoningTokens?: number } | null;
   timing?: { buildMs?: number; invokeMs?: number; totalMs?: number } | null;
@@ -83,6 +102,11 @@ async function resolveSellModel(userId: number) {
  */
 async function loadSellPrompt(): Promise<string> {
   return getPromptByCode("story-sell-item");
+}
+
+/** 商城小游戏专用提示词：t_prompts.customValue > def.prompts.ts 默认值 */
+async function loadShopPrompt(): Promise<string> {
+  return getPromptByCode("story-mini-game-shop");
 }
 
 /**
@@ -290,6 +314,144 @@ ${worldKnowledge}` : "");
     return normalized;
   } catch (err) {
     console.error("[SellService] 解析失败:", err);
+    return null;
+  }
+}
+
+const shopIntentSchema = {
+  action: z.enum(["list_categories", "show_items", "confirm_purchase", "free_chat"]).describe(
+    "意图类型：list_categories=浏览商城 show_items=查看价格 confirm_purchase=确认买入 free_chat=闲聊",
+  ),
+  categories: z.array(z.object({
+    key: z.string().describe("类别 key，英文，例如 weapon / armor / pill / ore / material"),
+    label: z.string().describe("类别中文标签，例如 武器 / 防具 / 丹药 / 矿石 / 材料"),
+    sampleItems: z.array(z.string()).optional().describe("该类下的代表物品名（可选）"),
+  })).default([]).describe("商城类别列表"),
+  items: z.array(z.object({
+    category: z.string().describe("所属类别 key"),
+    name: z.string().describe("物品名"),
+    price: z.number().min(0).describe("单价（金币）"),
+    desc: z.string().optional().describe("物品简介（可选）"),
+  })).default([]).describe("本次问询涉及的物品价格列表"),
+  narration: z.string().describe("回复用户的旁白，自然语言，控制在 200 字以内；如果是#打开商城，应该列出售卖的类别和示例物品；如果是#查看短刀多少钱，应该给出短刀的价格信息"),
+};
+
+function buildShopIntentSchemaPrompt(): string {
+  return `
+请按照以下 JSON Schema 格式返回结果:
+${JSON.stringify(
+    z.toJSONSchema(z.object(shopIntentSchema)),
+    null,
+    2,
+  )}
+只返回结果，不要将Schema返回。`;
+}
+
+function normalizeShopIntentResult(rawObject: Record<string, unknown> | null | undefined): ShopIntentResult | null {
+  if (!rawObject || typeof rawObject !== "object") return null;
+  type ShopAction = "list_categories" | "show_items" | "confirm_purchase" | "free_chat";
+  const VALID_ACTIONS: ShopAction[] = ["list_categories", "show_items", "confirm_purchase", "free_chat"];
+  const rawAction = String((rawObject as any).action || "") as ShopAction;
+  const action: ShopAction = VALID_ACTIONS.includes(rawAction) ? rawAction : "free_chat";
+  const rawCats = Array.isArray((rawObject as any).categories) ? (rawObject as any).categories : [];
+  const rawItems = Array.isArray((rawObject as any).items) ? (rawObject as any).items : [];
+  const categories = rawCats.map((c: any) => ({
+    key: String(c?.key || "").trim(),
+    label: String(c?.label || "").trim(),
+    sampleItems: Array.isArray(c?.sampleItems) ? c.sampleItems.map((s: any) => String(s || "").trim()).filter(Boolean) : undefined,
+  })).filter((c: any) => c.key && c.label);
+  const items = rawItems.map((it: any) => ({
+    category: String(it?.category || "").trim(),
+    name: String(it?.name || "").trim(),
+    price: Number(it?.price || 0) || 0,
+    desc: it?.desc ? String(it.desc).trim() : undefined,
+  })).filter((it: any) => it.name);
+  const narration = String((rawObject as any).narration || "").trim();
+  return {
+    action,
+    categories,
+    items,
+    narration,
+  };
+}
+
+/**
+ * 解析玩家商城意图（#打开商城 / #查看短刀多少钱 / #查看武器类 等）。
+ *
+ * 复用 sell-item prompt 的"系统商城"分支；调用同款模型。
+ */
+export async function resolveShopIntent(
+  userInput: string,
+  userId: number,
+  worldId?: number,
+): Promise<ShopIntentResult | null> {
+  if (!String(userInput || "").trim()) return null;
+  const startedAt = Date.now();
+  try {
+    const modelConfig = await resolveSellModel(userId);
+    const dbPrompt = await loadShopPrompt();
+    let worldKnowledge = "";
+    if (worldId) {
+      try {
+        const rows = await u.db("t_worldBook").where({ worldId }).select("*");
+        const entries = normalizeWorldBookOutput(rows);
+        worldKnowledge = buildWorldKnowledgeText(entries, userInput, 300, "mini_game_shop_intent");
+      } catch (e) {
+        console.warn("[mini_game_shop_intent] 世界书加载失败", e);
+      }
+    }
+    const systemPrompt = (dbPrompt || PROMPT_STORY_MINI_GAME_SHOP || "你是一家世界里的系统商城老板，介绍商品、报价格、引导购买。") + (worldKnowledge ? `
+
+【世界知识】
+${worldKnowledge}` : "");
+    const schemaPrompt = buildShopIntentSchemaPrompt();
+    const userPrompt = `## 玩家输入
+"${userInput}"
+
+## 输出 action 对照
+- 玩家想浏览/打开商城/闲聊开场 → action=list_categories，categories 填本世界观可购买的类别
+- 玩家问具体物品价格 → action=show_items，items 填该物品的价格
+- 玩家问某类物品清单 → action=show_items，categories+items 都填
+- 玩家要买入 → action=confirm_purchase，items 填确认购买的商品和价格
+- 其他闲聊 → action=free_chat，categories/items 留空`;
+    const result = await u.ai.text.invoke(
+      {
+        usageType: "系统商城查询",
+        usageRemark: "shop-command",
+        usageMeta: { stage: "storyMiniGameModel" },
+        plainTextOutput: true,
+        messages: [
+          { role: "system", content: systemPrompt + schemaPrompt },
+          { role: "user", content: userPrompt },
+        ],
+        maxRetries: 0,
+      },
+      modelConfig as any,
+    );
+    const rawResponse = String((result as any)?.text || "").trim();
+    if (!rawResponse) return null;
+    const rawObject = parseModelJsonObject(rawResponse);
+    const usage = (result as any)?.usage;
+    let tokenUsage: { inputTokens: number; outputTokens: number; reasoningTokens: number } | null = null;
+    if (usage && typeof usage === "object") {
+      tokenUsage = {
+        inputTokens: Number(usage.inputTokens || 0) || 0,
+        outputTokens: Number(usage.outputTokens || 0) || 0,
+        reasoningTokens: Number(usage.outputTokenDetails?.reasoningTokens || usage.reasoningTokens || 0) || 0,
+      };
+    }
+    const invokeMs = Date.now() - startedAt;
+    const normalized = normalizeShopIntentResult(rawObject);
+    if (normalized) {
+      normalized.tokenUsage = tokenUsage;
+      normalized.timing = { buildMs: 0, invokeMs, totalMs: invokeMs };
+      normalized.requestPreview = userPrompt;
+      normalized.responsePreview = rawResponse;
+      normalized._systemPrompt = systemPrompt + schemaPrompt;
+    }
+    return normalized;
+  } catch (err) {
+    console.error("[ShopService] 解析失败:", err);
     return null;
   }
 }

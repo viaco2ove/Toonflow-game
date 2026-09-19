@@ -15,7 +15,7 @@ import {
   resolveMiniGameModel,
   type MiniGameIntentLogMeta,
 } from "@/modules/game-runtime/services/MiniGameIntentService";
-import { resolveSellIntent } from "@/modules/game-runtime/services/MiniGameSellService";
+import { resolveSellIntent, resolveShopIntent } from "@/modules/game-runtime/services/MiniGameSellService";
 import { getPromptByCode } from "@/lib/promptHelper";
 import { abandonActiveFreeChapterTaskEvent, createTaskFromUserRequest } from "@/modules/game-runtime/services/FreeChapterTaskService";
 import { analyzeIntent, analyzeIntentWithAiFallback, type IntentResult } from "@/modules/game-runtime/agents/intentAnalyzer";
@@ -126,7 +126,7 @@ const CONTROL_ALIASES: Record<string, string[]> = {
   suspend: ["暂停", "暂停小游戏", "先暂停"],
 };
 
-const TEXT_INPUT_GAME_TYPES = new Set(["research_skill", "alchemy", "upgrade_equipment", "battle"]);
+const TEXT_INPUT_GAME_TYPES = new Set(["research_skill", "alchemy", "upgrade_equipment", "battle", "shop"]);
 
 function isTextInputMiniGame(gameType: string) {
   return TEXT_INPUT_GAME_TYPES.has(scalarText(gameType));
@@ -479,6 +479,21 @@ function buildMiniGameUiStateItems(session: JsonRecord, rulebook: MiniGameRulebo
       { key: "建议调整", value: scalarText(publicState.last_advice) || "暂无" },
     ].filter((item) => scalarText(item.value));
   }
+  if (rulebook.gameType === "shop") {
+    // 商城小游戏摘要：把类目名 + 物品价都汇总成可读文本，避免 Object 数组 join 出现 [object Object]
+    const cats = asArray<{ label?: string; key?: string }>(publicState.categories);
+    const items = asArray<{ name?: string; price?: number; category?: string }>(publicState.items);
+    const catText = cats.map((c) => scalarText(c.label) || scalarText(c.key)).filter(Boolean).join("、") || "暂无";
+    const itemText = items.length
+      ? items.map((it) => `${scalarText(it.name)}(${Number(it.price || 0)}金)`).slice(0, 6).join("、")
+      : "暂无";
+    return [
+      { key: "商城开场", value: scalarText(publicState.narration) || "商城已打开" },
+      { key: "类别", value: catText },
+      { key: "商品", value: itemText },
+      { key: "本轮查询", value: scalarText(publicState.last_query) || "浏览中" },
+    ].filter((item) => scalarText(item.value));
+  }
   if (rulebook.gameType === "upgrade_equipment") {
     return [
       { key: "目标装备", value: scalarText(publicState.equip_name) || "当前装备" },
@@ -500,6 +515,12 @@ function buildMiniGamePhaseLabel(session: JsonRecord, rulebook: MiniGameRulebook
   const phase = scalarText(session.phase);
   if (rulebook.gameType === "task") {
     return phase || "任务进行中";
+  }
+  if (rulebook.gameType === "shop") {
+    if (phase === "browsing") return "浏览商品";
+    if (phase === "purchasing") return "购买中";
+    if (phase === "settling") return "已结束";
+    return phase || "逛店中";
   }
   if (rulebook.gameType === "battle") {
     if (phase === "encounter") return "交战中";
@@ -528,6 +549,9 @@ function buildMiniGamePhaseLabel(session: JsonRecord, rulebook: MiniGameRulebook
 function buildMiniGameInputHint(rulebook: MiniGameRulebook): string {
   if (rulebook.gameType === "task") {
     return "当前正在执行任务。直接输入你的行动推进任务；输入 #退出 可放弃当前任务。";
+  }
+  if (rulebook.gameType === "shop") {
+    return "直接说想买什么或问价格，例如“有啥卖”“短刀多少钱”“看看武器类”“买一把短刀”，#退出 离开商城";
   }
   if (rulebook.gameType === "werewolf") {
     return "直接输入动作，例如“发言”“进入投票”“投票萧炎”“查验美杜莎”“救萧炎”，#退出 可强制退出小游戏";
@@ -4896,6 +4920,108 @@ function buildSimplePublicState(fields: Record<string, any>): JsonRecord {
   return { ...fields };
 }
 
+/**
+ * 商城小游戏 step 函数。
+ *
+ * 行为：
+ * - 玩家在 #打开商城 后，所有输入都先尝试解读为商城动作（看类目 / 看价格 / 买入）；
+ * - 识别不到时落回 AI 自由问答（"老板你好" "有什么丹药"这类）。
+ * - 公共状态 public_state 始终保留最近一次 AI 返回的 categories + items + narration，
+ *   供前端 #商城 小面板实时展示。
+ */
+/**
+ * 商城小游戏 step 函数（同步）。
+ *
+ * 设计：
+ * - applyAction 必须是同步函数，AI 调用在 controller 的路由层 (evaluateShopInput) 里完成；
+ * - 这里只负责把 AI 算好的 result 写到 session.public_state，并产出 narration + meta。
+ */
+function shopStep(
+  session: JsonRecord,
+  _actionId: string,
+  ctx: MiniGameControllerInput & { __shopResult?: Awaited<ReturnType<typeof resolveShopIntent>> },
+): MiniGameStepResult {
+  const publicState = asRecord(session.public_state);
+  const hidden = asRecord(session.hidden_state);
+  const narratorName = scalarText(ctx?.world?.narratorRole?.name) || "旁白";
+  const playerName = scalarText(ctx?.world?.playerRole?.name) || "用户";
+  const playerMessage = scalarText(ctx?.playerMessage);
+  session.round = Number(session.round || 1) + 1;
+  hidden.open_count = Number(hidden.open_count || 0) + 1;
+  hidden.last_action = "interaction";
+
+  const result = ctx.__shopResult;
+  if (!result) {
+    const narration = "商城暂时无法响应，请稍后再试。";
+    publicState.narration = narration;
+    return {
+      narration,
+      resultTags: ["shop_no_response"],
+      pendingNarrativePlan: buildMiniGameNarrativePlan(
+        "商城：AI 无响应",
+        narration,
+        false,
+        narratorName,
+        playerName,
+        "on_mini_game",
+        null,
+        null,
+        null,
+        undefined,
+        undefined,
+        undefined,
+      ),
+    };
+  }
+  // 把 AI 结果落到 session.public_state，前端可读
+  publicState.categories = result.categories;
+  publicState.items = result.items;
+  publicState.narration = result.narration;
+  publicState.last_query = playerMessage;
+
+  const tags: string[] = ["shop_query"];
+  if (result.items.length) tags.push("shop_items");
+  if (result.categories.length) tags.push("shop_categories");
+
+  return {
+    narration: result.narration || "商城已就绪。",
+    resultTags: tags,
+    pendingNarrativePlan: buildMiniGameNarrativePlan(
+      `商城播报：${result.narration?.slice(0, 30) || "继续浏览"}`,
+      result.narration || "商城已就绪。",
+      false,
+      narratorName,
+      playerName,
+      "on_mini_game",
+      null,
+      null,
+      null,
+      undefined,
+      undefined,
+      undefined,
+    ),
+  };
+}
+
+/**
+ * 商城小游戏入口：先调 AI 拿到最新结果，再走 shopStep 把结果落到 session.public_state。
+ *
+ * 返回的 step.narration / meta.shop 由 streamlines 旁白通道 + 商城面板共用。
+ */
+async function evaluateShopInput(
+  session: JsonRecord,
+  input: MiniGameControllerInput,
+): Promise<MiniGameStepResult> {
+  const result = await resolveShopIntent(
+    String(input.playerMessage || ""),
+    input.userId,
+    Number(input.world?.id || 0) || undefined,
+  );
+  // 把 result 透传到 shopStep（同步签名不能 await，所以走 ctx 注入）
+  const ctx = { ...input, __shopResult: result } as any;
+  return shopStep(session, "shop_query", ctx);
+}
+
 const RULEBOOKS: Record<string, MiniGameRulebook> = {
   task: {
     gameType: "task",
@@ -4943,6 +5069,49 @@ const RULEBOOKS: Record<string, MiniGameRulebook> = {
       resultTags: ["task_passthrough"],
       memorySummary: "任务面板保持中",
     }),
+  },
+  shop: {
+    gameType: "shop",
+    displayName: "系统商城",
+    version: "1.0",
+    // 商城是一段持续的小游戏：玩家在 #打开商城 后可以继续问价、购买，直到 #退出 才关闭。
+    // 与 #战斗 / #钓鱼 / #挖矿 等真小游戏同级别，使用 triggerTags 让 detectGameTrigger 接管。
+    goal: "查看商城商品、查询价格、购买物品；输入 #退出 关闭商城",
+    phaseOrder: ["browsing", "purchasing", "settling"],
+    triggerTags: ["#打开商城", "#商城", "#shop"],
+    passivePatterns: [],
+    ruleSummary: "持续型小游戏。开场展示所有类别与代表物品；玩家可继续问价或买入，输入 #退出 关闭。",
+    setup: (_ctx, sessionId, entrySource) => ({
+      session_id: sessionId,
+      game_type: "shop",
+      rulebook_version: "1.0",
+      status: "active",
+      phase: "browsing",
+      round: 1,
+      sub_turn: 0,
+      entry_source: entrySource,
+      // public_state 暂存 AI 最近的商城结果（categories + items + narration）
+      public_state: {
+        categories: [],
+        items: [],
+        narration: "",
+        last_query: "",
+        last_query_kind: "",
+      },
+      hidden_state: { open_count: 1, last_action: "open" },
+      resource_state: {},
+      rng_state: {},
+      action_log_ids: [],
+      result: "ongoing",
+      finish_reason: "",
+      reward_preview: {},
+      writeback_whitelist: ["player_state.parameter_card", "player_state.inventory"],
+      can_suspend: false,
+      can_quit: true,
+      resume_token: `shop_${sessionId}`,
+    }),
+    options: () => [],
+    applyAction: shopStep,
   },
   werewolf: {
     gameType: "werewolf",
@@ -6002,7 +6171,7 @@ export async function handleMiniGameTurn(input: MiniGameControllerInput): Promis
       };
     }
 
-    // #卖出 是全局命令，不依赖小游戏状态，在没有小游戏时也要拦截
+    // #卖出 是全局命令（不依赖小游戏），商城改为小游戏形式由 detectGameTrigger 进入
     if (isSellCommand(input.playerMessage)) {
       return handleSellCommand(input, state, root);
     }
@@ -6044,7 +6213,32 @@ export async function handleMiniGameTurn(input: MiniGameControllerInput): Promis
     root.actionLog = [];
     root.writeback = {};
     root.memorySummary = "";
-    const narration = buildStartNarration(rulebook, session);
+    // ★ 商城小游戏开场：先调一次 AI 把开场语和类目写到 session.public_state
+    //   这样 buildStartNarration 之后，前端 meta.miniGame.publicState 就有数据可显示
+    let shopOpeningNarration = "";
+    if (rulebook.gameType === "shop") {
+      try {
+        const shopResult = await resolveShopIntent(
+          String(input.playerMessage || ""),
+          input.userId,
+          Number(input.world?.id || 0) || undefined,
+        );
+        if (shopResult) {
+          const ps = asRecord(session.public_state);
+          ps.categories = shopResult.categories;
+          ps.items = shopResult.items;
+          ps.narration = shopResult.narration;
+          ps.last_query = String(input.playerMessage || "");
+          session.public_state = ps;
+          shopOpeningNarration = shopResult.narration;
+        }
+      } catch (e) {
+        console.warn("[shop-open] 预加载失败", e);
+      }
+    }
+    const narration = rulebook.gameType === "shop" && shopOpeningNarration
+      ? shopOpeningNarration
+      : buildStartNarration(rulebook, session);
     refreshRuntimeUi(root, narration, rulebook);
     pushMiniGameLog(root, {
       round: Number(session.round || 1),
@@ -6390,6 +6584,13 @@ export async function handleMiniGameTurn(input: MiniGameControllerInput): Promis
       });
     } else if (rulebook.gameType === "research_skill") {
       step = evaluateResearchSkillInput(activeSession, input);
+      logMiniGameAction({
+        normalizedInput,
+        intercepted: true,
+        resultTags: step.resultTags || [],
+      });
+    } else if (rulebook.gameType === "shop") {
+      step = await evaluateShopInput(activeSession, input);
       logMiniGameAction({
         normalizedInput,
         intercepted: true,

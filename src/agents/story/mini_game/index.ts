@@ -15,6 +15,9 @@ export const STORY_MINI_GAME_PROMPT_CODES = {
   researchSkill: "story-mini-game-research-skill",
   alchemy: "story-mini-game-alchemy",
   upgradeEquipment: "story-mini-game-upgrade-equipment",
+  // shop 用独立的商城提示词（更纯净，只做商城不混卖出）
+  shop: "story-mini-game-shop",
+  sell: "story-sell-item",
 } as const;
 
 /**
@@ -42,6 +45,8 @@ export function miniGamePromptCodeByType(gameType: string): string {
       return STORY_MINI_GAME_PROMPT_CODES.alchemy;
     case "upgrade_equipment":
       return STORY_MINI_GAME_PROMPT_CODES.upgradeEquipment;
+    case "shop":
+      return STORY_MINI_GAME_PROMPT_CODES.shop;
     default:
       return STORY_MINI_GAME_PROMPT_CODES.router;
   }
