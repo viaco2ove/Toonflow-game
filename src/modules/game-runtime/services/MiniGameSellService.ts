@@ -4,6 +4,7 @@ import u from "@/utils";
 import { DebugLogUtil } from "@/utils/debugLogUtil";
 import { buildWorldKnowledgeText, normalizeWorldBookOutput } from "@/lib/gameEngine";
 import { getPromptByCode } from "@/lib/promptHelper";
+import { PROMPT_STORY_SELL_ITEM } from "@/lib/def.prompts";
 
 export interface InventoryItem {
   name: string;
@@ -76,13 +77,6 @@ async function resolveSellModel(userId: number) {
 async function loadSellPrompt(): Promise<string> {
   return getPromptByCode("story-sell-item");
 }
-
-/**
- * 默认的物品出售解析提示词（数据库无配置时使用）。
- */
-const DEFAULT_SELL_SYSTEM_PROMPT = `你是一个物品收购商人，帮助玩家将背包中的物品出售换钱。
-语言风格：简洁自然，符合修仙/古风世界观。
-输出要求：只匹配背包中实际存在的物品，数量不能超过持有量。`;
 
 /**
  * 定价规则表。
@@ -222,7 +216,11 @@ export async function resolveSellIntent(
         console.warn("[mini_game_sell_intent] 世界书加载失败", e);
       }
     }
-    const systemPrompt = (dbPrompt || DEFAULT_SELL_SYSTEM_PROMPT) + (worldKnowledge ? `\n\n【世界知识】\n${worldKnowledge}` : "");
+    // 提示词优先级：t_prompts.customValue > def.prompts.ts 默认值（"story-sell-item" 标签页可维护）
+    const systemPrompt = (dbPrompt || PROMPT_STORY_SELL_ITEM || "你是一个物品收购商人，帮助玩家将背包中的物品出售换钱。语言风格：简洁自然，符合修仙/古风世界观。输出要求：只匹配背包中实际存在的物品，数量不能超过持有量。") + (worldKnowledge ? `
+
+【世界知识】
+${worldKnowledge}` : "");
 
     const userPrompt = buildSellPrompt(userInput, inventory);
     const schemaPrompt = buildSellIntentSchemaPrompt();

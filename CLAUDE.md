@@ -86,6 +86,7 @@ src/
 # 系统环境配置 
 务必查看！！！
 [system.yml](system/system.yml)
+特别是 web_project_windows，这是前端代码地址
 
 ## 前端开发
 
@@ -95,6 +96,9 @@ src/
 
 - 开发使用 `db.sqlite` (已 gitignore)
 - 相关表: `t_gameSession`, `t_sessionMessage`, `t_storyWorld`, `t_storyChapter`
+
+knex 取代fixdb initdb，fixdb initdb 已被被删除！！！！
+knex 对数据库迁移版本进行管理
 
 ## 技能要求
 .claude/mmx.conf 
