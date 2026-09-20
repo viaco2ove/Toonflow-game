@@ -1,3 +1,11 @@
+/**
+ * 两种导入方式
+ * import {
+ *   WORLD_BOOK_ACTIVATED_MAX_ENTRIES,
+ *   WORLD_BOOK_STICKINESS_DEFAULT
+ * } from "@/constants/gobal.const";
+ * import * as WB_CONST from "@/constants/gobal.const";
+ */
 /** 世界书注入默认Token预算，给 selectWorldBookForInjection 使用 */
 export const GLOBAL_WORLD_BOOK_TOKEN_BUDGET = 200000;
 
@@ -31,10 +39,3 @@ export const WORLD_BOOK_ACTIVATED_MAX_ENTRIES = 30;
  * - 3 轮内仍未再命中，粘性归零，下一轮从激活列表里移除。
  */
 export const WORLD_BOOK_STICKINESS_DEFAULT = 3;
-
-// 聚合打包成一个大对象
-export const WB_CONST = {
-  WORLD_BOOK_ACTIVATED_MAX_ENTRIES,
-  WORLD_BOOK_ENTRY_MAX_CHARS,
-  WORLD_BOOK_STICKINESS_DEFAULT,
-} as const; // as const 锁住字面量类型，不要丢类型

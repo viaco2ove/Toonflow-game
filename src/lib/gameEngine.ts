@@ -1,9 +1,9 @@
 import u from "@/utils";
 import {
   WORLD_BOOK_ACTIVATED_MAX_ENTRIES,
-  WORLD_BOOK_STICKINESS_DEFAULT,
-  WB_CONST
+  WORLD_BOOK_STICKINESS_DEFAULT
 } from "@/constants/gobal.const";
+import * as WB_CONST from "@/constants/gobal.const";
 
 export interface JsonRecord {
   [key: string]: any;
