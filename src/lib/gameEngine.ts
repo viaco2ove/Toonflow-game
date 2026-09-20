@@ -3056,7 +3056,7 @@ export interface WorldBookEntry {
   agentList?: string[];
   /**
    * 粘性轮数（被命中后保持激活的编排轮数）。
-   * - 默认 3（常驻条目）；也可显式 0（命中即用、不粘）
+   * - 默认 3（非常驻条目）；也可显式 0（命中即用、不粘）
    * - 范围 [0, 99]，超出会被 normalizeWorldBookEntry 截到合法范围
    * - 缺失或 null/undefined 时回退到 WORLD_BOOK_STICKINESS_DEFAULT
    */
@@ -3245,22 +3245,32 @@ export function selectWorldBookForInjection(
 
   for (const entry of entries) {
     if (!entry || !entry.content) continue;
-    if (agentKey && !worldBookEntryVisibleToAgent(entry, agentKey)) continue;
     const entryId = String(entry.entryId || entry.id || entry.title || "").trim();
     if (!entryId) continue;
 
-    // (a) 常驻条目 / keys 命中 → 立即注入 + 粘性重置
     const isConstant = !!entry.constant;
-    const keyHit = !isConstant
-      && WORLD_BOOK_INJECTABLE_CATEGORIES.has(entry.category)
+
+    // 常驻条目：先过 agentKey 可见性过滤，再无条件注入（豁免 token 预算 / 条目数上限）
+    if (isConstant) {
+      if (agentKey && !worldBookEntryVisibleToAgent(entry, agentKey)) continue;
+      matched.push({ ...entry, content: truncateEntryContent(entry.content) });
+      hitIds.add(entryId);
+      nextSticky[entryId] = typeof entry.stickiness === "number"
+        ? entry.stickiness
+        : WORLD_BOOK_STICKINESS_DEFAULT;
+      continue;
+    }
+
+    if (agentKey && !worldBookEntryVisibleToAgent(entry, agentKey)) continue;
+
+    const keyHit = WORLD_BOOK_INJECTABLE_CATEGORIES.has(entry.category)
       && Array.isArray(entry.keys)
       && entry.keys.length > 0
       && entry.keys.some((key) => matchWorldBookKey(key, text));
 
-    if (isConstant || keyHit) {
+    if (keyHit) {
       matched.push({ ...entry, content: truncateEntryContent(entry.content) });
       hitIds.add(entryId);
-      // 用条目自身配置的 stickiness（默认 3），允许常驻条目单独配更长/更短粘性
       nextSticky[entryId] = typeof entry.stickiness === "number"
         ? entry.stickiness
         : WORLD_BOOK_STICKINESS_DEFAULT;
@@ -3279,24 +3289,31 @@ export function selectWorldBookForInjection(
     }
   }
 
-  // 2. 按 order 升序排序（order 大的靠后，对输出影响大；预算紧时截断 order 小的）
+  // 2. 按 order 升序排序（order 大的靠后）
   matched.sort((a, b) => (a.order || 0) - (b.order || 0));
 
-  // 3. token 预算截断（已通过 truncateEntryContent 单条限长，这里只控总预算）
-  const kept: WorldBookEntry[] = [];
-  let used = 0;
-  for (const entry of matched) {
+  // 3. 分类：
+  //    - constants：永远保留，豁免 token 预算和条目数上限
+  //    - stickyEntries：仅靠粘性撑住的条目（keyHit=false 且 prior>0），也豁免 token 预算
+  //    - nonStickyNonConst：普通 keyHit 条目，才受 token 预算截断
+  const constants = matched.filter((e) => e.constant);
+  const stickyEntries = matched.filter((e) => !e.constant && (sticky[String(e.entryId || e.id || e.title || "")] || 0) > 0);
+  const nonStickyNonConst = matched.filter((e) => !e.constant && (sticky[String(e.entryId || e.id || e.title || "")] || 0) <= 0);
+
+  let used = [...constants, ...stickyEntries].reduce((acc, e) => acc + estimateWorldBookTokens(e.content), 0);
+  const keptNonSticky: WorldBookEntry[] = [];
+  for (const entry of nonStickyNonConst) {
     const cost = estimateWorldBookTokens(entry.content);
-    if (used + cost > tokenBudget && kept.length > 0) {
-      // 超预算且已有条目，跳过（保留至少已收集的）
+    if (used + cost > tokenBudget && keptNonSticky.length > 0) {
       continue;
     }
-    kept.push(entry);
+    keptNonSticky.push(entry);
     used += cost;
   }
+  // 常驻 > 粘性条目 > 普通条目
+  const kept = [...constants, ...stickyEntries, ...keptNonSticky];
 
-  // 4. 条目数上限（最大 30 条）。超出按 order 升序保留前面的，丢弃后面的。
-  //    常驻条目已按 order 排好；超 cap 就直接截。
+  // 4. 条目数上限（最大 30 条）。常驻和粘性条目优先保留，超出部分截掉普通条目。
   const capped = kept.slice(0, WORLD_BOOK_ACTIVATED_MAX_ENTRIES);
 
   // 5. 清理粘性表：仅保留本轮还在用（命中或粘性仍 > 0）的 entryId，
