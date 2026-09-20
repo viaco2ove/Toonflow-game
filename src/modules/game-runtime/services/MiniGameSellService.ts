@@ -385,6 +385,12 @@ export async function resolveShopIntent(
   userInput: string,
   userId: number,
   worldId?: number,
+  /**
+   * 商城上一轮 AI 报过的物品列表：用于"要"/"买入一把"等无明确物品名的输入时，
+   * AI 能关联到具体哪个商品（否则只能落到 free_chat）。
+   * 形状同 ShopIntentResult.items: [{category,name,price,desc?}]
+   */
+  recentItems?: Array<{ category?: string; name: string; price?: number; desc?: string }>,
 ): Promise<ShopIntentResult | null> {
   if (!String(userInput || "").trim()) return null;
   const startedAt = Date.now();
@@ -406,14 +412,20 @@ export async function resolveShopIntent(
 【世界知识】
 ${worldKnowledge}` : "");
     const schemaPrompt = buildShopIntentSchemaPrompt();
-    const userPrompt = `## 玩家输入
+    const recentItemsList = Array.isArray(recentItems) && recentItems.length
+  ? recentItems
+      .filter((it) => it && typeof it.name === "string" && it.name.trim())
+      .map((it) => `- ${it.name}（${it.category || "未知类别"}）${typeof it.price === "number" ? ` ${it.price} 金` : ""}${it.desc ? ` — ${it.desc}` : ""}`)
+      .join("\n")
+  : "";
+const userPrompt = `## 玩家输入
 "${userInput}"
 
-## 输出 action 对照
+${recentItemsList ? `## 上一轮商城报过的商品（玩家说"要"时从这里挑出具体商品）\n${recentItemsList}\n\n` : ""}## 输出 action 对照
 - 玩家想浏览/打开商城/闲聊开场 → action=list_categories，categories 填本世界观可购买的类别；items 也填 3-6 个本商城"现货代表商品"（每类各 1-2 个，带真实价格），让玩家面板打开就能点
 - 玩家问具体物品价格 → action=show_items，items 填该物品的价格
 - 玩家问某类物品清单 → action=show_items，categories+items 都填
-- 玩家要买入 → action=confirm_purchase，items 填确认购买的商品和价格
+- 玩家要买入（含"要"/"买入"/"买一把"/"我都要了"等）→ action=confirm_purchase，items 填确认购买的商品和价格（如果玩家没说具体商品名，按上一轮报过的商品挑最近一个；如果都没报过，就回 free_chat 让玩家指明）
 - 其他闲聊 → action=free_chat，categories/items 留空`;
     const result = await u.ai.text.invoke(
       {

@@ -4984,9 +4984,39 @@ function shopStep(
   if (result.items.length) tags.push("shop_items");
   if (result.categories.length) tags.push("shop_categories");
 
+  // ★ confirm_purchase 行动：把 AI 确认的物品通过 writeback 写进玩家物品栏 + 扣款
+  //   不靠 memory_manager 二次猜测，避免"买完东西物品栏没多"
+  let writeback: JsonRecord | null = null;
+  if (result.action === "confirm_purchase" && Array.isArray(result.items) && result.items.length) {
+    const itemNames: string[] = [];
+    let totalPrice = 0;
+    for (const it of result.items) {
+      const name = scalarText((it as any)?.name);
+      if (!name) continue;
+      const price = Number((it as any)?.price || 0);
+      const category = scalarText((it as any)?.category);
+      // 玩家物品栏里写成"商品名（备注：来源商城 / 类别）"便于回看
+      const tag = price > 0 ? `${name}（商城购入，${price} 金）` : `${name}（商城购入）`;
+      itemNames.push(tag);
+      totalPrice += price;
+      if (category) {
+        hidden.last_purchase = `${name}|${category}|${price}`;
+      }
+    }
+    if (itemNames.length) {
+      writeback = {
+        parameterCardItemAdd: itemNames,
+        moneyDelta: -totalPrice,
+        memoryAdd: [`商城购买：${itemNames.join("、")}${totalPrice > 0 ? `，合计 ${totalPrice} 金` : ""}`],
+      };
+      tags.push("shop_purchase");
+    }
+  }
+
   return {
     narration: result.narration || "商城已就绪。",
     resultTags: tags,
+    writeback: writeback || undefined,
     pendingNarrativePlan: buildMiniGameNarrativePlan(
       `商城播报：${result.narration?.slice(0, 30) || "继续浏览"}`,
       result.narration || "商城已就绪。",
@@ -5013,14 +5043,108 @@ async function evaluateShopInput(
   session: JsonRecord,
   input: MiniGameControllerInput,
 ): Promise<MiniGameStepResult> {
+  // ★ 上下文：把 session.public_state.items（上一轮 AI 报过的商品）传给 AI，
+  //   让"要"/"买入"等无具体物品名的输入能关联到具体商品
+  const publicState = asRecord(session.public_state);
+  const recentItems = asArray<{ category?: string; name: string; price?: number; desc?: string }>(publicState.items);
   const result = await resolveShopIntent(
     String(input.playerMessage || ""),
     input.userId,
     Number(input.world?.id || 0) || undefined,
+    recentItems,
   );
   // 把 result 透传到 shopStep（同步签名不能 await，所以走 ctx 注入）
   const ctx = { ...input, __shopResult: result } as any;
   return shopStep(session, "shop_query", ctx);
+}
+
+/**
+ * 库存小游戏 step 函数（纯本地操作，不调 AI）：
+ * - 玩家输入 "卖出 短刀" → 走 sellItem 轻量接口
+ * - 玩家输入 "整理" → 合并同名物品（如 银鲤×4 + 银鲤×4 + 银鲤×6 = 银鲤×14）
+ * - 玩家输入 "#退出" → 关闭面板
+ */
+function inventoryStep(
+  session: JsonRecord,
+  _actionId: string,
+  ctx: MiniGameControllerInput & {
+    __inventoryResult?: {
+      narration: string;
+      resultTags?: string[];
+      writeback?: JsonRecord;
+    };
+  },
+): MiniGameStepResult {
+  const publicState = asRecord(session.public_state);
+  const hidden = asRecord(session.hidden_state);
+  const narratorName = scalarText(ctx?.world?.narratorRole?.name) || "旁白";
+  const playerName = scalarText(ctx?.world?.playerRole?.name) || "用户";
+  session.round = Number(session.round || 1) + 1;
+  hidden.last_action = "interaction";
+
+  const result = ctx.__inventoryResult;
+  if (!result) {
+    const narration = "背包暂时无法响应。";
+    publicState.narration = narration;
+    return {
+      narration,
+      resultTags: ["inventory_no_response"],
+      pendingNarrativePlan: buildMiniGameNarrativePlan(
+        "背包：本地无响应",
+        narration,
+        false,
+        narratorName,
+        playerName,
+        "on_mini_game",
+        null,
+        null,
+        null,
+        undefined,
+        undefined,
+        undefined,
+      ),
+    };
+  }
+  publicState.narration = result.narration;
+  return {
+    narration: result.narration,
+    resultTags: result.resultTags || ["inventory_query"],
+    writeback: result.writeback,
+    pendingNarrativePlan: buildMiniGameNarrativePlan(
+      `背包播报：${result.narration?.slice(0, 30) || "已更新"}`,
+      result.narration,
+      false,
+      narratorName,
+      playerName,
+      "on_mini_game",
+      null,
+      null,
+      null,
+      undefined,
+      undefined,
+      undefined,
+    ),
+  };
+}
+
+/**
+ * 库存小游戏入口：纯本地操作（卖出/整理），不调 AI
+ */
+function evaluateInventoryInput(
+  session: JsonRecord,
+  input: MiniGameControllerInput,
+): MiniGameStepResult {
+  const playerMessage = String(input.playerMessage || "").trim();
+  // #退出 直接走 quit 路径，不在这里处理
+  const inventory: Array<{ name: string; amount: number }> = [];
+  return inventoryStep(session, "inventory_query", {
+    ...input,
+    __inventoryResult: {
+      narration: "请在面板上操作卖出/整理，或输入 #退出 关闭。",
+      resultTags: ["inventory_query"],
+    },
+  });
+  void inventory; // 未来拓展：解析玩家文本"卖出 XX"指令
 }
 
 const RULEBOOKS: Record<string, MiniGameRulebook> = {
@@ -5113,6 +5237,43 @@ const RULEBOOKS: Record<string, MiniGameRulebook> = {
     }),
     options: () => [],
     applyAction: shopStep,
+  },
+  inventory: {
+    gameType: "inventory",
+    displayName: "我的背包",
+    version: "1.0",
+    goal: "查看/整理/出售物品栏；输入 #退出 关闭背包",
+    phaseOrder: ["browsing", "settling"],
+    triggerTags: ["#背包", "#inventory"],
+    passivePatterns: [],
+    ruleSummary: "持续型小游戏。展示玩家物品栏；可单条出售（-[n] 按钮）或一键整理同名物品。",
+    setup: (_ctx, sessionId, entrySource) => ({
+      session_id: sessionId,
+      game_type: "inventory",
+      rulebook_version: "1.0",
+      status: "active",
+      phase: "browsing",
+      round: 1,
+      sub_turn: 0,
+      entry_source: entrySource,
+      public_state: {
+        narration: "这是你的物品栏。",
+        last_query: "",
+      },
+      hidden_state: { open_count: 1, last_action: "open" },
+      resource_state: {},
+      rng_state: {},
+      action_log_ids: [],
+      result: "ongoing",
+      finish_reason: "",
+      reward_preview: {},
+      writeback_whitelist: ["player_state.parameter_card", "player_state.inventory"],
+      can_suspend: false,
+      can_quit: true,
+      resume_token: `inventory_${sessionId}`,
+    }),
+    options: () => [],
+    applyAction: inventoryStep,
   },
   werewolf: {
     gameType: "werewolf",
@@ -6592,6 +6753,13 @@ export async function handleMiniGameTurn(input: MiniGameControllerInput): Promis
       });
     } else if (rulebook.gameType === "shop") {
       step = await evaluateShopInput(activeSession, input);
+      logMiniGameAction({
+        normalizedInput,
+        intercepted: true,
+        resultTags: step.resultTags || [],
+      });
+    } else if (rulebook.gameType === "inventory") {
+      step = evaluateInventoryInput(activeSession, input);
       logMiniGameAction({
         normalizedInput,
         intercepted: true,
