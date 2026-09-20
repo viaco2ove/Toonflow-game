@@ -724,6 +724,30 @@ router.post(
         roleNumSpeechCurrEvent: speechCount.roleNumSpeechCurrEvent,
         roleNumSpeechCurrStage: speechCount.roleNumSpeechCurrStage,
       };
+      // ★ 小游戏模式：把 state 里的 miniGame 完整 snapshot 注入 emittedMessage.meta，
+      //   让前端 streamlines 阶段也能拿到 categories/items/publicState。
+      //   没有这段，on_mini_game 后续轮次（#换一批 / #查看武器类 等）的 items 不会传到前端，
+      //   play-mini-game-panel 永远显示首次开场的旧数据。
+      if (miniGameStateManager.isMiniGameMode(state || {})) {
+        const gameInfo = miniGameStateManager.getMiniGameStateInfo(state || {});
+        const miniGameRoot = ((state as any)?.miniGame || {}) as Record<string, any>;
+        const rulebook = (miniGameRoot.rulebook || {}) as Record<string, any>;
+        const session = (miniGameRoot.session || {}) as Record<string, any>;
+        const publicState = (session.public_state || {}) as Record<string, any>;
+        const uiRoot = (miniGameRoot.ui || {}) as Record<string, any>;
+        emittedMessage.meta = {
+          miniGame: {
+            gameType: String(gameInfo.gameType || rulebook.gameType || ""),
+            displayName: String(gameInfo.displayName || rulebook.displayName || ""),
+            status: String(gameInfo.status || session.status || ""),
+            phase: String(gameInfo.phase || session.phase || ""),
+            round: Number(session.round || 0),
+            publicState,
+            acceptsTextInput: Boolean(uiRoot.accepts_text_input),
+            inputHint: String(uiRoot.input_hint || ""),
+          },
+        };
+      }
 
       if (!sessionId) {
         // 调试链仍然要在服务端推进运行态和回溯快照，只是不把这些信息塞进台词流响应。

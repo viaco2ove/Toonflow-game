@@ -268,7 +268,9 @@ export function asDebugMessage(input: any) {
     eventType: String(input.eventType || "on_debug"),
     content: String(input.content || ""),
     createTime: Number(input.createTime || nowTs()),
-    meta: {},
+    // ★ 透传 input.meta：streamlines 会注入 miniGame.publicState 等运行时数据，
+    //   没有这段，前端 mini-game-panel 拿不到 #换一批 等后续轮次的 items
+    meta: (input && input.meta && typeof input.meta === "object") ? input.meta : {},
   });
 }
 

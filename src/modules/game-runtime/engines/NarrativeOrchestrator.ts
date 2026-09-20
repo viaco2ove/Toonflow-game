@@ -71,6 +71,8 @@ export interface RuntimeMessageInput {
   // 角色当前事件/阶段的发言计数
   roleNumSpeechCurrEvent?: number | null;
   roleNumSpeechCurrStage?: number | null;
+  // ★ 流式响应附加数据（如小游戏 publicState 透传给前端 mini-game-panel）
+  meta?: Record<string, unknown> | null;
   memoryDelta?: {
     eventIndex?: number | null;
     eventKind?: string | null;

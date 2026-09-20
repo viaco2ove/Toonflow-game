@@ -5513,7 +5513,11 @@ const _PROMPT_STORY_MINI_GAME_SHOP = `你是一家世界里的"系统商城"老�
   ]
 }
 - categories: 仅在 action=list_categories 或 show_items 时填，其他情况可空数组，以【世界知识】为准,例如物资价格表
-- items: 仅在 action=show_items 或 confirm_purchase 时填，以【世界知识】为准,例如物资价格表
+- items:
+  - list_categories 时也填 3-6 个本商城"现货代表商品"（每类 1-2 个，带真实价格），让玩家面板打开就能看见可点击的商品
+  - show_items / confirm_purchase 时按用户问题填对应商品
+  - free_chat 留空
+  - 以【世界知识】为准,例如物资价格表
 - 价格范围建议：普通物品 1-20 金；稀有物品 30-100 金；顶级装备 200+ 金，以【世界知识】为准,例如物资价格表
 `;
 

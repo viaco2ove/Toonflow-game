@@ -410,7 +410,7 @@ ${worldKnowledge}` : "");
 "${userInput}"
 
 ## 输出 action 对照
-- 玩家想浏览/打开商城/闲聊开场 → action=list_categories，categories 填本世界观可购买的类别
+- 玩家想浏览/打开商城/闲聊开场 → action=list_categories，categories 填本世界观可购买的类别；items 也填 3-6 个本商城"现货代表商品"（每类各 1-2 个，带真实价格），让玩家面板打开就能点
 - 玩家问具体物品价格 → action=show_items，items 填该物品的价格
 - 玩家问某类物品清单 → action=show_items，categories+items 都填
 - 玩家要买入 → action=confirm_purchase，items 填确认购买的商品和价格
