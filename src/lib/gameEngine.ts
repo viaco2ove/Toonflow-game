@@ -1,4 +1,9 @@
 import u from "@/utils";
+import {
+  WORLD_BOOK_ACTIVATED_MAX_ENTRIES,
+  WORLD_BOOK_STICKINESS_DEFAULT,
+  WB_CONST
+} from "@/constants/gobal.const";
 
 export interface JsonRecord {
   [key: string]: any;
@@ -1926,8 +1931,8 @@ function normalizeRuntimeEventKind(input: unknown): RuntimeCurrentEventState["ki
 
 // 归一化 `currentEvent`，并在缺字段时用 fallback 兜底。
 export function normalizeRuntimeCurrentEventState(
-  raw: unknown,
-  fallback?: Partial<RuntimeCurrentEventState> | null,
+    raw: unknown,
+    fallback?: { index: number; kind: string; summary: string; facts: string[] | any[]; status: any },
 ): RuntimeCurrentEventState {
   const base = parseJsonSafe<JsonRecord>(raw, {});
   // ★ 合并顺序：raw（已有 state.currentEvent）在前，fallback（算出来的新值）在后
@@ -2623,6 +2628,7 @@ export function setChapterProgressState(state: JsonRecord, patch: Partial<Chapte
     index: next.eventIndex,
     kind: next.eventKind,
     summary: next.eventSummary,
+    facts: [],
     status: next.eventStatus,
   });
   return next;
@@ -2659,6 +2665,7 @@ export function normalizeSessionState(
     index: chapterProgress.eventIndex,
     kind: chapterProgress.eventKind,
     summary: chapterProgress.eventSummary,
+    facts: [],
     status: chapterProgress.eventStatus,
   });
   const dynamicEvents = normalizeRuntimeDynamicEventList(base.dynamicEvents);
@@ -3201,39 +3208,13 @@ function worldBookEntryVisibleToAgent(entry: WorldBookEntry, agentKey: string): 
   return list.includes(agentKey);
 }
 
-/**
- * 世界书注入条目单条大小上限（字符数）。
- *
- * 用途：
- * - 防止单个常驻条目因体积过大把整轮 token 预算吃光；
- * - 同时给前端"激活的世界书"面板一个合理的单条展示上限。
- */
-export const WORLD_BOOK_ENTRY_MAX_CHARS = 20000;
 
-/**
- * 激活世界书条目数上限。
- *
- * 用途：
- * - 编排一轮最多注入 30 条世界书条目；
- * - 防止匹配过多条目把上下文塞爆 + 给前端面板一个稳定数量上限。
- */
-export const WORLD_BOOK_ACTIVATED_MAX_ENTRIES = 30;
-
-/**
- * 常驻条目默认粘性（编排轮数）。
- *
- * 含义：
- * - 一个条目被命中（keys 匹配）后，"保持激活"3 轮编排；
- * - 这 3 轮里即使 keys 不再命中，它仍出现在激活列表里（保证上下文连贯）；
- * - 3 轮内仍未再命中，粘性归零，下一轮从激活列表里移除。
- */
-export const WORLD_BOOK_STICKINESS_DEFAULT = 3;
 
 /** 按上限截断单个条目的 content（仅做安全网；正常条目应在编辑时控长度） */
 function truncateEntryContent(content: string): string {
   const text = String(content || "");
-  if (text.length <= WORLD_BOOK_ENTRY_MAX_CHARS) return text;
-  return text.slice(0, WORLD_BOOK_ENTRY_MAX_CHARS);
+  if (text.length <= WB_CONST.WORLD_BOOK_ENTRY_MAX_CHARS) return text;
+  return text.slice(0, WB_CONST.WORLD_BOOK_ENTRY_MAX_CHARS);
 }
 
 export function selectWorldBookForInjection(
