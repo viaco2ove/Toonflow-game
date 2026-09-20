@@ -94,6 +94,7 @@ import {
 } from "@/modules/game-runtime/types/runtime";
 import { DebugLogUtil } from "@/utils/debugLogUtil";
 import {miniGameStateManager, MiniGameOrchestrationResult} from "@/modules/game-runtime/engines/MiniGameStateManager";
+import {GLOBAL_WORLD_BOOK_TOKEN_BUDGET} from "@/constants/gobal.const";
 
 // ==================== 游玩模式回溯功能内存缓存 ====================
 //
@@ -1549,7 +1550,7 @@ async function tryBuildTaskModePlan(input: {
           playerMessage,
           ...dialogue.map((d) => String(d.content || "")),
         ].join("\n");
-        worldKnowledgeText = buildWorldKnowledgeText(wbEntries, scanText, 800, "task_director");
+        worldKnowledgeText = buildWorldKnowledgeText(wbEntries, scanText, GLOBAL_WORLD_BOOK_TOKEN_BUDGET, "task_director");
       }
     }
   } catch (err) {
@@ -3541,7 +3542,7 @@ export async function generatePlayTips(sessionIdInput: string): Promise<{ tips: 
       const scanText = [dialogueText].filter(Boolean).join("\n");
       const wbRows = await db("t_worldBook").where({ worldId: wId }).select("*");
       const wbEntries = normalizeWorldBookOutput(wbRows);
-      worldKnowledgeTip = buildWorldKnowledgeText(wbEntries, scanText, 400, "play_tip");
+      worldKnowledgeTip = buildWorldKnowledgeText(wbEntries, scanText, GLOBAL_WORLD_BOOK_TOKEN_BUDGET, "play_tip");
     } catch (e) {
       console.warn("[play_tip] 世界书加载失败", e);
     }
@@ -3653,7 +3654,7 @@ export async function generateOrchestrateOptionsForSession(
       const scanText = [latestPlayerMessage ? String((latestPlayerMessage as any).content || "") : "", dialogueText].filter(Boolean).join("\n");
       const wbRows = await db("t_worldBook").where({ worldId }).select("*");
       const wbEntries = normalizeWorldBookOutput(wbRows);
-      worldKnowledge = buildWorldKnowledgeText(wbEntries, scanText, 400, "orchestrate_options");
+      worldKnowledge = buildWorldKnowledgeText(wbEntries, scanText, GLOBAL_WORLD_BOOK_TOKEN_BUDGET, "orchestrate_options");
     } catch (e) {
       console.warn("[orchestrate_options] 世界书加载失败", e);
     }

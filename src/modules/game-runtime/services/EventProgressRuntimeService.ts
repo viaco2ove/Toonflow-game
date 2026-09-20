@@ -16,6 +16,7 @@ import {
 } from "@/modules/game-runtime/engines/ChapterProgressEngine";
 import { DebugLogUtil } from "@/utils/debugLogUtil";
 import { z } from "zod";
+import {GLOBAL_WORLD_BOOK_TOKEN_BUDGET} from "@/constants/gobal.const";
 
 /**
  * 事件进度检测输入。
@@ -561,7 +562,7 @@ export async function evaluateEventProgressByAi(
       ].filter(Boolean).join("\n");
       const wbRows = await getGameDb()("t_worldBook").where({ worldId: wId }).select("*");
       const wbEntries = normalizeWorldBookOutput(wbRows);
-      worldKnowledge = buildWorldKnowledgeText(wbEntries, scanText, 400, "event_progress_judge");
+      worldKnowledge = buildWorldKnowledgeText(wbEntries, scanText, GLOBAL_WORLD_BOOK_TOKEN_BUDGET, "event_progress_judge");
     } catch (e) {
       console.warn("[event_progress_judge] 世界书加载失败", e);
     }

@@ -5,6 +5,7 @@ import { DebugLogUtil } from "@/utils/debugLogUtil";
 import { getPromptByCode } from "@/lib/promptHelper";
 import { buildWorldKnowledgeText, normalizeWorldBookOutput } from "@/lib/gameEngine";
 import { parseModelJsonObject } from "@/utils/ai/jsonParserUtils";
+import {GLOBAL_WORLD_BOOK_TOKEN_BUDGET} from "@/constants/gobal.const";
 
 export interface MiniGameIntentOptionInput {
   actionId: string;
@@ -216,7 +217,7 @@ export async function resolveMiniGameIntentByAi(input: ResolveMiniGameIntentInpu
         const scanText = String(input.userInput || "");
         const rows = await u.db("t_worldBook").where({ worldId: input.worldId }).select("*");
         const entries = normalizeWorldBookOutput(rows);
-        worldKnowledge = buildWorldKnowledgeText(entries, scanText, 300, "mini_game_intent");
+        worldKnowledge = buildWorldKnowledgeText(entries, scanText, GLOBAL_WORLD_BOOK_TOKEN_BUDGET, "mini_game_intent");
       } catch (e) {
         console.warn("[mini_game_intent] 世界书加载失败", e);
       }

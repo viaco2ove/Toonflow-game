@@ -19,6 +19,7 @@ import { resolveSellIntent, resolveShopIntent } from "@/modules/game-runtime/ser
 import { getPromptByCode } from "@/lib/promptHelper";
 import { abandonActiveFreeChapterTaskEvent, createTaskFromUserRequest } from "@/modules/game-runtime/services/FreeChapterTaskService";
 import { analyzeIntent, analyzeIntentWithAiFallback, type IntentResult } from "@/modules/game-runtime/agents/intentAnalyzer";
+import {GLOBAL_WORLD_BOOK_TOKEN_BUDGET} from "@/constants/gobal.const";
 // 任务模式 Agent 由 SessionService.orchestrateSessionTurn / streamlines 调用，
 // 本文件只需导出 readActiveTaskStateFromState、collectNpcListForTask 给上层使用。
 
@@ -1126,7 +1127,7 @@ async function generateMiniGameMentorSpeech(
         const scanText = String(ctx.playerMessage || "");
         const wbRows = await getGameDb()("t_worldBook").where({ worldId: wId }).select("*");
         const wbEntries = normalizeWorldBookOutput(wbRows);
-        worldKnowledge = buildWorldKnowledgeText(wbEntries, scanText, 300, "mini_game_mentor_speech");
+        worldKnowledge = buildWorldKnowledgeText(wbEntries, scanText, GLOBAL_WORLD_BOOK_TOKEN_BUDGET, "mini_game_mentor_speech");
       } catch (e) {
         console.warn("[mini_game_mentor_speech] 世界书加载失败", e);
       }

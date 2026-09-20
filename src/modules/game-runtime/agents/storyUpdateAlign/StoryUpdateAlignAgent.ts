@@ -17,6 +17,7 @@ import { loadTaskPrompt } from "../taskMode/loadTaskPrompt";
 import { ProgressAlignReport } from "@/modules/game-runtime/services/progressAlign";
 import { buildWorldKnowledgeText, normalizeWorldBookOutput } from "@/lib/gameEngine";
 import { parseModelJsonObject } from "@/utils/ai/jsonParserUtils";
+import {GLOBAL_WORLD_BOOK_TOKEN_BUDGET} from "@/constants/gobal.const";
 
 const FALLBACK_SYSTEM = `你是故事存档迁移专家。任务：把用户在旧版故事中的存档进度对齐到新版章节，重点做阶段语义匹配和事件摘要重生成。
 
@@ -108,7 +109,7 @@ export async function runStoryUpdateAlignAgent(input: StoryUpdateAlignInput): Pr
       ].join("\n");
       const rows = await u.db("t_worldBook").where({ worldId: input.worldId }).select("*");
       const entries = normalizeWorldBookOutput(rows);
-      worldKnowledge = buildWorldKnowledgeText(entries, scanText, 400, "story_update_align");
+      worldKnowledge = buildWorldKnowledgeText(entries, scanText, GLOBAL_WORLD_BOOK_TOKEN_BUDGET, "story_update_align");
     } catch (e) {
       console.warn("[story_update_align] 世界书加载失败", e);
     }

@@ -13,6 +13,7 @@ import u from "@/utils";
 import { z } from "zod";
 import { buildWorldKnowledgeText, normalizeWorldBookOutput } from "@/lib/gameEngine";
 import { parseModelJsonObject } from "@/utils/ai/jsonParserUtils";
+import {GLOBAL_WORLD_BOOK_TOKEN_BUDGET} from "@/constants/gobal.const";
 
 // ============================================================================
 // 类型定义
@@ -139,7 +140,7 @@ export async function classifyIntentWithAi(ctx: IntentContext): Promise<IntentRe
         const scanText = [ctx.playerMessage, ...(ctx.recentMessages || []).map((m) => m.content || "")].join("\n");
         const rows = await u.db("t_worldBook").where({ worldId: ctx.worldId }).select("*");
         const entries = normalizeWorldBookOutput(rows);
-        worldKnowledge = buildWorldKnowledgeText(entries, scanText, 400, "intent_classifier");
+        worldKnowledge = buildWorldKnowledgeText(entries, scanText, GLOBAL_WORLD_BOOK_TOKEN_BUDGET, "intent_classifier");
       } catch (e) {
         console.warn("[intent_classifier] 世界书加载失败", e);
       }

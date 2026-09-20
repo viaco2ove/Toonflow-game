@@ -5,6 +5,7 @@ import { buildWorldKnowledgeText, normalizeWorldBookOutput } from "@/lib/gameEng
 import { getPromptByCode } from "@/lib/promptHelper";
 import { PROMPT_STORY_SELL_ITEM, PROMPT_STORY_MINI_GAME_SHOP } from "@/lib/def.prompts";
 import { parseModelJsonObject } from "@/utils/ai/jsonParserUtils";
+import {GLOBAL_WORLD_BOOK_TOKEN_BUDGET} from "@/constants/gobal.const";
 
 /** 从三种可能字段中提取物品显示名称，与 MiniGameController 的同步逻辑保持一致 */
 function getItemDisplayName(item: InventoryItem): string {
@@ -243,7 +244,7 @@ export async function resolveSellIntent(
       try {
         const rows = await u.db("t_worldBook").where({ worldId }).select("*");
         const entries = normalizeWorldBookOutput(rows);
-        worldKnowledge = buildWorldKnowledgeText(entries, userInput, 300, "mini_game_sell_intent");
+        worldKnowledge = buildWorldKnowledgeText(entries, userInput, GLOBAL_WORLD_BOOK_TOKEN_BUDGET, "mini_game_sell_intent");
       } catch (e) {
         console.warn("[mini_game_sell_intent] 世界书加载失败", e);
       }
@@ -395,7 +396,7 @@ export async function resolveShopIntent(
       try {
         const rows = await u.db("t_worldBook").where({ worldId }).select("*");
         const entries = normalizeWorldBookOutput(rows);
-        worldKnowledge = buildWorldKnowledgeText(entries, userInput, 300, "mini_game_shop_intent");
+        worldKnowledge = buildWorldKnowledgeText(entries, userInput, GLOBAL_WORLD_BOOK_TOKEN_BUDGET, "mini_game_shop_intent");
       } catch (e) {
         console.warn("[mini_game_shop_intent] 世界书加载失败", e);
       }

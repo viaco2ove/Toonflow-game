@@ -15,6 +15,7 @@ import {
 } from "@/lib/gameEngine";
 import { DebugLogUtil } from "@/utils/debugLogUtil";
 import u from "@/utils";
+import {GLOBAL_WORLD_BOOK_TOKEN_BUDGET} from "@/constants/gobal.const";
 
 // 复用 TaskProgressAgent 的纯函数（避免循环依赖）
 function parsePhaseStep(text: string): { text: string; status: "idle" | "active" | "complete" | "failed" } {
@@ -924,7 +925,7 @@ async function evaluateFreeTaskResolutionByAi(input: {
       ].filter(Boolean).join("\n");
       const wbRows = await u.db("t_worldBook").where({ worldId: wId }).select("*");
       const wbEntries = normalizeWorldBookOutput(wbRows);
-      worldKnowledge = buildWorldKnowledgeText(wbEntries, scanText, 400, "free_task_resolution");
+      worldKnowledge = buildWorldKnowledgeText(wbEntries, scanText, GLOBAL_WORLD_BOOK_TOKEN_BUDGET, "free_task_resolution");
     } catch (e) {
       console.warn("[free_task_resolution] 世界书加载失败", e);
     }
@@ -1078,7 +1079,7 @@ async function generateFreeChapterTaskBlueprintByAi(input: {
       ].filter(Boolean).join("\n");
       const wbRows = await u.db("t_worldBook").where({ worldId: wId2 }).select("*");
       const wbEntries = normalizeWorldBookOutput(wbRows);
-      worldKnowledge = buildWorldKnowledgeText(wbEntries, scanText, 600, "free_task_blueprint");
+      worldKnowledge = buildWorldKnowledgeText(wbEntries, scanText, GLOBAL_WORLD_BOOK_TOKEN_BUDGET, "free_task_blueprint");
     } catch (e) {
       console.warn("[free_task_blueprint] 世界书加载失败", e);
     }
