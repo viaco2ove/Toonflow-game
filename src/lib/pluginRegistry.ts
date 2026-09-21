@@ -201,14 +201,14 @@ export async function installPluginPackage(
     const targetDir = getPluginDir(userId, manifest.id);
     const upgraded = await u.db("t_plugin").where({ userId, pluginId: manifest.id }).first();
     let upgradedFrom: string | null = null;
+    // 无论是否 DB 有记录，只要 targetDir 存在就先清理（避免 Windows rename 覆盖非空目录报错）
+    if (fs.existsSync(targetDir)) {
+      const trashDir = targetDir + ".old-" + Date.now();
+      await fsp.rename(targetDir, trashDir);
+      await fsp.rm(trashDir, { recursive: true, force: true }).catch(() => undefined);
+    }
     if (upgraded) {
       upgradedFrom = String(upgraded.version || "");
-      // 覆盖安装：先删旧目录（临时改名再删，避免 Windows 文件锁）
-      const trashDir = targetDir + ".old-" + Date.now();
-      if (fs.existsSync(targetDir)) {
-        await fsp.rename(targetDir, trashDir);
-        await fsp.rm(trashDir, { recursive: true, force: true }).catch(() => undefined);
-      }
     }
     await fsp.mkdir(path.dirname(targetDir), { recursive: true });
     await fsp.rename(manifestDir, targetDir);

@@ -237,6 +237,20 @@ toonflow.minigame.abort()
 
 关闭 iframe，放弃当前小游戏，不写入结果。
 
+#### 切换全屏模式
+
+```js
+toonflow.minigame.setFullscreen(<enabled>)
+toonflow.minigame.setFullscreen(true)   // 进入全屏，iframe 撑满视口
+toonflow.minigame.setFullscreen(false)  // 退出全屏，恢复面板默认尺寸
+```
+
+插件启动时（`manifest.json` 的 `fullscreen: true`）是静态配置，此 API 允许运行时**动态切换**。
+
+底层原理：向父窗口 postMessage `{ type: "tf_plugin_fullscreen", fullscreen: <bool> }`，前端宿主接收后给 `<section class="play-plugin-minigame-panel--fullscreen">` 挂 class，CSS 将面板升级为 `position: fixed; inset: 0; z-index: 9999` 覆盖全屏，iframe 随之撑满。
+
+退出全屏：插件再次调用 `setFullscreen(false)`，或用户点击面板右上角 ✕ 按钮。
+
 ---
 
 ### 2.6 资产（Assets）
@@ -417,7 +431,7 @@ toonflow-field-survival/
       "title": "野外生存",
       "width": 400,
       "height": 600,
-      "fullscreen": false,
+      "fullscreen": false,       // 静态默认值；插件运行时可通过 toonflow.minigame.setFullscreen(true) 动态切换全屏
       "entry": "ui/game.html"
     },
     "sidebar": [
