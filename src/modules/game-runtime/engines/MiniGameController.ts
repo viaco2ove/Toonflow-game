@@ -17,6 +17,7 @@ import {
 } from "@/modules/game-runtime/services/MiniGameIntentService";
 import { resolveSellIntent, resolveShopIntent } from "@/modules/game-runtime/services/MiniGameSellService";
 import { getPromptByCode } from "@/lib/promptHelper";
+import { scanPluginCommands, findPluginByCommand, executePluginAction } from "@/lib/PluginExecutor";
 import { abandonActiveFreeChapterTaskEvent, createTaskFromUserRequest } from "@/modules/game-runtime/services/FreeChapterTaskService";
 import { analyzeIntent, analyzeIntentWithAiFallback, type IntentResult } from "@/modules/game-runtime/agents/intentAnalyzer";
 import {GLOBAL_WORLD_BOOK_TOKEN_BUDGET} from "@/constants/gobal.const";
@@ -2701,7 +2702,8 @@ function detectGameTrigger(
   message: string,
   recentMessages: Array<Record<string, any>> = [],
   root: JsonRecord = {},
-): { gameType: string; source: string } | null {
+  userId: number = 0,
+): { gameType: string; source: string; pluginId?: string; pluginType?: string } | null {
   const text = scalarText(message);
   const transcript = [
     ...recentMessages.slice(-8).map((item) => `${scalarText(item.role)}:${scalarText(item.content)}`.trim()).filter(Boolean),
@@ -2722,6 +2724,24 @@ function detectGameTrigger(
     if (rulebook.triggerTags.some(standaloneTagPattern)) {
       DebugLogUtil.log("story:mini_game:agent", "识别到小游戏", JSON.stringify(rulebook));
       return { gameType: rulebook.gameType, source: "active" };
+    }
+  }
+  // ── 插件命令扫描：动态扫已启用插件 sidebar.command ──
+  if (userId > 0) {
+    scanPluginCommands(userId).catch(() => {});
+    for (const cmd of text.split(/#/g).map((s: string) => "#" + s.trim()).filter(Boolean)) {
+      const ctx = findPluginByCommand(cmd);
+      if (ctx) {
+        DebugLogUtil.log("story:mini_game:agent", `识别到插件小游戏: ${ctx.pluginId}`, cmd);
+        // 把 manifest 写入 root，供 setup 调用
+      (root as any)._pluginManifest = ctx.manifest;
+      return {
+        gameType: "plugin",
+        source: "plugin",
+        pluginId: ctx.pluginId,
+        pluginType: ctx.manifest.contributes?.minigame?.type as string ?? ctx.pluginId,
+      };
+      }
     }
   }
   // 被动触发已禁用：只有显式 #标签 命令才能触发小游戏，
@@ -5643,6 +5663,57 @@ const RULEBOOKS: Record<string, MiniGameRulebook> = {
     options: () => [],
     applyAction: battleStep,
   },
+
+  // ── 插件小游戏（动态接入，已注册插件通过 scanPluginCommands 扫描） ──
+  plugin: {
+    gameType: "plugin",
+    displayName: "插件小游戏",
+    version: "1.0",
+    goal: "运行插件小游戏本体",
+    phaseOrder: ["active", "settling"],
+    triggerTags: [],
+    passivePatterns: [],
+    ruleSummary: "小游戏进行中，请在游戏界面内操作。",
+    setup: (ctx: any, sessionId: string, _entrySource: string) => {
+      const pluginId = ctx.pluginId || "";
+      const pluginType = ctx.pluginType || pluginId;
+      const manifest = ctx.manifest as any;
+      const minigame = manifest?.contributes?.minigame as any || {};
+      return {
+        session_id: sessionId,
+        game_type: "plugin",
+        plugin_id: pluginId,
+        plugin_type: pluginType,
+        rulebook_version: "1.0",
+        status: "active",
+        phase: "active",
+        round: 1,
+        entry_source: "plugin",
+        public_state: {
+          plugin_id: pluginId,
+          plugin_type: pluginType,
+          entry: minigame.entry || "",
+          title: minigame.title || pluginId,
+          width: minigame.width || 480,
+          height: minigame.height || 640,
+        },
+        hidden_state: {},
+        resource_state: {},
+        rng_state: { seed: `plugin:${pluginId}:${sessionId}`, cursor: 0, queue: [] },
+        action_log_ids: [],
+        result: "ongoing",
+        finish_reason: "",
+        can_suspend: false,
+        can_quit: true,
+        resume_token: `plugin_${sessionId}`,
+      };
+    },
+    options: (_session: JsonRecord): MiniGameActionOption[] => [],
+    applyAction: (_session: JsonRecord, _actionId: string, _ctx: MiniGameControllerInput): MiniGameStepResult => {
+      return { narration: "小游戏正在进行中，请在游戏界面内操作。" };
+    },
+  },
+
   upgrade_equipment: {
     gameType: "upgrade_equipment",
     displayName: "升级装备",
@@ -6354,14 +6425,19 @@ export async function handleMiniGameTurn(input: MiniGameControllerInput): Promis
       };
     }
 
-    const detected = catalogSelection.detected || detectGameTrigger(input.playerMessage, input.recentMessages, root);
+    const detected = catalogSelection.detected || detectGameTrigger(input.playerMessage, input.recentMessages, root, input.userId);
     if (!detected) return null;
     const rulebook = RULEBOOKS[detected.gameType];
     if (!rulebook) return null;
     // 只有显式标签或目录选择真正进入小游戏时，才解除退出后的被动重进抑制。
     clearPassiveMiniGameReentrySuppression(root);
     clearMiniGameCatalog(state);
-    const session = rulebook.setup(input, gameSessionId(detected.gameType), detected.source);
+    // plugin rulebook 需要 plugin 上下文：把 detected 扩展为含 manifest 的完整对象
+    const detectedAny = detected as any;
+    const setupCtx = detected.gameType === "plugin"
+      ? { ...input, pluginId: detectedAny.pluginId, pluginType: detectedAny.pluginType, manifest: (root as any)._pluginManifest }
+      : input;
+    const session = rulebook.setup(setupCtx, gameSessionId(detected.gameType), detected.source);
     root.rulebook = {
       gameType: rulebook.gameType,
       displayName: rulebook.displayName,

@@ -1,4 +1,4 @@
-// @db-hash 2e68b67466eb685ad63fdd81f901b904
+// @db-hash 534953cfe1bc06ef4125f2dec70b1a32
 //该文件由脚本自动生成，请勿手动修改
 
 export interface knex_migrations {
@@ -168,6 +168,23 @@ export interface t_outline {
   'episode'?: number | null;
   'id'?: number;
   'projectId'?: number | null;
+}
+export interface t_plugin {
+  'author'?: string | null;
+  'backendEntry'?: string | null;
+  'description'?: string | null;
+  'dir': string;
+  'enabled'?: number | null;
+  'entry'?: string | null;
+  'id'?: number;
+  'installedAt'?: number | null;
+  'manifestJson': string;
+  'name'?: string | null;
+  'pluginId': string;
+  'status'?: string | null;
+  'updatedAt'?: number | null;
+  'userId': number;
+  'version'?: string | null;
 }
 export interface t_project {
   'artStyle'?: string | null;
@@ -464,6 +481,7 @@ export interface DB {
   "t_imageModel": t_imageModel;
   "t_novel": t_novel;
   "t_outline": t_outline;
+  "t_plugin": t_plugin;
   "t_project": t_project;
   "t_prompts": t_prompts;
   "t_role_memory": t_role_memory;

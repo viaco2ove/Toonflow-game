@@ -44,6 +44,7 @@ const modelInstance = {
   runninghub: runninghub,
   // apimart: apimart,
   other,
+  openai: other, // openai 走透传，复用 other（createOpenAICompatible）
 } as const;
 
 const uniqueManufacturers = (ownedList: typeof modelList): string[] =>
@@ -67,21 +68,26 @@ export default async (input: ImageConfig, config: AIConfig) => {
   const manufacturerFn = modelInstance[manufacturer as keyof typeof modelInstance];
   if (!manufacturerFn) throw new Error("不支持的图片厂商");
 
-  const ownedCandidates = modelList.filter((item) => item.model === model);
-  const owned = ownedCandidates.find((item) => item.manufacturer === manufacturer);
-  if (manufacturer === "other") {
-    const matchedManufacturers = uniqueManufacturers(ownedCandidates.filter((item) => item.manufacturer !== "other"));
-    if (matchedManufacturers.length === 1) {
-      throw new Error(`模型 ${model} 属于 ${matchedManufacturers[0]} 厂商，请将厂商设置为 ${matchedManufacturers[0]}`);
-    }
-    if (matchedManufacturers.length > 1) {
-      throw new Error(`模型 ${model} 已被内置厂商占用，请将厂商设置为 ${matchedManufacturers.join(" / ")}`);
-    }
-  } else {
-    if (!owned) {
-      const matchedManufacturers = uniqueManufacturers(ownedCandidates);
-      if (!matchedManufacturers.length) throw new Error("不支持的模型");
-      throw new Error(`模型 ${model} 与厂商 ${manufacturer} 不匹配，可用厂商：${matchedManufacturers.join(" / ")}`);
+  // ★ openai 是透传厂商：不限制模型名，用户填什么就调什么（OpenAI 兼容协议），
+  //   只要 baseURL + apiKey 能调通即可。
+  const isPassthroughManufacturer = manufacturer === "openai";
+  if (!isPassthroughManufacturer) {
+    const ownedCandidates = modelList.filter((item) => item.model === model);
+    const owned = ownedCandidates.find((item) => item.manufacturer === manufacturer);
+    if (manufacturer === "other") {
+      const matchedManufacturers = uniqueManufacturers(ownedCandidates.filter((item) => item.manufacturer !== "other"));
+      if (matchedManufacturers.length === 1) {
+        throw new Error(`模型 ${model} 属于 ${matchedManufacturers[0]} 厂商，请将厂商设置为 ${matchedManufacturers[0]}`);
+      }
+      if (matchedManufacturers.length > 1) {
+        throw new Error(`模型 ${model} 已被内置厂商占用，请将厂商设置为 ${matchedManufacturers.join(" / ")}`);
+      }
+    } else {
+      if (!owned) {
+        const matchedManufacturers = uniqueManufacturers(ownedCandidates);
+        if (!matchedManufacturers.length) throw new Error("不支持的模型");
+        throw new Error(`模型 ${model} 与厂商 ${manufacturer} 不匹配，可用厂商：${matchedManufacturers.join(" / ")}`);
+      }
     }
   }
 
