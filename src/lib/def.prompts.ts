@@ -5501,7 +5501,7 @@ const _PROMPT_STORY_MINI_GAME_SHOP = `你是一家世界里的"系统商城"老�
 - "为啥这么贵" / "便宜点" → 简短讨价还价回应（仍以世界观内的解释为准）
 
 【输出要求 — 严格 JSON】
-只输出以下 JSON，不要任何其他文字：
+只输出以下 JSON，不要任何其他文字： 
 {
   "action": "list_categories" | "show_items" | "confirm_purchase" | "free_chat",
   "reply": "给玩家看的旁白回复（不超过 100 字）",
