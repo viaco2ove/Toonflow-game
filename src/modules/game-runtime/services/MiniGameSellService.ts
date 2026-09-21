@@ -468,3 +468,92 @@ ${recentItemsList ? `## 上一轮商城报过的商品（玩家说"要"时从这
     return null;
   }
 }
+
+/** 物品整理 AI 输出结构 */
+export interface ConsolidateResult {
+  items: string[];
+  narration: string;
+}
+
+/**
+ * 用 AI 整理物品栏。
+ *
+ * 玩家的 items 数组长期由 memory_manager 追加，会产生三类脏数据：
+ *   1. 一条元素里塞了多个物品："银鲤、银鲤×1（…）、光棒（…）"
+ *   2. 同名物品散落多条："银鲤×4（备注A）、银鲤×6（备注B）"
+ *   3. 已消耗/已失效的条目："暗核（已全部吸收消耗，不再持有）"
+ *
+ * 纯字符串合并对付不了 1，所以这里走 AI：把原始 items 交给模型，
+ * 让它拆串、合并同类、删失效，返回规整后的数组。
+ */
+export async function consolidateInventoryWithAi(
+  items: string[],
+  userId: number,
+  worldId?: number,
+): Promise<ConsolidateResult | null> {
+  if (!Array.isArray(items)) return null;
+  const original = items.map((x) => String(x || "").trim()).filter(Boolean);
+  if (!original.length) return { items: [], narration: "物品栏为空。" };
+  try {
+    const modelConfig = await resolveSellModel(userId);
+    const dbPrompt = await loadSellPrompt();
+    let worldKnowledge = "";
+    if (worldId) {
+      try {
+        const rows = await u.db("t_worldBook").where({ worldId }).select("*");
+        const entries = normalizeWorldBookOutput(rows);
+        worldKnowledge = buildWorldKnowledgeText(entries, original.join("、"), GLOBAL_WORLD_BOOK_TOKEN_BUDGET, "mini_game_sell_intent");
+      } catch (e) {
+        console.warn("[inventory_consolidate] 世界书加载失败", e);
+      }
+    }
+    const systemPrompt = (dbPrompt || PROMPT_STORY_SELL_ITEM || "你是物品整理助手。") + (worldKnowledge ? `
+
+【世界知识】
+${worldKnowledge}` : "");
+    const userPrompt = `## 任务
+整理玩家的物品栏。这是"整理"，不是"出售"——不扣除任何物品，只是把列表变干净。
+
+## 当前物品栏（原始，可能有脏数据）
+${original.map((it, i) => `${i + 1}. ${it}`).join("\n")}
+
+## 整理规则
+1. 如果一条元素里塞了多个物品（用顿号"、"分隔），拆成多条
+2. 同名物品合并成一条："银鲤×4（备注A）"+"银鲤×6（备注B）" → "银鲤×10（备注A；备注B）"；数量为 1 时省略 "×1"
+3. 已消耗/已失效条目（如"已全部吸收消耗，不再持有""已耗尽"）直接删除
+4. 保留有意义的备注（来源、价格、状态），删掉过时的统计（"合计xxx金""总计xxx金"这类旧汇总）
+5. 不新增物品栏里没有的东西；不改物品名（"银鲤"不要改成"银鱼"）
+6. 硬币/光棒等名称里的修饰可以保留在备注里
+
+## 输出（严格 JSON，无其他文字）
+{"items": ["物品1", "物品2×3（备注）"], "narration": "一句话汇报整理结果"}`;
+    const result = await u.ai.text.invoke(
+      {
+        usageType: "物品整理",
+        usageRemark: "inventory-consolidate",
+        usageMeta: { stage: "storyMiniGameModel" },
+        plainTextOutput: true,
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userPrompt },
+        ],
+        maxRetries: 0,
+      },
+      modelConfig as any,
+    );
+    const rawResponse = String((result as any)?.text || "").trim();
+    if (!rawResponse) return null;
+    const rawObject = parseModelJsonObject(rawResponse);
+    if (!rawObject || !Array.isArray((rawObject as any).items)) return null;
+    const consolidated = (rawObject as any).items
+      .map((x: any) => String(x || "").trim())
+      .filter(Boolean);
+    return {
+      items: consolidated,
+      narration: String((rawObject as any).narration || "物品已整理。").trim(),
+    };
+  } catch (err) {
+    console.error("[InventoryConsolidate] 整理失败:", err);
+    return null;
+  }
+}
