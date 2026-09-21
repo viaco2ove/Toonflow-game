@@ -9,6 +9,6 @@
 而且有较好的组件拆分能力。
 vue/src/App.vue   ←  你在改这里
         ↓
-    vite build
+    yarn vite build
         ↓
 ui/game.html    ←  iframe 加载，其他形式的嵌入，事件响应等
