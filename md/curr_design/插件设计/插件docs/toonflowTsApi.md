@@ -1,4 +1,4 @@
-# ToonflowPy API
+# Toonflow TS API
 
 > 参考 [TavoJS API](https://docs.tavoai.dev/cn/guides/javascript-api/) 设计，面向 Toonflow 互动故事游戏的后端 Python 插件接口。
 
@@ -6,11 +6,11 @@
 
 ## 一、概述
 
-ToonflowPy 是 Toonflow 插件系统的后端 Python API，供插件的 `entry.py` 使用。每个插件的 `entry.py` 提供游戏逻辑、数据处理、AI 能力扩展等功能，与前端 minigame iframe 协同工作。
+Toonflow TS API 是 Toonflow 插件系统的后端 TypeScript API，供插件的 `entry.ts` 使用。每个插件的 `entry.py` 提供游戏逻辑、数据处理、AI 能力扩展等功能，与前端 minigame iframe 协同工作。
 
 ### 1.1 入口文件约定
 
-插件根目录下必须有 `entry.py`，其中定义以下**可选**的钩子函数：
+插件根目录下必须有 `entry.ts`（编译为 `entry.js`），其中定义以下**可选**的钩子函数：
 
 | 钩子函数 | 说明 | 调用时机 |
 |---------|------|---------|
@@ -33,13 +33,11 @@ async def handle_action(
 **返回值规范**：
 
 ```python
-# 成功
-return {'code': 0, 'data': {...}}
+// 成功
+return { code: 0, message: "ok", state: newState, response: "...", actions: ["..."] }
 
-# 失败
-return {'code': 400, 'error': '错误信息'}
-# 或
-return {'error': '错误信息', 'code': 500}
+// 失败
+return { code: 1, message: "错误信息", state }
 ```
 
 > ⚠️ **注意**：`code` 字段必须为 `0` 表示成功，其他值为失败。
@@ -63,12 +61,12 @@ return {'error': '错误信息', 'code': 500}
 
 **示例**：
 
-```python
-async def handle_action(action, params, state, context):
-    user_id = context.get('user_id')
-    session_id = context.get('session_id')
-    plugin_id = context.get('plugin_id')
-    # 根据用户 ID 加载对应数据
+```typescript
+const userId = context['user_id'] ?? 1;
+const sessionId = context['session_id'] ?? '';
+const pluginId = context['pluginId'];
+const pluginDir = context['pluginDir'];
+const manifest = context['manifest'];
 ```
 
 ---
@@ -77,22 +75,21 @@ async def handle_action(action, params, state, context):
 
 `state` 是插件在当前会话中的持久化状态字典，**由系统自动管理**。插件可以在 `state` 中存储任意数据，下次调用时会自动恢复。
 
-```python
-async def handle_action(action, params, state, context):
-    if action == 'init':
-        # 初始化游戏状态
-        state['hp'] = 100
-        state['score'] = 0
-        state['enemies'] = []
-        return {'code': 0, 'data': {'initialized': True}}
-
-    elif action == 'attack':
-        # 读取状态
-        hp = state.get('hp', 100)
-        # 修改状态
-        state['hp'] = hp - 10
-        # 返回结果
-        return {'code': 0, 'data': {'hp': state['hp']}}
+```typescript
+if (action === 'init') {
+  // 初始化游戏状态
+  state['hp'] = 100;
+  state['score'] = 0;
+  state['enemies'] = [];
+  return { code: 0, message: 'ok', state };
+} else if (action === 'attack') {
+  // 读取状态
+  const hp = (state['hp'] as number) ?? 100;
+  // 修改状态
+  state['hp'] = hp - 10;
+  // 返回结果
+  return { code: 0, message: 'ok', state, response: `攻击！HP 变为 ${state['hp']}` };
+}
 ```
 
 > 📌 **状态持久化**：修改 `state` 字典后，系统会自动保存。下一次 `handle_action` 调用时，会传入上次修改后的 `state`。
@@ -101,43 +98,11 @@ async def handle_action(action, params, state, context):
 
 ## 四、生命周期钩子
 
-### 4.1 on_install
+### 4.1 生命周期钩子（已废弃）
 
-插件安装时调用，用于初始化插件所需的数据库表、资源等。
+> ⚠️ `on_install` / `on_enable` / `on_disable` 钩子在当前 Toonflow 实现中**不再调用**。插件激活流程由 `MiniGameController.detectGameTrigger` 统一处理。
 
-```python
-def on_install(plugin_id: str, version: str) -> Dict:
-    """
-    plugin_id: 插件唯一标识
-    version: 插件版本号
-    """
-    # 初始化插件资源
-    return {'code': 0, 'data': {'message': '安装成功'}}
-```
-
-### 4.2 on_enable
-
-插件启用时调用，用于开启插件功能（如注册 Agent、创建定时任务等）。
-
-```python
-def on_enable(plugin_id: str, version: str) -> Dict:
-    """
-    插件启用时调用
-    """
-    return {'code': 0, 'data': {'enabled': True}}
-```
-
-### 4.3 on_disable
-
-插件禁用时调用，用于清理插件开启的资源（如注销 Agent、停止定时任务等）。
-
-```python
-def on_disable(plugin_id: str) -> Dict:
-    """
-    插件禁用时调用
-    """
-    return {'code': 0, 'data': {'disabled': True}}
-```
+如需在插件加载时做初始化，请直接在 `handle_action('init')` 中处理。
 
 ---
 
@@ -149,112 +114,58 @@ def on_disable(plugin_id: str) -> Dict:
 my-plugin-1.0.0.tpg (zip 压缩包)
 ├── manifest.json       # 插件元数据（必须）
 ├── entry.js            # 前端入口（minigame 必须）
-├── entry.py            # 后端入口（可选）
+├── entry.ts            # 后端入口（插件小游戏必须）
 └── ui/
-    └── game.html       # 小游戏 HTML
+    └── game.html       # 小游戏 HTML（iframe 入口）
 ```
 
 ### 5.2 entry.py 编写模板
 
 ```python
-# entry.py - 插件后端入口
-import json
-from typing import Dict, Any
+# entry.ts - 插件后端入口
+// TypeScript 版本，编译为 entry.js 后由 PluginExecutor 加载
 
-# ============================================================
-# 生命周期钩子（可选）
-# ============================================================
+interface PluginGameContext {
+  pluginId: string;
+  pluginDir: string;
+  manifest: any;
+}
 
-def on_install(plugin_id: str, version: str) -> Dict:
-    """插件安装时调用"""
-    return {'code': 0, 'data': {'message': '安装成功'}}
-
-
-def on_enable(plugin_id: str, version: str) -> Dict:
-    """插件启用时调用"""
-    return {'code': 0, 'data': {'enabled': True}}
-
-
-def on_disable(plugin_id: str) -> Dict:
-    """插件禁用时调用"""
-    return {'code': 0, 'data': {'disabled': True}}
-
-
-# ============================================================
+// ============================================================
 # 主入口
-# ============================================================
+// ============================================================
 
-async def handle_action(action: str, params: Dict, state: Dict, context: Dict) -> Dict:
-    """
-    统一入口：处理前端插件的所有请求
-
-    参数：
-        action: 操作类型（必填）
-        params: 请求参数
-        state:  游戏状态（session 级别，自动持久化）
-        context: 执行上下文
-
-    返回：
-        {'code': 0, 'data': {...}} 成功
-        {'code': 非0, 'error': '...'} 失败
-    """
-    handlers = {
-        'init': handle_init,
-        'play': handle_play,
-        'end': handle_end,
+export async function handle_action(
+  action: string,
+  params: Record<string, unknown>,
+  state: Record<string, unknown>,
+  _context: PluginGameContext,
+): Promise<{
+  code: number;
+  message: string;
+  state: Record<string, unknown>;
+  response?: string;
+  actions?: string[];
+}> {
+  switch (action) {
+    case 'init': {
+      state['hp'] = 100;
+      state['score'] = 0;
+      return {
+        code: 0, message: 'ok', state,
+        response: '游戏开始！',
+        actions: ['攻击', '防御', '寻找食物', '寻找水源'],
+      };
     }
-
-    handler = handlers.get(action)
-    if not handler:
-        return {'code': 400, 'error': f'Unknown action: {action}'}
-
-    try:
-        return await handler(action, params, state, context)
-    except Exception as e:
-        return {'code': 500, 'error': str(e)}
-
-
-# ============================================================
-# 业务逻辑处理器
-# ============================================================
-
-async def handle_init(action: str, params: Dict, state: Dict, context: Dict) -> Dict:
-    """初始化游戏"""
-    # 读取参数
-    difficulty = params.get('difficulty', '普通')
-
-    # 初始化 state
-    state['hp'] = 100
-    state['score'] = 0
-    state['difficulty'] = difficulty
-
-    return {'code': 0, 'data': {
-        'hp': state['hp'],
-        'difficulty': difficulty
-    }}
-
-
-async def handle_play(action: str, params: Dict, state: Dict, context: Dict) -> Dict:
-    """处理游戏操作"""
-    op = params.get('operation')
-
-    if op == 'attack':
-        damage = params.get('damage', 10)
-        enemy_hp = state.get('enemy_hp', 100)
-        state['enemy_hp'] = enemy_hp - damage
-        return {'code': 0, 'data': {'enemy_hp': state['enemy_hp']}}
-
-    return {'code': 400, 'error': 'Unknown operation'}
-
-
-async def handle_end(action: str, params: Dict, state: Dict, context: Dict) -> Dict:
-    """结束游戏"""
-    score = state.get('score', 0)
-    # 计算最终奖励
-    return {'code': 0, 'data': {
-        'final_score': score,
-        'rewards': {'exp': 50, 'gold': 100}
-    }}
+    case 'attack': {
+      const hp = (state['hp'] as number) ?? 100;
+      state['hp'] = hp - 10;
+      return { code: 0, message: 'ok', state, response: '攻击！', actions: ['攻击', '防御'] };
+    }
+    default:
+      return { code: 0, message: 'ok', state };
+  }
+}
 ```
 
 ---
@@ -263,123 +174,90 @@ async def handle_end(action: str, params: Dict, state: Dict, context: Dict) -> D
 
 ### 6.1 entry.py 核心结构
 
-> 完整代码见 `toonflow-game-plugins/plugins/toonflow-field-survival/entry.py`
+> 完整代码见 `toonflow-game-plugins/plugins/toonflow-field-survival/entry.ts`
 
-```python
-# 难度配置
-DIFFICULTY_CONFIG = {
-    '简单': {'enemy_hp_mult': 0.7, 'enemy_atk_mult': 0.6, 'reward_mult': 1.3, 'wave_count': 3},
-    '普通': {'enemy_hp_mult': 1.0, 'enemy_atk_mult': 1.0, 'reward_mult': 1.0, 'wave_count': 5},
-    '困难': {'enemy_hp_mult': 1.5, 'enemy_atk_mult': 1.4, 'reward_mult': 0.8, 'wave_count': 7}
+```typescript
+// handle_action 签名
+export async function handle_action(
+  action: string,
+  params: Record<string, unknown>,
+  state: Record<string, unknown>,
+  _context: PluginGameContext,
+): Promise<{
+  code: number;
+  message: string;
+  state: Record<string, unknown>;
+  response?: string;
+  actions?: string[];
+}> {
+  switch (action) {
+    case 'init':   // 初始化
+    case 'find_food':  // 寻找食物
+    case 'find_water': // 寻找水源
+    case 'search':     // 搜索周围
+    case 'attack':     // 攻击
+    case 'defend':     // 防御
+    case 'exit':       // 退出
+      return { code: 0, message: 'ok', state, response: '...', actions: ['...'] };
+  }
 }
-
-# 主入口
-async def handle_action(action: str, params: Dict, state: Dict, context: Dict) -> Dict:
-    handlers = {
-        'init': handle_init,
-        'spawn_wave': handle_spawn_wave,
-        'apply_rewards': handle_apply_rewards,
-        'end_game': handle_end_game,
-        'get_character_stats': handle_get_character_stats
-    }
-    handler = handlers.get(action)
-    if not handler:
-        return {'code': 400, 'error': f'Unknown action: {action}'}
-    try:
-        return await handler(action, params, state, context)
-    except Exception as e:
-        return {'code': 500, 'error': str(e)}
 ```
 
 ### 6.2 action 处理示例
 
-```python
-async def handle_init(action: str, params: Dict, state: Dict, context: Dict) -> Dict:
-    """游戏初始化：生成敌人波次、计算难度系数"""
-    party = params.get('party', [])
-    difficulty = params.get('difficulty', '普通')
+```typescript
+case 'init': {
+  const fresh = emptyState();
+  fresh.wave = 1;
+  fresh.enemies = buildEnemies(1);
+  fresh.events.push(`第 1 波来袭！出现了 ${fresh.enemies.length} 只野兽！`);
+  fresh.score += 10;
+  return {
+    code: 0,
+    message: 'ok',
+    state: fresh,
+    response: `野外生存开始！你有 100 点生命值。野兽出现了！`,
+    actions: ['寻找食物', '寻找水源', '搜索周围', '攻击', '防御'],
+  };
+}
 
-    # 计算角色战斗属性
-    party_stats = {}
-    for char_id in party:
-        char_data = state.get(f'char_{char_id}', {
-            '等级': 1, '经验': 0, '金钱': 0,
-            '属性': {'生命值': 100, '攻击力': 20, '防御力': 10}
-        })
-        party_stats[char_id] = calc_character_stats(char_data, difficulty)
-
-    # 生成第一波敌人
-    enemies = generate_enemies(party, difficulty, wave=1)
-    diff_cfg = DIFFICULTY_CONFIG[difficulty]
-
-    return {
-        'code': 0,
-        'data': {
-            'partyStats': party_stats,
-            'enemies': enemies,
-            'waveCount': diff_cfg['wave_count'],
-        }
-    }
-
-
-async def handle_apply_rewards(action: str, params: Dict, state: Dict, context: Dict) -> Dict:
-    """发放奖励到角色参数卡"""
-    rewards = params.get('rewards', {})
-    character_ids = params.get('characterIds', [])
-
-    results = {}
-    for char_id in character_ids:
-        char_key = f'char_{char_id}'
-        char_data = state.get(char_key, {})
-        updated = apply_rewards_to_character(char_data, rewards)
-        state[char_key] = updated  # 持久化到 state
-        results[char_id] = updated
-
-    return {'code': 0, 'data': {'updated': results}}
+case 'attack': {
+  tickSurvival(s);
+  const aliveEnemies = s.enemies.filter(e => e.hp > 0);
+  const enemy = aliveEnemies[0];
+  const myDmg = 15 + Math.floor(Math.random() * 10);
+  enemy.hp -= myDmg;
+  s.events.push(`对 ${enemy.name} 造成 ${myDmg} 点伤害！`);
+  s.score += enemy.hp <= 0 ? 20 : 5;
+  // 敌人反击...
+  return { code: 0, message: 'ok', state: s, response: s.events[s.events.length - 1], actions: ['...'] };
+}
 ```
 
 ### 6.3 奖励发放逻辑
 
-```python
-def apply_rewards_to_character(character_data: Dict, rewards: Dict) -> Dict:
-    """将奖励写入角色参数卡"""
-    updated = dict(character_data)
+```typescript
+// 野外生存状态更新逻辑（TS 实现）
+function tickSurvival(state: FieldSurvivalState): void {
+  state.hunger = clamp(state.hunger - 3, 0, 100);
+  state.thirst = clamp(state.thirst - 5, 0, 100);
+  if (state.hunger === 0 || state.thirst === 0) {
+    state.hp = clamp(state.hp - 10, 0, 100);
+  }
+  if (state.hp <= 0) state.alive = false;
+}
 
-    # 更新金钱和经验
-    updated['金钱'] = updated.get('金钱', 0) + rewards.get('gold', 0)
-    new_exp = updated.get('经验', 0) + rewards.get('exp', 0)
-    updated['经验'] = new_exp
-
-    # 检查升级
-    exp_to_next = updated.get('升级经验', 100)
-    level = updated.get('等级', 1)
-    leveled_up = False
-
-    while new_exp >= exp_to_next:
-        new_exp -= exp_to_next
-        level += 1
-        exp_to_next = math.floor(exp_to_next * 1.5)
-        leveled_up = True
-
-    updated['经验'] = new_exp
-    updated['等级'] = level
-    updated['升级经验'] = exp_to_next
-
-    # 升级加成属性
-    if leveled_up:
-        attrs = updated.get('属性', {})
-        attrs['生命值'] = attrs.get('生命值', 100) + 10
-        attrs['攻击力'] = attrs.get('攻击力', 20) + 3
-        attrs['防御力'] = attrs.get('防御力', 10) + 2
-        updated['属性'] = attrs
-
-    # 记录获得物品
-    if rewards.get('items'):
-        inventory = updated.get('背包', [])
-        inventory.extend(rewards['items'])
-        updated['背包'] = inventory
-
-    return updated
+function buildEnemies(wave: number): Enemy[] {
+  const count = Math.min(1 + Math.floor(wave / 2), 4);
+  return Array.from({ length: count }, (_, i) => ({
+    id: `enemy_${wave}_${i}`,
+    name: wave >= 3 && i === 0 ? '荒野巨兽' : `野兽 ${i + 1}`,
+    hp: 30 + wave * 10,
+    maxHp: 30 + wave * 10,
+    attack: 5 + wave * 3,
+    type: wave >= 3 && i === 0 ? 'boss' : 'beast',
+  }));
+}
 ```
 
 ---
@@ -391,72 +269,69 @@ def apply_rewards_to_character(character_data: Dict, rewards: Dict) -> Dict:
 前端 minigame 通过 `fetch` 调用后端 API：
 
 ```javascript
-// 前端发起请求
-const response = await fetch('/plugin/execute', {
+// 前端发起请求（通过后端 MiniGameController 路由）
+const response = await fetch('/api/miniGame/action', {
   method: 'POST',
   headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify({
     pluginId: 'com.toonflow.minigame-field-survival',
     action: 'init',
-    params: { party: ['char_1'], difficulty: '普通' },
+    params: {},
     sessionId: currentSessionId
   })
 })
 const result = await response.json()
-// result = { code: 0, data: { enemies: [...], waveCount: 5 } }
+// result = { code: 0, state: { hp: 100, ... }, response: '野外生存开始！', actions: ['寻找食物', ...] }
 ```
 
 ### 7.2 后端返回格式
 
-```python
-# 成功
-{'code': 0, 'data': {...}}
+```typescript
+// 成功
+{ code: 0, message: 'ok', state: {...}, response: '...', actions: ['...'] }
 
-# 失败
-{'code': 400, 'error': '参数错误'}
-{'code': 500, 'error': '服务器内部错误'}
+// 失败
+{ code: 1, message: '参数错误', state: {...} }
 ```
 
 ### 7.3 典型交互流程
 
 ```
-前端 minigame              后端 entry.py              Toonflow 引擎
+iframe minigame            后端 PluginExecutor         Toonflow 引擎
      │                           │                          │
-     │  handle_action('init')    │                          │
-     │ ─────────────────────────>│                          │
+     │  POST /api/miniGame/action│                          │
+     │ ──────────────────────────>│                          │
      │                           │                          │
-     │     {code:0, data:{...}}  │                          │
-     │ <─────────────────────────│                          │
+     │                           │ executePluginAction()     │
+     │                           │ import(entry.js)         │
+     │                           │ handle_action()          │
      │                           │                          │
-     │  toonflow.minigame.done() │                          │
-     │ ───────────────────────────────────────────────────> │
-     │                           │         写入 state        │
+     │     {code:0, state:{...}} │                          │
+     │ <──────────────────────────│                          │
+     │                           │         写入 session.state│
      │                           │                          │
 ```
 
 ---
 
-## 八、Python 内置模块使用
+## 八、TypeScript / JavaScript 标准能力
 
-Toonflow 插件后端运行在隔离的 Python 环境中，**允许使用以下标准库**：
+Toonflow 插件后端运行在 Node.js ESM 环境中，**允许使用以下标准能力**：
 
-| 模块 | 用途 |
+| 能力 | 用途 |
 |------|------|
-| `json` | JSON 序列化/反序列化 |
-| `random` | 随机数生成 |
-| `math` | 数学运算 |
-| `datetime` | 日期时间处理 |
-| `re` | 正则表达式 |
-| `typing` | 类型注解 |
-| `asyncio` | 异步编程 |
-| `hashlib` | 哈希计算 |
-| `uuid` | UUID 生成 |
+| `Math.*` | 数学运算 |
+| `Date` / `Intl` | 日期时间处理 |
+| `JSON.stringify/parse` | JSON 序列化 |
+| `crypto.randomUUID()` | UUID 生成 |
+| `async/await` | 异步编程 |
+| `console.log` | 日志（用于调试） |
 
 **禁止使用**（安全限制）：
-- `os`（文件系统访问）
-- `urllib` / `requests`（网络请求）
-- `subprocess`（命令执行）
-- `importlib` 动态加载外部模块
+- `fs` / `path`（文件系统访问）
+- `http` / `https` / `fetch`（直接网络请求）
+- `child_process`（命令执行）
+- `eval` / `new Function`（动态代码执行）
 
 ---
 
@@ -464,40 +339,37 @@ Toonflow 插件后端运行在隔离的 Python 环境中，**允许使用以下�
 
 ### 9.1 本地测试入口
 
-在 `entry.py` 中添加 `if __name__ == '__main__':` 块：
+在 `entry.ts` 中直接运行（需要 ts-node 或编译后运行）：
 
-```python
-if __name__ == '__main__':
-    import asyncio
-
-    # 模拟调用
-    async def test():
-        state = {}
-        context = {'session_id': 'test', 'user_id': 1, 'plugin_id': 'test'}
-        result = await handle_action('init', {'difficulty': '普通'}, state, context)
-        print(json.dumps(result, ensure_ascii=False, indent=2))
-
-    asyncio.run(test())
+```typescript
+// entry.ts 底部
+if (typeof process !== 'undefined' && process.argv[1]?.includes('entry.ts')) {
+  (async () => {
+    const state = {};
+    const ctx = { pluginId: 'test', pluginDir: __dirname, manifest: {} };
+    const result = await handle_action('init', {}, state, ctx as any);
+    console.log(JSON.stringify(result, null, 2));
+  })();
+}
 ```
 
-运行：
+编译并运行：
 
 ```bash
-cd toonflow-game-plugins/plugins/toonflow-field-survival
-python entry.py
+cd plugins/toonflow-field-survival
+tsc -p tsconfig.json
+node entry.js
 ```
 
-### 9.2 使用 toon_plugins CLI 测试
+### 9.2 通过后端 PluginExecutor 调试
 
-```bash
-# 列出已安装插件
-python -m toon_plugins plugins
+查看已扫描的命令：
 
-# 打包插件
-python -m toon_plugins plugins --install-all --no-tpg
+```typescript
+import { getAllPluginCommands, scanPluginCommands } from '@/lib/PluginExecutor';
 
-# 上传到 Toonflow 后端
-python -m toon_plugins plugins -i com.toonflow.minigame-field-survival
+await scanPluginCommands(userId);
+console.log('已扫描命令:', getAllPluginCommands());
 ```
 
 ---
@@ -506,31 +378,33 @@ python -m toon_plugins plugins -i com.toonflow.minigame-field-survival
 
 ### Q: handle_action 中抛出异常会怎样？
 
-异常会被捕获并返回 `{'code': 500, 'error': str(e)}`，不会影响 Toonflow 主进程。
+异常会被捕获并返回 `{ code: 1, message: '...' }`，不会影响 Toonflow 主进程。
 
 ### Q: state 的大小有限制吗？
 
-state 存储在 SQLite 中，建议单个插件的 state 总大小不超过 1MB。
+state 存储在 session 状态中，建议单个插件的 state 总大小不超过 1MB。
 
 ### Q: 如何在插件间共享数据？
 
-插件间数据隔离，不支持直接共享。如需共享，可通过 Toonflow 游戏状态（`toonflow.gameState`）作为中转。
+插件间数据隔离，不支持直接共享。如需共享，可通过 Toonflow 游戏状态作为中转。
 
 ### Q: handle_action 是同步还是异步的？
 
-`handle_action` 是 `async def`，支持 `await` 异步调用。系统会等待其返回后再处理结果。
+`handle_action` 是 `async function`，支持 `await` 异步调用。PluginExecutor 会等待其返回后再处理结果。
 
-### Q: state 是每个用户独立的吗？
+### Q: entry.ts 和 entry.js 是什么关系？
 
-是的，`state` 按 `(user_id, session_id)` 隔离，不同用户的状态互不影响。
+`entry.ts` 是插件源码（TypeScript），通过 `tsc -p tsconfig.json` 编译为 `entry.js`（ESM）。后端 `PluginExecutor` 加载 `entry.js`。
 
-### Q: 如何处理长时间运行的任务？
+### Q: entry.py 还能用吗？
 
-将任务拆分为多个 `action`，前端通过轮询或 WebSocket 分段获取结果。插件后端禁止执行超过 30 秒的同步计算。
+已废弃。`PluginExecutor` 只加载 `entry.js`，不再调用 `entry.py`。旧插件如需迁移，请将 `entry.py` 改写为 `entry.ts`。
 
 ---
 
-## 9. 命令注册与扫描机制（v2）
+## 9. 命令注册与扫描机制
+
+> ⚠️ 此章节内容已迁移到 `插件设计.md` §8.6。本节仅保留 FAQ。
 
 ### 设计目标
 
