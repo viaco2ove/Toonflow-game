@@ -47,7 +47,7 @@ This repo is an Electron + Node/Express + TypeScript app.
   - rollback or risk notes for AI/video generation behavior.
 
 ## Security & Configuration Tips
-- Never commit real API keys, tokens, local DB files, or backup artifacts (`*.bak`, `db.sqlite`).
+- Never commit real API keys, tokens, local DB files, or backup artifacts (`*.bak`, `.cache/db.sqlite`).
 - Prefer env-driven paths/ports (`DB_PATH`, `UPLOAD_DIR`, `PORT`) for cross-platform consistency.
 ## 不允许ai 修改的标注
 文件第一行: @no_modify

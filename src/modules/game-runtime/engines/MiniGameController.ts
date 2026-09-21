@@ -17,7 +17,9 @@ import {
 } from "@/modules/game-runtime/services/MiniGameIntentService";
 import { resolveSellIntent, resolveShopIntent } from "@/modules/game-runtime/services/MiniGameSellService";
 import { getPromptByCode } from "@/lib/promptHelper";
-import { scanPluginCommands, findPluginByCommand, executePluginAction } from "@/lib/PluginExecutor";
+import { scanPluginCommands, findPluginByCommand, executePluginAction, getAllPluginCommands } from "@/lib/PluginExecutor";
+import { getPluginDir, loadPluginManifestFromFile } from "@/lib/pluginRegistry";
+import { applyFieldSurvivalWriteback } from "@/lib/pluginWriteback";
 import { abandonActiveFreeChapterTaskEvent, createTaskFromUserRequest } from "@/modules/game-runtime/services/FreeChapterTaskService";
 import { analyzeIntent, analyzeIntentWithAiFallback, type IntentResult } from "@/modules/game-runtime/agents/intentAnalyzer";
 import {GLOBAL_WORLD_BOOK_TOKEN_BUDGET} from "@/constants/gobal.const";
@@ -74,9 +76,9 @@ interface MiniGameRulebook {
   passivePatterns: RegExp[];
   ruleSummary: string;
   rulebookNarration?: string;
-  setup: (ctx: MiniGameControllerInput, sessionId: string, entrySource: string) => JsonRecord;
+  setup: (ctx: MiniGameControllerInput, sessionId: string, entrySource: string) => JsonRecord | Promise<JsonRecord>;
   options: (session: JsonRecord) => MiniGameActionOption[];
-  applyAction: (session: JsonRecord, actionId: string, ctx: MiniGameControllerInput) => MiniGameStepResult;
+  applyAction: (session: JsonRecord, actionId: string, ctx: MiniGameControllerInput) => MiniGameStepResult | Promise<MiniGameStepResult>;
 }
 
 interface MiniGameStepResult {
@@ -128,7 +130,7 @@ const CONTROL_ALIASES: Record<string, string[]> = {
   suspend: ["暂停", "暂停小游戏", "先暂停"],
 };
 
-const TEXT_INPUT_GAME_TYPES = new Set(["research_skill", "alchemy", "upgrade_equipment", "battle", "shop"]);
+const TEXT_INPUT_GAME_TYPES = new Set(["research_skill", "alchemy", "upgrade_equipment", "battle", "shop", "plugin"]);
 
 function isTextInputMiniGame(gameType: string) {
   return TEXT_INPUT_GAME_TYPES.has(scalarText(gameType));
@@ -2698,12 +2700,12 @@ function buildParticipants(ctx: MiniGameControllerInput, count: number): JsonRec
   return [player, ...npcs.slice(0, Math.max(0, count - 1))];
 }
 
-function detectGameTrigger(
+async function detectGameTrigger(
   message: string,
   recentMessages: Array<Record<string, any>> = [],
   root: JsonRecord = {},
   userId: number = 0,
-): { gameType: string; source: string; pluginId?: string; pluginType?: string } | null {
+): Promise<{ gameType: string; source: string; pluginId?: string; pluginType?: string } | null> {
   const text = scalarText(message);
   const transcript = [
     ...recentMessages.slice(-8).map((item) => `${scalarText(item.role)}:${scalarText(item.content)}`.trim()).filter(Boolean),
@@ -2728,7 +2730,9 @@ function detectGameTrigger(
   }
   // ── 插件命令扫描：动态扫已启用插件 sidebar.command ──
   if (userId > 0) {
-    scanPluginCommands(userId).catch(() => {});
+    // 必须 await：原先是 fire-and-forget，首次请求时命令表还是空的，
+    // 导致 #插件命令 第一次永远命中不了（第二次才生效）。
+    await scanPluginCommands(userId).catch(() => {});
     for (const cmd of text.split(/#/g).map((s: string) => "#" + s.trim()).filter(Boolean)) {
       const ctx = findPluginByCommand(cmd);
       if (ctx) {
@@ -5167,6 +5171,38 @@ function evaluateInventoryInput(
   void inventory; // 未来拓展：解析玩家文本"卖出 XX"指令
 }
 
+/**
+ * 小游戏可选角色清单：用户 + 当前在场 NPC。
+ * 供插件选人面板（参展 / 观战 / 敌对）与 2.5D 战场渲染使用。
+ */
+function buildMiniGameRoleOptions(state: JsonRecord | undefined): Array<Record<string, unknown>> {
+  const root = asRecord(state || {});
+  const out: Array<Record<string, unknown>> = [];
+  const pushRole = (raw: JsonRecord, fallbackRoleType: string) => {
+    const id = scalarText(raw.id) || scalarText(raw.role_id);
+    const name = scalarText(raw.name) || scalarText(raw.role_name);
+    if (!id && !name) return;
+    const card = asRecord(raw.parameterCardJson);
+    out.push({
+      id: id || name,
+      name: name || id,
+      roleType: scalarText(raw.roleType) || scalarText(raw.role_type) || fallbackRoleType,
+      avatarPath: scalarText(raw.avatarPath) || scalarText(card.avatarPath),
+      avatarBgPath: scalarText(raw.avatarBgPath) || scalarText(card.avatarBgPath),
+      description: scalarText(raw.description).slice(0, 120),
+      hp: Number(card.hp || raw.hp || 100) || 100,
+      level: Number(card.level || 1) || 1,
+      skills: Array.isArray(card.skills) ? card.skills : [],
+    });
+  };
+  pushRole(asRecord(root.player), "player");
+  const npcs = asRecord(root.npcs);
+  for (const key of Object.keys(npcs)) {
+    pushRole(asRecord(npcs[key]), "npc");
+  }
+  return out;
+}
+
 const RULEBOOKS: Record<string, MiniGameRulebook> = {
   task: {
     gameType: "task",
@@ -5663,7 +5699,6 @@ const RULEBOOKS: Record<string, MiniGameRulebook> = {
     options: () => [],
     applyAction: battleStep,
   },
-
   // ── 插件小游戏（动态接入，已注册插件通过 scanPluginCommands 扫描） ──
   plugin: {
     gameType: "plugin",
@@ -5674,11 +5709,32 @@ const RULEBOOKS: Record<string, MiniGameRulebook> = {
     triggerTags: [],
     passivePatterns: [],
     ruleSummary: "小游戏进行中，请在游戏界面内操作。",
-    setup: (ctx: any, sessionId: string, _entrySource: string) => {
+    setup: async (ctx: any, sessionId: string, _entrySource: string) => {
       const pluginId = ctx.pluginId || "";
       const pluginType = ctx.pluginType || pluginId;
       const manifest = ctx.manifest as any;
       const minigame = manifest?.contributes?.minigame as any || {};
+      // ★ 调用插件 entry.ts init 拿初始游戏状态（HP/饥饿/干渴/波次/敌人/可用动作）
+      const initResult = await executePluginAction(
+        {
+          pluginId,
+          pluginDir: getPluginDir(ctx.userId, pluginId),
+          manifest,
+          userId: ctx.userId,
+          sessionId,
+          roles: buildMiniGameRoleOptions(ctx?.state),
+          playerCard: asRecord(asRecord(ctx?.state?.player).parameterCardJson),
+        },
+        "init",
+        {},
+        {},
+      );
+      const pluginState = asRecord(initResult.state) || {};
+      const actions = Array.isArray(initResult.actions) ? initResult.actions.map(String) : [];
+      // ★ 角色候选（参展 / 观战 / 敌对）与用户参数卡：
+      //   实时类插件（2.5D 动作游戏）需要用户的技能、物品、金钱、经验作为输入。
+      const roles = buildMiniGameRoleOptions(ctx?.state);
+      const playerCard = asRecord(asRecord(ctx?.state?.player).parameterCardJson);
       return {
         session_id: sessionId,
         game_type: "plugin",
@@ -5696,6 +5752,14 @@ const RULEBOOKS: Record<string, MiniGameRulebook> = {
           title: minigame.title || pluginId,
           width: minigame.width || 480,
           height: minigame.height || 640,
+          fullscreen: Boolean(minigame.fullscreen),
+          // 选人面板数据 + 用户参数卡快照
+          roles,
+          player_card: playerCard,
+          // 插件本体状态（前端 iframe 通过 meta.miniGame.publicState 拿到）
+          plugin_state: pluginState,
+          plugin_actions: actions,
+          plugin_response: scalarText(initResult.response),
         },
         hidden_state: {},
         resource_state: {},
@@ -5708,9 +5772,63 @@ const RULEBOOKS: Record<string, MiniGameRulebook> = {
         resume_token: `plugin_${sessionId}`,
       };
     },
-    options: (_session: JsonRecord): MiniGameActionOption[] => [],
-    applyAction: (_session: JsonRecord, _actionId: string, _ctx: MiniGameControllerInput): MiniGameStepResult => {
-      return { narration: "小游戏正在进行中，请在游戏界面内操作。" };
+    options: (session: JsonRecord): MiniGameActionOption[] => {
+      // ★ 把插件 actions 渲染成按钮（别名与 label 一致，用户中文输入直接命中）
+      const ps = asRecord(asRecord(session.public_state));
+      const acts = asArray<string>(ps.plugin_actions).map(scalarText).filter(Boolean);
+      return acts.map((label) => ({
+        action_id: label,
+        label,
+        desc: `${label}（插件动作）`,
+        aliases: [label],
+      }));
+    },
+    applyAction: async (session: JsonRecord, actionId: string, ctx: MiniGameControllerInput): Promise<MiniGameStepResult> => {
+      // ★ 真正执行插件 entry.ts handle_action：更新状态、生成旁白、处理退出/死亡
+      const ps = asRecord(session.public_state);
+      const pluginId = scalarText(ps.plugin_id);
+      const pluginType = scalarText(ps.plugin_type);
+      if (!pluginId) return { narration: "插件信息丢失，无法继续游戏。" };
+      const manifest = ((ctx as any)?.manifest) || null;
+      let pluginCtx = { pluginId, pluginDir: getPluginDir(ctx.userId, pluginId), manifest: manifest as any };
+      if (!manifest) {
+        const fromFile = await loadPluginManifestFromFile(ctx.userId, pluginId);
+        if (fromFile) pluginCtx.manifest = fromFile;
+      }
+      const prev = asRecord(ps.plugin_state) || {};
+      const rawInput = String(ctx.playerMessage || "").trim();
+      const result = await executePluginAction(pluginCtx, rawInput || actionId, {}, prev);
+      if (result.code !== 0 && scalarText(result.message) === "已死亡") {
+        session.status = "finished";
+        session.result = "defeat";
+        session.finish_reason = "生命值耗尽";
+        session.phase = "settling";
+      }
+      if (scalarText(result.message) === "exit") {
+        session.status = "finished";
+        session.result = "aborted";
+        session.finish_reason = "玩家退出";
+        session.phase = "settling";
+      }
+      const newPs = asRecord(session.public_state) || {};
+      newPs.plugin_state = result.state;
+      newPs.plugin_actions = Array.isArray(result.actions) ? result.actions : (newPs.plugin_actions || []);
+      newPs.plugin_response = scalarText(result.response);
+      session.public_state = newPs;
+      // ★ 结算写回：退出 / 死亡时把奖励写入用户与参展角色参数卡（只写一次）
+      const fsState: any = asRecord(result.state);
+      const fsResult: any = fsState.result;
+      if (fsState.phase === "over" && fsResult && !fsResult.written) {
+        applyFieldSurvivalWriteback((ctx as any)?.state, fsResult, fsState.selections);
+        fsState.result = { ...fsResult, written: true };
+        newPs.plugin_state = fsState;
+        session.public_state = newPs;
+      }
+      session.round = Number(session.round || 1) + 1;
+      return {
+        narration: scalarText(result.response) || "小游戏继续进行中。",
+        resultTags: [`plugin:${pluginType}`],
+      };
     },
   },
 
@@ -6425,7 +6543,7 @@ export async function handleMiniGameTurn(input: MiniGameControllerInput): Promis
       };
     }
 
-    const detected = catalogSelection.detected || detectGameTrigger(input.playerMessage, input.recentMessages, root, input.userId);
+    const detected = catalogSelection.detected || (await detectGameTrigger(input.playerMessage, input.recentMessages, root, input.userId));
     if (!detected) return null;
     const rulebook = RULEBOOKS[detected.gameType];
     if (!rulebook) return null;
@@ -6437,7 +6555,7 @@ export async function handleMiniGameTurn(input: MiniGameControllerInput): Promis
     const setupCtx = detected.gameType === "plugin"
       ? { ...input, pluginId: detectedAny.pluginId, pluginType: detectedAny.pluginType, manifest: (root as any)._pluginManifest }
       : input;
-    const session = rulebook.setup(setupCtx, gameSessionId(detected.gameType), detected.source);
+    const session = await rulebook.setup(setupCtx, gameSessionId(detected.gameType), detected.source);
     root.rulebook = {
       gameType: rulebook.gameType,
       displayName: rulebook.displayName,
@@ -6755,7 +6873,18 @@ export async function handleMiniGameTurn(input: MiniGameControllerInput): Promis
     const beforeHiddenState = deepCloneRecord(asRecord(activeSession.hidden_state));
     const beforeResourceState = deepCloneRecord(asRecord(activeSession.resource_state));
     let step: MiniGameStepResult;
-    if (rulebook.gameType === "battle") {
+    if (rulebook.gameType === "plugin") {
+      // ★ 插件小游戏：走通用 plugin rulebook（applyAction 内部调 executePluginAction）
+      const pluginActionId = normalizeMiniGameActionText(input.playerMessage);
+      step = (await rulebook.applyAction(activeSession, pluginActionId, input)) as MiniGameStepResult;
+      logMiniGameAction({
+        normalizedInput,
+        actionId: pluginActionId,
+        resolverSource: "plugin",
+        intercepted: true,
+        resultTags: step.resultTags || [],
+      });
+    } else if (rulebook.gameType === "battle") {
       const aiBattleAction = await resolveBattleActionByAgent(
         activeSession,
         rulebook,
@@ -6983,7 +7112,7 @@ export async function handleMiniGameTurn(input: MiniGameControllerInput): Promis
   const beforePublicState = deepCloneRecord(asRecord(activeSession.public_state));
   const beforeHiddenState = deepCloneRecord(asRecord(activeSession.hidden_state));
   const beforeResourceState = deepCloneRecord(asRecord(activeSession.resource_state));
-  const step = rulebook.applyAction(activeSession, actionId, input);
+  const step = await rulebook.applyAction(activeSession, actionId, input);
   logMiniGameAction({
     normalizedInput: normalizeMiniGameActionText(input.playerMessage),
     actionId,

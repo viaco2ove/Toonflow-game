@@ -94,7 +94,7 @@ src/
 
 ## 数据库
 
-- 开发使用 `db.sqlite` (已 gitignore)
+- 开发使用 `.cache/db.sqlite` (已 gitignore)
 - 相关表: `t_gameSession`, `t_sessionMessage`, `t_storyWorld`, `t_storyChapter`
 
 knex 取代fixdb initdb，fixdb initdb 已被被删除！！！！

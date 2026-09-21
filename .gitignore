@@ -39,7 +39,7 @@ build/*
 upload/*
 uploads/*
 
-db.sqlite
+.cache/db.sqlite
 db.sqlite-shm
 db.sqlite-wal
 db.sqlite.bak_*

@@ -108,7 +108,7 @@ compose 默认把数据挂到：
 
 其中包括：
 
-- `db.sqlite`
+- `../../../../.cache/db.sqlite`
 - `uploads/`
 - `tools/`
 - `logs/`

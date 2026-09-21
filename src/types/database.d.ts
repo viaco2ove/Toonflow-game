@@ -1,4 +1,4 @@
-// @db-hash 534953cfe1bc06ef4125f2dec70b1a32
+// @db-hash 6d90973d0d9649f988e67ab2fb7e379d
 //该文件由脚本自动生成，请勿手动修改
 
 export interface knex_migrations {
@@ -185,6 +185,17 @@ export interface t_plugin {
   'updatedAt'?: number | null;
   'userId': number;
   'version'?: string | null;
+}
+export interface t_plugin_session_data {
+  'createdAt'?: number | null;
+  'dataKey': string;
+  'dataValue'?: string;
+  'id'?: number;
+  'pluginId': string;
+  'pluginName'?: string | null;
+  'sessionId': string;
+  'updatedAt'?: number | null;
+  'userId': number;
 }
 export interface t_project {
   'artStyle'?: string | null;
@@ -482,6 +493,7 @@ export interface DB {
   "t_novel": t_novel;
   "t_outline": t_outline;
   "t_plugin": t_plugin;
+  "t_plugin_session_data": t_plugin_session_data;
   "t_project": t_project;
   "t_prompts": t_prompts;
   "t_role_memory": t_role_memory;

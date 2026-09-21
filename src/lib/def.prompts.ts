@@ -6241,6 +6241,8 @@ export const PROMPT_VIDEO_MULTI = _normalize(_PROMPT_VIDEO_MULTI);
 export const PROMPT_VIDEO_SINGLE = _normalize(_PROMPT_VIDEO_SINGLE);
 export const PROMPT_VIDEO_MAIN = _normalize(_PROMPT_VIDEO_MAIN);
 
+import { PROMPT_FIELD_SURVIVAL_MAP_GENER } from "@/agents/plugins.prompts";
+
 /**
  * code → 默认 prompt 的查找表
  * 运行时读取顺序：t_prompts.customValue → DEFAULT_PROMPTS[code] → ""
@@ -6299,5 +6301,6 @@ export const DEFAULT_PROMPTS: Record<string, string> = {
   "story-update-align": PROMPT_STORY_UPDATE_ALIGN,
   "story-orchestrator-options": PROMPT_STORY_ORCHESTRATOR_OPTIONS,
   "task-director-agent-options": PROMPT_TASK_DIRECTOR_AGENT_OPTIONS,
+  "plugin-field-survival-map-gener": PROMPT_FIELD_SURVIVAL_MAP_GENER,
 };
 

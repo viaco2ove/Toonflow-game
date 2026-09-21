@@ -25,6 +25,15 @@ export interface PluginGameContext {
   pluginId: string;
   pluginDir: string;
   manifest: PluginManifest;
+  /** 运行上下文（/plugin/tick 与 MiniGameController 均会带上） */
+  userId?: number;
+  sessionId?: string;
+  /** 会话内可选角色清单（参展/观战/敌对候选），由 rulebook setup 写入 */
+  roles?: Array<Record<string, unknown>>;
+  /** 用户参数卡快照（技能/物品/金钱/经验/生命），供插件读取技能与物品 */
+  playerCard?: Record<string, unknown>;
+  /** 后端插件 API（toonflowTsApi：pluginData + agent），按 ctx 维度自动注入 */
+  tsApi?: import("./plugins/toonflowTsApi").ToonflowTsApi;
 }
 
 export interface HandleActionParams {
@@ -70,6 +79,26 @@ export async function executePluginAction(
   params: HandleActionParams,
   state: PluginGameState
 ): Promise<HandleActionResult> {
+  // ★ 注入 toonflowTsApi：插件 entry.ts 内用 ctx.tsApi.pluginData / ctx.tsApi.agent
+  if (
+    ctx &&
+    Number.isFinite(Number(ctx.userId)) &&
+    Number(ctx.userId) > 0 &&
+    ctx.sessionId &&
+    !ctx.tsApi
+  ) {
+    try {
+      const { buildToonflowTsApi } = await import("./plugins/toonflowTsApi");
+      ctx.tsApi = buildToonflowTsApi({
+        userId: Number(ctx.userId),
+        sessionId: String(ctx.sessionId),
+        pluginId: ctx.pluginId,
+      });
+    } catch (err) {
+      console.error("[PluginExecutor] 注入 toonflowTsApi 失败:", err);
+    }
+  }
+
   const mod = await loadEntryModule(ctx.pluginDir);
   if (!mod.handle_action) {
     return {
