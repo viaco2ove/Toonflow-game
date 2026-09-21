@@ -3,13 +3,9 @@
  *
  * 商城小游戏轻量购买接口：
  *   - 玩家在面板点"购买"按钮触发
- *   - 直接调 AI 商城老板 prompt 拿到 confirm_purchase 响应（narration + items）
- *   - 不写消息、不触发 streamlines、不持久化 session 状态
- *   - 真正的"扣款/入背包"目前仅返回 AI 确认，落地逻辑后续接入游戏运行时 writeback
- *
- * 区别于 addMessage 路径：
- *   - addMessage 落用户消息 → 触发 streamlines 编排 → 记忆整理 → 语音... 全套链路 5-15s
- *   - 本接口：单次 AI 调用，返回结果只刷前端面板 ~1-3s
+ *   - 不写消息、不触发 streamlines
+ *   - confirm_purchase：直接扣款入背包，回写 session state
+ *   - 其他 action（list_categories / show_items / free_chat）：纯 AI 查询，不动状态
  */
 import express from "express";
 import { z } from "zod";
@@ -20,6 +16,45 @@ import { getGameDb } from "@/lib/gameEngine";
 import u from "@/utils";
 
 const router = express.Router();
+
+/** 从 session.stateJson 读取玩家当前金钱 */
+function readPlayerMoney(sessionState: any): number {
+  const root = sessionState || {};
+  const player = root.player || root.playerRole || {};
+  const card = player.parameterCardJson || player.parameter_card_json || {};
+  return Number(card.money || 0);
+}
+
+/** 写入玩家金钱到 session.stateJson，返回新的金钱值 */
+function writePlayerMoney(sessionState: any, newMoney: number): number {
+  const root = sessionState as Record<string, any>;
+  const player = root.player || root.playerRole || {};
+  const card = (player.parameterCardJson || player.parameter_card_json || {}) as Record<string, any>;
+  card.money = Math.max(0, newMoney);
+  player.parameterCardJson = card;
+  if (root.player) root.player = player;
+  else root.playerRole = player;
+  return card.money;
+}
+
+/** 从 session.stateJson 读取玩家背包 items */
+function readPlayerItems(sessionState: any): string[] {
+  const root = sessionState || {};
+  const player = root.player || root.playerRole || {};
+  const card = player.parameterCardJson || player.parameter_card_json || {};
+  return Array.isArray(card.items) ? card.items.map((x: any) => String(x || "").trim()).filter(Boolean) : [];
+}
+
+/** 写入玩家背包 items 到 session.stateJson */
+function writePlayerItems(sessionState: any, newItems: string[]): void {
+  const root = sessionState as Record<string, any>;
+  const player = root.player || root.playerRole || {};
+  const card = (player.parameterCardJson || player.parameter_card_json || {}) as Record<string, any>;
+  card.items = newItems;
+  player.parameterCardJson = card;
+  if (root.player) root.player = player;
+  else root.playerRole = player;
+}
 
 export default router.post(
   "/",
@@ -46,17 +81,24 @@ export default router.post(
       const db = getGameDb();
       const row = await db("t_gameSession")
         .where({ sessionId, userId: currentUserId })
-        .select("worldId", "sessionId")
+        .select("sessionId", "stateJson")
         .first();
       if (!row) {
         return res.status(404).send(error("会话不存在"));
       }
+
+      const sessionState = typeof row.stateJson === "string"
+        ? JSON.parse(row.stateJson || "{}")
+        : (row.stateJson || {});
       const worldId = Number(row.worldId || 0) || undefined;
 
-      // 给 AI 一个明确购买意图的输入，让它返回 confirm_purchase action
+      // 预读当前金钱和背包
+      const currentMoney = readPlayerMoney(sessionState);
+      const currentItems = readPlayerItems(sessionState);
+
       const priceHint = expectedPrice > 0 ? `（之前看到的报价 ${expectedPrice} 金）` : "";
       const categoryHint = itemCategory ? ` [${itemCategory}]` : "";
-      const purchaseInput = `买一把 ${itemName}${categoryHint}${priceHint}`;
+      const purchaseInput = `买${itemName}${categoryHint}${priceHint}`;
 
       const result = await resolveShopIntent(purchaseInput, currentUserId, worldId);
       if (!result) {
@@ -68,6 +110,40 @@ export default router.post(
         }));
       }
 
+      // confirm_purchase：直接扣款入背包
+      if (result.action === "confirm_purchase" && result.items && result.items.length > 0) {
+        const purchasedItem = result.items[0];
+        const price = purchasedItem.price || expectedPrice || 0;
+
+        if (currentMoney < price) {
+          // 钱不够，返回失败提示
+          return res.status(200).send(success({
+            action: "free_chat",
+            categories: [],
+            items: [],
+            narration: `钱不够。这件要 ${price} 金，你只有 ${currentMoney} 金。`,
+          }));
+        }
+
+        const newMoney = writePlayerMoney(sessionState, currentMoney - price);
+        const newItems = [...currentItems, `${purchasedItem.name}（商城购入，${price} 金）`];
+        writePlayerItems(sessionState, newItems);
+
+        await db("t_gameSession").where({ sessionId }).update({
+          stateJson: JSON.stringify(sessionState),
+          updateTime: Math.floor(Date.now() / 1000),
+        });
+
+        return res.status(200).send(success({
+          action: "purchased",
+          categories: [],
+          items: [],
+          narration: result.narration
+            || `已购入：${purchasedItem.name}，花了 ${price} 金，剩余 ${newMoney} 金。`,
+        }));
+      }
+
+      // 其他 action（list_categories / show_items / free_chat）：纯查询，不动状态
       res.status(200).send(success({
         action: result.action,
         categories: result.categories,
