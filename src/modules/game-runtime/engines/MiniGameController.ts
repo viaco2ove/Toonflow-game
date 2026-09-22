@@ -5798,16 +5798,27 @@ const RULEBOOKS: Record<string, MiniGameRulebook> = {
       const prev = asRecord(ps.plugin_state) || {};
       const rawInput = String(ctx.playerMessage || "").trim();
       const result = await executePluginAction(pluginCtx, rawInput || actionId, {}, prev);
+      // ★ 死亡判定：插件可能在 code/message 为 "ok" 时把 phase 改为 "over"（插件本体走自己的 death 分支）
+      //   仅靠 message === "exit" 漏掉死亡路径，会导致 session.status 永远是 "active"，
+      //   下次输入 #野外生存 时 hasActiveGame=true 直接短路（MiniGameController.handleMiniGameTurn 第 6357 行），
+      //   面板不会再弹出。必须根据 plugin_state.phase / result.reason 兜底改 status。
+      const outState: any = (result as any)?.state || {};
+      const outPhase = scalarText(outState.phase);
+      const outReason = scalarText(outState?.result?.reason);
       if (result.code !== 0 && scalarText(result.message) === "已死亡") {
         session.status = "finished";
         session.result = "defeat";
         session.finish_reason = "生命值耗尽";
         session.phase = "settling";
-      }
-      if (scalarText(result.message) === "exit") {
+      } else if (scalarText(result.message) === "exit" || outPhase === "over" && outReason === "exit") {
         session.status = "finished";
         session.result = "aborted";
         session.finish_reason = "玩家退出";
+        session.phase = "settling";
+      } else if (outPhase === "over" && outReason === "death") {
+        session.status = "finished";
+        session.result = "defeat";
+        session.finish_reason = "生命值耗尽";
         session.phase = "settling";
       }
       const newPs = asRecord(session.public_state) || {};
@@ -6482,6 +6493,87 @@ export async function handleMiniGameTurn(input: MiniGameControllerInput): Promis
     //   addMessage → /game/orchestration/minigame → /game/streamlines → /game/streamvoice
     // 4-Agent 编排（Director / Speaker / Completion）由
     //   /orchestration/minigame 阶段执行，本处不再生成台词。
+  }
+
+  // ★ 显式重进：用户输入新的 #小游戏名（不是 #退出 / 目录 / 卖出），
+  //   即使当前有 finished/over 的旧会话，也应该作为新一局开始。
+  //   否则 hasActiveGame 不会主动 false，setup() 永远走不到，新面板出不来。
+  //   先探测 trigger；若命中 plugin/rulebook，强制清掉旧 session 然后走 setup 路径。
+  if (!isForceQuitMiniGameCommand(input.playerMessage)
+      && !isMiniGameCatalogCommand(input.playerMessage)
+      && !isSellCommand(input.playerMessage)) {
+    const restartDetected = await detectGameTrigger(
+      input.playerMessage, input.recentMessages, root, input.userId,
+    );
+    if (restartDetected) {
+      const restartRulebook = RULEBOOKS[restartDetected.gameType];
+      if (restartRulebook) {
+        DebugLogUtil.log(
+          "story:mini_game:agent",
+          "显式 #命令 触发小游戏重进（旧 session=" +
+            scalarText(activeSession.phase) + "/" + scalarText(activeSession.status) + "）",
+          JSON.stringify(restartDetected),
+        );
+        clearPassiveMiniGameReentrySuppression(root);
+        clearMiniGameCatalog(state);
+        // 清掉旧 session —— 让 hasActiveGame 重新评估为 false，走下面的 setup()
+        clearMiniGameSession(root);
+        // 重新评估 hasActiveGame（root.session 已被 clearMiniGameSession 重置为空对象）
+        const afterClear = isMiniGameActiveState(state);
+        if (!afterClear) {
+          // 把本次 detected 透传到下面 if (!hasActiveGame) 分支：用一个特殊 sentinel
+          // 但更简单：在这里直接调一次 setup 并 return 同样格式的结果。
+          const detectedAny2 = restartDetected as any;
+          const setupCtx2 = restartDetected.gameType === "plugin"
+            ? {
+                ...input,
+                pluginId: detectedAny2.pluginId,
+                pluginType: detectedAny2.pluginType,
+                manifest: (root as any)._pluginManifest,
+              }
+            : input;
+          const session2 = await restartRulebook.setup(
+            setupCtx2, gameSessionId(restartDetected.gameType), restartDetected.source,
+          );
+          root.rulebook = {
+            gameType: restartRulebook.gameType,
+            displayName: restartRulebook.displayName,
+            version: restartRulebook.version,
+            goal: restartRulebook.goal,
+            phaseOrder: restartRulebook.phaseOrder,
+            ruleSummary: restartRulebook.ruleSummary,
+          };
+          root.session = session2;
+          root.actionLog = [];
+          root.writeback = {};
+          root.memorySummary = "";
+          const narration2 = buildStartNarration(restartRulebook, session2);
+          refreshRuntimeUi(root, narration2, restartRulebook);
+          pushMiniGameLog(root, {
+            round: Number(session2.round || 1),
+            phase: scalarText(session2.phase),
+            actor_id: "player",
+            action_id: "enter",
+            action_payload_json: { source: restartDetected.source, trigger: input.playerMessage, restart: true },
+            result_json: { narration: narration2 },
+            created_at: nowTs(),
+          });
+          const startMeta2 = buildMiniGameMeta(root);
+          const narratorName2 = scalarText(input.world?.narratorRole?.name) || "旁白";
+          return {
+            intercepted: true,
+            runtime: root,
+            message: {
+              role: narratorName2,
+              roleType: "narrator",
+              eventType: "on_mini_game_start",
+              content: narration2,
+              meta: startMeta2,
+            },
+          };
+        }
+      }
+    }
   }
 
   if (!hasActiveGame) {
