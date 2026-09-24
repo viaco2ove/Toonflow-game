@@ -131,7 +131,23 @@ export function parseManifest(raw: string, manifestDir: string): PluginManifest 
 /* 安装                                                                */
 /* ------------------------------------------------------------------ */
 
-const PLUGIN_PACKAGE_MAX_BYTES = 100 * 1024 * 1024; // 100MB
+/** 插件包体积上限缺省值：1GB */
+const DEFAULT_PLUGIN_PACKAGE_MAX_BYTES = 1024 * 1024 * 1024;
+
+/**
+ * 插件包体积上限（字节）。
+ * 优先读环境变量 PLUGIN_PACKAGE_MAX_BYTES；缺失 / 非法（非正数）时回退 1GB。
+ */
+export function getPluginPackageMaxBytes(): number {
+  const raw = Number(process.env.PLUGIN_PACKAGE_MAX_BYTES);
+  if (!Number.isFinite(raw) || raw <= 0) return DEFAULT_PLUGIN_PACKAGE_MAX_BYTES;
+  return Math.floor(raw);
+}
+
+/** 把上限字节数换算为整数 MB，用于报错文案 */
+function formatMaxMb(maxBytes: number): number {
+  return Math.floor(maxBytes / (1024 * 1024));
+}
 
 function extractBase64(raw: string): Buffer {
   const value = String(raw || "").trim();
@@ -154,23 +170,24 @@ export interface InstallPluginResult {
   upgraded: boolean;
 }
 
-export async function installPluginPackage(
+/**
+ * 从磁盘 zip 文件安装插件（核心实现）。
+ *
+ * 解压 / 安全校验 / 落库逻辑与旧 installPluginPackage 完全一致，
+ * 差别仅在于 zip 来源是磁盘文件：直接解压该文件，不再先读成 Buffer 再写一遍。
+ */
+export async function installFromZipFile(
   userId: number,
-  base64Data: string,
+  zipFilePath: string,
   fileName?: string | null,
 ): Promise<InstallPluginResult> {
-  const buffer = extractBase64(base64Data);
-  if (!buffer.length) throw new Error("插件包内容为空");
-  if (buffer.length > PLUGIN_PACKAGE_MAX_BYTES) throw new Error("插件包超过 100MB 限制");
-
+  void fileName;
   const extract = require("extract-zip");
   const tmpDir = path.join(getPluginsRootDir(), ".tmp", `${Date.now()}-${randomUUID().slice(0, 8)}`);
   await fsp.mkdir(tmpDir, { recursive: true });
 
   try {
-    const tmpZip = path.join(tmpDir, "package.zip");
-    await fsp.writeFile(tmpZip, buffer);
-    await extract(tmpZip, { dir: tmpDir, onEntry: (entry: any) => {
+    await extract(zipFilePath, { dir: tmpDir, onEntry: (entry: any) => {
       if (!isSafeEntryName(entry.fileName)) throw new Error(`插件包包含不安全路径: ${entry.fileName}`);
     } });
 
@@ -245,6 +262,41 @@ export async function installPluginPackage(
   } finally {
     await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => undefined);
   }
+}
+
+export async function installPluginPackage(
+  userId: number,
+  base64Data: string,
+  fileName?: string | null,
+): Promise<InstallPluginResult> {
+  const buffer = extractBase64(base64Data);
+  if (!buffer.length) throw new Error("插件包内容为空");
+  const maxBytes = getPluginPackageMaxBytes();
+  if (buffer.length > maxBytes) throw new Error(`插件包超过 ${formatMaxMb(maxBytes)}MB 限制`);
+
+  // 落盘为临时 zip 后交给统一文件入口（对外行为保持不变）
+  const stagingDir = path.join(getPluginsRootDir(), ".tmp");
+  await fsp.mkdir(stagingDir, { recursive: true });
+  const stagedZip = path.join(stagingDir, `upload-${Date.now()}-${randomUUID().slice(0, 8)}.zip`);
+  try {
+    await fsp.writeFile(stagedZip, buffer);
+    return await installFromZipFile(userId, stagedZip, fileName);
+  } finally {
+    await fsp.rm(stagedZip, { force: true }).catch(() => undefined);
+  }
+}
+
+/** 从磁盘 zip 安装插件（供 raw 流式上传路由复用）。 */
+export async function installPluginPackageFromFile(
+  userId: number,
+  zipFilePath: string,
+  fileName?: string | null,
+): Promise<InstallPluginResult> {
+  const stat = await fsp.stat(zipFilePath);
+  if (!stat.isFile() || stat.size === 0) throw new Error("插件包内容为空");
+  const maxBytes = getPluginPackageMaxBytes();
+  if (stat.size > maxBytes) throw new Error(`插件包超过 ${formatMaxMb(maxBytes)}MB 限制`);
+  return installFromZipFile(userId, zipFilePath, fileName);
 }
 
 /* ------------------------------------------------------------------ */

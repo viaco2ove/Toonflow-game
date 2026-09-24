@@ -55,7 +55,10 @@ export default async function startServe(randomPort: Boolean = false) {
 
   app.use(logger("dev"));
   app.use(cors({ origin: "*" }));
-  app.use(express.json({ limit: "100mb" }));
+  // JSON 请求体上限可通过 JSON_BODY_LIMIT 配置（默认 100mb）；
+  // 显式开启 inflation，让 body-parser 自动解压 gzip/deflate 请求体
+  // （配合客户端 Content-Encoding: gzip）。
+  app.use(express.json({ limit: process.env.JSON_BODY_LIMIT || "100mb", inflation: true }));
   app.use(express.urlencoded({ extended: true, limit: "100mb" }));
   app.use(jsonGzipMiddleware);
 
