@@ -17,6 +17,25 @@ import u from "@/utils";
 import { getPromptByCode } from "@/lib/promptHelper";
 import { pluginAgentPromptCode } from "@/agents/plugins.prompts";
 
+/** ★ fix③：插件 agent 调用超时上限。
+ *  背景：web 端点「开始游戏」时 /plugin/tick(action=start) 会同步等待地图生成，
+ *  原实现对 u.ai.text.invoke 不设上限 → 模型卡住/流式停顿会让该 HTTP 请求长时间不返回
+ *  （前端表现：无返回、加载态消失）。超时即抛错 → 走 fallback 地图，请求必定及时返回。 */
+const AGENT_TIMEOUT_MS = 15000;
+
+/** 给 Promise 加超时（定时器在完成/失败后清理，避免悬挂） */
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, timeoutMessage: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  return Promise.race([
+    promise.finally(() => {
+      if (timer) clearTimeout(timer);
+    }),
+    new Promise<T>((_, reject) => {
+      timer = setTimeout(() => reject(new Error(timeoutMessage)), timeoutMs);
+    }),
+  ]);
+}
+
 export interface MapGenerInput {
   /** 故事动态数据摘要（动态角色卡/全局背景/世界时钟/参战名单等，已拼好的文本） */
   storyDigest?: string;
@@ -176,14 +195,18 @@ export async function runPluginAgent(
     const userPrompt = parts.join("\n\n");
 
     const aiConfig = await u.getPromptAi(aiConfigKey);
-    const result = await u.ai.text.invoke(
-      {
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: userPrompt },
-        ],
-      },
-      aiConfig
+    const result = await withTimeout(
+      u.ai.text.invoke(
+        {
+          messages: [
+            { role: "system", content: systemPrompt },
+            { role: "user", content: userPrompt },
+          ],
+        },
+        aiConfig
+      ),
+      AGENT_TIMEOUT_MS,
+      `插件 agent 调用超时（>${AGENT_TIMEOUT_MS}ms）`
     );
 
     const content: string = String((result as any)?.content ?? (result as any)?.text ?? "");
