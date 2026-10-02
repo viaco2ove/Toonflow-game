@@ -12,6 +12,35 @@ function asRec(v: unknown): Record<string, any> {
   return v && typeof v === "object" ? (v as Record<string, any>) : {};
 }
 
+/**
+ * ★ v5：把插件侧对用户「动态参数卡」的补丁（背包 items / 技能 skills / 金钱 money）
+ * 写回会话 stateJson 的用户卡（兼容 player / playerRole、parameterCardJson / parameter_card_json）。
+ * 仅在插件实际改动了参数卡时调用（如背包卖出、纳戒存取、商城购买）。
+ */
+export function applyPlayerCardPatch(state: any, patch: Record<string, any>): boolean {
+  const p = patch && typeof patch === "object" ? patch : null;
+  if (!p || !state) return false;
+  const node =
+    state.player && typeof state.player === "object"
+      ? state.player
+      : state.playerRole && typeof state.playerRole === "object"
+        ? state.playerRole
+        : null;
+  if (!node) return false;
+  const card = asRec(node.parameterCardJson ?? node.parameter_card_json);
+  let changed = false;
+  for (const k of Object.keys(p)) {
+    const v = (p as any)[k];
+    if (v === undefined) continue;
+    card[k] = v;
+    changed = true;
+  }
+  if (!changed) return false;
+  node.parameterCardJson = card;
+  if (node.parameter_card_json !== undefined) node.parameter_card_json = card;
+  return true;
+}
+
 export function applyFieldSurvivalWriteback(
   state: any,
   result: any,

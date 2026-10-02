@@ -3,6 +3,8 @@
  *
  * 目前支持的 agent：
  *   - field-survival-map-gener：利用故事动态数据生成/维护野外生存地图 JSON
+ *   - field-survival-shop-gener：★ v5 利用故事动态数据 + 常驻世界书条目，
+ *     为「系统面板 · 商城」生成贴合故事的商品清单（插件再叠加自带物资）
  *
  * 调用链（req.md 设计）：
  *   插件 entry.ts (后端进程内)
@@ -34,6 +36,14 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number, timeoutMessage: 
       timer = setTimeout(() => reject(new Error(timeoutMessage)), timeoutMs);
     }),
   ]);
+}
+
+/** ★ v5：商城生成 agent 输入 */
+export interface ShopGenerInput {
+  /** 常驻世界书条目摘要（故事世界观 / 物资设定） */
+  worldBookDigest?: string;
+  /** 用户参数卡（等级 / 金钱，用于定价与量级） */
+  playerCard?: Record<string, unknown>;
 }
 
 export interface MapGenerInput {
@@ -128,6 +138,26 @@ function sanitizeMap(map: Record<string, any>): Record<string, any> {
   };
 }
 
+/** ★ v5：商城 agent 名 */
+const SHOP_AGENT_NAME = "field-survival-shop-gener";
+
+/** ★ v5：商城商品裁剪（数量 / 数值兜底），坏字段一律回退默认 */
+function sanitizeShop(out: Record<string, any>): Record<string, any> {
+  const goods = Array.isArray(out?.goods) ? out.goods.slice(0, 14) : [];
+  const KINDS = ["consumable", "material", "equipment", "skill_book", "quest"];
+  const RARITIES = ["common", "fine", "rare", "epic", "legend"];
+  return {
+    goods: goods.map((g: any, i: number) => ({
+      name: String(g?.name || `物资${i + 1}`).slice(0, 20),
+      price: num(g?.price, 50, 1, 9999),
+      kind: KINDS.includes(String(g?.kind)) ? String(g.kind) : "material",
+      rarity: RARITIES.includes(String(g?.rarity)) ? String(g.rarity) : "common",
+      heal: num(g?.heal, 0, 0, 200),
+      desc: String(g?.desc || "").slice(0, 60),
+    })),
+  };
+}
+
 /** 生成一份保底地图（LLM 不可用/解析失败时用，保证游戏可玩） */
 function fallbackMap(input?: MapGenerInput): Record<string, any> {
   return sanitizeMap({
@@ -173,11 +203,12 @@ function mergeMap(current: Record<string, any>, patch: Record<string, any>): Rec
  */
 export async function runPluginAgent(
   agentName: string,
-  input: MapGenerInput,
+  input: MapGenerInput & ShopGenerInput,
   aiConfigKey = "storyMiniGameModel"
 ): Promise<{ ok: boolean; output?: Record<string, any>; error?: string }> {
   const code = pluginAgentPromptCode(agentName);
   if (!code) return { ok: false, error: `未知插件 agent: ${agentName}` };
+  const isShop = String(agentName || "").trim() === SHOP_AGENT_NAME;
 
   try {
     const systemPrompt = await getPromptByCode(code);
@@ -185,7 +216,10 @@ export async function runPluginAgent(
 
     const parts: string[] = [];
     parts.push("【故事动态数据】\n" + String(input.storyDigest || "（无）"));
-    if (input.currentMap) {
+    if (isShop) {
+      parts.push("【常驻世界书条目】\n" + String(input.worldBookDigest || "（无）"));
+      parts.push("【用户参数卡】\n" + JSON.stringify(input.playerCard || {}));
+    } else if (input.currentMap) {
       parts.push(
         "【当前地图 JSON（增量维护，只输出需变更字段）】\n" +
           JSON.stringify(sanitizeMap(input.currentMap))
@@ -212,12 +246,16 @@ export async function runPluginAgent(
     const content: string = String((result as any)?.content ?? (result as any)?.text ?? "");
     const parsed = extractJson(content);
     if (!parsed) {
-      return { ok: false, error: "LLM 输出解析失败", output: fallbackMap(input) };
+      return { ok: false, error: "LLM 输出解析失败", output: isShop ? undefined : fallbackMap(input) };
     }
-    const output = input.currentMap ? mergeMap(input.currentMap, parsed) : sanitizeMap(parsed);
+    const output = isShop
+      ? sanitizeShop(parsed)
+      : input.currentMap
+        ? mergeMap(input.currentMap, parsed)
+        : sanitizeMap(parsed);
     return { ok: true, output };
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
-    return { ok: false, error: msg, output: fallbackMap(input) };
+    return { ok: false, error: msg, output: isShop ? undefined : fallbackMap(input) };
   }
 }

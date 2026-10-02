@@ -5,13 +5,33 @@ import { error, success } from "@/lib/responseFormat";
 import { getGameDb, parseJsonSafe, toJsonText } from "@/lib/gameEngine";
 import { getPluginDir, loadPluginManifestFromFile } from "@/lib/pluginRegistry";
 import { executePluginAction, type PluginGameContext } from "@/lib/PluginExecutor";
-import { applyFieldSurvivalWriteback } from "@/lib/pluginWriteback";
+import { applyFieldSurvivalWriteback, applyPlayerCardPatch } from "@/lib/pluginWriteback";
 import {
   getPluginData,
   setPluginData,
 } from "@/lib/plugins/PluginSessionDataService";
 
 const router = express.Router();
+
+/**
+ * ★ v5：把当前世界（worldId）的常驻世界书条目拼成摘要文本，
+ * 供插件 agent（商城生成）参考故事世界观与物资设定。
+ */
+async function buildWorldBookDigest(db: any, worldId: number): Promise<string> {
+  if (!Number.isFinite(worldId) || worldId <= 0) return "";
+  try {
+    const rows = await db("t_worldBook").where({ worldId }).orderBy("sort", "asc").limit(80);
+    const list = Array.isArray(rows) ? rows : [];
+    if (!list.length) return "";
+    const line = (r: any) =>
+      `- ${String(r?.title || "").slice(0, 30)}：${String(r?.content || "").replace(/\s+/g, " ").slice(0, 200)}`;
+    const constant = list.filter((r: any) => Number(r?.constant) === 1);
+    const picked = (constant.length ? constant : list).slice(0, 12);
+    return picked.map(line).join("\n").slice(0, 2000);
+  } catch {
+    return "";
+  }
+}
 
 /** 插件运行时状态在 t_plugin_session_data 里的 dataKey */
 const PLUGIN_STATE_KEY = "plugin_state";
@@ -102,9 +122,19 @@ export default router.post(
         playerCard: (publicState.player_card && typeof publicState.player_card === "object")
           ? publicState.player_card
           : undefined,
+        // ★ v5：常驻世界书条目摘要（商城 agent 生成物资时参考）
+        worldBookDigest: await buildWorldBookDigest(db, Number((session as any)?.worldId || 0)),
       };
 
       const result = await executePluginAction(ctx as any, action, params, prev as any);
+
+      // ★ v5：插件侧对用户「动态参数卡」的改动（背包物品 / 技能 / 金钱）写回 stateJson
+      //   插件在 state.writeback 里给出增量补丁，宿主消费后清空，避免重复写
+      const wbPatch = (result as any)?.state?.writeback;
+      if (wbPatch && typeof wbPatch === "object" && Object.keys(wbPatch).length > 0) {
+        applyPlayerCardPatch(state, wbPatch);
+        (result as any).state.writeback = null;
+      }
 
       // ★ 结算写回：退出 / 死亡时把奖励写入用户与参展角色参数卡（只写一次）
       const resultState: any = result?.state ?? prev;

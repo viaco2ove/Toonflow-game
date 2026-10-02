@@ -135,7 +135,7 @@ export default async function startServe(randomPort: Boolean = false) {
       return res.status(401).send({ message: "无效的token" });
     }
   });
-   console.log("你个弱智还敢说没启动吗？", new Date());
+   console.log("服务已启动", new Date());
   //Express 中间件/路由的执行顺序：Express 是按 app.use / app.get / app.post 的注册顺序依次匹配请求的，一旦某个 handler return res.status(...) 后面的就不跑了。
   // 版本号接口必须在所有中间件之前注册（包括 enforceResourceIsolation）,避免401 问题
   app.get("/other/version", (_req, res) => {

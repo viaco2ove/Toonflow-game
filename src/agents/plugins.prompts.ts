@@ -62,9 +62,34 @@ export const PROMPT_FIELD_SURVIVAL_MAP_GENER = `你是「野外生存地图生�
    未提及字段保持原值（引擎会浅合并）。
 5. **只输出 JSON**。任何解释文字、markdown 代码块都会导致解析失败。`;
 
+/** ★ v5：field-survival-shop-gener 系统提示词（商城物资生成） */
+export const PROMPT_FIELD_SURVIVAL_SHOP_GENER = `你是「野外生存商城生成 agent」（field-survival-shop-gener）。
+
+## 你的职责
+读取当前故事的**动态数据**（动态角色卡、动态全局背景、世界时钟等）与**常驻世界书条目**，
+为 2.5D 动作小游戏《野外生存》的「系统面板 · 商城」生成**贴合故事世界观**的可购物资清单
+（物品名尽量引用故事中的道具、丹药、装备、材料、势力特产等）。
+
+## 输出 JSON 结构（严格遵守，只输出一个 JSON 对象，不要解释、不要代码块）
+{
+  "goods": [
+    { "name": "物资名", "price": 45, "kind": "consumable|material|equipment|skill_book|quest",
+      "rarity": "common|fine|rare|epic|legend", "heal": 30, "desc": "一句描述" }
+  ]
+}
+
+## 约束
+- goods 8-14 件；name ≤ 20 字；desc ≤ 40 字
+- price 1-9999（消耗品 10-80；材料 15-120；装备 120-320；技能书 200-600）
+- heal 仅消耗品有意义，0-120（普通 20、较好 40、珍贵 60-120）；其余填 0
+- 至少 1 件消耗品、1 件装备、1 件技能书
+- 不得出现真实世界商标；不得输出与故事无关的现代物品
+- **只输出 JSON**，任何解释文字都会导致解析失败。`;
+
 /** 插件 agent code 映射（设置页展示用） */
 export const PLUGIN_AGENT_PROMPT_CODES = {
   fieldSurvivalMapGener: "plugin-field-survival-map-gener",
+  fieldSurvivalShopGener: "plugin-field-survival-shop-gener",
 } as const;
 
 /** 插件 agent 名 → prompt code */
@@ -72,6 +97,8 @@ export function pluginAgentPromptCode(agentName: string): string {
   switch (String(agentName || "").trim()) {
     case "field-survival-map-gener":
       return PLUGIN_AGENT_PROMPT_CODES.fieldSurvivalMapGener;
+    case "field-survival-shop-gener":
+      return PLUGIN_AGENT_PROMPT_CODES.fieldSurvivalShopGener;
     default:
       return "";
   }

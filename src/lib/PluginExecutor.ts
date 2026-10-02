@@ -32,6 +32,8 @@ export interface PluginGameContext {
   roles?: Array<Record<string, unknown>>;
   /** 用户参数卡快照（技能/物品/金钱/经验/生命），供插件读取技能与物品 */
   playerCard?: Record<string, unknown>;
+  /** ★ v5：当前世界「常驻世界书条目」摘要（供插件 agent 生成商城物资） */
+  worldBookDigest?: string;
   /** 后端插件 API（toonflowTsApi：pluginData + agent），按 ctx 维度自动注入 */
   tsApi?: import("./plugins/toonflowTsApi").ToonflowTsApi;
 }

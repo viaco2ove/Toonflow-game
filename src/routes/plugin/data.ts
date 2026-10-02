@@ -46,9 +46,15 @@ export default router.post(
       }
 
       // 会话归属校验（防跨会话读写）
+      // ★ ★ 特殊值 sessionId="all" 表示「跨会话共享」，跳过 t_gameSession 校验。
+      //   配套 t_plugin_session_data 的写入会用 (userId, "all", pluginId, dataKey)
+      //   作主键，故事内任何 sessionId 都能读出来（req.md 第 46 行约定）。
+      //   没有 t_gameSession 行却仍能写 /plugin/data，避免「共享数据」被会话生命周期绑架。
       const db = getGameDb();
-      const session = await db("t_gameSession").where({ sessionId, userId }).first();
-      if (!session) return res.status(404).send(error("会话不存在"));
+      if (sessionId !== "all") {
+        const session = await db("t_gameSession").where({ sessionId, userId }).first();
+        if (!session) return res.status(404).send(error("会话不存在"));
+      }
 
       const scope = { userId, sessionId, pluginId };
 
