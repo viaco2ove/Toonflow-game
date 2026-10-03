@@ -5714,6 +5714,19 @@ const RULEBOOKS: Record<string, MiniGameRulebook> = {
       const pluginType = ctx.pluginType || pluginId;
       const manifest = ctx.manifest as any;
       const minigame = manifest?.contributes?.minigame as any || {};
+      // ★ v5：常驻世界书条目摘要（商城 agent 生成物资参考；与 routes/plugin/tick.ts 同口径）
+      let worldBookDigest = "";
+      try {
+        const wId = Number((ctx as any)?.world?.id || 0);
+        if (wId > 0) {
+          const rows = await getGameDb()("t_worldBook").where({ worldId: wId }).orderBy("sort", "asc").limit(80);
+          const list = Array.isArray(rows) ? rows : [];
+          const line = (r: any) =>
+            `- ${String(r?.title || "").slice(0, 30)}：${String(r?.content || "").replace(/\s+/g, " ").slice(0, 200)}`;
+          const constant = list.filter((r: any) => Number(r?.constant) === 1);
+          worldBookDigest = (constant.length ? constant : list).slice(0, 12).map(line).join("\n").slice(0, 2000);
+        }
+      } catch { /* 摘要失败不阻断开局 */ }
       // ★ 调用插件 entry.ts init 拿初始游戏状态（HP/饥饿/干渴/波次/敌人/可用动作）
       const initResult = await executePluginAction(
         {
@@ -5724,6 +5737,7 @@ const RULEBOOKS: Record<string, MiniGameRulebook> = {
           sessionId,
           roles: buildMiniGameRoleOptions(ctx?.state),
           playerCard: asRecord(asRecord(ctx?.state?.player).parameterCardJson),
+          worldBookDigest,
         },
         "init",
         {},

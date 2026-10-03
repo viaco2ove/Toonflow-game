@@ -6241,7 +6241,7 @@ export const PROMPT_VIDEO_MULTI = _normalize(_PROMPT_VIDEO_MULTI);
 export const PROMPT_VIDEO_SINGLE = _normalize(_PROMPT_VIDEO_SINGLE);
 export const PROMPT_VIDEO_MAIN = _normalize(_PROMPT_VIDEO_MAIN);
 
-import { PROMPT_FIELD_SURVIVAL_MAP_GENER } from "@/agents/plugins.prompts";
+import { PROMPT_FIELD_SURVIVAL_MAP_GENER, PROMPT_FIELD_SURVIVAL_SHOP_GENER } from "@/agents/plugins.prompts";
 
 /**
  * code → 默认 prompt 的查找表
@@ -6302,5 +6302,6 @@ export const DEFAULT_PROMPTS: Record<string, string> = {
   "story-orchestrator-options": PROMPT_STORY_ORCHESTRATOR_OPTIONS,
   "task-director-agent-options": PROMPT_TASK_DIRECTOR_AGENT_OPTIONS,
   "plugin-field-survival-map-gener": PROMPT_FIELD_SURVIVAL_MAP_GENER,
+  "plugin-field-survival-shop-gener": PROMPT_FIELD_SURVIVAL_SHOP_GENER,
 };
 
