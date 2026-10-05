@@ -2,7 +2,7 @@
 
 > AI Agent 如何理解插件、如何编排插件行为、如何与插件状态交互。
 > 与 `NarrativeOrchestrator`、`MiniGameIntentService`、`MiniGameController` 完全对齐。
-> 最后更新：2026-09-21
+> 最后更新：2026-10-05（新增第十章：插件专属 agent / 角色发言器）
 
 ---
 
@@ -393,3 +393,62 @@ MP不足时：提示用户"MP不足，该技能需要XX点MP"
 物品不存在时：提示用户"背包中没有该物品"
 """.strip()
 ```
+
+---
+
+## 十、插件专属 agent（插件自己调大模型）
+
+> 完整契约见 **[插件对话链路设计.md](./插件对话链路设计.md)**，本节只讲「如何注册与使用」。
+
+前面九章讲的是**宿主 AI 如何理解插件**；本章反过来：**插件自己主动调大模型**。
+
+### 10.1 与宿主 AI 的区别
+
+| | 宿主 AI（NarrativeOrchestrator） | 插件专属 agent |
+|---|---|---|
+| 谁发起 | 玩家在聊天框说话 | 插件运行时（`entry.ts` / 插件前端动作） |
+| 谁编排 | 编排器 + 流式语音 | 无编排，直接 `u.ai.text.invoke` |
+| 输出 | 旁白/台词，进 `t_sessionMessage` | 由插件自己决定（写插件数据 / 回推 state） |
+| 落库 | 会话消息 | 不落消息，避免刷屏 |
+
+### 10.2 调用方式
+
+```ts
+// entry.ts（后端插件）
+const r = await ctx.tsApi.agent.run("task-speaker-agent", {
+  npcId, npcName, npcCard, isNeutral, userText, lastResp, mode,
+  context: { storyDigest, playerLevel },
+});
+// → { ok: true, output: { text: "…" } } | { ok: false, error: "…" }
+```
+
+### 10.3 已注册的 agent
+
+| agentName | prompt code | 出入参 | 兜底 |
+|---|---|---|---|
+| `field-survival-map-gener` | `plugin-field-survival-map-gener` | JSON（地图） | ✅ `fallbackMap()` |
+| `field-survival-shop-gener` | `plugin-field-survival-shop-gener` | JSON（商品） | ❌ |
+| **`task-speaker-agent`** | `task-speaker-agent`（复用任务模式提示词） | **文本**（台词 / 3 选项） | ❌ 不伪造台词 |
+
+### 10.4 注册新 agent（三步，改完必须重启后端）
+
+```ts
+// ① src/agents/plugins.prompts.ts
+export const PLUGIN_AGENT_PROMPT_CODES = { /* … */ yourAgent: "plugin-your-agent" };
+export function pluginAgentPromptCode(name: string) {
+  switch (name) { /* … */ case "your-agent": return PLUGIN_AGENT_PROMPT_CODES.yourAgent; }
+}
+
+// ② src/lib/plugins/PluginAgentRunner.ts：加输入 interface + 分支
+//    JSON 型：extractJson + sanitize（可 fallback）；文本型：plainTextOutput + 剥围栏（不兜底）
+
+// ③ 提示词默认值写进 DEFAULT_PROMPTS（设置页 customValue 可覆盖）
+```
+
+### 10.5 三条铁律
+
+1. **超时必设**（`AGENT_TIMEOUT_MS = 15000`）：`/plugin/tick` 是高频接口，
+   agent 卡住会让 HTTP 请求长时间不返回，前端表现为「点了没反应」。
+2. **长耗时结果不要塞 HTTP 回包**：写 `state.xxxResult` + `reqId`，前端配对取回
+   （tick 回包会被下一帧 tick 的 state 推送覆盖）。
+3. **文本型 agent 不做兜底**：对话类宁可报错（前端显红色提示），也不要伪造台词/选项。

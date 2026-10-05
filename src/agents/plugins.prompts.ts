@@ -90,6 +90,12 @@ export const PROMPT_FIELD_SURVIVAL_SHOP_GENER = `你是「野外生存商城生�
 export const PLUGIN_AGENT_PROMPT_CODES = {
   fieldSurvivalMapGener: "plugin-field-survival-map-gener",
   fieldSurvivalShopGener: "plugin-field-survival-shop-gener",
+  /**
+   * ★ 角色发言器（task-speaker-agent）：复用任务模式已有的提示词 code
+   *   （def.prompts.ts 的 DEFAULT_PROMPTS 已注册 "task-speaker-agent"），
+   *   插件内 NPC / ally / 旁白 的台词与对话选项都由它生成，必须走真实大模型。
+   */
+  taskSpeaker: "task-speaker-agent",
 } as const;
 
 /** 插件 agent 名 → prompt code */
@@ -99,6 +105,9 @@ export function pluginAgentPromptCode(agentName: string): string {
       return PLUGIN_AGENT_PROMPT_CODES.fieldSurvivalMapGener;
     case "field-survival-shop-gener":
       return PLUGIN_AGENT_PROMPT_CODES.fieldSurvivalShopGener;
+    // ★ 角色发言器：插件对话功能（城镇 NPC / 队友 / 旁白）
+    case "task-speaker-agent":
+      return PLUGIN_AGENT_PROMPT_CODES.taskSpeaker;
     default:
       return "";
   }

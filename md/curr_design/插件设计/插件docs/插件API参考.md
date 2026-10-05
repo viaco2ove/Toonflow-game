@@ -762,4 +762,90 @@ def on_state_change(
   dialogue_continue — 继续对话
   choice_select    — 选择选项（需 params.choice_id）
   roll_dice        — 掷骰子
+
+实时类（/plugin/tick，由插件自定义，不落会话消息）：
+  tick / move / attack / skill / item / page / revive / exit …
+  sys_*             — 系统级动作（不推进帧，如 sys_chat 对话、sys_rest 休息）
+```
+
+> `sys_` 前缀约定：纯逻辑/AI 型动作，不参与帧推进与战斗结算。
+
+---
+
+## 八、后端插件 API：`ctx.tsApi`（插件调宿主）
+
+> 注入方式：`PluginExecutor.executePluginAction` 在调 `handle_action` 前挂上
+> `ctx.tsApi = buildToonflowTsApi({ userId, sessionId, pluginId })`。
+> 文件：`src/lib/plugins/toonflowTsApi.ts`
+
+```ts
+interface ToonflowTsApi {
+  /** 插件会话数据（t_plugin_session_data） */
+  pluginData: {
+    get(dataKey: string): Promise<any>;          // 无数据返回 null
+    set(dataKey: string, value: unknown): Promise<void>;
+    list(): Promise<string[]>;
+    remove(dataKey: string): Promise<void>;
+  };
+  /** 插件专属 agent（真实大模型） */
+  agent: {
+    run(
+      agentName: string,
+      input: Record<string, unknown>
+    ): Promise<{ ok: boolean; output?: Record<string, any>; error?: string }>;
+  };
+}
+```
+
+### 8.1 pluginData 用法
+
+```ts
+// entry.ts
+const map = await ctx.tsApi.pluginData.get("map_data");     // 读地图包
+await ctx.tsApi.pluginData.set("shop_goods", goods);        // 存商城物资
+```
+
+- 作用域：`(userId, sessionId, pluginId, dataKey)`；
+- **`sessionId = "all"` 为跨会话共享**（宿主前端 `toonflowJsApi.pluginData` 传 `sessionId:"all"` 同样生效），
+  用于放地图包、物资表这类**与具体会话无关**的资源（game.md「地图数据可独立安装」）；
+- 前端侧：`toonflowJsApi.pluginData.*` → postMessage `tf_plugin_data` → 宿主代发 `POST /plugin/data`，
+  结果带 `reqId` 原路回 iframe（Promise 对账）。
+
+### 8.2 agent.run 用法与已注册 agent
+
+```ts
+const r = await ctx.tsApi.agent.run("task-speaker-agent", {
+  npcId, npcName, npcCard, isNeutral, userText, lastResp,
+  mode: "response" | "options",
+  context: { storyDigest, playerLevel },
+});
+if (!r.ok) { /* 写 state.chatResult{ ok:false, error } 回推，不要伪造内容 */ }
+```
+
+| agentName | 入参 | 出参 | 兜底 |
+|---|---|---|---|
+| `field-survival-map-gener` | `{ storyDigest, currentMap?, changeSummary? }` | `{ ok, output: 地图JSON }` | ✅ `fallbackMap` |
+| `field-survival-shop-gener` | `{ storyDigest, worldBookDigest, playerCard }` | `{ ok, output:{ goods:[…] } }` | ❌ |
+| `task-speaker-agent` | `{ npcId, npcName, npcCard, isNeutral, userText, lastResp, mode, context }` | `{ ok, output:{ text } }` | ❌ 不伪造台词 |
+
+- 统一 15s 超时（`AGENT_TIMEOUT_MS`）；
+- 默认模型配置 key：`storyMiniGameModel`（`runPluginAgent(name, input, aiConfigKey)` 第三参可覆盖）；
+- 注册新 agent 见 [插件Agent设计指南.md](./插件Agent设计指南.md) §10.4；
+- 完整对话链路契约见 [插件对话链路设计.md](./插件对话链路设计.md)。
+
+### 8.3 异步结果回推约定（必读）
+
+`/plugin/tick` 的 HTTP 回包会被下一次 tick 的 state 推送覆盖，
+任何**耗时 > 1 帧**的结果都不要指望从回包拿：
+
+```ts
+// entry.ts：结果写进 state，由宿主下一次推送带回
+s.chatResult = { reqId, ok: true, mode, speaker, text };   // 失败也要写 { ok:false, error }
+await persistSys(ctx, s);
+```
+
+```ts
+// 插件前端：发请求带 reqId，收到 state 时按 reqId 配对唤醒
+sendTick("sys_chat", { reqId, /* … */ });
+const res = await waitChatResult(reqId, 45000);
 ```

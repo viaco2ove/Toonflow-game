@@ -69,6 +69,53 @@ const pluginDir = context['pluginDir'];
 const manifest = context['manifest'];
 ```
 
+### 2.1 `context.tsApi`（后端插件调宿主的标准能力）
+
+`PluginExecutor.executePluginAction` 在调 `handle_action` 前会挂上
+`context.tsApi = buildToonflowTsApi({ userId, sessionId, pluginId })`
+（文件：`src/lib/plugins/toonflowTsApi.ts`）。
+
+```typescript
+interface ToonflowTsApi {
+  /** 插件会话数据（t_plugin_session_data，按 userId×sessionId×pluginId×dataKey 隔离） */
+  pluginData: {
+    get(dataKey: string): Promise<any>;                  // 无数据 → null
+    set(dataKey: string, value: unknown): Promise<void>;
+    list(): Promise<string[]>;
+    remove(dataKey: string): Promise<void>;
+  };
+  /** 插件专属 agent（真实大模型，15s 超时） */
+  agent: {
+    run(agentName: string, input: Record<string, unknown>)
+      : Promise<{ ok: boolean; output?: Record<string, any>; error?: string }>;
+  };
+}
+```
+
+```typescript
+// 读/写插件数据
+const map = await context.tsApi.pluginData.get('map_data');
+await context.tsApi.pluginData.set('shop_goods', goods);
+
+// 调插件专属 agent
+const r = await context.tsApi.agent.run('task-speaker-agent', {
+  npcId, npcName, npcCard, isNeutral, userText, lastResp,
+  mode: 'response' | 'options',
+  context: { storyDigest, playerLevel },
+});
+if (!r.ok) { /* 写 state.chatResult{ ok:false, error } 回推，不要伪造内容 */ }
+```
+
+| agentName | 用途 | 输出 |
+|-----------|------|------|
+| `field-survival-map-gener` | 生成/维护地图 JSON | `{ output: 地图 }`（有 fallback） |
+| `field-survival-shop-gener` | 生成商城物资 | `{ output: { goods: [...] } }` |
+| `task-speaker-agent` | 角色发言器（NPC/队友/旁白台词与选项） | `{ output: { text } }` |
+
+- `pluginData` 的 **`sessionId = "all"`** 表示跨会话共享（地图包、物资表这类与会话无关的资源）；
+- 注册新 agent、完整对话链路见 [插件对话链路设计.md](./插件对话链路设计.md) 与
+  [插件Agent设计指南.md](./插件Agent设计指南.md) §10。
+
 ---
 
 ## 三、state 参数详解

@@ -315,6 +315,51 @@ toonflow.utils.openUrl('https://example.com')
 
 ---
 
+### 2.9 插件会话数据（pluginData）
+
+iframe 与后端不同源且无 JWT，读写 `t_plugin_session_data` 必须经宿主代理：
+
+```js
+import { toonflowJsApi } from './toonflowJsApi';
+
+await toonflowJsApi.pluginData.set('shop_goods', goods);   // 写入
+const map = await toonflowJsApi.pluginData.get('map_data'); // 读取（无数据 → null）
+const keys = await toonflowJsApi.pluginData.list();         // 列出 dataKey
+await toonflowJsApi.pluginData.remove('tmp_key');
+```
+
+- 通道：`postMessage { type:"tf_plugin_data", reqId, op, dataKey, value }` → 宿主 `POST /plugin/data`
+  → 回 `postMessage { type:"tf_plugin_data_result", reqId, ok, value/keys/error }`；
+- 维度：`userId × sessionId × pluginId × dataKey`；**`sessionId = "all"` = 跨会话共享**
+  （放地图包、物资表等与具体会话无关的资源）；
+- 超时 10s；投递前统一 `JSON.parse(JSON.stringify(v))` 深拷贝
+  （Vue 响应式 Proxy 直接 postMessage 会抛 `DataCloneError`）。
+
+### 2.10 实时推进（tick）与对话消息
+
+| 消息 | 方向 | 用途 |
+|------|------|------|
+| `{ type:"tf_plugin_tick", action, params }` | iframe → 宿主 | 宿主代发 `POST /plugin/tick`（移动/技能/对话/退出） |
+| `{ type:"tf_plugin_state", state }` | 宿主 → iframe | 推送最新 plugin_state（含 `state.chatResult` 等结果字段） |
+| `{ type:"tf_plugin_chat", speaker, text, avatar }` | iframe → 宿主 | 把角色台词同步进 Toonflow-game-web 聊天框 |
+| `{ type:"tf_plugin_fullscreen", fullscreen }` | iframe → 宿主 | 请求面板全屏 |
+| `{ type:"tf_plugin_action", kind:"done"\|"abort" }` | iframe → 宿主 | 结束/放弃小游戏 |
+| `{ type:"tf_plugin_loaded" }` | iframe → 宿主 | 就绪通知（宿主 listener 可能晚注册，建议重试至收到首条 state） |
+
+```js
+import { sendTick, sendChat, onHostState } from './bridge';
+
+sendTick('sys_chat', { reqId, npcId: 'mapnpc_169', mode: 'response' });
+const stop = onHostState((d) => { /* d.state.chatResult → 按 reqId 配对 */ });
+sendChat('矮人比利', '你这儿有什么活儿？', avatarUrl);
+```
+
+> ⚠️ tick 是**高频**接口，回包 state 会被下一次 tick 覆盖。
+> 耗时结果（LLM）一律写 `state.<xxx>Result` + `reqId` 由前端配对取回，
+> 详见 [插件对话链路设计.md](./插件对话链路设计.md)。
+
+---
+
 ## 三、插件 manifest 中 contributes 的前端字段
 
 ### 3.1 minigame

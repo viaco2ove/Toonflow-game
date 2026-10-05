@@ -1,7 +1,7 @@
 # Toonflow 插件开发文档
 
 > 基于真实代码分析，与现有 `MiniGameController`、`MiniGameStateManager`、`ScenePlay.vue` 完全对齐。
-> 最后更新：2026-09-21
+> 最后更新：2026-10-05
 
 ---
 
@@ -9,12 +9,24 @@
 
 | 文档 | 内容 |
 |------|------|
-| **[插件前端开发指南.md](./插件前端开发指南.md)** | `entry.js` 写法、UI 挂载、事件总线 |
-| **[插件后端开发指南.md](./插件后端开发指南.md)** | `entry.py` 写法、状态读写、奖励发放 |
-| **[插件Agent设计指南.md](./插件Agent设计指南.md)** | AI Agent 如何理解插件、如何编排插件行为 |
-| **[插件API参考.md](./插件API参考.md)** | `ctx`、`plugin`、`api` 所有接口的完整类型定义 |
-| **[插件运行时实现.md](./插件运行时实现.md)** | 安装/卸载/启停插件的后端运行时（PluginRegistry、5 个 HTTP 路由） |
+| **[插件前端开发指南.md](./插件前端开发指南.md)** | `entry.js` 写法、UI 挂载、事件总线、**reqId 异步结果配对** |
+| **[插件后端开发指南.md](./插件后端开发指南.md)** | `entry.ts` 写法、状态读写、奖励发放、**AI 类 action（sys_chat）** |
+| **[插件Agent设计指南.md](./插件Agent设计指南.md)** | AI Agent 如何理解插件、如何编排插件行为、**插件专属 agent 注册** |
+| **[插件对话链路设计.md](./插件对话链路设计.md)** | ★ 新增：插件内 NPC 对话如何**真实调用大模型**（task-speaker-agent 全链路契约） |
+| **[插件API参考.md](./插件API参考.md)** | `ctx`、`plugin`、`api` 所有接口的完整类型定义 + `ctx.tsApi.agent.run` |
+| **[插件运行时实现.md](./插件运行时实现.md)** | 安装/卸载/启停插件的后端运行时（PluginRegistry、9 个 HTTP 路由） |
 | **[插件前端运行时层.md](./插件前端运行时层.md)** | `usePluginRuntime` composable、命令面板注入、minigame iframe 容器 |
+
+### 2026-10-05 更新要点（依据 `toonflow-game-plugins/md/curr_design/toonflow-field-survival/game.md`）
+
+| 主题 | 变化 |
+|------|------|
+| 插件内对话 | 新增统一链路 `sendTick("sys_chat")` → 后端 `ctx.tsApi.agent.run("task-speaker-agent")` → 真 LLM → `state.chatResult` 按 `reqId` 回推 |
+| 插件专属 agent | `task-speaker-agent`（角色发言器）已注册；`runPluginAgent` 新增「文本进/文本出」分支（无兜底、15s 超时） |
+| 新增路由 | `POST /plugin/agentRun`（dev-host 桩代跑 agent，保证 `--conn` 也是真 LLM） |
+| 插件数据 | `POST /plugin/data` 支持 `sessionId="all"` → 跨会话共享数据（地图包等资源可独立安装） |
+| 异步结果约定 | `/plugin/tick` 回包会被后续 tick 覆盖 → 长耗时结果一律写 `state.xxxResult` + `reqId` 配对 |
+| 地图实体 | 实体外观由 `object.gid` 决定，`entity_type` 只决定行为类（NPC/DOOR/CHEST…） |
 
 ---
 

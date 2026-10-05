@@ -141,6 +141,31 @@ function sanitizeMap(map: Record<string, any>): Record<string, any> {
 /** ★ v5：商城 agent 名 */
 const SHOP_AGENT_NAME = "field-survival-shop-gener";
 
+/** ★ 角色发言器 agent 名（插件对话功能：城镇 NPC / 队友 / 旁白 的台词与选项） */
+const SPEAKER_AGENT_NAME = "task-speaker-agent";
+
+/**
+ * ★ 角色发言器输入（由插件 entry.ts 的 sys_chat 传入）
+ * 与 field-survival-*-gener 不同：它输入/输出都是文本，不解析 JSON。
+ */
+export interface SpeakerInput {
+  /** 角色唯一 id（mapnpc_<id> / role id） */
+  npcId?: string;
+  /** 角色显示名 */
+  npcName?: string;
+  /** 角色参数卡（动态角色卡 / 地图 NPC 卡），可为 null */
+  npcCard?: unknown;
+  /** 是否为中立（旁白/环境）角色 */
+  isNeutral?: boolean;
+  /** 玩家本轮说的话（null = 玩家没说话，让角色主动开腔） */
+  userText?: string | null;
+  /** 上一句台词（对话历史） */
+  lastResp?: string;
+  /** options = 生成 3 个玩家发言选项；response = 生成角色台词 */
+  mode?: "options" | "response";
+  context?: { storyDigest?: string; playerLevel?: number };
+}
+
 /** ★ v5：商城商品裁剪（数量 / 数值兜底），坏字段一律回退默认 */
 function sanitizeShop(out: Record<string, any>): Record<string, any> {
   const goods = Array.isArray(out?.goods) ? out.goods.slice(0, 14) : [];
@@ -203,16 +228,89 @@ function mergeMap(current: Record<string, any>, patch: Record<string, any>): Rec
  */
 export async function runPluginAgent(
   agentName: string,
-  input: MapGenerInput & ShopGenerInput,
+  input: MapGenerInput & ShopGenerInput & SpeakerInput,
   aiConfigKey = "storyMiniGameModel"
 ): Promise<{ ok: boolean; output?: Record<string, any>; error?: string }> {
   const code = pluginAgentPromptCode(agentName);
   if (!code) return { ok: false, error: `未知插件 agent: ${agentName}` };
   const isShop = String(agentName || "").trim() === SHOP_AGENT_NAME;
+  const isSpeaker = String(agentName || "").trim() === SPEAKER_AGENT_NAME;
 
   try {
     const systemPrompt = await getPromptByCode(code);
     if (!systemPrompt) return { ok: false, error: `提示词缺失: ${code}` };
+
+    // ★ 角色发言器：文本进 / 文本出，不做 JSON 解析（与 map/shop agent 走不同分支）
+    if (isSpeaker) {
+      const mode = String(input?.mode || "response").trim();
+      const npcName = String(input?.npcName || "???").trim() || "???";
+      const npcCard = input?.npcCard ?? null;
+      const isNeutral = input?.isNeutral === true;
+      const userText = input?.userText ?? null;
+      const lastResp = String(input?.lastResp || "").trim();
+      const ctxObj = (input?.context || {}) as Record<string, unknown>;
+
+      const roleHint = isNeutral
+        ? "你是旁白 / 环境叙述者（描述场景氛围，不代替玩家发言）"
+        : `你是角色「${npcName}」，正在与玩家面对面交谈`;
+
+      const parts: string[] = [];
+      parts.push(`【角色】${roleHint}`);
+      if (npcCard) {
+        parts.push(
+          "【角色人设 / 参数卡】\n" +
+            (typeof npcCard === "string" ? npcCard : JSON.stringify(npcCard))
+        );
+      }
+      parts.push("【故事背景】\n" + String(ctxObj.storyDigest || "（无）"));
+      parts.push(`【玩家等级】${Number(ctxObj.playerLevel ?? 1)}`);
+      parts.push(`【最近对话】${lastResp || "（无）"}`);
+      parts.push(
+        `【玩家本轮输入】${userText ? String(userText) : "（玩家没有说话，请你主动开腔推进对话）"}`
+      );
+      parts.push(
+        mode === "options"
+          ? "【输出要求】输出玩家此刻可以说的 3 句发言选项（站在玩家立场、简短口语化、每句 ≤ 20 字）。只输出一个 JSON 数组，例如 [\"…\",\"…\",\"…\"]，不要任何解释文字。"
+          : `【输出要求】只输出「${npcName}」本轮的台词本身（1-3 句、口语化、有推进感），不要 JSON 包装、不要前缀标签、不要写"作为NPC"这类元说明。`
+      );
+
+      // ★ task-speaker-agent 的提示词原为「任务模式」设计（输出 {speaker,content,tone,emotion} JSON 对象），
+      //   插件对话需要的是「纯台词 / 纯选项数组」两种形态 → 在 system 尾部追加本轮格式覆盖，
+      //   否则模型会把两套格式混着输出（既给 JSON 对象又给数组），前端解析不出干净结果。
+      const formatOverride =
+        mode === "options"
+          ? "\n\n【本轮输出格式覆盖】忽略上文任何 JSON 对象格式要求。本轮只输出一个 JSON 字符串数组，包含 3 个玩家发言选项，例如 [\"…\",\"…\",\"…\"]。不要输出除该数组以外的任何文字。"
+          : "\n\n【本轮输出格式覆盖】忽略上文任何 JSON 对象格式要求。本轮只输出纯台词文本本身（1-3 句），不要 JSON 包装、不要 speaker/content 字段、不要代码围栏、不要引号包裹。";
+      const systemText = `${systemPrompt}${formatOverride}`;
+
+      const aiConfig = await u.getPromptAi(aiConfigKey);
+      const result = await withTimeout(
+        u.ai.text.invoke(
+          {
+            plainTextOutput: true,
+            usageType: "插件对话",
+            usageRemark: "PluginSpeakerAgent",
+            messages: [
+              { role: "system", content: systemText },
+              { role: "user", content: parts.join("\n\n") },
+            ],
+          } as any,
+          aiConfig
+        ),
+        AGENT_TIMEOUT_MS,
+        `插件对话 agent 调用超时（>${AGENT_TIMEOUT_MS}ms）`
+      );
+      const rawText = String((result as any)?.text ?? (result as any)?.content ?? "").trim();
+      if (!rawText) return { ok: false, error: "角色发言器返回空文本" };
+      // ★ 剥 ```json 围栏（options 模式常见）+ 剥首尾成对引号（response 模式常见）
+      const unfenced = rawText
+        .replace(/^\s*```[a-zA-Z]*\s*/, "")
+        .replace(/\s*```\s*$/, "")
+        .trim();
+      const text = unfenced.replace(/^"([\s\S]*)"$/, "$1").trim();
+      if (!text) return { ok: false, error: "角色发言器返回空文本" };
+      return { ok: true, output: { text } };
+    }
 
     const parts: string[] = [];
     parts.push("【故事动态数据】\n" + String(input.storyDigest || "（无）"));
@@ -246,7 +344,8 @@ export async function runPluginAgent(
     const content: string = String((result as any)?.content ?? (result as any)?.text ?? "");
     const parsed = extractJson(content);
     if (!parsed) {
-      return { ok: false, error: "LLM 输出解析失败", output: isShop ? undefined : fallbackMap(input) };
+      // ★ 角色发言器没有兜底地图：失败就如实报错，由插件前端显示错误（不伪造台词）
+      return { ok: false, error: "LLM 输出解析失败", output: isShop || isSpeaker ? undefined : fallbackMap(input) };
     }
     const output = isShop
       ? sanitizeShop(parsed)
@@ -256,6 +355,6 @@ export async function runPluginAgent(
     return { ok: true, output };
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
-    return { ok: false, error: msg, output: isShop ? undefined : fallbackMap(input) };
+    return { ok: false, error: msg, output: isShop || isSpeaker ? undefined : fallbackMap(input) };
   }
 }
