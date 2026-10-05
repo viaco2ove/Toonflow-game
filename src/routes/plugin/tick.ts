@@ -13,6 +13,21 @@ import {
 
 const router = express.Router();
 
+/** session 级串行锁：防止高频游戏 tick 与一次性系统命令（使用物品/卖出/排序等）
+ *  并发读写 plugin_state 互相覆盖，导致「点了没反应」「卖了还在」等表现。 */
+const tickLocks = new Map<string, Promise<void>>();
+
+function withSessionLock<T>(sessionId: string, fn: () => Promise<T>): Promise<T> {
+  const prev = tickLocks.get(sessionId) || Promise.resolve();
+  let next: Promise<T>;
+  const run = async () => fn();
+  next = prev.then(run, run).finally(() => {
+    if (tickLocks.get(sessionId) === next) tickLocks.delete(sessionId);
+  });
+  tickLocks.set(sessionId, next as Promise<void>);
+  return next;
+}
+
 /**
  * ★ v5：把当前世界（worldId）的常驻世界书条目拼成摘要文本，
  * 供插件 agent（商城生成）参考故事世界观与物资设定。
@@ -62,19 +77,21 @@ export default router.post(
     params: z.any().optional().nullable(),
   }),
   async (req, res) => {
+    const sessionId = String(req.body.sessionId || "").trim();
     try {
       const userId = Number((req as any)?.user?.id || 0);
       if (!Number.isFinite(userId) || userId <= 0) {
         return res.status(401).send(error("用户未登录"));
       }
-      const sessionId = String(req.body.sessionId || "").trim();
       const pluginId = String(req.body.pluginId || "").trim();
       const action = String(req.body.action || "tick").trim() || "tick";
       const params = (req.body.params && typeof req.body.params === "object")
         ? req.body.params
         : {};
 
-      const db = getGameDb();
+      // 串行化同一 session 的 tick 请求，防止并发读写 plugin_state 覆盖
+      return await withSessionLock(sessionId, async () => {
+        const db = getGameDb();
       const session = await db("t_gameSession").where({ sessionId, userId }).first();
       if (!session) return res.status(404).send(error("会话不存在"));
 
@@ -191,13 +208,14 @@ export default router.post(
         .where({ sessionId, userId })
         .update({ stateJson: toJsonText(state, {}), updateTime: Date.now() });
 
-      return res.status(200).send(success({
-        state: resultState,
-        actions: Array.isArray(result?.actions) ? result.actions : (publicState.plugin_actions || []),
-        response: publicState.plugin_response || "",
-        code: result?.code ?? 0,
-        message: result?.message ?? "",
-      }));
+        return res.status(200).send(success({
+          state: resultState,
+          actions: Array.isArray(result?.actions) ? result.actions : (publicState.plugin_actions || []),
+          response: publicState.plugin_response || "",
+          code: result?.code ?? 0,
+          message: result?.message ?? "",
+        }));
+      });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err || "插件推进失败");
       return res.status(500).send(error(message));
