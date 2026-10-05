@@ -112,6 +112,20 @@ export default router.post(
       }
 
       const manifest = await loadPluginManifestFromFile(userId, pluginId);
+      // ★ 修复「受伤立刻回满」：publicState.player_card 是 init 时的一次性快照
+      //   （MiniGameController 进入小游戏时写入，之后不再更新）。若每 tick 都把
+      //   快照喂给插件，插件 syncCardFromContext 会因签名不一致把快照上的满血/
+      //   旧等级整卡回灌实体（表现 = 玩家被打掉血下一帧又满）。
+      //   这里改用 stateJson 里的实时动态卡（writeback 每帧消费后的最新值），
+      //   快照仅作为实时卡缺失时的兜底。
+      const livePlayerCard = (() => {
+        const p = state.player && typeof state.player === "object" ? state.player : null;
+        const card = p ? (p.parameterCardJson ?? p.parameter_card_json) : null;
+        if (card && typeof card === "object" && Object.keys(card).length > 0) return card;
+        return (publicState.player_card && typeof publicState.player_card === "object")
+          ? publicState.player_card
+          : undefined;
+      })();
       const ctx: PluginGameContext = {
         pluginId,
         pluginDir: getPluginDir(userId, pluginId),
@@ -119,8 +133,8 @@ export default router.post(
         userId,
         sessionId,
         roles: Array.isArray(publicState.roles) ? publicState.roles : [],
-        playerCard: (publicState.player_card && typeof publicState.player_card === "object")
-          ? publicState.player_card
+        playerCard: (livePlayerCard && typeof livePlayerCard === "object")
+          ? livePlayerCard
           : undefined,
         // ★ v5：常驻世界书条目摘要（商城 agent 生成物资时参考）
         worldBookDigest: await buildWorldBookDigest(db, Number((session as any)?.worldId || 0)),
