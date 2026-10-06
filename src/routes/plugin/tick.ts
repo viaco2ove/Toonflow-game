@@ -108,7 +108,7 @@ export default router.post(
 
       const statePluginId = String(publicState.plugin_id || "");
       if (!statePluginId || statePluginId !== pluginId) {
-        return res.status(409).send(error("当前没有进行中的该插件小游戏"));
+        return res.status(409).send(error(`当前没有进行中的该插件小游戏,statePluginId:${statePluginId},pluginId:${pluginId}`));
       }
 
       const scope = { userId, sessionId, pluginId };
