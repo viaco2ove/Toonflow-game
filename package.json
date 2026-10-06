@@ -1,6 +1,6 @@
 {
   "name": "toonflow-app",
-  "version": "1.0.23",
+  "version": "1.0.24",
   "description": "Toonflow game ,原身Toonflow 是一款 AI 短剧漫剧工具，能够利用 AI 技术将小说自动转化为剧本，并结合 AI 生成的图片和视频，实现高效的短剧创作。Toonflow game 是Toonflow 的基础上改造的ai game",
   "author_original": "HBAI-Ltd <ltlctools@outlook.com>",
   "homepage_original": "https://github.com/HBAI-Ltd/Toonflow-app#readme",

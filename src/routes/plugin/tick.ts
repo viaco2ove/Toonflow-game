@@ -108,7 +108,27 @@ export default router.post(
 
       const statePluginId = String(publicState.plugin_id || "");
       if (!statePluginId || statePluginId !== pluginId) {
-        return res.status(409).send(error(`当前没有进行中的该插件小游戏,statePluginId:${statePluginId},pluginId:${pluginId}`));
+        // ★ 自愈（v5.1）：编排器复写 stateJson 可能丢掉 miniGame.session.public_state.plugin_id
+        //   指针（AI 故事轮次整体重建 miniGame 节点），但插件真实状态在 t_plugin_session_data
+        //   里完好。若该插件在此会话有 phase=playing 的活跃状态 → 判定「游戏仍在进行，
+        //   只是指针被 clobber」，就地重建指针继续 tick，而不是 409。
+        //   （409 期间 iframe 收不到任何 state → UI 冻结，购买/卖出操作看着「没生效」。）
+        const healScope = { userId, sessionId, pluginId };
+        const heal = await getPluginData(healScope, PLUGIN_STATE_KEY);
+        const healState = heal?.dataValue;
+        const healPhase = String((healState as any)?.phase || "");
+        const healActive = !!healState && typeof healState === "object"
+          && (healPhase === "playing" || healPhase === "");
+        if (!healActive) {
+          return res.status(409).send(error(`当前没有进行中的该插件小游戏,statePluginId:${statePluginId},pluginId:${pluginId}`));
+        }
+        // 重建指针（本次请求内生效；落库见下方 sessionNode 写回）
+        publicState.plugin_id = pluginId;
+        publicState.plugin_type = publicState.plugin_type || "plugin";
+        sessionNode.public_state = publicState;
+        root.session = sessionNode;
+        state.miniGame = root;
+        console.log(`[plugin/tick] 指针自愈：session=${sessionId} plugin=${pluginId}（stateJson 指针丢失但插件状态活跃）`);
       }
 
       const scope = { userId, sessionId, pluginId };
@@ -143,6 +163,27 @@ export default router.post(
           ? publicState.player_card
           : undefined;
       })();
+      // ★ v5.1 玩家卡脏条目自愈（"[object Object]" 字符串残留）：
+      //   历史 String(obj) 把对象变成字面字符串后写入参数卡，syncCardFromContext
+      //   不会主动重写（签名未变），脏数据永远卡死。tick 入口主动洗一遍 items：
+      //   过滤字面 "[object Object]"，若净化前后数组不同则立即落库到 stateJson.player
+      //   （独立于 writeback 机制，下一帧前端就能看到正确背包）。
+      if (livePlayerCard && Array.isArray((livePlayerCard as any).items)) {
+        const rawList = (livePlayerCard as any).items as any[];
+        const cleaned = rawList.filter((x) => !String(x).includes("[object Object]"));
+        if (cleaned.length !== rawList.length) {
+          (livePlayerCard as any).items = cleaned;
+          if (state.player && typeof state.player === "object") {
+            if ("parameterCardJson" in state.player) {
+              (state.player as any).parameterCardJson = livePlayerCard;
+            }
+            if ("parameter_card_json" in state.player) {
+              (state.player as any).parameter_card_json = livePlayerCard;
+            }
+          }
+          console.log(`[plugin/tick] 玩家卡 dirty 自愈：清理 ${rawList.length - cleaned.length} 条字面 [object Object]`);
+        }
+      }
       const ctx: PluginGameContext = {
         pluginId,
         pluginDir: getPluginDir(userId, pluginId),
