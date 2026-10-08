@@ -4,6 +4,7 @@ import { validateFields } from "@/middleware/middleware";
 import { success, error } from "@/lib/responseFormat";
 import u from "@/utils";
 import { installPluginPackage } from "@/lib/pluginRegistry";
+import { ensureEntryConsistency } from "@/lib/pluginEntryConsistency";
 
 const router = express.Router();
 
@@ -22,6 +23,16 @@ export default router.post(
       }
       const { fileName, base64Data } = req.body;
       const result = await installPluginPackage(userId, base64Data, fileName);
+      // ★ 一致性保证：装完触发 esbuild 现编 + 清 entryModuleCache（同 CLI 装）
+      //   失败仅警告，不阻塞安装成功状态
+      try {
+        const consistency = await ensureEntryConsistency(userId, result.dir || "", {
+          reason: "http:/plugin/install",
+        });
+        (result as any).consistency = consistency;
+      } catch (e: any) {
+        (result as any).consistencyWarning = String(e?.message ?? e);
+      }
       return res.status(200).send(success(result));
     } catch (err) {
       return res.status(400).send(error(u.error(err).message));

@@ -8,6 +8,7 @@
  * 3. 提供状态快照供 iframe postMessage 使用
  */
 
+import fs from "fs";
 import path from "path";
 import type { PluginManifest } from "./pluginRegistry";
 import { getPluginDir, listEnabledPlugins } from "./pluginRegistry";
@@ -55,8 +56,10 @@ export interface HandleActionResult {
 // 缓存
 // ---------------------------------------------------------------------------
 
-/** 已加载的 entry.ts 模块缓存 */
-const entryModuleCache = new Map<string, { handle_action: Function }>();
+/** 已加载的 entry 模块缓存：key=pluginDir, value={module, sourcePath, mtimeMs}
+ *  ★ 优化方案 2026-10-08：加 mtime 失效——文件被 esbuild 重建后自动重 import，
+ *  无需重启 60002。clearEntryCache() 提供手动失效入口。 */
+const entryModuleCache = new Map<string, { handle_action: Function; sourcePath: string; mtimeMs: number }>();
 
 /** 已扫描的插件命令映射: commandText -> PluginGameContext */
 const pluginCommandMap = new Map<string, PluginGameContext>();
@@ -173,10 +176,6 @@ export function getAllPluginCommands(): string[] {
 // ---------------------------------------------------------------------------
 
 async function loadEntryModule(pluginDir: string): Promise<{ handle_action: Function }> {
-  if (entryModuleCache.has(pluginDir)) {
-    return entryModuleCache.get(pluginDir)!;
-  }
-
   // 优先 .js（编译后的），其次 .ts（需要运行时支持）
   const jsPath = path.join(pluginDir, "entry.js");
   const tsPath = path.join(pluginDir, "entry.ts");
@@ -185,18 +184,39 @@ async function loadEntryModule(pluginDir: string): Promise<{ handle_action: Func
   const fileUrl = (p: string) =>
     p.startsWith("file://") ? p : `file:///${p.replace(/\\/g, "/").replace(/^\//, "")}`;
 
-  for (const candidate of [jsPath, tsPath]) {
-    try {
-      const url = fileUrl(candidate);
-      const mod = await import(/* @vite-ignore */ url);
-      if (mod.handle_action) {
-        entryModuleCache.set(pluginDir, { handle_action: mod.handle_action });
-        return mod as { handle_action: Function };
-      }
-    } catch {
-      // 继续尝试下一个
-    }
+  // ① mtime 失效检查：源文件比缓存新就重 import（esbuild 重建或手工编辑后无需重启）
+  const candidatePaths = [jsPath, tsPath].filter((p) => fs.existsSync(p));
+  if (candidatePaths.length === 0) {
+    console.error(`[PluginExecutor] 加载 entry 失败: 试过 ${jsPath} 与 ${tsPath}`);
+    return { handle_action: () => ({ code: 1, message: "entry 模块加载失败", state: {} }) };
   }
-  console.error(`[PluginExecutor] 加载 entry 失败: 试过 ${jsPath} 与 ${tsPath}`);
+  const sourcePath = candidatePaths[0];
+  const stat = fs.statSync(sourcePath);
+  const cached = entryModuleCache.get(pluginDir);
+  if (cached && cached.sourcePath === sourcePath && cached.mtimeMs === stat.mtimeMs) {
+    return { handle_action: cached.handle_action };
+  }
+
+  // ② 真 import
+  try {
+    const url = fileUrl(sourcePath);
+    const mod = await import(/* @vite-ignore */ url);
+    if (mod.handle_action) {
+      entryModuleCache.set(pluginDir, { handle_action: mod.handle_action, sourcePath, mtimeMs: stat.mtimeMs });
+      return mod as { handle_action: Function };
+    }
+  } catch {
+    // 试下一个候选
+  }
+  console.error(`[PluginExecutor] 加载 entry 失败: ${sourcePath} handle_action 未导出`);
   return { handle_action: () => ({ code: 1, message: "entry 模块加载失败", state: {} }) };
+}
+
+/**
+ * 清空 entry 模块缓存（供三个一致性入口调用）。
+ * @param pluginDir 不传则清全部
+ */
+export function clearEntryCache(pluginDir?: string): void {
+  if (pluginDir) entryModuleCache.delete(pluginDir);
+  else entryModuleCache.clear();
 }

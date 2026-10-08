@@ -105,6 +105,7 @@ import route101 from "./routes/plugin/list";
 import route102 from "./routes/plugin/setEnabled";
 import route103 from "./routes/plugin/tick";
 import route104 from "./routes/plugin/uninstall";
+import routeRebuild from "./routes/plugin/rebuild";
 import route105 from "./routes/project/addProject";
 import route106 from "./routes/project/delProject";
 import route107 from "./routes/project/getProject";
@@ -286,6 +287,7 @@ export default async (app: Express) => {
   app.use("/plugin/setEnabled", route102);
   app.use("/plugin/tick", route103);
   app.use("/plugin/uninstall", route104);
+  app.use("/plugin/rebuild", routeRebuild);
   app.use("/project/addProject", route105);
   app.use("/project/delProject", route106);
   app.use("/project/getProject", route107);
