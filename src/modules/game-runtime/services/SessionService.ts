@@ -2624,6 +2624,7 @@ async function addSessionMessageInner(input: AddSessionMessageInput, sessionId: 
     DebugLogUtil.log("story:ai_parallel", "[addSessionMessage] 开始 AI #1 (handleMiniGameTurn)");
     const miniGameResult = await handleMiniGameTurn({
       userId: currentUserId,
+      sessionId,
       world,
       chapter: currentChapter || { id: prevChapterId || state.chapterId || 0, title: "当前章节" },
       state,

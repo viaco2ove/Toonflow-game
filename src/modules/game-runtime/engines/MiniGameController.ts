@@ -20,6 +20,7 @@ import { getPromptByCode } from "@/lib/promptHelper";
 import { scanPluginCommands, findPluginByCommand, executePluginAction, getAllPluginCommands } from "@/lib/PluginExecutor";
 import { getPluginDir, loadPluginManifestFromFile } from "@/lib/pluginRegistry";
 import { applyFieldSurvivalWriteback } from "@/lib/pluginWriteback";
+import { removePluginData } from "@/lib/plugins/PluginSessionDataService";
 import { abandonActiveFreeChapterTaskEvent, createTaskFromUserRequest } from "@/modules/game-runtime/services/FreeChapterTaskService";
 import { analyzeIntent, analyzeIntentWithAiFallback, type IntentResult } from "@/modules/game-runtime/agents/intentAnalyzer";
 import {GLOBAL_WORLD_BOOK_TOKEN_BUDGET} from "@/constants/gobal.const";
@@ -35,6 +36,7 @@ export interface MiniGameActionOption {
 
 export interface MiniGameControllerInput {
   userId: number;
+  sessionId?: string; // 生产路径（orchestration）必传；debug 路径可选（无数据库 session）
   world: any;
   chapter: any;
   state: JsonRecord;
@@ -343,6 +345,12 @@ function clearMiniGameSession(root: JsonRecord) {
   root.actionLog = [];
   root.writeback = {};
   root.memorySummary = "";
+  // ★ 清除历史「退出墓碑」残留：早期版本曾在此写 root.miniGameClosedAt，导致
+  //   「显式重进 #野外生存」（本函数亦被开新局路径调用）时把新局误标为已结束，
+  //   /plugin/tick 随即 409「小游戏已结束」→ 面板弹出但永远起不来。
+  //   墓碑机制已废弃：退出防复活改由「删除 plugin_state + tick 的 heal 守卫」保证。
+  //   这里主动 delete，兼带自愈已被旧版本污染过的会话。
+  delete (root as Record<string, any>).miniGameClosedAt;
 }
 
 /**
@@ -5738,6 +5746,9 @@ const RULEBOOKS: Record<string, MiniGameRulebook> = {
           roles: buildMiniGameRoleOptions(ctx?.state),
           playerCard: asRecord(asRecord(ctx?.state?.player).parameterCardJson),
           worldBookDigest,
+          // ★ v6：当前世界身份（故事绑定视觉地图模板，entry.init 即注入会话 map_visual）
+          worldId: Number((ctx as any)?.world?.id || 0) || undefined,
+          worldName: scalarText((ctx as any)?.world?.name || (ctx as any)?.world?.title || ""),
         },
         "init",
         {},
@@ -5804,7 +5815,14 @@ const RULEBOOKS: Record<string, MiniGameRulebook> = {
       const pluginType = scalarText(ps.plugin_type);
       if (!pluginId) return { narration: "插件信息丢失，无法继续游戏。" };
       const manifest = ((ctx as any)?.manifest) || null;
-      let pluginCtx = { pluginId, pluginDir: getPluginDir(ctx.userId, pluginId), manifest: manifest as any };
+      let pluginCtx = {
+        pluginId,
+        pluginDir: getPluginDir(ctx.userId, pluginId),
+        manifest: manifest as any,
+        // ★ v6：当前世界身份（故事绑定视觉地图模板）
+        worldId: Number((ctx as any)?.world?.id || 0) || undefined,
+        worldName: scalarText((ctx as any)?.world?.name || (ctx as any)?.world?.title || ""),
+      };
       if (!manifest) {
         const fromFile = await loadPluginManifestFromFile(ctx.userId, pluginId);
         if (fromFile) pluginCtx.manifest = fromFile;
@@ -6756,7 +6774,14 @@ export async function handleMiniGameTurn(input: MiniGameControllerInput): Promis
   }
 
   const gameType = scalarText(activeSession.game_type);
-  const rulebook = RULEBOOKS[gameType];
+  let rulebook = RULEBOOKS[gameType];
+  // ★ 自愈：历史脏 game_type（如 "field-survival"，不在 RULEBOOKS 里）会导致 #退出 走
+  //   `if (!rulebook) return null` 分支、完全不被拦截 → 面板关不掉、tick 不断复活。
+  //   若本会话 public_state.plugin_id 存在，则确为插件小游戏，归正为 canonical "plugin"。
+  if (!rulebook && scalarText(asRecord(asRecord(activeSession.public_state).plugin_id)) !== "") {
+    activeSession.game_type = "plugin";
+    rulebook = RULEBOOKS["plugin"];
+  }
   if (!rulebook) return null;
   const logMiniGameAction = (payload: {
     normalizedInput?: string;
@@ -6906,9 +6931,25 @@ export async function handleMiniGameTurn(input: MiniGameControllerInput): Promis
       : `你已强制退出 ${rulebook.displayName}，当前可继续回到主线剧情。`;
     refreshRuntimeUi(root, narration, rulebook);
     // 生成退出播报后，立刻清空小游戏运行态，避免后续普通输入再次被旧小游戏上下文误触发。
+    // 先取出 plugin_id（clearMiniGameSession 会清空 root.session，之后就读不到了）
+    const exitingPluginId = scalarText(asRecord(activeSession.public_state).plugin_id);
     clearMiniGameSession(root);
     // 退出后进入主线阶段，只允许显式 #小游戏 / #钓鱼 这类命令重新进入，禁止被动再次命中。
     suppressPassiveMiniGameReentry(root);
+    // ★ 同步清空插件数据表里的 plugin_state：否则 /plugin/tick 的 heal 守卫会把它当成
+    //   「游戏仍在进行」而复活面板（#退出 后一闪重开的核心根因之一）。与 root.miniGameClosedAt
+    //   墓碑双保险，彻底断掉「关了又重开」。
+    // sessionId 为 undefined 时（debug 路径）跳过，因为没有数据库 session 可匹配。
+    if (exitingPluginId && input.sessionId) {
+      try {
+        await removePluginData(
+          { userId: input.userId, sessionId: input.sessionId, pluginId: exitingPluginId },
+          "plugin_state",
+        );
+      } catch {
+        /* 清理失败不阻断退出流程 */
+      }
+    }
     return {
       intercepted: true,
       runtime: root,

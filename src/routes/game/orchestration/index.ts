@@ -634,6 +634,7 @@ async function handleDebugPlayerTurn(params: {
   db: ReturnType<typeof getGameDb>;
   userId: number;
   worldId: number;
+  sessionId: string;
   world: any;
   chapter: any;
   state: Record<string, any>;
@@ -656,6 +657,7 @@ async function handleDebugPlayerTurn(params: {
 
   const miniGameResult = await handleMiniGameTurn({
     userId: params.userId,
+    sessionId: params.sessionId,
     world: params.world,
     chapter: params.chapter,
     state: params.state,
@@ -936,6 +938,7 @@ async function handleDebugOrchestrationRequest(req: express.Request, res: expres
     db,
     userId,
     worldId,
+    sessionId,
     world,
     chapter,
     state: runtimeContext.state,

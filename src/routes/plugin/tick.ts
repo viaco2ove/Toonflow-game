@@ -184,6 +184,26 @@ export default router.post(
           console.log(`[plugin/tick] 玩家卡 dirty 自愈：清理 ${rawList.length - cleaned.length} 条字面 [object Object]`);
         }
       }
+      // ★ v6：当前世界名（故事绑定视觉地图模板用）：
+      //   entry.start 按 worldName 读 map_visual:<worldName> 模板（sessionId="all"），
+      //   注入本会话 map_visual → 前端 loadLevelByName 优先渲染该故事的视觉世界。
+      //   发布快照（t_storyWorld_published）优先，草稿表（t_storyWorld）兜底；缺失不阻断 tick。
+      let worldName = "";
+      try {
+        const wId = Number((session as any)?.worldId || 0);
+        if (wId > 0) {
+          let wrow: any = null;
+          try { wrow = await db("t_storyWorld_published").where({ worldId: wId }).first(); } catch { /* 表缺失忽略 */ }
+          if (!wrow) {
+            try { wrow = await db("t_storyWorld").where({ id: wId }).first(); } catch { /* 表缺失忽略 */ }
+          }
+          worldName = String((wrow as any)?.name || (wrow as any)?.title || "").trim();
+        }
+      } catch { /* 世界名缺失不阻断 tick */ }
+      // ★ 诊断日志：地图串故事的排查锚点。worldName 决定 entry 读哪个 map_visual:<name> 模板。
+      console.log(
+        `[plugin/tick] [map-diag] action=${action} sessionId=${sessionId} worldId=${session?.worldId} worldName=${JSON.stringify(worldName)}`,
+      );
       const ctx: PluginGameContext = {
         pluginId,
         pluginDir: getPluginDir(userId, pluginId),
@@ -196,6 +216,9 @@ export default router.post(
           : undefined,
         // ★ v5：常驻世界书条目摘要（商城 agent 生成物资时参考）
         worldBookDigest: await buildWorldBookDigest(db, Number((session as any)?.worldId || 0)),
+        // ★ v6：当前世界身份（故事绑定视觉地图模板）
+        worldId: Number((session as any)?.worldId || 0) || undefined,
+        worldName: worldName || undefined,
       };
 
       const result = await executePluginAction(ctx as any, action, params, prev as any);
@@ -226,7 +249,11 @@ export default router.post(
         sessionNode.status = "active";
       }
       sessionNode.phase = resultState?.phase ?? "playing";
-      if (!sessionNode.game_type) sessionNode.game_type = "field-survival";
+      // ★ 修复「#退出 关不掉、一闪重开」：插件小游戏的 canonical game_type 是 "plugin"
+      //   （对应 RULEBOOKS.plugin，#退出 才能被 handleMiniGameTurn 拦截）。
+      //   旧代码硬编码 "field-survival"（不在 RULEBOOKS 里）→ #退出 走 null 分支不生效、
+      //   tick 又不断把 status=active 写回 → 面板死灰复燃。
+      if (!sessionNode.game_type) sessionNode.game_type = "plugin";
 
       // stateJson 只在「状态引用变更」时同步完整 public_state：
       //   - plugin_state 已迁 t_plugin_session_data，stateJson 里只写 null（指针语义）

@@ -35,6 +35,10 @@ export interface PluginGameContext {
   playerCard?: Record<string, unknown>;
   /** ★ v5：当前世界「常驻世界书条目」摘要（供插件 agent 生成商城物资） */
   worldBookDigest?: string;
+  /** ★ v6：当前世界 id（故事绑定视觉地图模板；由 /plugin/tick 与 MiniGameController 注入） */
+  worldId?: number;
+  /** ★ v6：当前世界/故事名（entry 按它读 map_visual:<worldName> 模板并注入本会话） */
+  worldName?: string;
   /** 后端插件 API（toonflowTsApi：pluginData + agent），按 ctx 维度自动注入 */
   tsApi?: import("./plugins/toonflowTsApi").ToonflowTsApi;
 }

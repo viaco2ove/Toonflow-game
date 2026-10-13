@@ -119,6 +119,7 @@ export default router.post(
     playerContent: z.string().optional().nullable(),
     state: z.any().optional().nullable(),
     messages: z.array(debugMessageSchema).optional().nullable(),
+    sessionId: z.string().optional().nullable(),
   }),
   async (req, res) => {
     try {
@@ -450,6 +451,7 @@ export default router.post(
 
       const miniGameResult = await handleMiniGameTurn({
         userId,
+        sessionId: req.body.sessionId || undefined,
         world,
         chapter,
         state,

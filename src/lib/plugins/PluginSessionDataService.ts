@@ -69,6 +69,13 @@ export async function getPluginData(
       dataKey: String(dataKey || ""),
     })
     .first();
+  // ★ 诊断日志：地图模板/会话缓存的读取锚点（map_visual / map_data 前缀）
+  if (String(dataKey || "").startsWith("map_")) {
+    // eslint-disable-next-line no-console
+    console.log(
+      `[PluginSessionData] [map-diag] get key=${dataKey} sessionId=${scope.sessionId} pluginId=${scope.pluginId} -> ${row ? "HIT" : "MISS"}`
+    );
+  }
   if (!row) return null;
   return {
     dataKey: row.dataKey,
@@ -100,6 +107,42 @@ export async function setPluginData(
     })
     .onConflict(["userId", "sessionId", "pluginId", "dataKey"])
     .merge({ dataValue: value, updatedAt: ts });
+
+  // ★ 上传新地图模板时，自动清掉所有「非 all 会话」里缓存的旧 map_visual / map_data
+  //   行。否则：entry.ts 规则 4「本会话已有 map_visual 就跳过注入」会让老会话永远
+  //   显示上一次上传的地图（用户已踩坑：上传「赦夜人」后老会话仍显示「通天传授」）。
+  //   范围限定：
+  //     - 仅在写入「地图模板 key」(map_visual:* / map_data:*) 时触发
+  //     - 仅在 sessionId="all"（即模板作用域）时触发
+  //     - 只删该 userId × pluginId 下「非 all」会话里匹配的 key，保留 all 模板本身
+  //     - 不影响 plugin_state / ai_story_roles 等运行时 key
+  if (
+    scope.sessionId === "all" &&
+    (key.startsWith("map_visual:") || key.startsWith("map_data:"))
+  ) {
+    try {
+      const cleared = await db("t_plugin_session_data")
+        .where({
+          userId: scope.userId,
+          pluginId: scope.pluginId,
+        })
+        .whereNot("sessionId", "all")
+        .whereIn("dataKey", ["map_visual", "map_data"])
+        .del();
+      // ★ 诊断日志：always 打印（含 cleared=0），否则"清理没生效"和"本来就没缓存"分不清
+      // eslint-disable-next-line no-console
+      console.log(
+        `[PluginSessionData] [map-diag] template ${key} written (scope: userId=${scope.userId} pluginId=${scope.pluginId} sessionId=all); cleared stale session map cache rows=${cleared}`
+      );
+    } catch (e) {
+      // 清理失败不阻断上传主流程；下次开游戏再覆盖即可
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[PluginSessionData] failed to clear session cache after uploading ${key}:`,
+        e
+      );
+    }
+  }
 }
 
 /** 列出该插件在某会话下的全部 dataKey（不回传 value，避免大负载） */

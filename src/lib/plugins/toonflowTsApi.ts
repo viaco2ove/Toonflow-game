@@ -33,6 +33,13 @@ export interface ToonflowTsApi {
   /** 插件会话数据（t_plugin_session_data） */
   pluginData: {
     get(dataKey: string): Promise<any>;
+    /**
+     * ★ v6：读「故事模板」数据（sessionId="all" 命名空间）。
+     * CLI `plugin_session_data -u -story X` 按 story 播种的模板（如 map_visual:X）
+     * 写在 sessionId="all" 下，供任意会话开局时按当前故事读取并注入本会话。
+     * 不碰 get 的精确匹配语义；模板不存在返回 null。
+     */
+    getTemplate(dataKey: string): Promise<any>;
     set(dataKey: string, value: unknown): Promise<void>;
     list(): Promise<string[]>;
     remove(dataKey: string): Promise<void>;
@@ -52,6 +59,10 @@ export function buildToonflowTsApi(scope: ToonflowTsApiScope): ToonflowTsApi {
     pluginData: {
       get: async (dataKey: string) => {
         const entry = await getPluginData(scope, dataKey);
+        return entry ? entry.dataValue : null;
+      },
+      getTemplate: async (dataKey: string) => {
+        const entry = await getPluginData({ ...scope, sessionId: "all" }, dataKey);
         return entry ? entry.dataValue : null;
       },
       set: (dataKey: string, value: unknown) => setPluginData(scope, dataKey, value),
