@@ -229,6 +229,10 @@ export async function installFromZipFile(
     }
     await fsp.mkdir(path.dirname(targetDir), { recursive: true });
     await fsp.rename(manifestDir, targetDir);
+    // ★ 本地运行目录同步：开发环境下宿主从项目内置 plugins/1/<id> 加载，
+    //   install 默认只解包到数据根，需把新插件同步过去并清 require.cache，
+    //   否则 install 后 PC 仍跑旧版本（"装了个寂寞"）。
+    await deployToRuntimePluginDir(manifest.id, targetDir, manifest.entry || "entry.js");
     // Windows rename 失败时退回 copy+delete
     if (!fs.existsSync(path.join(targetDir, "manifest.json"))) {
       await fsp.cp(manifestDir, targetDir, { recursive: true }).catch(async () => {
@@ -297,6 +301,40 @@ export async function installPluginPackageFromFile(
   const maxBytes = getPluginPackageMaxBytes();
   if (stat.size > maxBytes) throw new Error(`插件包超过 ${formatMaxMb(maxBytes)}MB 限制`);
   return installFromZipFile(userId, zipFilePath, fileName);
+}
+
+/**
+ * 把刚解包的插件同步到「本地运行目录」，让宿主（dev 环境）立刻加载到新版。
+ *
+ * 运行目录可由 env TOONFLOW_RUNTIME_PLUGIN_DIR 覆盖；默认取
+ * <项目根>/Toonflow-game/plugins/1/<pluginId>。仅当该目录已存在时才同步
+ * （不存在说明不是本地 dev 部署，跳过，不影响安装成功）。
+ *
+ * 同步后清 require.cache 中该 entry.js（仅对 CJS 加载有效；若宿主用 ESM
+ * 动态 import，则需重启进程 —— 但文件已就位，重启即生效，无需手动 cp）。
+ */
+async function deployToRuntimePluginDir(
+  pluginId: string,
+  srcDir: string,
+  entryFile: string,
+): Promise<void> {
+  try {
+    const envDir = process.env.TOONFLOW_RUNTIME_PLUGIN_DIR;
+    const runtimeDir = envDir
+      ? path.join(envDir, pluginId)
+      : path.resolve(__dirname, "..", "..", "Toonflow-game", "plugins", "1", pluginId);
+    if (!fs.existsSync(runtimeDir)) return; // 非本地 dev 部署，跳过
+    await fsp.rm(runtimeDir, { recursive: true, force: true });
+    await fsp.mkdir(runtimeDir, { recursive: true });
+    await fsp.cp(srcDir, runtimeDir, { recursive: true });
+    // 清 require.cache（对 CJS 加载热重载有效）
+    try {
+      delete require.cache[require.resolve(path.join(runtimeDir, entryFile))];
+    } catch { /* ESM / 未加载则忽略 */ }
+    console.log(`[plugin] 已同步插件到运行目录: ${runtimeDir}`);
+  } catch (e: any) {
+    console.warn(`[plugin] 同步运行目录失败（不阻塞安装）: ${e?.message ?? e}`);
+  }
 }
 
 /* ------------------------------------------------------------------ */
