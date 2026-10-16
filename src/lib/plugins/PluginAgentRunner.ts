@@ -5,6 +5,8 @@
  *   - field-survival-map-gener：利用故事动态数据生成/维护野外生存地图 JSON
  *   - field-survival-shop-gener：★ v5 利用故事动态数据 + 常驻世界书条目，
  *     为「系统面板 · 商城」生成贴合故事的商品清单（插件再叠加自带物资）
+ *   - field-survival-quest-gener：★ v6 利用故事动态数据，为「任务板」生成贴合故事
+ *     的可接委托 JSON 数组（替代原「台词发言器」误用，后者永远返回对白而非任务 JSON）
  *
  * 调用链（req.md 设计）：
  *   插件 entry.ts (后端进程内)
@@ -27,6 +29,9 @@ import { pluginAgentPromptCode } from "@/agents/plugins.prompts";
  *  地图生成 agent 仍保持 15s（走 fallback 兜底）。 */
 const AGENT_TIMEOUT_MS = 15000;
 const SHOP_AGENT_TIMEOUT_MS = 30000;
+/** ★ v6 任务生成 agent：输出 1-6 条委托（每条含 objectives/reward），给 20s 窗口
+ *  （插件侧外层超时 25s，保证后端先返回，不会出现「插件超时但后端仍在跑」） */
+const QUEST_AGENT_TIMEOUT_MS = 20000;
 
 /** 给 Promise 加超时（定时器在完成/失败后清理，避免悬挂） */
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number, timeoutMessage: string): Promise<T> {
@@ -56,6 +61,18 @@ export interface MapGenerInput {
   currentMap?: Record<string, unknown>;
   /** 变化摘要（维护模式说明发生了什么） */
   changeSummary?: string;
+}
+
+/** ★ v6：任务板委托生成 agent 输入 */
+export interface QuestGenerInput {
+  /** 当前地图显示名（如 Mulberry Town） */
+  mapName?: string;
+  /** 玩家等级（用于难度自适应） */
+  playerLevel?: number;
+  /** 需要生成的委托数量（1-6） */
+  count?: number;
+  /** 已发布任务标题（agent 据此避免重复） */
+  existingTitles?: string[];
 }
 
 const num = (v: unknown, d: number, min: number, max: number): number => {
@@ -93,6 +110,32 @@ function extractJson(text: string): Record<string, any> | null {
     }
   }
   return null;
+}
+
+/**
+ * ★ v6：从 LLM 输出中提取 JSON —— **对象或数组都接受**（任务生成 agent 可能直接吐数组）。
+ *  与 extractJson 的区别：extractJson 只认 `{...}`，若模型输出裸数组 `[{...}]` 会被
+ *  错误地截成「第一个元素对象」；这里优先按「出现更靠前的那个括号」判定整体结构。
+ */
+function extractJsonAny(text: string): any | null {
+  if (!text) return null;
+  let t = String(text).trim();
+  const fence = t.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fence) t = fence[1].trim();
+  const trySlice = (s: number, e: number): any | null => {
+    if (s < 0 || e <= s) return null;
+    try { return JSON.parse(t.slice(s, e + 1)); } catch { return null; }
+  };
+  const iObj = t.indexOf("{");
+  const iArr = t.indexOf("[");
+  // 数组更靠前（或只有数组）→ 先按数组解析
+  if (iArr >= 0 && (iObj < 0 || iArr < iObj)) {
+    const arr = trySlice(iArr, t.lastIndexOf("]"));
+    if (arr) return arr;
+  }
+  const obj = extractJson(text);
+  if (obj) return obj;
+  return trySlice(iArr, t.lastIndexOf("]"));
 }
 
 /** 数值裁剪与结构修复：保证地图数据合法，坏字段回退默认 */
@@ -156,6 +199,9 @@ function sanitizeMap(map: Record<string, any>): Record<string, any> {
 /** ★ v5：商城 agent 名 */
 const SHOP_AGENT_NAME = "field-survival-shop-gener";
 
+/** ★ v6：任务板委托生成 agent 名（只输出任务 JSON，替代原「台词发言器」误用） */
+const QUEST_AGENT_NAME = "field-survival-quest-gener";
+
 /** ★ 角色发言器 agent 名（插件对话功能：城镇 NPC / 队友 / 旁白 的台词与选项） */
 const SPEAKER_AGENT_NAME = "task-speaker-agent";
 
@@ -181,25 +227,27 @@ export interface SpeakerInput {
   context?: { storyDigest?: string; playerLevel?: number };
 }
 
+/** ★ 防 [object Object]：name/desc/title 等字段可能是对象 {cn/zh/name/label/title}，必须先抽字符串。
+ *  （商城 / 任务生成 agent 共用；LLM 偶尔会把中文字段包成对象） */
+function pickStr(v: any, def: string): string {
+  if (typeof v === "string") return v;
+  if (v == null) return def;
+  if (typeof v === "number" || typeof v === "boolean") return String(v);
+  if (typeof v === "object") {
+    const obj = v as Record<string, any>;
+    for (const k of ["name", "label", "title", "cn", "zh", "chinese"]) {
+      if (typeof obj[k] === "string" && obj[k]) return obj[k] as string;
+    }
+    return def;
+  }
+  return def;
+}
+
 /** ★ v5：商城商品裁剪（数量 / 数值兜底），坏字段一律回退默认 */
 function sanitizeShop(out: Record<string, any>): Record<string, any> {
   const goods = Array.isArray(out?.goods) ? out.goods.slice(0, 14) : [];
   const KINDS = ["consumable", "material", "equipment", "skill_book", "quest"];
   const RARITIES = ["common", "fine", "rare", "epic", "legend"];
-  // ★ 防 [object Object]：name/desc 可能是对象 {cn/zh/name/label/title}，必须先抽字符串
-  const pickStr = (v: any, def: string): string => {
-    if (typeof v === "string") return v;
-    if (v == null) return def;
-    if (typeof v === "number" || typeof v === "boolean") return String(v);
-    if (typeof v === "object") {
-      const obj = v as Record<string, any>;
-      for (const k of ["name", "label", "title", "cn", "zh", "chinese"]) {
-        if (typeof obj[k] === "string" && obj[k]) return obj[k] as string;
-      }
-      return def;
-    }
-    return def;
-  };
   return {
     goods: goods.map((g: any, i: number) => ({
       name: pickStr(g?.name, `物资${i + 1}`).slice(0, 20),
@@ -210,6 +258,66 @@ function sanitizeShop(out: Record<string, any>): Record<string, any> {
       desc: pickStr(g?.desc, "").slice(0, 60),
     })),
   };
+}
+
+/** ★ v6：任务板委托裁剪与结构修复（保证每条委托合法，坏字段回退默认）。
+ *  输入可为 { quests:[...] } 或裸数组；输出统一 { quests:[...] }，最多 6 条。 */
+function sanitizeQuests(out: any): Record<string, any> {
+  const QUEST_TYPES = ["kill", "gather", "escort", "deliver", "explore", "talk"];
+  const QUEST_KINDS = ["kill", "gather", "arrive", "talk", "explore"];
+  const rawList: any[] = Array.isArray(out) ? out : Array.isArray(out?.quests) ? out.quests : [];
+  const quests = rawList.slice(0, 6).map((q: any, i: number) => {
+    const objectives = (Array.isArray(q?.objectives) ? q.objectives : []).slice(0, 3).map((o: any) => {
+      const kind = QUEST_KINDS.includes(String(o?.kind)) ? String(o.kind) : "kill";
+      const obj: Record<string, any> = { kind, count: num(o?.count, 1, 1, 12) };
+      const t = pickStr(o?.target, "").trim();
+      if (t) obj.target = t.slice(0, 20);
+      const m = pickStr(o?.map, "").trim();
+      if (m) obj.map = m.slice(0, 40);
+      if (o?.x !== undefined && o?.y !== undefined) {
+        obj.x = num(o.x, 0, -2000, 2000);
+        obj.y = num(o.y, 0, -2000, 2000);
+      }
+      if (kind === "arrive" || kind === "explore") obj.radius = num(o?.radius, 4, 0.5, 40);
+      if (o?.confirm === true) obj.confirm = true;
+      const uid = pickStr(o?.uid, "").trim();
+      if (uid) obj.uid = uid.slice(0, 24);
+      return obj;
+    });
+    if (!objectives.length) objectives.push({ kind: "kill", target: "湮物", count: 3 });
+    let type = pickStr(q?.type, "").trim();
+    if (!QUEST_TYPES.includes(type)) {
+      const k = String(objectives[0].kind);
+      type = k === "kill" ? "kill" : k === "gather" ? "gather" : k === "talk" ? "talk"
+        : k === "explore" ? "explore" : "deliver";
+    }
+    const reward: Record<string, any> = {
+      exp: num(q?.reward?.exp, 60, 0, 400),
+      money: num(q?.reward?.money, 40, 0, 300),
+    };
+    const items = (Array.isArray(q?.reward?.items) ? q.reward.items : []).slice(0, 2)
+      .map((it: any) => ({ name: pickStr(it?.name, "").trim().slice(0, 20), count: num(it?.count, 1, 1, 99) }))
+      .filter((it: { name: string }) => !!it.name);
+    if (items.length) reward.items = items;
+
+    const def: Record<string, any> = {
+      id: pickStr(q?.id, "").trim().slice(0, 24) || `QAI${String(i + 1).padStart(2, "0")}`,
+      title: pickStr(q?.title, "").trim().slice(0, 12) || `委托${i + 1}`,
+      type,
+      giver: pickStr(q?.giver, "任务板").trim().slice(0, 20) || "任务板",
+      desc: pickStr(q?.desc, "").trim().slice(0, 200),
+      level: num(q?.level, 1, 1, 60),
+      objectives,
+      reward,
+    };
+    const map = pickStr(q?.map, "").trim();
+    if (map) def.map = map.slice(0, 40);
+    const tl = Math.round(num(q?.timeLimitTicks, 0, 0, 10_000_000));
+    if (tl > 0) def.timeLimitTicks = tl;
+    if (q?.repeat === true) def.repeat = true;
+    return def;
+  });
+  return { quests };
 }
 
 /** 生成一份保底地图（LLM 不可用/解析失败时用，保证游戏可玩） */
@@ -257,13 +365,14 @@ function mergeMap(current: Record<string, any>, patch: Record<string, any>): Rec
  */
 export async function runPluginAgent(
   agentName: string,
-  input: MapGenerInput & ShopGenerInput & SpeakerInput,
+  input: MapGenerInput & ShopGenerInput & SpeakerInput & QuestGenerInput,
   aiConfigKey = "storyMiniGameModel"
 ): Promise<{ ok: boolean; output?: Record<string, any>; error?: string }> {
   const code = pluginAgentPromptCode(agentName);
   if (!code) return { ok: false, error: `未知插件 agent: ${agentName}` };
   const isShop = String(agentName || "").trim() === SHOP_AGENT_NAME;
   const isSpeaker = String(agentName || "").trim() === SPEAKER_AGENT_NAME;
+  const isQuest = String(agentName || "").trim() === QUEST_AGENT_NAME;
 
   try {
     const systemPrompt = await getPromptByCode(code);
@@ -346,6 +455,16 @@ export async function runPluginAgent(
     if (isShop) {
       parts.push("【常驻世界书条目】\n" + String(input.worldBookDigest || "（无）"));
       parts.push("【用户参数卡】\n" + JSON.stringify(input.playerCard || {}));
+    } else if (isQuest) {
+      parts.push(`【当前地图】${String(input.mapName || "未知")}`);
+      parts.push(`【玩家等级】${Number(input.playerLevel ?? 1)}`);
+      parts.push(`【需要生成数量】${Number(input.count ?? 3)}`);
+      parts.push(
+        "【已发布任务标题（不要重复）】\n" +
+          (Array.isArray(input.existingTitles) && input.existingTitles.length
+            ? input.existingTitles.map((t) => String(t)).join("、")
+            : "（无）")
+      );
     } else if (input.currentMap) {
       parts.push(
         "【当前地图 JSON（增量维护，只输出需变更字段）】\n" +
@@ -356,8 +475,8 @@ export async function runPluginAgent(
     const userPrompt = parts.join("\n\n");
 
     const aiConfig = await u.getPromptAi(aiConfigKey);
-    // ★ 商城生成 agent 输出量大（8-14 件物资 + 多字段），单独延长到 30s；其它 agent 维持 15s
-    const agentTimeoutMs = isShop ? SHOP_AGENT_TIMEOUT_MS : AGENT_TIMEOUT_MS;
+    // ★ 商城生成 agent 输出量大（8-14 件物资 + 多字段）→ 30s；任务生成 agent（1-6 条委托）→ 20s；其它 15s
+    const agentTimeoutMs = isShop ? SHOP_AGENT_TIMEOUT_MS : isQuest ? QUEST_AGENT_TIMEOUT_MS : AGENT_TIMEOUT_MS;
     const result = await withTimeout(
       u.ai.text.invoke(
         {
@@ -374,7 +493,8 @@ export async function runPluginAgent(
     );
 
     const content: string = String((result as any)?.text ?? (result as any)?.content ?? "");
-    const parsed = extractJson(content);
+    // ★ 任务生成 agent 允许裸数组输出 → 用 extractJsonAny；其它 agent 仍只认对象
+    const parsed = isQuest ? extractJsonAny(content) : extractJson(content);
     if (!parsed) {
       // ★ 商城生成 agent：解析失败时仍返回一份「故事风格兜底物资」让前端有内容可显示
       //   此前返回 undefined 会让插件显示「货源：插件常备物资」让用户感受不到 LLM 已调用
@@ -401,17 +521,23 @@ export async function runPluginAgent(
           },
         };
       }
-      // ★ 角色发言器没有兜底地图：失败就如实报错，由插件前端显示错误（不伪造台词）
-      return { ok: false, error: "LLM 输出解析失败", output: isSpeaker ? undefined : fallbackMap(input) };
+      // ★ 角色发言器 / 任务生成没有兜底地图：失败就如实报错，
+      //   由插件前端走自己的兜底（发言器不伪造台词；任务板不伪造委托）
+      if (isQuest) {
+        console.warn("[任务生成 agent] LLM 输出解析失败，交由插件侧兜底委托。原始 content 前 500 字符:", content.slice(0, 500));
+      }
+      return { ok: false, error: "LLM 输出解析失败", output: isSpeaker || isQuest ? undefined : fallbackMap(input) };
     }
     const output = isShop
       ? sanitizeShop(parsed)
-      : input.currentMap
-        ? mergeMap(input.currentMap, parsed)
-        : sanitizeMap(parsed);
+      : isQuest
+        ? sanitizeQuests(parsed)
+        : input.currentMap
+          ? mergeMap(input.currentMap, parsed)
+          : sanitizeMap(parsed);
     return { ok: true, output };
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
-    return { ok: false, error: msg, output: isShop || isSpeaker ? undefined : fallbackMap(input) };
+    return { ok: false, error: msg, output: isShop || isSpeaker || isQuest ? undefined : fallbackMap(input) };
   }
 }

@@ -86,10 +86,56 @@ export const PROMPT_FIELD_SURVIVAL_SHOP_GENER = `你是「野外生存商城生�
 - 不得出现真实世界商标；不得输出与故事无关的现代物品
 - **只输出 JSON**，任何解释文字都会导致解析失败。`;
 
+/** ★ v6：field-survival-quest-gener 系统提示词（任务板委托生成）
+ *  与 task-speaker-agent 的区别：后者是「台词发言器」（只生成 NPC 对白），
+ *  本 agent 只输出**任务 JSON 数组**，供插件 entry.ts 收敛成 QuestDef[] 并入任务板。 */
+export const PROMPT_FIELD_SURVIVAL_QUEST_GENER = `你是「野外生存任务板生成 agent」（field-survival-quest-gener）。
+
+## 你的职责
+读取当前故事的**动态数据**（动态角色卡、动态全局背景、世界时钟、势力/怪物/道具设定），
+为 2.5D 动作小游戏《野外生存》的「任务板」生成**风格贴合故事**的可接委托（quest）。
+委托的发布者、目标名、地名、奖励物品都要尽量引用故事里的势力、怪物、地点、道具。
+
+## 输出 JSON 结构（严格遵守，只输出一个 JSON 对象，不要解释、不要代码块）
+{
+  "quests": [
+    {
+      "id": "Qxx",
+      "title": "任务名（不超过 12 字）",
+      "type": "kill | gather | escort | deliver | explore | talk",
+      "giver": "发布者（故事里的势力/角色/机构）",
+      "desc": "一句话描述（不超过 40 字，带故事口吻）",
+      "level": 1,
+      "map": "发布地图（可选，用英文 slug，如 mulberryTown / mulberryForest / mulberryGraveyard / mulberryDungeon1）",
+      "timeLimitTicks": 0,
+      "objectives": [
+        { "kind": "kill | gather | arrive | talk | explore", "target": "目标名", "count": 1,
+          "map": "目标地图 slug（arrive/explore 用）", "x": 0, "y": 0, "radius": 4, "confirm": false }
+      ],
+      "reward": { "exp": 60, "money": 40, "items": [ { "name": "物品名", "count": 1 } ] },
+      "repeat": false
+    }
+  ]
+}
+
+## 约束
+- quests 数量按输入要求（默认 3 条，1-6 条）；**每条 id 唯一**（Q101、Q102… 或沿用输入已有的 Q 号之后的号）
+- **不要与输入里「已发布任务标题」重复**，也不要与故事任务表已有委托重名
+- type 与 objectives[0].kind 必须匹配：
+  kill→kill；gather→gather；talk→talk；explore→explore；deliver→gather+arrive；escort→arrive（且 type=escort）
+- objectives 至少 1 条，最多 3 条；kill/gather/talk 必须给 count（1-12）；arrive/explore 必须给 map + x + y + radius
+- map 一律用英文 slug（不要写中文地名）
+- timeLimitTicks：0 表示不限时；要限时则填 10 的倍数（1 tick = 100ms，如 6000 = 10 分钟）
+- reward：exp 20-400；money 10-300；items 0-2 件；等级越高奖励越高
+- level 参考输入的玩家等级 ±2，避免出现远超玩家等级的委托
+- 不得出现真实世界商标、现代物品；不得输出与故事无关的内容
+- **只输出 JSON**，任何解释文字、markdown 代码块都会导致解析失败。`;
+
 /** 插件 agent code 映射（设置页展示用） */
 export const PLUGIN_AGENT_PROMPT_CODES = {
   fieldSurvivalMapGener: "plugin-field-survival-map-gener",
   fieldSurvivalShopGener: "plugin-field-survival-shop-gener",
+  fieldSurvivalQuestGener: "plugin-field-survival-quest-gener",
   /**
    * ★ 角色发言器（task-speaker-agent）：复用任务模式已有的提示词 code
    *   （def.prompts.ts 的 DEFAULT_PROMPTS 已注册 "task-speaker-agent"），
@@ -105,6 +151,9 @@ export function pluginAgentPromptCode(agentName: string): string {
       return PLUGIN_AGENT_PROMPT_CODES.fieldSurvivalMapGener;
     case "field-survival-shop-gener":
       return PLUGIN_AGENT_PROMPT_CODES.fieldSurvivalShopGener;
+    // ★ v6 任务板：只输出任务 JSON 数组（供插件任务板生成委托）
+    case "field-survival-quest-gener":
+      return PLUGIN_AGENT_PROMPT_CODES.fieldSurvivalQuestGener;
     // ★ 角色发言器：插件对话功能（城镇 NPC / 队友 / 旁白）
     case "task-speaker-agent":
       return PLUGIN_AGENT_PROMPT_CODES.taskSpeaker;
