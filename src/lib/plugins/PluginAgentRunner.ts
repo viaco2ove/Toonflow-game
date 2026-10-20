@@ -20,6 +20,7 @@
  *   唯一例外：task-speaker-agent 复用宿主设置页注册的提示词（DEFAULT_PROMPTS["task-speaker-agent"]）。
  */
 import u from "@/utils";
+import sharp from "sharp";
 import { getPromptByCode } from "@/lib/promptHelper";
 import { separateGeneratedSpriteBackground } from "@/routes/game/separateRoleAvatar";
 
@@ -233,6 +234,25 @@ const SPRITE_AGENT_NAME = "field-survival-sprite-gener";
 /** ★ 实体形象生图 agent 超时：图片模型推理通常 30~90s，留足余量 */
 const SPRITE_AGENT_TIMEOUT_MS = 150000;
 
+/** ★ 2026-10-20：参考图统一转 png——头像常是 webp/动图，部分图片模型（如 Kolors）不认。
+ *  输入 data:URL / http(s) / 裸 base64，输出 png data:URL；任何失败由调用方保留原图。 */
+async function refImageToPng(ref: string): Promise<string> {
+  const m = /^data:(image\/[a-z0-9.+-]+);base64,(.+)$/i.exec(ref.trim());
+  let buffer: Buffer;
+  if (m) {
+    if (/^image\/png$/i.test(m[1])) return ref; // 已是 png 原样返回
+    buffer = Buffer.from(m[2], "base64");
+  } else if (/^https?:/i.test(ref)) {
+    const res = await fetch(ref);
+    if (!res.ok) throw new Error(`参考图下载失败 ${res.status}`);
+    buffer = Buffer.from(await res.arrayBuffer());
+  } else {
+    buffer = Buffer.from(ref, "base64");
+  }
+  const png = await sharp(buffer).png().toBuffer();
+  return `data:image/png;base64,${png.toString("base64")}`;
+}
+
 /**
  * ★ 角色发言器输入（由插件 entry.ts 的 sys_chat 传入）
  * 与 field-survival-*-gener 不同：它输入/输出都是文本，不解析 JSON。
@@ -431,7 +451,15 @@ export async function runPluginAgent(
       const refImages = Array.isArray(input?.refImages) ? input.refImages.filter((x) => typeof x === "string" && x) : [];
       const size = (input?.size === "2K" || input?.size === "4K") ? input.size : "1K";
       const aspectRatio = String(input?.aspectRatio || "1:1").trim() || "1:1";
-      const userText = `角色名：${String(input?.playerName || "未知")}\n等级：${Number(input?.level || 1)}\n画风：${String(input?.style || "2.5d-topdown-pixel")}\n外形：${prompt}`;
+      /* ★ 2026-10-20 规格：userText 只保留 外形(prompt)+画风，角色名/等级等无关字段去掉；
+       *   生图模型没有 systemPrompt 参数 → 拼进 prompt："{userText}({systemPrompt})"。
+       *   systemPrompt 太长会挤掉外形描述，超限时截断尾部（画风/外形在前优先保真）。 */
+      const style = String(input?.style || "2.5d-topdown-pixel");
+      const sys = String((input as any)?.systemPrompt || "").trim();
+      const sysClause = sys ? `（${sys.length > 600 ? sys.slice(0, 600) + "…" : sys}）` : "";
+      const userText = `${prompt}，${style}${sysClause}`;
+      // 参考图规格：webp 头像等格式模型可能不认 → 一律转 png（失败保留原图不阻断）
+      const pngRefs = await Promise.all(refImages.map((r) => refImageToPng(r).catch(() => r)));
       const cfg = await u.getPromptAi("storyImageModel");
       const cfgAny = (cfg && (cfg as any).manufacturer) ? cfg : await u.getPromptAi("storyMiniGameModel");
       if (!cfgAny || !(cfgAny as any).manufacturer) {
@@ -442,9 +470,8 @@ export async function runPluginAgent(
         content = await withTimeout(
           (u as any).ai.image(
             {
-              systemPrompt,
               prompt: userText,
-              imageBase64: refImages,
+              imageBase64: pngRefs,
               size,
               aspectRatio,
               resType: "b64",
