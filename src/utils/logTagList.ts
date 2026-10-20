@@ -117,6 +117,7 @@ export const logTagList = [
   "video:kieai", // kieai 视频
   "video:qingyuntop", // qingyuntop 视频
   "video:t8star", // t8star 视频
+  "plugins", // 插件相关
 ] as const;
 
 /** 后端登记的 debug 日志 tag 类型（用于 IDE 补全与文档参考）。 */
