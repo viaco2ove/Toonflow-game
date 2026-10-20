@@ -2,6 +2,7 @@ import "./type";
 import u from "@/utils";
 import modelList from "./modelList";
 import axios from "axios";
+import { dumpAiHttpRequest, reqDumpEnabled } from "@/utils/ai/debugReqDump";
 
 import volcengine from "./owned/volcengine";
 import kling from "./owned/kling";
@@ -112,6 +113,27 @@ export default async (input: ImageConfig, config: AIConfig) => {
       }
       // 默认使用 png
       return `data:image/png;base64,${img}`;
+    });
+  }
+
+  // ★ AI_TEXT_DEBUG_HTTP_REQ=1：落盘本次生图的「统一请求体」（各厂商最终 HTTP body 都由此构造）。
+  //   imageBase64 含参考图原值；文件落在 AI_TEXT_DEBUG_HTTP_REQ_LOG_PATH。
+  //   语义级 dump 覆盖全部厂商；部分 axios 直连厂商（如 volcengine）另有更精确的线上 body dump。
+  if (reqDumpEnabled()) {
+    dumpAiHttpRequest(`u.ai.image_${String(manufacturer)}_${String(model)}`, {
+      method: "PROVIDER",
+      url: baseURL || `(provider default: ${String(manufacturer)})`,
+      headers: { Authorization: "Bearer ***" },
+      body: {
+        model,
+        prompt: input.prompt,
+        systemPrompt: input.systemPrompt ?? null,
+        size: input.size,
+        aspectRatio: input.aspectRatio,
+        resType: input.resType,
+        imageBase64: input.imageBase64 ?? null,
+      },
+      extra: { via: "u.ai.image", manufacturer, model },
     });
   }
 

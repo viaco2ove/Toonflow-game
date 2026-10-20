@@ -8,9 +8,8 @@ import { getModelList, normalizeTextModelName, createResponsesProtocolFetch } fr
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { z } from "zod";
 import { writeAiTokenUsageLog } from "@/lib/aiTokenUsageLog";
+import { dumpAiHttpRequest, reqDumpEnabled } from "@/utils/ai/debugReqDump";
 import type { LanguageModelUsage } from "ai";
-import fs from "fs";
-import path from "path";
 interface AIInput<T extends Record<string, z.ZodTypeAny> | undefined = undefined> {
   system?: string;
   tools?: Record<string, Tool>;
@@ -217,28 +216,13 @@ function createDebugFetch(label: string, agentName?: string): typeof fetch {
     const requestBody = getBodyPreview(init?.body);
 
     // AI_TEXT_DEBUG_HTTP_REQ=1 时，dump 真实 HTTP 请求体到文件（包含 URL/headers/body）
-    const reqDumpEnabled = process.env.AI_TEXT_DEBUG_HTTP_REQ === "1" && process.env.AI_TEXT_DEBUG_HTTP_REQ_LOG_PATH;
-    if (reqDumpEnabled) {
-      const reqDir = String(process.env.AI_TEXT_DEBUG_HTTP_REQ_LOG_PATH!).trim();
-      const modelPart = label.replace(/[/:]/g, "_");
-      const agentPart = agentName ? `_${agentName}` : "";
-      const reqFile = path.join(reqDir, `req_${Date.now()}_${modelPart}${agentPart}.json`);
-      const dumpData = {
-        _meta: {
-          env: { AI_TEXT_DEBUG_HTTP_REQ: "1" },
-          label,
-          method: requestMethod,
-          url: requestUrl,
-        },
+    if (reqDumpEnabled()) {
+      dumpAiHttpRequest(`${label}${agentName ? `_${agentName}` : ""}`, {
+        method: requestMethod,
+        url: requestUrl,
         headers: requestHeaders,
-        body: init?.body ? JSON.parse(init.body as string) : null,
-      };
-      try {
-        fs.mkdirSync(reqDir, { recursive: true });
-        fs.writeFileSync(reqFile, JSON.stringify(dumpData, null, 2), "utf-8");
-      } catch (e: any) {
-        console.error("[ai:text:req_dump] error:", e?.message);
-      }
+        body: init?.body ?? (typeof input !== "string" && !(input instanceof URL) ? (input as Request).body : undefined),
+      });
     }
 
     if (TEXT_DEBUG_HTTP) {
@@ -347,7 +331,10 @@ const buildOptions = async (input: AIInput<any>, config: AIConfig = {}) => {
     name: "xixixi",
     ...minimaxReasoning,
     ...(
-      (TEXT_DEBUG_HTTP || process.env.AI_TEXT_DEBUG_HTTP_REQ === "1") && openAICompatible
+      /* ★ 2026-10-20：reqDump（AI_TEXT_DEBUG_HTTP_REQ=1）开启时对**所有厂商**注入 debug fetch —
+         插件 agent（地图/任务/商店/对话）即便配了非 openai 兼容厂商（gemini/anthropic 等原生 SDK）
+         也必须落盘请求体；TEXT_DEBUG_HTTP 的 console 日志维持原 openai 兼容范围不变。 */
+      reqDumpEnabled() || (TEXT_DEBUG_HTTP && openAICompatible)
         ? { fetch: createDebugFetch(`${owned.manufacturer}:${model}`, (input as any)?.usageType || (input as any)?.usageRemark || undefined) }
         : {}
     ),

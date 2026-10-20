@@ -1,6 +1,7 @@
 import "../type";
 import axios from "axios";
 import u from "@/utils";
+import { dumpAiHttpRequest, reqDumpEnabled } from "@/utils/ai/debugReqDump";
 
 const normalizeAspectRatio = (ratio: string): string => ratio.replace(/\s+/g, "");
 
@@ -44,6 +45,17 @@ export default async (input: ImageConfig, config: AIConfig): Promise<string> => 
   };
 
   const url = config.baseURL ?? "https://ark.cn-beijing.volces.com/api/v3/images/generations";
+  // ★ AI_TEXT_DEBUG_HTTP_REQ=1：落盘 volcengine 生图的**精确线上请求体**（ark 接口真实字段，
+  //   image = 参考图 data:URL 数组）。Authorization 会由 dump 工具自动脱敏。
+  if (reqDumpEnabled()) {
+    dumpAiHttpRequest(`image_volcengine_${String(config.model)}`, {
+      method: "POST",
+      url,
+      headers: { Authorization: apiKey },
+      body,
+      extra: { via: "u.ai.image → owned/volcengine", manufacturer: "volcengine", model: config.model },
+    });
+  }
   try {
     const { data } = await axios.post(url, body, { headers: { Authorization: apiKey } });
     return data.data[0]?.url;
