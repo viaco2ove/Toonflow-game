@@ -23,6 +23,7 @@ import u from "@/utils";
 import sharp from "sharp";
 import { getPromptByCode } from "@/lib/promptHelper";
 import { separateGeneratedSpriteBackground } from "@/routes/game/separateRoleAvatar";
+import {DebugLogUtil} from "@/utils/debugLogUtil";
 
 /** ★ fix③：插件 agent 调用超时上限。
  *  背景：web 端点「开始游戏」时 /plugin/tick(action=start) 会同步等待地图生成，
@@ -465,6 +466,9 @@ export async function runPluginAgent(
       if (!cfgAny || !(cfgAny as any).manufacturer) {
         return { ok: false, error: "未配置图片模型，请在设置中配置 storyImageModel" };
       }
+
+      DebugLogUtil.log("plugins", `[runPluginAgent] userText=${userText}`);
+
       let content: string;
       try {
         content = await withTimeout(
