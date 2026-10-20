@@ -1228,6 +1228,86 @@ async function runConfiguredImageModelAvatarMattingJob(
   return await saveSeparatedRoleAvatarFiles(payload, foregroundBuffer, backgroundBuffer);
 }
 
+/**
+ * ★ 2026-10-20：实体形象生图的背景分离（插件「系统 → 角色 → 实体形象 → AI 生成」链路）。
+ *
+ * 与角色头像分离（runSeparateRoleAvatarJob）的区别：不落盘、不建任务、不要背景层，
+ * 只要一张透明前景 PNG 的 data:URL 返回给插件入图库。
+ *
+ * 配置来源：storyAvatarMattingModel（设置页「背景分离工具」槽位）：
+ *   - bria / aliyun_imageseg / tencent_ci：对应厂商分离接口
+ *   - volcengine：复用配置的图像模型做「前景重建」
+ *   - local_birefnet / local_modnet：本地 ONNX 模型（未安装则跳过）
+ * 未配置或失败一律返回 null，调用方保留原图（不阻断生成）。
+ */
+export async function separateGeneratedSpriteBackground(
+  imageDataUrl: string,
+): Promise<{ image: string; manufacturer: string } | null> {
+  const cfg = await u.getPromptAi("storyAvatarMattingModel");
+  if (!(cfg as any)?.manufacturer) return null;
+  const config = cfg as ImageAiConfig;
+  /** 厂商名单独取成局部变量：下面是一串同类类型守卫（config is ImageAiConfig），
+   *  串联后分支内 config 会被 TS 收窄成 never，直接读 config.manufacturer 会 TS2339。 */
+  const manufacturer = String((config as any).manufacturer || "").trim();
+  try {
+    if (isLocalBiRefNetAvatarMattingConfig(config)) {
+      const modelName = String(config.model || "").trim();
+      const status = await getLocalAvatarMattingStatus({ manufacturer: manufacturer, model: modelName });
+      if (status.status !== "installed") return null;
+      const mattingInput = await normalizeRoleSourceForMatting(imageDataUrl);
+      const foregroundRaw = await runLocalBiRefNetMatting(mattingInput, modelName);
+      const foregroundBuffer = await normalizeForegroundLayer(foregroundRaw, { skipChromaKey: true });
+      return { image: bufferToDataUrl(foregroundBuffer, "image/png"), manufacturer: manufacturer };
+    }
+    if (isBriaAvatarMattingConfig(config)) {
+      const mattingInput = await normalizeRoleSourceForMatting(imageDataUrl);
+      const foregroundRaw = await callBriaEdit(config, "remove_background", {
+        image: bufferToDataUrl(mattingInput, "image/png"),
+        sync: true,
+        preserve_alpha: true,
+        visual_input_content_moderation: false,
+      });
+      const foregroundBuffer = await normalizeForegroundLayer(foregroundRaw, { skipChromaKey: true });
+      return { image: bufferToDataUrl(foregroundBuffer, "image/png"), manufacturer: manufacturer };
+    }
+    if (isAliyunAvatarMattingConfig(config)) {
+      const mattingInput = await normalizeRoleSourceForMatting(imageDataUrl);
+      const foregroundRaw = await callAliyunMatting(mattingInput, config);
+      const foregroundBuffer = await normalizeForegroundLayer(foregroundRaw, { skipChromaKey: true });
+      return { image: bufferToDataUrl(foregroundBuffer, "image/png"), manufacturer: manufacturer };
+    }
+    if (isTencentAvatarMattingConfig(config)) {
+      const mattingInput = await normalizeRoleSourceForMatting(imageDataUrl);
+      const foregroundRaw = await callTencentPortraitMatting(mattingInput, config);
+      const foregroundBuffer = await normalizeForegroundLayer(foregroundRaw, { skipChromaKey: true });
+      return { image: bufferToDataUrl(foregroundBuffer, "image/png"), manufacturer: manufacturer };
+    }
+    if (isVolcengineAvatarMattingConfig(config)) {
+      // 火山「头像分离」槽位复用图生图前景重建：用配置的图像模型重画前景
+      const modelInputDataUrl = bufferToDataUrl(await normalizeRoleSource(imageDataUrl), "image/png");
+      const foregroundRaw = await u.ai.image(
+        {
+          systemPrompt: "你是角色主体分离助手，只输出图片。",
+          prompt: buildForegroundPrompt("角色"),
+          imageBase64: [modelInputDataUrl],
+          aspectRatio: "1:1",
+          size: "2K",
+        },
+        config,
+      );
+      const foregroundBuffer = await normalizeForegroundLayer(
+        await imageOutputToBuffer(String(foregroundRaw || "")),
+        { skipChromaKey: true },
+      );
+      return { image: bufferToDataUrl(foregroundBuffer, "image/png"), manufacturer: manufacturer };
+    }
+    return null;
+  } catch (err) {
+    console.warn("[separateRoleAvatar] 实体形象背景分离失败（保留原背景）:", u.error(err).message);
+    return null;
+  }
+}
+
 async function ensureOwnedProjectId(projectId: number | null | undefined, userId: number): Promise<number | null> {
   const normalizedProjectId = Number(projectId || 0);
   if (!Number.isFinite(normalizedProjectId) || normalizedProjectId <= 0) {

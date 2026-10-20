@@ -15,11 +15,13 @@
  *     → 输出 JSON 解析/修复/数值裁剪
  *     → 返回给插件（插件自己决定存 t_plugin_session_data 的哪个 dataKey）
  *
- * 提示词默认值在 src/agents/plugins.prompts.ts，DB customValue 可覆盖。
+ * ★ 2026-10-20：提示词改由插件自带——插件的 agent 提示词随 input.systemPrompt 传入
+ *   （插件 src/agents/plugins.prompts.ts，宿主不持有插件提示词；原 src/agents/plugins.prompts.ts 已删）。
+ *   唯一例外：task-speaker-agent 复用宿主设置页注册的提示词（DEFAULT_PROMPTS["task-speaker-agent"]）。
  */
 import u from "@/utils";
 import { getPromptByCode } from "@/lib/promptHelper";
-import { pluginAgentPromptCode } from "@/agents/plugins.prompts";
+import { separateGeneratedSpriteBackground } from "@/routes/game/separateRoleAvatar";
 
 /** ★ fix③：插件 agent 调用超时上限。
  *  背景：web 端点「开始游戏」时 /plugin/tick(action=start) 会同步等待地图生成，
@@ -73,6 +75,25 @@ export interface QuestGenerInput {
   count?: number;
   /** 已发布任务标题（agent 据此避免重复） */
   existingTitles?: string[];
+}
+
+/** ★ 2026-10-19：实体形象生图 agent 输入（由插件 entry.ts 的 sys_sprite_generate 传入） */
+export interface SpriteGenerInput {
+  /** 形象描述（必填，≤ 800 字） */
+  prompt: string;
+  /** 参考图：data:URL / http(s) URL（插件内相对路径后端读不到）；最多 3 张 */
+  refImages?: string[];
+  /** 画风提示：2.5d-topdown-pixel / anime / realistic / etc. */
+  style?: string;
+  /** 图片尺寸 1K / 2K / 4K（默认 1K，与玩家头像实际显示尺寸匹配） */
+  size?: "1K" | "2K" | "4K";
+  /** 长宽比 1:1 优先（头像） */
+  aspectRatio?: string;
+  /** 角色名（脱敏） */
+  playerName?: string;
+  level?: number;
+  /** 系统提示词：由插件自带传入（宿主不再持有插件 agent 提示词） */
+  systemPrompt?: string;
 }
 
 const num = (v: unknown, d: number, min: number, max: number): number => {
@@ -204,6 +225,13 @@ const QUEST_AGENT_NAME = "field-survival-quest-gener";
 
 /** ★ 角色发言器 agent 名（插件对话功能：城镇 NPC / 队友 / 旁白 的台词与选项） */
 const SPEAKER_AGENT_NAME = "task-speaker-agent";
+
+/** ★ 2026-10-19：实体形象生图 agent 名（系统 → 角色 → 实体形象 → AI 生成）
+ *  与其它 text agent 走不同分支：调用 u.ai.image（图片模型，非文本 LLM）。 */
+const SPRITE_AGENT_NAME = "field-survival-sprite-gener";
+
+/** ★ 实体形象生图 agent 超时：图片模型推理通常 30~90s，留足余量 */
+const SPRITE_AGENT_TIMEOUT_MS = 150000;
 
 /**
  * ★ 角色发言器输入（由插件 entry.ts 的 sys_chat 传入）
@@ -365,18 +393,90 @@ function mergeMap(current: Record<string, any>, patch: Record<string, any>): Rec
  */
 export async function runPluginAgent(
   agentName: string,
-  input: MapGenerInput & ShopGenerInput & SpeakerInput & QuestGenerInput,
+  input: MapGenerInput & ShopGenerInput & SpeakerInput & QuestGenerInput & SpriteGenerInput,
   aiConfigKey = "storyMiniGameModel"
 ): Promise<{ ok: boolean; output?: Record<string, any>; error?: string }> {
-  const code = pluginAgentPromptCode(agentName);
-  if (!code) return { ok: false, error: `未知插件 agent: ${agentName}` };
-  const isShop = String(agentName || "").trim() === SHOP_AGENT_NAME;
-  const isSpeaker = String(agentName || "").trim() === SPEAKER_AGENT_NAME;
-  const isQuest = String(agentName || "").trim() === QUEST_AGENT_NAME;
+  const agentKey = String(agentName || "").trim();
+  const knownPluginAgents = [
+    "field-survival-map-gener",
+    SHOP_AGENT_NAME,
+    QUEST_AGENT_NAME,
+    SPRITE_AGENT_NAME,
+    SPEAKER_AGENT_NAME,
+  ];
+  if (knownPluginAgents.indexOf(agentKey) < 0) {
+    return { ok: false, error: `未知插件 agent: ${agentName}` };
+  }
+  const isShop = agentKey === SHOP_AGENT_NAME;
+  const isSpeaker = agentKey === SPEAKER_AGENT_NAME;
+  const isQuest = agentKey === QUEST_AGENT_NAME;
+  const isSprite = agentKey === SPRITE_AGENT_NAME;
 
   try {
-    const systemPrompt = await getPromptByCode(code);
-    if (!systemPrompt) return { ok: false, error: `提示词缺失: ${code}` };
+    // 提示词来源：① 插件 input.systemPrompt（插件自带）→ ② task-speaker-agent 的宿主注册表
+    const speakerCode = isSpeaker ? SPEAKER_AGENT_NAME : "";
+    const systemPrompt = String((input as any)?.systemPrompt || "").trim()
+      || (speakerCode ? await getPromptByCode(speakerCode) : "");
+    if (!systemPrompt) {
+      return { ok: false, error: "提示词缺失：插件未通过 input.systemPrompt 提供（task-speaker-agent 应走宿主提示词表）" };
+    }
+
+    /* ★ 2026-10-19：实体形象生图 agent——走 u.ai.image（与现有图片模型同源）
+     *  input 契约见 SpriteGenerInput。返回 { image: data:URL } 让插件直接用，
+     *  不入 oss（避免再次回读；本就是一次性展示，data:URL 体积可接受）。
+     *  失败原因会同步报错给插件 entry.ts → 弹窗显示。 */
+    if (isSprite) {
+      const prompt = String(input?.prompt || "").trim();
+      if (!prompt) return { ok: false, error: "缺提示词" };
+      const refImages = Array.isArray(input?.refImages) ? input.refImages.filter((x) => typeof x === "string" && x) : [];
+      const size = (input?.size === "2K" || input?.size === "4K") ? input.size : "1K";
+      const aspectRatio = String(input?.aspectRatio || "1:1").trim() || "1:1";
+      const userText = `角色名：${String(input?.playerName || "未知")}\n等级：${Number(input?.level || 1)}\n画风：${String(input?.style || "2.5d-topdown-pixel")}\n外形：${prompt}`;
+      const cfg = await u.getPromptAi("storyImageModel");
+      const cfgAny = (cfg && (cfg as any).manufacturer) ? cfg : await u.getPromptAi("storyMiniGameModel");
+      if (!cfgAny || !(cfgAny as any).manufacturer) {
+        return { ok: false, error: "未配置图片模型，请在设置中配置 storyImageModel" };
+      }
+      let content: string;
+      try {
+        content = await withTimeout(
+          (u as any).ai.image(
+            {
+              systemPrompt,
+              prompt: userText,
+              imageBase64: refImages,
+              size,
+              aspectRatio,
+              resType: "b64",
+            },
+            cfgAny,
+          ),
+          SPRITE_AGENT_TIMEOUT_MS,
+          `实体形象生图超时（>${SPRITE_AGENT_TIMEOUT_MS}ms）`,
+        );
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
+        return { ok: false, error: "生图失败：" + msg };
+      }
+      // u.ai.image 返回内容形如 "data:image/png;base64,xxxx" 或纯 base64
+      const dataUrl = String(content || "").trim();
+      if (!dataUrl) return { ok: false, error: "生图 agent 返回空内容" };
+      let image = /^data:/i.test(dataUrl) ? dataUrl : `data:image/png;base64,${dataUrl}`;
+      /* ★ 2026-10-20 背景分离：宿主配置的背景分离工具（storyAvatarMattingModel）把背景透明化。
+       *   未配置 / 分离失败 → 保留原图（不阻断生成），matting 字段告知插件用了哪个厂商。 */
+      let matting = "skipped";
+      try {
+        const sep = await separateGeneratedSpriteBackground(image);
+        if (sep && sep.image) {
+          image = sep.image;
+          matting = sep.manufacturer || "applied";
+        }
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
+        console.warn("[pluginAgentRunner] 实体形象背景分离失败（保留原背景）:", msg);
+      }
+      return { ok: true, output: { image, prompt, source: "ai", matting } };
+    }
 
     // ★ 角色发言器：文本进 / 文本出，不做 JSON 解析（与 map/shop agent 走不同分支）
     if (isSpeaker) {
@@ -538,6 +638,6 @@ export async function runPluginAgent(
     return { ok: true, output };
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
-    return { ok: false, error: msg, output: isShop || isSpeaker || isQuest ? undefined : fallbackMap(input) };
+    return { ok: false, error: msg, output: isShop || isSpeaker || isQuest || isSprite ? undefined : fallbackMap(input) };
   }
 }

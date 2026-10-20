@@ -57,9 +57,14 @@ function runEsbuild(bin: string, cwd: string, entryTs: string, entryJs: string):
     const args = [
       entryTs,
       "--outfile=" + entryJs,
-      "--bundle=false",
+      // ★ 2026-10-20：必须 bundle——插件 entry.ts 现在 import 了插件自带的
+      //   src/agents/plugins.prompts.ts（宿主已不持有插件提示词）。bundle=false 会
+      //   把裸 import 留在 entry.js 里，宿主加载即 ModuleNotFound。改回 false 前先确认
+      //   插件 entry.ts 没有本地 import。
+      "--bundle=true",
       "--format=esm",
       "--target=es2020",
+      "--charset=utf8",
       "--log-level=warning",
     ];
     const child = spawn(bin, args, { cwd, stdio: ["ignore", "pipe", "pipe"] });
