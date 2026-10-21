@@ -5208,6 +5208,18 @@ function buildMiniGameRoleOptions(state: JsonRecord | undefined): Array<Record<s
   for (const key of Object.keys(npcs)) {
     pushRole(asRecord(npcs[key]), "npc");
   }
+  // ★ 2026-10-21：选人面板角色注入日志（排查「开局后选人界面没有可选角色」）。
+  //   roles 来自宿主注入插件的 ctx.roles → entry.init 的 state.roles → 前端三组 chips。
+  //   为空时顺着 root.player / root.npcs（故事运行时角色）继续往上游查 worldRoles。
+  const brief = out.map((r) => `${String(r.name)}[${String(r.roleType)}]`).join("、");
+  console.info(
+    `[minigame roles] 故事运行时角色 → 插件选人列表：` +
+    `player=${scalarText(asRecord(root.player).name) || "(无)"} ` +
+    `npcs=${Object.keys(npcs).length}([${Object.keys(npcs).join(",")}]) → ${out.length} 个${out.length ? " → " + brief : ""}`,
+  );
+  if (!out.length) {
+    console.warn("[minigame roles] ⚠️ 注入插件的角色列表为空——选人面板将没有任何可选角色（检查 ctx.state.player/npcs 与 world.settings.roles）");
+  }
   return out;
 }
 

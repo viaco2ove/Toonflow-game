@@ -426,6 +426,19 @@ export function worldRoles(world: any): RuntimeStoryRole[] {
   if (DebugLogUtil.isDebugLogEnabled()) {
     console.log(`[worldRoles] world=${world?.name} settings.roles count=${settings.roles?.length}, raw roles:`, JSON.stringify((settings.roles || []).map((r: any) => ({ id: r?.id, name: r?.name, roleType: r?.roleType }))));
   }
+  // ★ 2026-10-21：常开摘要（上面的 debug 门控日志之外）。storyInfo 角色池是选人面板/
+  //   AI 陪练的角色源头，为空时这里能直接看到「故事侧就没有角色」，不用先猜是不是插件问题。
+  const rawSettingRoles = Array.isArray(settings.roles) ? settings.roles : [];
+  const npcBrief = rawSettingRoles
+    .map((r: any) => `${String(r?.name ?? "?")}(${String(r?.roleType || "npc")})`)
+    .join("、");
+  console.info(
+    `[worldRoles] 故事角色池(storyInfo world.settings.roles)：world=${String(world?.name ?? "?")} ` +
+    `总数=${rawSettingRoles.length} player=${String(rolePair.playerRole.name || "用户")} ` +
+    `narrator=${String(rolePair.narratorRole.name || "旁白")} ` +
+    `NPC=${rawSettingRoles.filter((r: any) => !["player", "narrator"].includes(String(r?.roleType || "").trim().toLowerCase())).length}` +
+    (npcBrief ? ` → ${npcBrief}` : " → （NPC 为空！）"),
+  );
   const npcRoles = Array.isArray(settings.roles)
     ? settings.roles.filter((item) => {
       if (!item) return false;
