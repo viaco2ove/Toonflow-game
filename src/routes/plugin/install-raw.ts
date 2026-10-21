@@ -87,8 +87,20 @@ export default router.post("/", async (req, res) => {
       }
       if (!writeStream.write(buf)) {
         await new Promise<void>((resolve) => {
-          writeStream.once("drain", () => resolve());
-          writeStream.once("error", () => resolve()); // 出错时同样解除等待，交由下方 writeError 判定
+          // ★ 背压等待：drain / error 任意一个触发都要把另一个监听器摘掉。
+          //   早期版本两个 once 各自 resolve，drain 触发后 error 监听器仍挂在
+          //   WriteStream 上——每背压一次泄漏一个，大包上传会攒到 10+ 个触发
+          //   MaxListenersExceededWarning。
+          const onDrain = () => {
+            writeStream.off("error", onError);
+            resolve();
+          };
+          const onError = () => {
+            writeStream.off("drain", onDrain);
+            resolve();
+          };
+          writeStream.once("drain", onDrain);
+          writeStream.once("error", onError);
         });
       }
     }

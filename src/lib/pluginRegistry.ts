@@ -176,6 +176,55 @@ export interface InstallPluginResult {
  * 解压 / 安全校验 / 落库逻辑与旧 installPluginPackage 完全一致，
  * 差别仅在于 zip 来源是磁盘文件：直接解压该文件，不再先读成 Buffer 再写一遍。
  */
+/**
+ * 安装包瘦身：解压后剔除包内不应进入安装目录的冗余内容。
+ *
+ * 背景（2026-10-21）：用户从手机上传整个插件工作目录（394M / 3264 文件，
+ * 含 vue/node_modules 226M）导致 install-raw 耗时 58s。这里做纵深防御——
+ * 即使上传的是 fat 包，落到磁盘的安装目录也只保留运行时必需内容。
+ * entry.js 是 esbuild 单文件 bundle，不依赖 node_modules；vue/ 源码仅作参考。
+ *
+ * 保守原则：只删确定性垃圾（依赖目录 / VCS / 缓存 / 备份文件），
+ * ui/images 等资源一律保留（插件可能在运行时引用）。
+ */
+const STRIP_DIRS = new Set([
+  "node_modules", ".git", "__pycache__", ".venv", "venv",
+  ".idea", ".vscode", ".pytest_cache", ".mypy_cache", ".ruff_cache",
+  ".cache", "dist", "test_data",
+]);
+const STRIP_FILE_RE = /(?:\.bak(?:[._-].*)?|~|\.tmp|\.pyc)$/i;
+const STRIP_FILE_NAMES = new Set([".ds_store", "thumbs.db"]);
+
+async function stripPackageJunk(rootDir: string): Promise<{ dirs: number; files: number }> {
+  let dirs = 0;
+  let files = 0;
+  const stack = [rootDir];
+  while (stack.length) {
+    const cur = stack.pop() as string;
+    let entries: import("fs").Dirent[];
+    try {
+      entries = await fsp.readdir(cur, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const e of entries) {
+      const full = path.join(cur, e.name);
+      if (e.isDirectory()) {
+        if (STRIP_DIRS.has(e.name.toLowerCase())) {
+          await fsp.rm(full, { recursive: true, force: true }).catch(() => undefined);
+          dirs++;
+        } else {
+          stack.push(full);
+        }
+      } else if (STRIP_FILE_NAMES.has(e.name.toLowerCase()) || STRIP_FILE_RE.test(e.name)) {
+        await fsp.rm(full, { force: true }).catch(() => undefined);
+        files++;
+      }
+    }
+  }
+  return { dirs, files };
+}
+
 export async function installFromZipFile(
   userId: number,
   zipFilePath: string,
@@ -204,6 +253,14 @@ export async function installFromZipFile(
       } else {
         throw new Error("插件包根目录（或唯一子目录）缺少 manifest.json");
       }
+    }
+
+    // ★ 安装包瘦身：剔除 node_modules / .git / .bak 等冗余，防止 fat 包拖垮安装
+    const stripped = await stripPackageJunk(manifestDir);
+    if (stripped.dirs || stripped.files) {
+      console.log(
+        `[plugin] 安装包瘦身: 删除目录 ${stripped.dirs} 个 / 文件 ${stripped.files} 个`
+      );
     }
 
     const manifestRaw = await fsp.readFile(path.join(manifestDir, "manifest.json"), "utf8");
