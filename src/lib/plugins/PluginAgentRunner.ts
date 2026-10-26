@@ -232,6 +232,15 @@ const SPEAKER_AGENT_NAME = "task-speaker-agent";
  *  与其它 text agent 走不同分支：调用 u.ai.image（图片模型，非文本 LLM）。 */
 const SPRITE_AGENT_NAME = "field-survival-sprite-gener";
 
+/** ★ v6：AI 托管大脑 agent 名（插件 entry.ts case "sys_brain" 调用）
+ *  提示词随 input.systemPrompt 传入（插件自带，不查宿主提示词表）；
+ *  只输出一个决策 JSON，不进数据库。 */
+const AI_BRAIN_AGENT_NAME = "field-survival-ai-brain";
+
+/** ★ AI 大脑决策超时：游戏内实时决策，15s 兜底走程序化 fallback（见插件 brain.ts）。
+ *  前端 waitBrainResult 用 8s 先放弃，这里 15s 是宿主侧上限。 */
+const AI_BRAIN_AGENT_TIMEOUT_MS = 15000;
+
 /** ★ 实体形象生图 agent 超时：图片模型推理通常 30~90s，留足余量 */
 const SPRITE_AGENT_TIMEOUT_MS = 150000;
 
@@ -424,6 +433,7 @@ export async function runPluginAgent(
     QUEST_AGENT_NAME,
     SPRITE_AGENT_NAME,
     SPEAKER_AGENT_NAME,
+    AI_BRAIN_AGENT_NAME,
   ];
   if (knownPluginAgents.indexOf(agentKey) < 0) {
     return { ok: false, error: `未知插件 agent: ${agentName}` };
@@ -432,6 +442,7 @@ export async function runPluginAgent(
   const isSpeaker = agentKey === SPEAKER_AGENT_NAME;
   const isQuest = agentKey === QUEST_AGENT_NAME;
   const isSprite = agentKey === SPRITE_AGENT_NAME;
+  const isAiBrain = agentKey === AI_BRAIN_AGENT_NAME;
 
   try {
     // 提示词来源：① 插件 input.systemPrompt（插件自带）→ ② task-speaker-agent 的宿主注册表
@@ -606,8 +617,15 @@ export async function runPluginAgent(
     const userPrompt = parts.join("\n\n");
 
     const aiConfig = await u.getPromptAi(aiConfigKey);
-    // ★ 商城生成 agent 输出量大（8-14 件物资 + 多字段）→ 30s；任务生成 agent（1-6 条委托）→ 20s；其它 15s
-    const agentTimeoutMs = isShop ? SHOP_AGENT_TIMEOUT_MS : isQuest ? QUEST_AGENT_TIMEOUT_MS : AGENT_TIMEOUT_MS;
+    // ★ 商城生成 agent 输出量大（8-14 件物资 + 多字段）→ 30s；任务生成 agent（1-6 条委托）→ 20s；
+    //   AI 托管大脑（单动作 JSON，游戏内实时决策）→ 15s，超时后插件走程序化 fallback；其它 15s
+    const agentTimeoutMs = isShop
+      ? SHOP_AGENT_TIMEOUT_MS
+      : isQuest
+        ? QUEST_AGENT_TIMEOUT_MS
+        : isAiBrain
+          ? AI_BRAIN_AGENT_TIMEOUT_MS
+          : AGENT_TIMEOUT_MS;
     const result = await withTimeout(
       u.ai.text.invoke(
         {
