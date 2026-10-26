@@ -5182,8 +5182,14 @@ function evaluateInventoryInput(
 /**
  * 小游戏可选角色清单：用户 + 当前在场 NPC。
  * 供插件选人面板（参展 / 观战 / 敌对）与 2.5D 战场渲染使用。
+ *
+ * ★ 2026-10-26 导出：/plugin/tick 路由也需要它。
+ *   之前只有 MiniGameController.setup（进入小游戏时）用它填 ctx.roles，
+ *   而前端开局走的 /plugin/tick 路由填的是 `publicState.roles`（上次存档的 state）
+ *   → 首次进入时为空 → 插件 init 拿到空 roles → 选人面板一个角色都没有。
+ *   （表现为「退出再进一次就好了」：第二次 prev 里已有 roles。）
  */
-function buildMiniGameRoleOptions(state: JsonRecord | undefined): Array<Record<string, unknown>> {
+export function buildMiniGameRoleOptions(state: JsonRecord | undefined): Array<Record<string, unknown>> {
   const root = asRecord(state || {});
   const out: Array<Record<string, unknown>> = [];
   const pushRole = (raw: JsonRecord, fallbackRoleType: string) => {

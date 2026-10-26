@@ -6,6 +6,9 @@ import { getGameDb, parseJsonSafe, toJsonText } from "@/lib/gameEngine";
 import { getPluginDir, loadPluginManifestFromFile } from "@/lib/pluginRegistry";
 import { executePluginAction, type PluginGameContext } from "@/lib/PluginExecutor";
 import { applyFieldSurvivalWriteback, applyPlayerCardPatch } from "@/lib/pluginWriteback";
+// ★ 2026-10-26：ctx.roles 改用故事运行时角色（与 MiniGameController.setup 同源），
+//   修复「首次进入小游戏选人面板没有角色」。
+import { buildMiniGameRoleOptions } from "@/modules/game-runtime/engines/MiniGameController";
 import {
   getPluginData,
   setPluginData,
@@ -204,13 +207,30 @@ export default router.post(
       console.log(
         `[plugin/tick] [map-diag] action=${action} sessionId=${sessionId} worldId=${session?.worldId} worldName=${JSON.stringify(worldName)}`,
       );
+      // ★ 2026-10-26 修复「选人面板无角色」：
+      //   原来 roles 取的是 `publicState.roles`（= 上次存档 state 里的 roles）。
+      //   首次进入小游戏时 publicState.roles 为空 → 插件 init 拿到空 roles
+      //   → 前端选人面板一个角色都没有（表现为「退出再进一次就好了」，
+      //     因为第二次 prev 里已经有 roles 了）。
+      //   正确来源：故事运行时的 state.player + state.npcs（与
+      //   MiniGameController.setup 里 buildMiniGameRoleOptions(ctx.state) 同源）。
+      //   兜底仍保留 publicState.roles（存档里有就直接用）。
+      const liveRoles = buildMiniGameRoleOptions(state as any);
+      const storedRoles = Array.isArray(publicState.roles) ? publicState.roles : [];
+      const ctxRoles = liveRoles.length ? liveRoles : storedRoles;
+      if (!liveRoles.length && !storedRoles.length) {
+        console.warn(
+          `[plugin/tick] ⚠️ ctx.roles 为空（state.player/npcs 与 publicState.roles 都无角色）` +
+          `→ 插件选人面板将没有可选角色（sessionId=${sessionId}）`,
+        );
+      }
       const ctx: PluginGameContext = {
         pluginId,
         pluginDir: getPluginDir(userId, pluginId),
         manifest: (manifest || {}) as any,
         userId,
         sessionId,
-        roles: Array.isArray(publicState.roles) ? publicState.roles : [],
+        roles: ctxRoles,
         playerCard: (livePlayerCard && typeof livePlayerCard === "object")
           ? livePlayerCard
           : undefined,
