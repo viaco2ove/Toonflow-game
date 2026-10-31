@@ -67,3 +67,4 @@ run.local.ps1
 /env/pyvenv.cfg.ubuntu
 /.serena/
 /.mcp.json
+/.claude/
