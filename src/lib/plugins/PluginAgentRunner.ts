@@ -592,6 +592,38 @@ export async function runPluginAgent(
       return { ok: true, output: { text } };
     }
 
+    /* ★ AI 托管大脑：userPrompt 由插件前端构造（感知 + 短信往来 + ★ 未回复标记），
+     *   宿主不拼 parts —— 拼出来的地图数据对决策毫无意义，还会挤掉短信上下文。 */
+    if (isAiBrain) {
+      const brainUserPrompt = String((input as any)?.userPrompt || "").trim();
+      if (!brainUserPrompt) {
+        return { ok: false, error: "AI 大脑缺少 userPrompt（插件前端未提供实时感知）" };
+      }
+      const brainConfig = await u.getPromptAi(aiConfigKey);
+      const brainResult = await withTimeout(
+        u.ai.text.invoke(
+          {
+            plainTextOutput: true,
+            messages: [
+              { role: "system", content: systemPrompt },
+              { role: "user", content: brainUserPrompt },
+            ],
+          },
+          brainConfig,
+        ),
+        AI_BRAIN_AGENT_TIMEOUT_MS,
+        `插件 agent 调用超时（>${AI_BRAIN_AGENT_TIMEOUT_MS}ms）`,
+      );
+      const brainContent: string = String((brainResult as any)?.text ?? (brainResult as any)?.content ?? "");
+      const brainParsed = extractJson(brainContent);
+      if (!brainParsed) {
+        console.warn("[AI 大脑 agent] LLM 输出解析失败。原始 content 前 500 字符:", brainContent.slice(0, 500));
+        return { ok: false, error: "LLM 输出解析失败", output: undefined };
+      }
+      // ★ 决策 JSON 直通：不进 sanitizeMap（那会撕掉 message / action 字段）
+      return { ok: true, output: brainParsed };
+    }
+
     const parts: string[] = [];
     parts.push("【故事动态数据】\n" + String(input.storyDigest || "（无）"));
     if (isShop) {
@@ -677,7 +709,9 @@ export async function runPluginAgent(
       }
       return { ok: false, error: "LLM 输出解析失败", output: isSpeaker || isQuest ? undefined : fallbackMap(input) };
     }
-    const output = isShop
+    const output = isAiBrain
+      ? parsed /* ★ AI 托管大脑：决策 JSON 直通，不进 sanitizeMap（会撕掉 message/action） */
+      : isShop
       ? sanitizeShop(parsed)
       : isQuest
         ? sanitizeQuests(parsed)
