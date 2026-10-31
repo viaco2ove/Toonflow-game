@@ -65,3 +65,4 @@ run.local.ps1
 /toonflow-pkg-v1.0.2/
 /env/pyvenv.cfg
 /env/pyvenv.cfg.ubuntu
+/.serena/
