@@ -17,8 +17,15 @@ import {
 const router = express.Router();
 
 /** session 级串行锁：防止高频游戏 tick 与一次性系统命令（使用物品/卖出/排序等）
- *  并发读写 plugin_state 互相覆盖，导致「点了没反应」「卖了还在」等表现。 */
+ *  并发读写 plugin_state 互相覆盖，导致「点了没反应」「卖了还在」等表现。
+ *  ★ O4 快慢锁拆分（2026-11-01，网络通信机制 v2 §3.4）：
+ *    sys_brain/sys_chat 等慢命令（LLM 1-5s）与帧 tick 共用一把锁时，
+ *    AI 决策期间所有帧 tick 被堵（游戏画面冻结、坐标不上报）。
+ *    拆两把锁：fastLock=帧 tick（10Hz 高频），slowLock=sys_* 慢命令。
+ *    读写一致性：两者都走 entry.handle_action（内含 O2 的节流记账），
+ *    chatResult 通过 plugin_state 回流不依赖帧锁；残余竞争窗口 ≤2s（O2 节流）。 */
 const tickLocks = new Map<string, Promise<void>>();
+const slowLocks = new Map<string, Promise<void>>();
 
 function withSessionLock<T>(sessionId: string, fn: () => Promise<T>): Promise<T> {
   const prev = tickLocks.get(sessionId) || Promise.resolve();
@@ -28,6 +35,18 @@ function withSessionLock<T>(sessionId: string, fn: () => Promise<T>): Promise<T>
     if (tickLocks.get(sessionId) === next) tickLocks.delete(sessionId);
   });
   tickLocks.set(sessionId, next as Promise<void>);
+  return next;
+}
+
+/** 慢命令锁：sys_* 类 action 专用，与帧 tick 并行不互相阻塞 */
+function withSlowLock<T>(sessionId: string, fn: () => Promise<T>): Promise<T> {
+  const prev = slowLocks.get(sessionId) || Promise.resolve();
+  let next: Promise<T>;
+  const run = async () => fn();
+  next = prev.then(run, run).finally(() => {
+    if (slowLocks.get(sessionId) === next) slowLocks.delete(sessionId);
+  });
+  slowLocks.set(sessionId, next as Promise<void>);
   return next;
 }
 
@@ -53,6 +72,16 @@ async function buildWorldBookDigest(db: any, worldId: number): Promise<string> {
 
 /** 插件运行时状态在 t_plugin_session_data 里的 dataKey */
 const PLUGIN_STATE_KEY = "plugin_state";
+
+/** ★ O1+O2（2026-11-01）：plugin_state 落盘节流与无变化跳过。
+ *  帧 tick 10Hz 旧逻辑每秒 UPSERT 10 次 ~48KB JSON（SQLite 单写者锁，多会话互相排队）。
+ *  plugin_state 落库的意义只是「崩溃/刷新恢复」，不需要帧级实时：
+ *   - PLUGIN_STATE_FLUSH_MS 内的重复写直接跳过；
+ *   - 与上次落盘版本相同的 state（挂机空转）不写；
+ *   - phase 变化 / over 结算 / 非 tick 命令 / forceSync 仍立即落盘。 */
+const PLUGIN_STATE_FLUSH_MS = 2000;
+const pluginStateLastJson = new Map<string, string>();
+const pluginStateFlushAt = new Map<string, number>();
 
 /**
  * 插件实时推进接口（轻量）：
@@ -92,8 +121,14 @@ export default router.post(
         ? req.body.params
         : {};
 
+      // ★ O4：sys_* 慢命令（LLM 决策/对话/商城生成，1-5s）走独立慢锁——
+      //   不与 10Hz 帧 tick 抢锁（AI 决策期间游戏帧照常推进）。
+      //   帧写库与慢命令写库的互斥由 O2 节流记账 + SQLite 单写者兜底。
+      const isSlowCmd = action.startsWith("sys_");
+      const lockFn = isSlowCmd ? withSlowLock : withSessionLock;
+
       // 串行化同一 session 的 tick 请求，防止并发读写 plugin_state 覆盖
-      return await withSessionLock(sessionId, async () => {
+      return await lockFn(sessionId, async () => {
         const db = getGameDb();
       const session = await db("t_gameSession").where({ sessionId, userId }).first();
       if (!session) return res.status(404).send(error("会话不存在"));
@@ -120,8 +155,13 @@ export default router.post(
         const heal = await getPluginData(healScope, PLUGIN_STATE_KEY);
         const healState = heal?.dataValue;
         const healPhase = String((healState as any)?.phase || "");
+        // ★ P2 协议分流（2026-11-01，网络通信机制 v2 §4）：
+        //   回合/指令型插件有 select/config 等合法非 playing 中间态（选人/布置阶段
+        //   玩家要出招交互，却不处于实时对局）——自愈判定从「仅 playing/空」放宽为
+        //   「**只要插件状态存在且未 over**」。over 仍不放行：结束的局必须走编排器
+        //   正常重开，防止僵尸指针复活已结算的对局。
         const healActive = !!healState && typeof healState === "object"
-          && (healPhase === "playing" || healPhase === "");
+          && (healPhase === "playing" || healPhase === "" || healPhase !== "over");
         if (!healActive) {
           return res.status(409).send(error(`当前没有进行中的该插件小游戏,statePluginId:${statePluginId},pluginId:${pluginId}`));
         }
@@ -260,7 +300,26 @@ export default router.post(
       }
 
       // ── 写 plugin_state：进插件数据表（不再塞 stateJson，根治 clobber）──
-      await setPluginData(scope, PLUGIN_STATE_KEY, resultState);
+      // ★ 性能优化（2026-11-01，O1+O2 合体：脏检查 + 降频落盘）：
+      //   帧 tick 10Hz 下，旧逻辑每秒 UPSERT 10 次 ~48KB JSON（SQLite 单写者锁，
+      //   多会话互相排队）。plugin_state 落库的意义是「崩溃/刷新恢复」，不需要帧级实时：
+      //   ① 快照节流：距上次落盘 < PLUGIN_STATE_FLUSH_MS 直接跳过写库；
+      //   ② 无变化跳过：state 与上次落盘版本相同（玩家挂机、敌怪待机）→ 不写。
+      //   例外（必须立即落盘）：phase 变化 / over 结算 / 非 tick 命令（sys_* 等）/ forceSync。
+      const scopeKey = `${userId}:${sessionId}:${pluginId}`;
+      const forceSync = action !== "tick"
+        || resultState?.phase !== prev?.phase
+        || resultState?.phase === "over"
+        || !!(resultState as any)?.forceSync;
+      const serializedNow = JSON.stringify(resultState);
+      const now2 = Date.now();
+      const lastFlushAt = pluginStateFlushAt.get(scopeKey) || 0;
+      const changed = pluginStateLastJson.get(scopeKey) !== serializedNow;
+      if (forceSync || (changed && now2 - lastFlushAt >= PLUGIN_STATE_FLUSH_MS)) {
+        await setPluginData(scope, PLUGIN_STATE_KEY, resultState);
+        pluginStateLastJson.set(scopeKey, serializedNow);
+        pluginStateFlushAt.set(scopeKey, now2);
+      }
 
       // ★ 始终写 session 节点：让前端 hasActiveMiniGameInRuntimeState() 能感知游戏进行中
       //   （依赖 session.status === "active" && session.game_type 存在判断）
@@ -296,8 +355,13 @@ export default router.post(
         .where({ sessionId, userId })
         .update({ stateJson: toJsonText(state, {}), updateTime: Date.now() });
 
+        // ★ O1 增量回传（304 语义，2026-11-01）：纯帧 tick 且状态无变化时，
+        //   响应不携带全量 state（state:null，~48KB → ~1KB），前端跳过状态合并。
+        //   何为「无变化」：serializedNow 与上次落盘快照一致（O2 记账共享）。
+        //   sys_* 命令 / phase 变化 / forceSync 永远带全量（前端消费路径不受影响）。
+        const stateUnchanged = !forceSync && pluginStateLastJson.get(scopeKey) === serializedNow;
         return res.status(200).send(success({
-          state: resultState,
+          state: stateUnchanged ? null : resultState,
           actions: Array.isArray(result?.actions) ? result.actions : (publicState.plugin_actions || []),
           response: publicState.plugin_response || "",
           code: result?.code ?? 0,
