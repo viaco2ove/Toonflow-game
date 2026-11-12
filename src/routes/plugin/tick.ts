@@ -12,6 +12,10 @@ import { buildMiniGameRoleOptions } from "@/modules/game-runtime/engines/MiniGam
 import {
   getPluginData,
   setPluginData,
+  // ★ BUG-2 修复（2026-11-12）：plugin_state 内存态（权威）——DB 退化为快照，
+  //   避免 O2 写库节流把世界推进速率从 10Hz 拖到 0.36Hz。详见 PluginSessionDataService 注释。
+  getHotPluginState,
+  setHotPluginState,
 } from "@/lib/plugins/PluginSessionDataService";
 
 const router = express.Router();
@@ -152,7 +156,11 @@ export default router.post(
         //   只是指针被 clobber」，就地重建指针继续 tick，而不是 409。
         //   （409 期间 iframe 收不到任何 state → UI 冻结，购买/卖出操作看着「没生效」。）
         const healScope = { userId, sessionId, pluginId };
-        const heal = await getPluginData(healScope, PLUGIN_STATE_KEY);
+        // ★ BUG-2 修复（2026-11-12）：内存态优先、DB 兜底。
+        //   内存态才是权威（世界按 10Hz 推进）；DB 可能因 O2 节流滞后 2s，
+        //   或已被 #退出 清理。两者取「存在且未 over」的那个即可。
+        const hotHeal = getHotPluginState(healScope);
+        const heal = hotHeal ? { dataValue: hotHeal.dataValue } : await getPluginData(healScope, PLUGIN_STATE_KEY);
         const healState = heal?.dataValue;
         const healPhase = String((healState as any)?.phase || "");
         // ★ P2 协议分流（2026-11-01，网络通信机制 v2 §4）：
@@ -177,18 +185,31 @@ export default router.post(
       const scope = { userId, sessionId, pluginId };
 
       // ── 读 plugin_state：优先插件数据表；老数据在 stateJson 里则一次性迁移 ──
+      // ★ BUG-2 修复（2026-11-12）：优先读**内存态**（PluginSessionDataService 的热缓存）。
+      //   原因：entry.js handle_action 无状态（每次拿 state 重建、只推进一次 step），
+      //   若每请求都从 DB 读，则 O2 的 2s 写库节流会把「未落库的中间状态」整体丢弃
+      //   → 世界推进速率掉到 0.36Hz（实测），CD 递减 2.7 倍、野怪 AI 变慢、
+      //   死亡渐隐卡住、attack 因服务端位置滞后 2s 而误判「附近没有敌人」。
+      //   内存态为权威，DB 退化为快照（落盘仍按 O2 节流，省写的收益不变）。
       let prev: Record<string, any> = {};
-      const stored = await getPluginData(scope, PLUGIN_STATE_KEY);
-      if (stored && stored.dataValue && typeof stored.dataValue === "object") {
-        prev = stored.dataValue;
+      const hot = getHotPluginState(scope);
+      if (hot && hot.dataValue && typeof hot.dataValue === "object") {
+        prev = hot.dataValue;
       } else {
-        const legacy = (publicState.plugin_state && typeof publicState.plugin_state === "object")
-          ? publicState.plugin_state
-          : {};
-        if (legacy && Object.keys(legacy).length > 0) {
-          await setPluginData(scope, PLUGIN_STATE_KEY, legacy);
-          prev = legacy;
+        const stored = await getPluginData(scope, PLUGIN_STATE_KEY);
+        if (stored && stored.dataValue && typeof stored.dataValue === "object") {
+          prev = stored.dataValue;
+        } else {
+          const legacy = (publicState.plugin_state && typeof publicState.plugin_state === "object")
+            ? publicState.plugin_state
+            : {};
+          if (legacy && Object.keys(legacy).length > 0) {
+            await setPluginData(scope, PLUGIN_STATE_KEY, legacy);
+            prev = legacy;
+          }
         }
+        // 从 DB/legacy 冷启动后立刻灌入内存态（本次请求即生效）
+        if (prev && Object.keys(prev).length > 0) setHotPluginState(scope, prev);
       }
 
       const manifest = await loadPluginManifestFromFile(userId, pluginId);
@@ -299,13 +320,18 @@ export default router.post(
         // 写回动了 state.player/npcs（故事动态数据），这次必须落 stateJson
       }
 
-      // ── 写 plugin_state：进插件数据表（不再塞 stateJson，根治 clobber）──
+      // ── 写 plugin_state：内存态立即更新 + DB 快照按 O2 节流落盘 ──
       // ★ 性能优化（2026-11-01，O1+O2 合体：脏检查 + 降频落盘）：
       //   帧 tick 10Hz 下，旧逻辑每秒 UPSERT 10 次 ~48KB JSON（SQLite 单写者锁，
       //   多会话互相排队）。plugin_state 落库的意义是「崩溃/刷新恢复」，不需要帧级实时：
       //   ① 快照节流：距上次落盘 < PLUGIN_STATE_FLUSH_MS 直接跳过写库；
       //   ② 无变化跳过：state 与上次落盘版本相同（玩家挂机、敌怪待机）→ 不写。
       //   例外（必须立即落盘）：phase 变化 / over 结算 / 非 tick 命令（sys_* 等）/ forceSync。
+      //
+      // ★ BUG-2 修复（2026-11-12）：**内存态每次请求都更新**（权威），DB 只是快照。
+      //   之前内存态不存在，entry.js 每请求从 DB 重建 state → 世界推进被落库频率
+      //   拖到 0.36Hz。现在内存态是权威 → 世界按请求频率（10Hz）推进，
+      //   DB 落盘仍按 O2 节流（省写的收益不变）。
       const scopeKey = `${userId}:${sessionId}:${pluginId}`;
       const forceSync = action !== "tick"
         || resultState?.phase !== prev?.phase
@@ -315,6 +341,8 @@ export default router.post(
       const now2 = Date.now();
       const lastFlushAt = pluginStateFlushAt.get(scopeKey) || 0;
       const changed = pluginStateLastJson.get(scopeKey) !== serializedNow;
+      // ★ 内存态：每次请求后立即更新（权威状态），与落盘解耦
+      setHotPluginState(scope, resultState);
       if (forceSync || (changed && now2 - lastFlushAt >= PLUGIN_STATE_FLUSH_MS)) {
         await setPluginData(scope, PLUGIN_STATE_KEY, resultState);
         pluginStateLastJson.set(scopeKey, serializedNow);
