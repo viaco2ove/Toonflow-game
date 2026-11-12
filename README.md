@@ -19,6 +19,7 @@
 "Toonflow Game" 有
 后端（当前项目），web 前端。安卓h5(嵌入 web dist 文件夹) ，插件。
 插件现在只有一个 野外生存（实际是个cavas 俯视 冒险游戏，特意做成 需要安装地图模仿魔兽争霸 地图编辑器效果）
+分类: 大模型驱动的文字冒险 / 角色扮演（LLM-driven Text RPG / AVG）
 
 # Toonflow
 [README.o1.md](README.Toonflow.md)

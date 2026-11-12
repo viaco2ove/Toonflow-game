@@ -32,6 +32,70 @@ function now(): number {
   return Date.now();
 }
 
+/**
+ * ★ BUG-2 修复（2026-11-12，网络通信机制 v2 §3.1 O2 副作用）：
+ *   plugin_state 的**内存态缓存**。
+ *
+ * 背景（实测见 md/test/toonflow-field-survival/即时交互测试报告_2026-11-12.md）：
+ *   O2「写库降频」把 plugin_state 落盘节流到 2s 一次，本意是省 SQLite 写；
+ *   但 entry.js 的 handle_action 是**无状态**的（每次请求拿 state 重建、只推进一次 step），
+ *   而 /plugin/tick 每次都从 DB 读 state → 未落库的中间状态被整体丢弃 →
+ *   **游戏世界推进速率从 10Hz 掉到 0.36Hz**（= 落库速率 1/2s），
+ *   连带技能 CD 递减 2.7 倍、野怪 AI 变慢、死亡渐隐卡住、
+ *   以及「玩家已贴近野怪但 attack 说附近没有敌人」（服务端拿 2s 前的位置判 4m 范围）。
+ *
+ * 解法：**内存态是权威，DB 退化为快照**。
+ *   - 读：命中内存态直接用（不查 DB）→ 世界按请求频率推进，与落库频率解耦；
+ *   - 写：每次请求后更新内存态；DB 落盘仍按 O2 节流（保留省写的收益）；
+ *   - 删除：removePluginData / clearPluginDataBySession 必须同步清内存态，
+ *     否则 #退出 删了 DB 行、内存态还在 → /plugin/tick 的 heal 守卫会认为
+ *     「游戏仍在进行」而复活面板（关了又重开）。
+ *
+ * 重启安全性：进程重启后内存态为空，首次请求回落读 DB（DB 有 ≤2s 内的快照），
+ * 损失可接受；不需要额外的恢复流程。
+ */
+const HOT_STATE_KEY = "plugin_state";
+type HotStateEntry = { dataValue: any; updatedAt: number };
+/** 内存态上限（超出按插入顺序淘汰最旧的）——单条 state 可达 ~48KB，64 条 ≈ 3MB */
+const HOT_STATE_MAX = 64;
+const hotStateCache = new Map<string, HotStateEntry>();
+
+function hotKey(scope: PluginDataScope, dataKey: string): string {
+  return `${scope.userId}:${scope.sessionId}:${scope.pluginId}:${dataKey}`;
+}
+
+/** 读内存态（仅 plugin_state 走热路径；其它 key 始终走 DB） */
+export function getHotPluginState(scope: PluginDataScope): HotStateEntry | null {
+  if (HOT_STATE_KEY !== "plugin_state") return null;
+  return hotStateCache.get(hotKey(scope, HOT_STATE_KEY)) || null;
+}
+
+/**
+ * 只更新内存态（不写库）。
+ * tick.ts 每次请求后调用：内存态立即生效，DB 落盘另按 O2 节流决定。
+ */
+export function setHotPluginState(scope: PluginDataScope, dataValue: any): void {
+  const key = hotKey(scope, HOT_STATE_KEY);
+  // 已存在则原地更新（保持 Map 插入顺序 = 最近使用顺序），否则插入
+  const existing = hotStateCache.get(key);
+  if (existing) {
+    existing.dataValue = dataValue;
+    existing.updatedAt = now();
+  } else {
+    hotStateCache.set(key, { dataValue, updatedAt: now() });
+  }
+  while (hotStateCache.size > HOT_STATE_MAX) {
+    const oldest = hotStateCache.keys().next();
+    if (oldest.done) break;
+    hotStateCache.delete(oldest.value);
+  }
+}
+
+/** 清掉某 scope 的内存态（#退出 / 会话清理时必须调用） */
+export function clearHotPluginState(scope: PluginDataScope): void {
+  hotStateCache.delete(hotKey(scope, HOT_STATE_KEY));
+}
+
 /** JSON 安全序列化（对象/数组序列化为 JSON 字符串，标量原样） */
 function serialize(value: unknown): string {
   if (value === null || value === undefined) return "";
@@ -169,6 +233,9 @@ export async function removePluginData(scope: PluginDataScope, dataKey: string):
       dataKey: String(dataKey || ""),
     })
     .del();
+  // ★ BUG-2：DB 行删了，内存态也必须删——否则 #退出 后 /plugin/tick 的 heal 守卫
+  //   读到内存态里的「游戏仍在进行」，会复活已关闭的面板（关了又重开）。
+  if (String(dataKey || "") === HOT_STATE_KEY) clearHotPluginState(scope);
 }
 
 /** 会话维度清理（会话删除/插件卸载时用） */
@@ -180,4 +247,8 @@ export async function clearPluginDataBySession(scope: {
   await db("t_plugin_session_data")
     .where({ userId: scope.userId, sessionId: scope.sessionId })
     .del();
+  // ★ BUG-2：同步清掉该会话下所有 plugin 的 plugin_state 内存态
+  for (const key of Array.from(hotStateCache.keys())) {
+    if (key.startsWith(`${scope.userId}:${scope.sessionId}:`)) hotStateCache.delete(key);
+  }
 }
