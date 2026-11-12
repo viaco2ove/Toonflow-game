@@ -60,8 +60,17 @@ type HotStateEntry = { dataValue: any; updatedAt: number };
 const HOT_STATE_MAX = 64;
 const hotStateCache = new Map<string, HotStateEntry>();
 
+/**
+ * ★ M2-4（v3 §10，2026-11-12）：scope 规范键 `userId:sessionId:pluginId`。
+ * 模块级记账 Map（O2 落盘节流、会话锁等）必须与 hotKey 用同一格式派生键，
+ * 否则 tick 与 MCP 会读到不同的内存态/记账（等于没有共用）。
+ */
+export function pluginScopeKey(scope: PluginDataScope): string {
+  return `${scope.userId}:${scope.sessionId}:${scope.pluginId}`;
+}
+
 function hotKey(scope: PluginDataScope, dataKey: string): string {
-  return `${scope.userId}:${scope.sessionId}:${scope.pluginId}:${dataKey}`;
+  return `${pluginScopeKey(scope)}:${dataKey}`;
 }
 
 /** 读内存态（仅 plugin_state 走热路径；其它 key 始终走 DB） */

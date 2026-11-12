@@ -163,6 +163,16 @@ export default async function startServe(randomPort: Boolean = false) {
     // 防止 double-send：若响应头已发出（比如路由里已 res.send() 后异常泄漏到这里），直接跳过。
     if (res.headersSent) return;
 
+    // ★ M1-9（2026-11-12，网络通信机制 v3）：MCP endpoint 的请求体 JSON 语法错误
+    //   在 app 级 express.json 就抛出（到不了路由内），这里按协议要求回 JSON-RPC -32700。
+    if (_.path === "/plugin/mcp" && err?.type === "entity.parse.failed") {
+      return res.status(400).json({
+        jsonrpc: "2.0",
+        id: null,
+        error: { code: -32700, message: "请求体不是合法 JSON（parse error）" },
+      });
+    }
+
     const status = err?.status || err?.statusCode || 500;
     // Express will serialize native Error objects to `{}`; return a stable JSON payload instead.
     if (err instanceof Error) {

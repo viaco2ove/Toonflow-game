@@ -2,90 +2,29 @@ import express from "express";
 import { z } from "zod";
 import { validateFields } from "@/middleware/middleware";
 import { error, success } from "@/lib/responseFormat";
-import { getGameDb, parseJsonSafe, toJsonText } from "@/lib/gameEngine";
-import { getPluginDir, loadPluginManifestFromFile } from "@/lib/pluginRegistry";
-import { executePluginAction, type PluginGameContext } from "@/lib/PluginExecutor";
-import { applyFieldSurvivalWriteback, applyPlayerCardPatch } from "@/lib/pluginWriteback";
-// ★ 2026-10-26：ctx.roles 改用故事运行时角色（与 MiniGameController.setup 同源），
-//   修复「首次进入小游戏选人面板没有角色」。
-import { buildMiniGameRoleOptions } from "@/modules/game-runtime/engines/MiniGameController";
+import { getGameDb, toJsonText } from "@/lib/gameEngine";
+// ★ M2（2026-11-12，网络通信机制 v3 §5.1 / §10）：状态读写/执行/落盘/会话锁统一下沉到
+//   PluginStateExecutor，tick 与 MCP 共用同一份内存态 + 同一把会话锁（防 AI 写入被 tick 覆盖）。
+import {
+  executePluginActionWithState,
+  withSessionLock,
+  withSlowLock,
+  PLUGIN_STATE_KEY,
+} from "@/lib/plugins/PluginStateExecutor";
+// ★ 2026-11-12：会话加载 + 插件执行上下文组装抽到 PluginExecutionContext（与 MCP 路由共用），
+//   避免 manifest/动态卡/角色/世界名组装逻辑在两个入口各写一份。
+import {
+  preparePluginExecutionContext,
+  PluginSessionMissingError,
+} from "@/lib/plugins/PluginExecutionContext";
 import {
   getPluginData,
-  setPluginData,
   // ★ BUG-2 修复（2026-11-12）：plugin_state 内存态（权威）——DB 退化为快照，
   //   避免 O2 写库节流把世界推进速率从 10Hz 拖到 0.36Hz。详见 PluginSessionDataService 注释。
   getHotPluginState,
-  setHotPluginState,
 } from "@/lib/plugins/PluginSessionDataService";
 
 const router = express.Router();
-
-/** session 级串行锁：防止高频游戏 tick 与一次性系统命令（使用物品/卖出/排序等）
- *  并发读写 plugin_state 互相覆盖，导致「点了没反应」「卖了还在」等表现。
- *  ★ O4 快慢锁拆分（2026-11-01，网络通信机制 v2 §3.4）：
- *    sys_brain/sys_chat 等慢命令（LLM 1-5s）与帧 tick 共用一把锁时，
- *    AI 决策期间所有帧 tick 被堵（游戏画面冻结、坐标不上报）。
- *    拆两把锁：fastLock=帧 tick（10Hz 高频），slowLock=sys_* 慢命令。
- *    读写一致性：两者都走 entry.handle_action（内含 O2 的节流记账），
- *    chatResult 通过 plugin_state 回流不依赖帧锁；残余竞争窗口 ≤2s（O2 节流）。 */
-const tickLocks = new Map<string, Promise<void>>();
-const slowLocks = new Map<string, Promise<void>>();
-
-function withSessionLock<T>(sessionId: string, fn: () => Promise<T>): Promise<T> {
-  const prev = tickLocks.get(sessionId) || Promise.resolve();
-  let next: Promise<T>;
-  const run = async () => fn();
-  next = prev.then(run, run).finally(() => {
-    if (tickLocks.get(sessionId) === next) tickLocks.delete(sessionId);
-  });
-  tickLocks.set(sessionId, next as Promise<void>);
-  return next;
-}
-
-/** 慢命令锁：sys_* 类 action 专用，与帧 tick 并行不互相阻塞 */
-function withSlowLock<T>(sessionId: string, fn: () => Promise<T>): Promise<T> {
-  const prev = slowLocks.get(sessionId) || Promise.resolve();
-  let next: Promise<T>;
-  const run = async () => fn();
-  next = prev.then(run, run).finally(() => {
-    if (slowLocks.get(sessionId) === next) slowLocks.delete(sessionId);
-  });
-  slowLocks.set(sessionId, next as Promise<void>);
-  return next;
-}
-
-/**
- * ★ v5：把当前世界（worldId）的常驻世界书条目拼成摘要文本，
- * 供插件 agent（商城生成）参考故事世界观与物资设定。
- */
-async function buildWorldBookDigest(db: any, worldId: number): Promise<string> {
-  if (!Number.isFinite(worldId) || worldId <= 0) return "";
-  try {
-    const rows = await db("t_worldBook").where({ worldId }).orderBy("sort", "asc").limit(80);
-    const list = Array.isArray(rows) ? rows : [];
-    if (!list.length) return "";
-    const line = (r: any) =>
-      `- ${String(r?.title || "").slice(0, 30)}：${String(r?.content || "").replace(/\s+/g, " ").slice(0, 200)}`;
-    const constant = list.filter((r: any) => Number(r?.constant) === 1);
-    const picked = (constant.length ? constant : list).slice(0, 12);
-    return picked.map(line).join("\n").slice(0, 2000);
-  } catch {
-    return "";
-  }
-}
-
-/** 插件运行时状态在 t_plugin_session_data 里的 dataKey */
-const PLUGIN_STATE_KEY = "plugin_state";
-
-/** ★ O1+O2（2026-11-01）：plugin_state 落盘节流与无变化跳过。
- *  帧 tick 10Hz 旧逻辑每秒 UPSERT 10 次 ~48KB JSON（SQLite 单写者锁，多会话互相排队）。
- *  plugin_state 落库的意义只是「崩溃/刷新恢复」，不需要帧级实时：
- *   - PLUGIN_STATE_FLUSH_MS 内的重复写直接跳过；
- *   - 与上次落盘版本相同的 state（挂机空转）不写；
- *   - phase 变化 / over 结算 / 非 tick 命令 / forceSync 仍立即落盘。 */
-const PLUGIN_STATE_FLUSH_MS = 2000;
-const pluginStateLastJson = new Map<string, string>();
-const pluginStateFlushAt = new Map<string, number>();
 
 /**
  * 插件实时推进接口（轻量）：
@@ -134,21 +73,26 @@ export default router.post(
       // 串行化同一 session 的 tick 请求，防止并发读写 plugin_state 覆盖
       return await lockFn(sessionId, async () => {
         const db = getGameDb();
-      const session = await db("t_gameSession").where({ sessionId, userId }).first();
-      if (!session) return res.status(404).send(error("会话不存在"));
 
-      const state = parseJsonSafe<Record<string, any>>(session.stateJson, {}) || {};
-      const root = (state.miniGame && typeof state.miniGame === "object")
-        ? { ...(state.miniGame as Record<string, any>) }
-        : {};
-      const sessionNode = (root.session && typeof root.session === "object")
-        ? { ...(root.session as Record<string, any>) }
-        : {};
-      const publicState = (sessionNode.public_state && typeof sessionNode.public_state === "object")
-        ? { ...(sessionNode.public_state as Record<string, any>) }
-        : {};
+        // ── 会话加载 + 插件执行上下文（★ 2026-11-12 抽到 PluginExecutionContext，与 MCP 共用）──
+        let boot;
+        try {
+          boot = await preparePluginExecutionContext({ userId, sessionId, pluginId, db });
+        } catch (e) {
+          if (e instanceof PluginSessionMissingError) {
+            return res.status(404).send(error(e.message));
+          }
+          throw e;
+        }
+        const { state, root, sessionNode, publicState, session } = boot;
+        const ctx = boot.ctx;
 
-      const statePluginId = String(publicState.plugin_id || "");
+        // ★ 诊断日志：地图串故事的排查锚点。worldName 决定 entry 读哪个 map_visual:<name> 模板。
+        console.log(
+          `[plugin/tick] [map-diag] action=${action} sessionId=${sessionId} worldId=${session?.worldId} worldName=${JSON.stringify(boot.worldName)}`,
+        );
+
+      const statePluginId = boot.statePluginId;
       if (!statePluginId || statePluginId !== pluginId) {
         // ★ 自愈（v5.1）：编排器复写 stateJson 可能丢掉 miniGame.session.public_state.plugin_id
         //   指针（AI 故事轮次整体重建 miniGame 节点），但插件真实状态在 t_plugin_session_data
@@ -184,170 +128,22 @@ export default router.post(
 
       const scope = { userId, sessionId, pluginId };
 
-      // ── 读 plugin_state：优先插件数据表；老数据在 stateJson 里则一次性迁移 ──
-      // ★ BUG-2 修复（2026-11-12）：优先读**内存态**（PluginSessionDataService 的热缓存）。
-      //   原因：entry.js handle_action 无状态（每次拿 state 重建、只推进一次 step），
-      //   若每请求都从 DB 读，则 O2 的 2s 写库节流会把「未落库的中间状态」整体丢弃
-      //   → 世界推进速率掉到 0.36Hz（实测），CD 递减 2.7 倍、野怪 AI 变慢、
-      //   死亡渐隐卡住、attack 因服务端位置滞后 2s 而误判「附近没有敌人」。
-      //   内存态为权威，DB 退化为快照（落盘仍按 O2 节流，省写的收益不变）。
-      let prev: Record<string, any> = {};
-      const hot = getHotPluginState(scope);
-      if (hot && hot.dataValue && typeof hot.dataValue === "object") {
-        prev = hot.dataValue;
-      } else {
-        const stored = await getPluginData(scope, PLUGIN_STATE_KEY);
-        if (stored && stored.dataValue && typeof stored.dataValue === "object") {
-          prev = stored.dataValue;
-        } else {
-          const legacy = (publicState.plugin_state && typeof publicState.plugin_state === "object")
-            ? publicState.plugin_state
-            : {};
-          if (legacy && Object.keys(legacy).length > 0) {
-            await setPluginData(scope, PLUGIN_STATE_KEY, legacy);
-            prev = legacy;
-          }
-        }
-        // 从 DB/legacy 冷启动后立刻灌入内存态（本次请求即生效）
-        if (prev && Object.keys(prev).length > 0) setHotPluginState(scope, prev);
-      }
-
-      const manifest = await loadPluginManifestFromFile(userId, pluginId);
-      // ★ 修复「受伤立刻回满」：publicState.player_card 是 init 时的一次性快照
-      //   （MiniGameController 进入小游戏时写入，之后不再更新）。若每 tick 都把
-      //   快照喂给插件，插件 syncCardFromContext 会因签名不一致把快照上的满血/
-      //   旧等级整卡回灌实体（表现 = 玩家被打掉血下一帧又满）。
-      //   这里改用 stateJson 里的实时动态卡（writeback 每帧消费后的最新值），
-      //   快照仅作为实时卡缺失时的兜底。
-      const livePlayerCard = (() => {
-        const p = state.player && typeof state.player === "object" ? state.player : null;
-        const card = p ? (p.parameterCardJson ?? p.parameter_card_json) : null;
-        if (card && typeof card === "object" && Object.keys(card).length > 0) return card;
-        return (publicState.player_card && typeof publicState.player_card === "object")
-          ? publicState.player_card
-          : undefined;
-      })();
-      // ★ v5.1 玩家卡脏条目自愈（"[object Object]" 字符串残留）：
-      //   历史 String(obj) 把对象变成字面字符串后写入参数卡，syncCardFromContext
-      //   不会主动重写（签名未变），脏数据永远卡死。tick 入口主动洗一遍 items：
-      //   过滤字面 "[object Object]"，若净化前后数组不同则立即落库到 stateJson.player
-      //   （独立于 writeback 机制，下一帧前端就能看到正确背包）。
-      if (livePlayerCard && Array.isArray((livePlayerCard as any).items)) {
-        const rawList = (livePlayerCard as any).items as any[];
-        const cleaned = rawList.filter((x) => !String(x).includes("[object Object]"));
-        if (cleaned.length !== rawList.length) {
-          (livePlayerCard as any).items = cleaned;
-          if (state.player && typeof state.player === "object") {
-            if ("parameterCardJson" in state.player) {
-              (state.player as any).parameterCardJson = livePlayerCard;
-            }
-            if ("parameter_card_json" in state.player) {
-              (state.player as any).parameter_card_json = livePlayerCard;
-            }
-          }
-          console.log(`[plugin/tick] 玩家卡 dirty 自愈：清理 ${rawList.length - cleaned.length} 条字面 [object Object]`);
-        }
-      }
-      // ★ v6：当前世界名（故事绑定视觉地图模板用）：
-      //   entry.start 按 worldName 读 map_visual:<worldName> 模板（sessionId="all"），
-      //   注入本会话 map_visual → 前端 loadLevelByName 优先渲染该故事的视觉世界。
-      //   发布快照（t_storyWorld_published）优先，草稿表（t_storyWorld）兜底；缺失不阻断 tick。
-      let worldName = "";
-      try {
-        const wId = Number((session as any)?.worldId || 0);
-        if (wId > 0) {
-          let wrow: any = null;
-          try { wrow = await db("t_storyWorld_published").where({ worldId: wId }).first(); } catch { /* 表缺失忽略 */ }
-          if (!wrow) {
-            try { wrow = await db("t_storyWorld").where({ id: wId }).first(); } catch { /* 表缺失忽略 */ }
-          }
-          worldName = String((wrow as any)?.name || (wrow as any)?.title || "").trim();
-        }
-      } catch { /* 世界名缺失不阻断 tick */ }
-      // ★ 诊断日志：地图串故事的排查锚点。worldName 决定 entry 读哪个 map_visual:<name> 模板。
-      console.log(
-        `[plugin/tick] [map-diag] action=${action} sessionId=${sessionId} worldId=${session?.worldId} worldName=${JSON.stringify(worldName)}`,
-      );
-      // ★ 2026-10-26 修复「选人面板无角色」：
-      //   原来 roles 取的是 `publicState.roles`（= 上次存档 state 里的 roles）。
-      //   首次进入小游戏时 publicState.roles 为空 → 插件 init 拿到空 roles
-      //   → 前端选人面板一个角色都没有（表现为「退出再进一次就好了」，
-      //     因为第二次 prev 里已经有 roles 了）。
-      //   正确来源：故事运行时的 state.player + state.npcs（与
-      //   MiniGameController.setup 里 buildMiniGameRoleOptions(ctx.state) 同源）。
-      //   兜底仍保留 publicState.roles（存档里有就直接用）。
-      const liveRoles = buildMiniGameRoleOptions(state as any);
-      const storedRoles = Array.isArray(publicState.roles) ? publicState.roles : [];
-      const ctxRoles = liveRoles.length ? liveRoles : storedRoles;
-      if (!liveRoles.length && !storedRoles.length) {
-        console.warn(
-          `[plugin/tick] ⚠️ ctx.roles 为空（state.player/npcs 与 publicState.roles 都无角色）` +
-          `→ 插件选人面板将没有可选角色（sessionId=${sessionId}）`,
-        );
-      }
-      const ctx: PluginGameContext = {
-        pluginId,
-        pluginDir: getPluginDir(userId, pluginId),
-        manifest: (manifest || {}) as any,
-        userId,
-        sessionId,
-        roles: ctxRoles,
-        playerCard: (livePlayerCard && typeof livePlayerCard === "object")
-          ? livePlayerCard
+      // ── 执行 + 状态读写统一下沉（★ M2-1/M2-3，网络通信机制 v3 §10）：
+      //    读内存态 → entry.handle_action → writeback/结算消费（hostState）→
+      //    写内存态 → DB 按 O2 节流落盘。tick 与 MCP 必须共用（v3 §5.1 红线）。
+      //    本路由整段 handler 已持会话锁（须覆盖下方 stateJson 写回，否则
+      //    「卖了还在」的覆盖竞态会回来）→ lock:"none"（同锁重入会死锁）。
+      const { result, resultState, forceSync, stateUnchanged } = await executePluginActionWithState({
+        ctx: ctx as any,
+        scope,
+        action,
+        params,
+        legacyState: (publicState.plugin_state && typeof publicState.plugin_state === "object")
+          ? (publicState.plugin_state as Record<string, any>)
           : undefined,
-        // ★ v5：常驻世界书条目摘要（商城 agent 生成物资时参考）
-        worldBookDigest: await buildWorldBookDigest(db, Number((session as any)?.worldId || 0)),
-        // ★ v6：当前世界身份（故事绑定视觉地图模板）
-        worldId: Number((session as any)?.worldId || 0) || undefined,
-        worldName: worldName || undefined,
-      };
-
-      const result = await executePluginAction(ctx as any, action, params, prev as any);
-
-      // ★ v5：插件侧对用户「动态参数卡」的改动（背包物品 / 技能 / 金钱）写回 stateJson
-      //   插件在 state.writeback 里给出增量补丁，宿主消费后清空，避免重复写
-      const wbPatch = (result as any)?.state?.writeback;
-      if (wbPatch && typeof wbPatch === "object" && Object.keys(wbPatch).length > 0) {
-        applyPlayerCardPatch(state, wbPatch);
-        (result as any).state.writeback = null;
-      }
-
-      // ★ 结算写回：退出 / 死亡时把奖励写入用户与参展角色参数卡（只写一次）
-      const resultState: any = result?.state ?? prev;
-      if (resultState && resultState.phase === "over" && resultState.result && !resultState.result.written) {
-        applyFieldSurvivalWriteback(state, resultState.result, resultState.selections);
-        resultState.result = { ...resultState.result, written: true };
-        // 写回动了 state.player/npcs（故事动态数据），这次必须落 stateJson
-      }
-
-      // ── 写 plugin_state：内存态立即更新 + DB 快照按 O2 节流落盘 ──
-      // ★ 性能优化（2026-11-01，O1+O2 合体：脏检查 + 降频落盘）：
-      //   帧 tick 10Hz 下，旧逻辑每秒 UPSERT 10 次 ~48KB JSON（SQLite 单写者锁，
-      //   多会话互相排队）。plugin_state 落库的意义是「崩溃/刷新恢复」，不需要帧级实时：
-      //   ① 快照节流：距上次落盘 < PLUGIN_STATE_FLUSH_MS 直接跳过写库；
-      //   ② 无变化跳过：state 与上次落盘版本相同（玩家挂机、敌怪待机）→ 不写。
-      //   例外（必须立即落盘）：phase 变化 / over 结算 / 非 tick 命令（sys_* 等）/ forceSync。
-      //
-      // ★ BUG-2 修复（2026-11-12）：**内存态每次请求都更新**（权威），DB 只是快照。
-      //   之前内存态不存在，entry.js 每请求从 DB 重建 state → 世界推进被落库频率
-      //   拖到 0.36Hz。现在内存态是权威 → 世界按请求频率（10Hz）推进，
-      //   DB 落盘仍按 O2 节流（省写的收益不变）。
-      const scopeKey = `${userId}:${sessionId}:${pluginId}`;
-      const forceSync = action !== "tick"
-        || resultState?.phase !== prev?.phase
-        || resultState?.phase === "over"
-        || !!(resultState as any)?.forceSync;
-      const serializedNow = JSON.stringify(resultState);
-      const now2 = Date.now();
-      const lastFlushAt = pluginStateFlushAt.get(scopeKey) || 0;
-      const changed = pluginStateLastJson.get(scopeKey) !== serializedNow;
-      // ★ 内存态：每次请求后立即更新（权威状态），与落盘解耦
-      setHotPluginState(scope, resultState);
-      if (forceSync || (changed && now2 - lastFlushAt >= PLUGIN_STATE_FLUSH_MS)) {
-        await setPluginData(scope, PLUGIN_STATE_KEY, resultState);
-        pluginStateLastJson.set(scopeKey, serializedNow);
-        pluginStateFlushAt.set(scopeKey, now2);
-      }
+        hostState: state,
+        lock: "none",
+      });
 
       // ★ 始终写 session 节点：让前端 hasActiveMiniGameInRuntimeState() 能感知游戏进行中
       //   （依赖 session.status === "active" && session.game_type 存在判断）
@@ -385,9 +181,8 @@ export default router.post(
 
         // ★ O1 增量回传（304 语义，2026-11-01）：纯帧 tick 且状态无变化时，
         //   响应不携带全量 state（state:null，~48KB → ~1KB），前端跳过状态合并。
-        //   何为「无变化」：serializedNow 与上次落盘快照一致（O2 记账共享）。
+        //   何为「无变化」：由 PluginStateExecutor 按 O2 落盘记账判定（M2 下沉）。
         //   sys_* 命令 / phase 变化 / forceSync 永远带全量（前端消费路径不受影响）。
-        const stateUnchanged = !forceSync && pluginStateLastJson.get(scopeKey) === serializedNow;
         return res.status(200).send(success({
           state: stateUnchanged ? null : resultState,
           actions: Array.isArray(result?.actions) ? result.actions : (publicState.plugin_actions || []),
