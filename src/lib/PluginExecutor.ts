@@ -56,6 +56,9 @@ export interface HandleActionResult {
   response?: string; // 人类可读回复
   actions?: string[]; // 可用动作列表（供前端渲染）
   assets?: string[]; // 资产路径列表
+  /** ★ 2026-11-13：MCP read 类工具的结构化数据（如 ai_query_state 的敌人/CD 清单），
+   *  经 /plugin/mcp 的 structuredContent 透出给 AI client；tick 链路不消费 */
+  data?: Record<string, any>;
 }
 
 // ---------------------------------------------------------------------------

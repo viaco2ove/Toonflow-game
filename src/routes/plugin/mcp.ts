@@ -36,10 +36,10 @@ import {
   type JsonRpcRequest,
 } from "@/lib/mcp/protocol";
 import {
-  MCP_TOOLS,
+  listMcpTools,
   findMcpTool,
+  runMcpTool,
   ToolBusinessError,
-  type McpToolCallContext,
 } from "@/lib/mcp/tools";
 import {
   preparePluginExecutionContext,
@@ -157,8 +157,14 @@ router.post("/", async (req, res) => {
     }
 
     case "tools/list": {
+      // ★ 工具来自注册表：宿主内置 + 各插件 manifest.contributes.mcpTools 声明
+      //   （插件业务留在插件里，宿主零硬编码）
+      const userId = Number((req as any)?.user?.id || 0);
+      const reg = Number.isFinite(userId) && userId > 0
+        ? await listMcpTools(userId)
+        : [];
       return sendRpc(res, 200, rpcResult(rpc.id ?? null, {
-        tools: MCP_TOOLS.map((t) => ({
+        tools: reg.map((t) => ({
           name: t.name,
           title: t.title,
           description: t.description,
@@ -173,9 +179,11 @@ router.post("/", async (req, res) => {
       const args = (argsRaw && typeof argsRaw === "object" && !Array.isArray(argsRaw))
         ? (argsRaw as Record<string, any>)
         : {};
-      const tool = findMcpTool(name);
+      const userIdHint = Number((req as any)?.user?.id || 0);
+      const tool = await findMcpTool(userIdHint, name, String(args.pluginId || "").trim() || undefined);
       if (!tool) {
-        const known = MCP_TOOLS.map((t) => t.name).join(", ");
+        const reg = Number.isFinite(userIdHint) && userIdHint > 0 ? await listMcpTools(userIdHint) : [];
+        const known = reg.map((t) => t.name).join(", ");
         return sendRpc(res, 400, rpcError(
           rpc.id ?? null,
           JSON_RPC_ERRORS.INVALID_PARAMS,
@@ -225,14 +233,21 @@ router.post("/", async (req, res) => {
             isError: true,
           }));
         }
-        const cctx: McpToolCallContext = {
-          userId,
-          sessionId,
-          pluginId: boot.resolvedPluginId,
-          boot,
-          db: getGameDb(),
-        };
-        const out = await tool.handler(cctx, args);
+        // ★ 工具归属检查：插件声明的工具只能在该插件的会话里调
+        //   （host 内置工具不受限；pluginId 取会话解析结果）
+        if (tool.owner !== "host" && tool.owner !== boot.resolvedPluginId) {
+          return sendRpc(res, 200, rpcResult(rpc.id ?? null, {
+            content: [{ type: "text", text:
+              `工具 ${tool.name} 属于插件 ${tool.owner}，当前会话进行中的小游戏是 ${boot.resolvedPluginId}；` +
+              `请先结束当前小游戏再操作，或换一个会话。` }],
+            isError: true,
+          }));
+        }
+        const out = await runMcpTool(
+          { userId, sessionId, pluginId: boot.resolvedPluginId, boot, db: getGameDb() },
+          tool,
+          args,
+        );
         return sendRpc(res, 200, rpcResult(rpc.id ?? null, {
           content: [{ type: "text", text: out.text }],
           ...(out.isError ? { isError: true } : {}),

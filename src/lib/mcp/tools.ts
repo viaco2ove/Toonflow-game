@@ -1,15 +1,25 @@
 /**
- * MCP Tools 层 —— AI agent 的插件工具集（2026-11-12，网络通信机制 v3 §6 / §10 M3）
+ * MCP Tools 注册表 —— 宿主只做「注册 + 通用分发」，插件业务留在插件里
+ * （2026-11-13 重构，网络通信机制 v3 §6 原则的落地形态）
  *
- * 原则（v3 §6 红线）：**能转发既有 handle_action 的绝不重写逻辑**。
- *   - 权威游戏逻辑在 entry.ts（esbuild 编译为 entry.js）；MCP 层不直接改 state，
- *     否则绕过权威结算（经验/掉落/任务计数会漏）。
- *   - 写工具全部经 PluginStateExecutor.executePluginActionWithState（与 tick 共用
- *     内存态 + 会话锁，v3 §5.1）；读工具走 readPluginStateSnapshot（内存态，免锁，
- *     M2-5）——查 DB 会读到最多 2s 前的快照，AI 会误判（以为怪还活着，其实刚被杀）。
- *   - 错误信息面向 AI（M3-8）：说明为什么失败、下一步怎么改。
+ * ★ 职责边界（为什么这样分）：
+ *   - 插件业务（工具叫什么、参数是什么、摘要长什么样、什么算成功）
+ *     由插件在 **manifest.contributes.mcpTools** 里**声明**，权威执行在插件 entry 的
+ *     handle_action（kind=action → 权威结算；kind=read → 插件的 ai_query_state 等）。
+ *     宿主升级/新增插件时，宿主代码**零改动**。
+ *   - 宿主只保留：① 与具体插件无关的内置工具（如事件队列）；
+ *     ② 通用分发器（读声明 → 校验 → 经共享执行层转发 → successPattern 判定）。
+ *
+ * 分发通道（v3 §5.1 红线的延续）：
+ *   - kind="action"（写）→ executePluginActionWithState（与 tick 共用内存态 + fast 锁，
+ *     forceSync 返回即落库）——绝不在 MCP 层直接改 state。
+ *   - kind="read"（读）→ readPluginStateSnapshot（内存态）+ executePluginAction 直读，
+ *     不加锁、不落盘、不写内存态（M2-5 语义）。
+ *   - kind="host"（宿主内置）→ 本文件内的 handler。
  */
 import { toJsonText } from "@/lib/gameEngine";
+import { executePluginAction } from "@/lib/PluginExecutor";
+import { loadPluginManifestFromFile, listEnabledPlugins } from "@/lib/pluginRegistry";
 import {
   executePluginActionWithState,
   readPluginStateSnapshot,
@@ -44,20 +54,188 @@ export class ToolBusinessError extends Error {
   }
 }
 
-export interface McpToolDefinition {
+/* ── 工具声明（manifest.contributes.mcpTools 的条目形状）── */
+
+export interface McpToolDeclaration {
+  /** 工具名（建议全局唯一；跨插件撞名时内置工具优先、先注册者保留并告警） */
+  name: string;
+  title?: string;
+  description?: string;
+  /** action=写（权威结算，默认）；read=读（直读内存态，不落盘） */
+  kind?: "action" | "read";
+  /** 转发到插件 entry.handle_action 的 action 名；缺省 = 工具名 */
+  action?: string;
+  /** 协议级必填参数（缺 → JSON-RPC -32602） */
+  required?: string[];
+  inputSchema?: Record<string, unknown>;
+  /** 响应文案的成功判定正则（字符串形式）；匹配 → 成功，不匹配 → isError。
+   *  未声明 → 一律视为成功（如 read 类工具）。 */
+  successPattern?: string;
+}
+
+/** 注册表条目（声明 + 归属 + 兜底字段） */
+export interface RegisteredTool {
   name: string;
   title: string;
   description: string;
-  /** 协议级必填参数（缺失 → JSON-RPC -32602，M3-7） */
+  kind: "action" | "read" | "host";
+  /** 转发到 entry 的 action（host 类无此字段语义） */
+  action?: string;
   required: string[];
   inputSchema: Record<string, unknown>;
-  handler: (c: McpToolCallContext, args: Record<string, any>) => Promise<McpToolResult>;
+  successPattern?: RegExp;
+  /** 归属：插件 id 或 "host" */
+  owner: string;
+  /** host 内置工具的 handler（仅 kind="host"） */
+  hostHandler?: (c: McpToolCallContext, args: Record<string, any>) => Promise<McpToolResult>;
 }
 
-/* ── 内部工具函数 ── */
+const TOOL_NAME_RE = /^[a-zA-Z][a-zA-Z0-9_]{1,63}$/;
+
+/** 把插件的声明 sanitize 成注册表条目（非法条目跳过并告警，不拖垮整表） */
+function sanitizeDeclaration(raw: any, pluginId: string): RegisteredTool | null {
+  if (!raw || typeof raw !== "object") return null;
+  const name = String(raw.name || "").trim();
+  if (!TOOL_NAME_RE.test(name)) {
+    console.warn(`[mcp/tools] 插件 ${pluginId} 声明了非法工具名「${name}」，已跳过`);
+    return null;
+  }
+  const kindRaw = String(raw.kind || "action").trim();
+  const kind: "action" | "read" = kindRaw === "read" ? "read" : "action";
+  const action = String(raw.action || name).trim();
+  let successPattern: RegExp | undefined;
+  if (raw.successPattern) {
+    try {
+      successPattern = new RegExp(String(raw.successPattern));
+    } catch {
+      console.warn(`[mcp/tools] 插件 ${pluginId} 工具 ${name} 的 successPattern 非法，忽略`);
+    }
+  }
+  const schema = (raw.inputSchema && typeof raw.inputSchema === "object" && !Array.isArray(raw.inputSchema))
+    ? (raw.inputSchema as Record<string, unknown>)
+    : { type: "object", properties: {} };
+  const required = Array.isArray(raw.required) ? raw.required.map(String) : [];
+  return {
+    name,
+    title: String(raw.title || name),
+    description: String(raw.description || `插件 ${pluginId} 提供的工具 ${name}（缺描述）`),
+    kind,
+    action,
+    required,
+    inputSchema: schema,
+    successPattern,
+    owner: pluginId,
+  };
+}
+
+/** 从某插件的 manifest 读声明（manifest 每次现读，改了即生效） */
+async function getPluginDeclaredTools(userId: number, pluginId: string): Promise<RegisteredTool[]> {
+  const manifest = await loadPluginManifestFromFile(userId, pluginId);
+  const rawList = (manifest as any)?.contributes?.mcpTools;
+  if (!Array.isArray(rawList)) return [];
+  return rawList
+    .map((r: any) => sanitizeDeclaration(r, pluginId))
+    .filter((t: RegisteredTool | null): t is RegisteredTool => t !== null);
+}
+
+/* ── 宿主内置工具（与具体插件无关的能力；插件业务不写在这里）── */
+
+const HOST_BUILTIN_TOOLS: RegisteredTool[] = [
+  {
+    name: "plugin_events_push",
+    title: "推送插件事件（AI 主动消息）",
+    description:
+      "向指定会话的插件事件队列（P3）推一条事件（如 wake_sms 唤醒短信决策）。" +
+      "插件在下一次 tick 时消费；队列上限 64 条，溢出丢最旧。这是宿主通用能力，对所有插件可用。",
+    kind: "host",
+    required: ["type"],
+    inputSchema: {
+      type: "object",
+      properties: {
+        type: { type: "string", description: "事件类型，如 wake_sms" },
+        payload: { type: "object", description: "事件附加数据（可选）" },
+      },
+      required: ["type"],
+      additionalProperties: false,
+    },
+    owner: "host",
+    hostHandler: async (c, args) => {
+      const type = String(args.type || "").trim();
+      if (!type) return { text: "缺少 type（事件类型，如 wake_sms）", isError: true };
+      const ok = await pushPluginEvent(
+        c.userId, c.sessionId, c.pluginId,
+        { type, ...(args.payload && typeof args.payload === "object" ? { payload: args.payload } : {}) },
+      );
+      if (!ok) return { text: "事件入队失败（存储异常），请稍后重试", isError: true };
+      return { text: `事件已入队：type=${type}（插件下一次 tick 时可见）` };
+    },
+  },
+];
+
+/* ── 注册表读取 ── */
+
+/** 全量工具清单：宿主内置 + 所有已启用插件的声明（按名字去重，内置优先，撞名告警） */
+export async function listMcpTools(userId: number): Promise<RegisteredTool[]> {
+  const byName = new Map<string, RegisteredTool>();
+  for (const t of HOST_BUILTIN_TOOLS) byName.set(t.name, t);
+  let plugins: Awaited<ReturnType<typeof listEnabledPlugins>> = [];
+  try {
+    plugins = await listEnabledPlugins(userId);
+  } catch (e) {
+    console.warn("[mcp/tools] listEnabledPlugins 失败（仅返回内置工具）：", e);
+  }
+  for (const p of plugins) {
+    try {
+      for (const t of await getPluginDeclaredTools(userId, p.pluginId)) {
+        if (byName.has(t.name)) {
+          console.warn(`[mcp/tools] 工具名冲突：${t.name}（${t.owner} 与 ${byName.get(t.name)!.owner}），保留先注册者`);
+          continue;
+        }
+        byName.set(t.name, t);
+      }
+    } catch (e) {
+      console.warn(`[mcp/tools] 读取插件 ${p.pluginId} 的 mcpTools 声明失败：`, e);
+    }
+  }
+  return Array.from(byName.values());
+}
+
+/** 按名字找工具：优先指定插件（会话指针指向的插件），再全表 */
+export async function findMcpTool(
+  userId: number,
+  name: string,
+  pluginIdHint?: string,
+): Promise<RegisteredTool | null> {
+  const builtin = HOST_BUILTIN_TOOLS.find((t) => t.name === name);
+  if (builtin) return builtin;
+  if (pluginIdHint) {
+    for (const t of await getPluginDeclaredTools(userId, pluginIdHint)) {
+      if (t.name === name) return t;
+    }
+  }
+  const all = await listMcpTools(userId);
+  return all.find((t) => t.name === name) || null;
+}
+
+/* ── 通用分发 ── */
 
 function dist(ax: number, ay: number, bx: number, by: number): number {
   return Math.sqrt((ax - bx) ** 2 + (ay - by) ** 2);
+}
+
+/** 从 tool arguments 提取 entry params（剥掉路由层参数） */
+function entryParams(args: Record<string, any>): Record<string, any> {
+  const p = { ...args };
+  delete p.sessionId;
+  delete p.session_id;
+  delete p.pluginId;
+  return p;
+}
+
+/** 用响应文案判业务成败（成功模式由插件在声明里给出） */
+function judgeByPattern(response: string, pattern: RegExp | undefined, hint: string): McpToolResult {
+  if (!pattern || pattern.test(response)) return { text: response };
+  return { text: `${response}\n（${hint}）`, isError: true };
 }
 
 /**
@@ -85,6 +263,7 @@ async function runAuthoritativeAction(
   if ((live as any).phase === "over") {
     throw new ToolBusinessError("本局已结束（phase=over），需重新开局后才能继续操作。");
   }
+
   const { result, resultState } = await executePluginActionWithState({
     ctx: boot.ctx as any,
     scope: { userId, sessionId, pluginId },
@@ -122,194 +301,32 @@ async function runAuthoritativeAction(
   return { result, resultState };
 }
 
-/** entry 返回 okResp(失败文案) 也是 code=0 —— 用响应文案判业务成败（AI 可读，M3-8） */
-function toolResultFromResponse(response: string, successPattern: RegExp, hint: string): McpToolResult {
-  if (successPattern.test(response)) return { text: response };
-  return { text: `${response}\n（${hint}）`, isError: true };
-}
-
-/* ── Tool 定义（M3-1 ~ M3-5 + M3-6 schema）── */
-
-export const MCP_TOOLS: McpToolDefinition[] = [
-  {
-    name: "query_state",
-    title: "查询野外生存游戏状态",
-    description:
-      "读取野外生存插件的实时世界状态（内存态，无滞后）：phase / tick / 玩家（hp、等级、坐标）/ " +
-      "存活敌人列表（id、名字、血量、距离，含最近敌人）/ 特效数 / 击杀数 / 金钱 / 最近事件。" +
-      "kill_mob 前先用它选目标（记下 entity id）。session 必填（game.sessionId）。",
-    required: [],
-    inputSchema: {
-      type: "object",
-      properties: {},
-      additionalProperties: false,
-    },
-    handler: async (c) => {
-      const st = await readPluginStateSnapshot({ userId: c.userId, sessionId: c.sessionId, pluginId: c.pluginId });
-      if (!st || typeof st !== "object") {
-        return {
-          text: "该会话当前没有野外生存游戏状态（玩家可能还没进入游戏）。" +
-            "可以先让玩家在故事对话中发送 #野外生存 开始游戏，或稍后再查询。",
-          isError: true,
-        };
-      }
-      const s: any = st;
-      const player = Array.isArray(s.entities) ? s.entities.find((e: any) => e.side === "player") : null;
-      const enemies = (Array.isArray(s.entities) ? s.entities : [])
-        .filter((e: any) => e.side === "enemy" && e.alive !== false && !e.deathMs)
-        .map((e: any) => ({
-          id: e.id,
-          name: e.name,
-          lv: e.level ?? 1,
-          hp: Math.max(0, Math.round(e.hp ?? 0)),
-          maxHp: Math.round(e.maxHp ?? e.hp ?? 0),
-          dist: player ? Math.round(dist(player.x, player.y, e.x, e.y) * 10) / 10 : undefined,
-        }))
-        .sort((a: any, b: any) => (a.dist ?? 1e9) - (b.dist ?? 1e9));
-      const vfxArr = Array.isArray(s.vfx) ? s.vfx : [];
-      const events = Array.isArray(s.events) ? s.events.slice(-3) : [];
-      const skillCds = (Array.isArray(s.skills) ? s.skills : [])
-        .filter((k: any) => k && k.name && !k.empty)
-        .map((k: any) => ({ name: k.name, cdLeft: k.cdLeft ?? 0, cd: k.cd ?? 0 }));
-      const lines: string[] = [];
-      lines.push(`phase=${s.phase} tick=${s.tick} 击杀=${s.kills ?? 0} 金钱=${s.money ?? 0}`);
-      if (skillCds.length) {
-        lines.push(`技能冷却: ${skillCds.map((k: any) => `${k.name} ${k.cdLeft}/${k.cd}`).join(", ")}`);
-      }
-      if (player) {
-        lines.push(
-          `玩家: ${player.name} Lv${player.level ?? 1} hp=${Math.max(0, Math.round(player.hp ?? 0))}/${Math.round(player.maxHp ?? 0)} ` +
-          `坐标=(${Math.round(player.x)}, ${Math.round(player.y)})`,
-        );
-      } else {
-        lines.push("玩家: （场上无玩家实体）");
-      }
-      if (enemies.length) {
-        const list = enemies.slice(0, 10).map((e: any) =>
-          `${e.id} ${e.name} Lv${e.lv} hp=${e.hp}/${e.maxHp} 距离${e.dist ?? "?"}m`,
-        );
-        lines.push(`存活敌人 ${enemies.length} 个（最近在前）:\n  ${list.join("\n  ")}`);
-        lines.push(`最近敌人: ${enemies[0].id}（${enemies[0].name}，距离 ${enemies[0].dist ?? "?"}m）`);
-      } else {
-        lines.push("存活敌人: 0 个（附近已清空，可等待刷新或用 spawn_entity 生成练习目标）");
-      }
-      lines.push(`进行中特效: ${vfxArr.length} 个`);
-      if (events.length) lines.push(`最近事件: ${events.join(" | ")}`);
-      return { text: lines.join("\n"), data: { phase: s.phase, tick: s.tick, kills: s.kills ?? 0, enemies, skills: skillCds } };
-    },
-  },
-  {
-    name: "kill_mob",
-    title: "击杀野怪（权威结算）",
-    description:
-      "对指定野怪发起一次普攻（与玩家点击普攻走同一条权威结算链：伤害/经验/掉落/任务计数一致）。" +
-      "要求目标在玩家 4m 攻击范围内；太远会失败并提示先用别的方式接近。" +
-      "先用 query_state 拿 entity id，再传 targetId。",
-    required: ["targetId"],
-    inputSchema: {
-      type: "object",
-      properties: {
-        targetId: { type: "string", description: "野怪实体 id（来自 query_state 的敌人列表）" },
-      },
-      required: ["targetId"],
-      additionalProperties: false,
-    },
-    handler: async (c, args) => {
-      const targetId = String(args.targetId || "").trim();
-      if (!targetId) {
-        return { text: "缺少 targetId（野怪实体 id）。先用 query_state 查看存活敌人及其 id。", isError: true };
-      }
-      const { result } = await runAuthoritativeAction(c, "attack", { targetId });
-      const response = String(result?.response || "");
-      // 成功形如「普攻 → 巨狼 -72」；失败是 okResp(原因)（不在范围/已死亡等）
-      return toolResultFromResponse(
-        response,
-        /^普攻 → .+ -\d+$/,
-        "击杀未生效：目标可能不在 4m 攻击范围内或已死亡；可用 query_state 确认目标与玩家距离",
-      );
-    },
-  },
-  {
-    name: "clear_effect",
-    title: "清除技能特效",
-    description:
-      "把一个或全部打击特效从权威状态 s.vfx 移除（前端下一帧即消失）。" +
-      "effectId 与 all 二选一；都不传视为全部清除。",
-    required: [],
-    inputSchema: {
-      type: "object",
-      properties: {
-        effectId: { type: "string", description: "要清除的特效 id（vfx_*）" },
-        all: { type: "boolean", description: "true=清除全部特效" },
-      },
-      additionalProperties: false,
-    },
-    handler: async (c, args) => {
-      const params: Record<string, any> = {};
-      if (args.effectId != null) params.effectId = String(args.effectId);
-      if (args.all === true) params.all = true;
-      const { result } = await runAuthoritativeAction(c, "ai_clear_vfx", params);
-      const response = String(result?.response || "");
-      return toolResultFromResponse(response, /^已清除/, "特效清除未生效：effectId 可能不存在；不带参数可全部清除");
-    },
-  },
-  {
-    name: "spawn_entity",
-    title: "刷出实体（野怪）",
-    description:
-      "在权威状态里刷出野怪（与正常刷怪同一构造链，经验/金钱奖励一致）。" +
-      "类型只能用当前地图怪图鉴里的 archetypeId（不带参数会列出可用类型）；" +
-      "count 1~6；不带坐标时按正常刷怪规则散布在玩家 30~100m。",
-    required: [],
-    inputSchema: {
-      type: "object",
-      properties: {
-        archetypeId: { type: "string", description: "野怪图鉴 id（如 enemy_1）；缺省用图鉴第一个" },
-        count: { type: "integer", minimum: 1, maximum: 6, description: "数量（1~6，缺省 1）" },
-        x: { type: "number", description: "世界坐标 x（米），与 y 一起提供才生效" },
-        y: { type: "number", description: "世界坐标 y（米），与 x 一起提供才生效" },
-      },
-      additionalProperties: false,
-    },
-    handler: async (c, args) => {
-      const params: Record<string, any> = {};
-      if (args.archetypeId != null) params.archetypeId = String(args.archetypeId);
-      if (args.count != null) params.count = args.count;
-      if (args.x != null && args.y != null) { params.x = args.x; params.y = args.y; }
-      const { result } = await runAuthoritativeAction(c, "ai_spawn", params);
-      const response = String(result?.response || "");
-      return toolResultFromResponse(response, /^已刷出/, "刷出未生效：游戏可能未开始（phase!=playing）或类型名不在图鉴中");
-    },
-  },
-  {
-    name: "plugin_events_push",
-    title: "推送插件事件（AI 主动消息）",
-    description:
-      "向该会话的插件事件队列（P3）推一条事件（如 wake_sms 唤醒短信决策）。" +
-      "插件在下一次 tick 时消费；队列上限 64 条，溢出丢最旧。",
-    required: ["type"],
-    inputSchema: {
-      type: "object",
-      properties: {
-        type: { type: "string", description: "事件类型，如 wake_sms" },
-        payload: { type: "object", description: "事件附加数据（可选）" },
-      },
-      required: ["type"],
-      additionalProperties: false,
-    },
-    handler: async (c, args) => {
-      const type = String(args.type || "").trim();
-      if (!type) return { text: "缺少 type（事件类型，如 wake_sms）", isError: true };
-      const ok = await pushPluginEvent(
-        c.userId, c.sessionId, c.pluginId,
-        { type, ...(args.payload && typeof args.payload === "object" ? { payload: args.payload } : {}) },
-      );
-      if (!ok) return { text: "事件入队失败（存储异常），请稍后重试", isError: true };
-      return { text: `事件已入队：type=${type}（插件下一次 tick 时可见）` };
-    },
-  },
-];
-
-export function findMcpTool(name: string): McpToolDefinition | undefined {
-  return MCP_TOOLS.find((t) => t.name === name);
+/** 通用分发入口：按 tool.kind 执行（路由只管协议，业务语义全部来自声明与插件） */
+export async function runMcpTool(
+  c: McpToolCallContext,
+  tool: RegisteredTool,
+  args: Record<string, any>,
+): Promise<McpToolResult> {
+  // ① 宿主内置
+  if (tool.kind === "host") {
+    return tool.hostHandler!(c, args);
+  }
+  const params = entryParams(args);
+  // ② 读：内存态快照 + entry 直读（不加锁、不落盘、不写内存态 —— M2-5 语义）
+  if (tool.kind === "read") {
+    const snap = await readPluginStateSnapshot({ userId: c.userId, sessionId: c.sessionId, pluginId: c.pluginId });
+    const result = await executePluginAction(c.boot.ctx as any, tool.action || tool.name, params, (snap || null) as any);
+    const response = String(result?.response || "");
+    const data = (result?.data && typeof result.data === "object") ? result.data : undefined;
+    const out = judgeByPattern(response, tool.successPattern, "执行未按预期成功");
+    return data ? { ...out, data } : out;
+  }
+  // ③ 写：权威结算通道
+  const { result } = await runAuthoritativeAction(c, tool.action || tool.name, params);
+  const response = String(result?.response || "");
+  return judgeByPattern(
+    response,
+    tool.successPattern,
+    "操作未生效：可用 query_state 确认世界状态后重试",
+  );
 }
