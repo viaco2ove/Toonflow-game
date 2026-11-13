@@ -168,8 +168,14 @@ export const MCP_TOOLS: McpToolDefinition[] = [
         .sort((a: any, b: any) => (a.dist ?? 1e9) - (b.dist ?? 1e9));
       const vfxArr = Array.isArray(s.vfx) ? s.vfx : [];
       const events = Array.isArray(s.events) ? s.events.slice(-3) : [];
+      const skillCds = (Array.isArray(s.skills) ? s.skills : [])
+        .filter((k: any) => k && k.name && !k.empty)
+        .map((k: any) => ({ name: k.name, cdLeft: k.cdLeft ?? 0, cd: k.cd ?? 0 }));
       const lines: string[] = [];
       lines.push(`phase=${s.phase} tick=${s.tick} 击杀=${s.kills ?? 0} 金钱=${s.money ?? 0}`);
+      if (skillCds.length) {
+        lines.push(`技能冷却: ${skillCds.map((k: any) => `${k.name} ${k.cdLeft}/${k.cd}`).join(", ")}`);
+      }
       if (player) {
         lines.push(
           `玩家: ${player.name} Lv${player.level ?? 1} hp=${Math.max(0, Math.round(player.hp ?? 0))}/${Math.round(player.maxHp ?? 0)} ` +
@@ -189,7 +195,7 @@ export const MCP_TOOLS: McpToolDefinition[] = [
       }
       lines.push(`进行中特效: ${vfxArr.length} 个`);
       if (events.length) lines.push(`最近事件: ${events.join(" | ")}`);
-      return { text: lines.join("\n"), data: { phase: s.phase, tick: s.tick, kills: s.kills ?? 0, enemies } };
+      return { text: lines.join("\n"), data: { phase: s.phase, tick: s.tick, kills: s.kills ?? 0, enemies, skills: skillCds } };
     },
   },
   {
