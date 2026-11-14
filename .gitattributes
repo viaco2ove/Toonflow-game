@@ -1,0 +1,9 @@
+# >>> init-aispace managed >>>
+# 由 init-aispace-links.js 自动维护，请勿手动编辑此块
+.claude export-subst
+.codebuddy export-subst
+.codex export-subst
+.claude symlink
+.codebuddy symlink
+.codex symlink
+# <<< init-aispace managed <<<
