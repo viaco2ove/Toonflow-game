@@ -86,3 +86,4 @@ run.local.ps1
 *.sqlite
 # <<< init-aispace managed <<<
 /.aispace/
+/init-aispace-links.js
