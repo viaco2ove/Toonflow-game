@@ -68,3 +68,21 @@ run.local.ps1
 /.serena/
 /.mcp.json
 /.claude/
+# >>> init-aispace managed >>>
+# AI 工具缓存/会话数据不入库
+/.aispace/claude/cache
+/.aispace/codebuddy/cache
+/.aispace/codex/cache
+/.aispace/claude/sessions
+/.aispace/codebuddy/sessions
+/.aispace/codex/sessions
+/.aispace/claude/journal
+/.aispace/codebuddy/journal
+/.aispace/codex/journal
+/.aispace/claude/memory
+/.aispace/codebuddy/memory
+/.aispace/codex/memory
+*.db
+*.sqlite
+# <<< init-aispace managed <<<
+/.aispace/
