@@ -52,7 +52,17 @@ let server: ReturnType<typeof app.listen> | null = null;
 export default async function startServe(randomPort: Boolean = false) {
   if (["dev", "local"].includes((process.env.NODE_ENV || "").toLowerCase())) await buildRoute();
 
-  expressWs(app);
+  // ★ v3.1（2026-11-14）：开启 WS permessage-deflate——插件实时通道（/plugin/realtime）
+  //   的 state 推送为 JSON 文本（12~50KB/帧），deflate 压缩率 ~80%；threshold 2KB 以下不压。
+  //   ARM 盒 CPU 考量：zlib level 3（12KB JSON < 3ms）；如压测吃紧可整体关掉 perMessageDeflate。
+  expressWs(app, undefined, {
+    wsOptions: {
+      perMessageDeflate: {
+        threshold: 2048,
+        zlibDeflateOptions: { level: 3 },
+      },
+    },
+  } as any);
 
   app.use(logger("dev"));
   app.use(cors({ origin: "*" }));
