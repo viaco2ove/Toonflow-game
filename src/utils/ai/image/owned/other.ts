@@ -110,17 +110,51 @@ export default async (input: ImageConfig, config: AIConfig): Promise<string> => 
       return result.text;
     }
   } else {
-    const { image } = await generateImage({
-      model: otherProvider.imageModel(model),
-      prompt:
-        input.imageBase64 && input.imageBase64.length
+    const hasRefs = !!(input.imageBase64 && input.imageBase64.length);
+    try {
+      const { image } = await generateImage({
+        model: otherProvider.imageModel(model),
+        prompt: hasRefs
           ? { text: fullPrompt + `请直接输出图片`, images: input.imageBase64 }
           : fullPrompt + `请直接输出图片`,
-      aspectRatio: input.aspectRatio as "1:1" | "3:4" | "4:3" | "9:16" | "16:9",
-      size: sizeMap[input.size] ?? "1024x1024",
-    });
-
-    return image.base64;
+        aspectRatio: input.aspectRatio as "1:1" | "3:4" | "4:3" | "9:16" | "16:9",
+        size: sizeMap[input.size] ?? "1024x1024",
+      });
+      return image.base64;
+    } catch (e) {
+      /* ★ 2026-11-14 图生图端点降级：
+       *   带参考图时 AI SDK 标准实现走 /images/edits（multipart），但部分平台
+       *   （实测 agnes）把 edits 的 i2i 权限与 generations 的 t2i 分开鉴权 → 403
+       *   "team not allowed"。而这些平台的 generations 端点自己支持 image 数组
+       *   做图生图（openai SDK extra_body.image 用法）。这里 edits 失败改走
+       *   generations+image 重试；不带图的原样抛错。 */
+      if (!hasRefs) throw e;
+      console.warn(
+        "[ai.image][other] /images/edits 失败，改走 /images/generations + image 图生图重试:",
+        (e instanceof Error ? e.message : String(e)).slice(0, 200),
+      );
+      const resp = await axios.post(
+        `${baseURL}/images/generations`,
+        {
+          model,
+          prompt: fullPrompt + `请直接输出图片`,
+          size: sizeMap[input.size] ?? "1024x1024",
+          image: input.imageBase64,
+          extra_body: { image: input.imageBase64 },
+        },
+        {
+          headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+          timeout: 180000,
+        },
+      );
+      const d: any = resp.data || {};
+      const item: any = (d.data && d.data[0]) || (d.images && d.images[0]) || {};
+      const url: string = item.url || item.image_url || "";
+      if (url) return await urlToBase64(url);
+      const b64: string = item.b64_json || item.base64 || (typeof item === "string" ? item : "") || "";
+      if (b64) return b64.startsWith("data:") ? b64 : `data:image/png;base64,${b64}`;
+      throw e;
+    }
   }
 };
 

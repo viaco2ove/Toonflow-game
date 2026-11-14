@@ -481,6 +481,7 @@ export async function runPluginAgent(
       DebugLogUtil.log("plugins", `[runPluginAgent] userText=${userText}`);
 
       let content: string;
+      let refDropped = false;
       try {
         content = await withTimeout(
           (u as any).ai.image(
@@ -498,7 +499,36 @@ export async function runPluginAgent(
         );
       } catch (e: unknown) {
         const msg = e instanceof Error ? e.message : String(e);
-        return { ok: false, error: "生图失败：" + msg };
+        /* ★ 2026-11-14 参考图降级重试：
+         *   openai-compatible 厂商带参考图时，AI SDK 会改走 /images/edits（图生图端点）。
+         *   很多平台把 i2i 与 t2i 的模型权限分开（实测 agnes：generations 200，
+         *   edits 403 "team not allowed to access model"）→ 带参考图必然失败。
+         *   这里带图失败时自动去掉参考图按文生图重试一次；成功则在 output.note 注明
+         *   参考图被忽略，插件面板可提示用户。不带图的失败照常抛错。 */
+        if (pngRefs.length > 0) {
+          console.warn("[pluginAgentRunner] 带参考图生图失败，降级为文生图重试:", msg.slice(0, 200));
+          try {
+            content = await withTimeout(
+              (u as any).ai.image(
+                {
+                  prompt: userText,
+                  imageBase64: [],
+                  size,
+                  aspectRatio,
+                  resType: "b64",
+                },
+                cfgAny,
+              ),
+              SPRITE_AGENT_TIMEOUT_MS,
+              `实体形象生图超时（>${SPRITE_AGENT_TIMEOUT_MS}ms）`,
+            );
+            refDropped = true;
+          } catch {
+            return { ok: false, error: "生图失败：" + msg };
+          }
+        } else {
+          return { ok: false, error: "生图失败：" + msg };
+        }
       }
       // u.ai.image 返回内容形如 "data:image/png;base64,xxxx" 或纯 base64
       const dataUrl = String(content || "").trim();
@@ -517,7 +547,18 @@ export async function runPluginAgent(
         const msg = e instanceof Error ? e.message : String(e);
         console.warn("[pluginAgentRunner] 实体形象背景分离失败（保留原背景）:", msg);
       }
-      return { ok: true, output: { image, prompt, source: "ai", matting } };
+      return {
+        ok: true,
+        output: {
+          image,
+          prompt,
+          source: "ai",
+          matting,
+          ...(refDropped
+            ? { refDropped: true, note: "参考图已忽略：当前生图模型不支持图生图（参考图端点无权限），已按文生图生成" }
+            : {}),
+        },
+      };
     }
 
     // ★ 角色发言器：文本进 / 文本出，不做 JSON 解析（与 map/shop agent 走不同分支）

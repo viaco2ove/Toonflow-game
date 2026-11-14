@@ -13,6 +13,7 @@ import other from "./owned/other";
 import gemini from "./owned/gemini";
 import t8star from "./owned/t8star";
 import siliconflow from "./owned/siliconflow";
+import agnes from "./owned/agnes";
 
 const QUOTA_ERROR_PATTERNS = [
   /token quota exhausted/i,
@@ -48,6 +49,7 @@ const modelInstance = {
   other,
   openai: other, // openai 走透传，复用 other（createOpenAICompatible）
   siliconflow, // 硅基流动专用处理器，响应格式与 OpenAI 不同
+  agnes, // agnes 专用处理器（2026-11-14）：图生图走 generations extra_body.image，不碰 /images/edits
 } as const;
 
 const uniqueManufacturers = (ownedList: typeof modelList): string[] =>
@@ -71,9 +73,9 @@ export default async (input: ImageConfig, config: AIConfig) => {
   const manufacturerFn = modelInstance[manufacturer as keyof typeof modelInstance];
   if (!manufacturerFn) throw new Error("不支持的图片厂商");
 
-  // ★ openai / siliconflow 是透传厂商：不限制模型名，用户填什么就调什么（OpenAI 兼容协议），
+  // ★ openai / siliconflow / agnes 是透传厂商：不限制模型名，用户填什么就调什么（平台自有协议），
   //   只要 baseURL + apiKey 能调通即可。
-  const isPassthroughManufacturer = manufacturer === "openai" || manufacturer === "siliconflow";
+  const isPassthroughManufacturer = manufacturer === "openai" || manufacturer === "siliconflow" || manufacturer === "agnes";
   if (!isPassthroughManufacturer) {
     const ownedCandidates = modelList.filter((item) => item.model === model);
     const owned = ownedCandidates.find((item) => item.manufacturer === manufacturer);
