@@ -135,3 +135,25 @@ ps aux | grep "node toonflow-game-app" | grep -v grep
 ps aux | grep "tower-pm2" | grep -v grep
 看看 tower-pm2 自己有没有跑了多个线程
 
+#  后端端重拉后直接构建发布                                                                                                                                                            
+                    
+```bash
+cd /opt/toonflow/toonflow-game-app
+git fetch origin
+git checkout dev
+git reset --hard origin/dev
+git clean -fd
+```
+
+```bash
+cd /opt/toonflow/toonflow-game-app                                                                                                                                     
+rm -rf node_modules                                                                                                   
+yarn cache clean                                                                                                                                                                  
+yarn install  --frozen-lockfile --ignore-engines
+yarn build
+tower-pm2 stop toonflow-game
+ps aux | grep "node /opt/toonflow" | grep -v grep
+tower-pm2 start toonflow-game
+tower-pm2 logs toonflow-game 
+ps aux | grep "node /opt/toonflow" | grep -v grep                                                                                                                             
+```

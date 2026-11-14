@@ -95,7 +95,7 @@ git clean -fd
 
 > **注意**：`git reset --hard` 会丢弃所有本地未提交的修改，请谨慎使用！
 
-  前端重拉后直接构建发布                                                                                                                                                            
+#  前端重拉后直接构建发布                                                                                                                                                            
                                                                                                                                                                                     
 ```bash
 cd /opt/toonflow/Toonflow-game-web                                                                                                                                                
