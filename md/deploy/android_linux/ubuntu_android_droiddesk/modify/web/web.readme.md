@@ -99,14 +99,14 @@ git clean -fd
                                                                                                                                                                                     
 ```bash
 cd /opt/toonflow/Toonflow-game-web                                                                                                                                                
-  rm -rf node_modules                                                                                                                                                               
-  yarn cache clean                                                                                                                                                                  
-  yarn install --frozen-lockfile --force                                                                                                                                            
-  export NODE_OPTIONS=--max-old-space-size=512                                                                                                                                      
-  yarn build                                                                                                                                                                        
-  rsync -rlt --no-perms --delete dist/ /opt/toonflow/toonflow-game-app/scripts/web/                                                                                                              
-  rsync -rlt --no-perms --delete dist/ /var/www/toonflow/                                                                                                                                        
-  chown -R www-data:www-data /var/www/toonflow                                                                                                                                      
-  chmod -R 755 /var/www/toonflow                                                                                                                                                    
-  nginx -t && systemctl reload reload
+rm -rf node_modules                                                                                                                                                               
+yarn cache clean                                                                                                                                                                  
+yarn install --frozen-lockfile --force                                                                                                                                            
+export NODE_OPTIONS=--max-old-space-size=512                                                                                                                                      
+yarn build                                                                                                                                                                        
+rsync -rlt --no-perms --delete dist/ /opt/toonflow/toonflow-game-app/scripts/web/                                                                                                              
+rsync -rlt --no-perms --delete dist/ /var/www/toonflow/                                                                                                                                        
+chown -R www-data:www-data /var/www/toonflow                                                                                                                                      
+chmod -R 755 /var/www/toonflow                                                                                                                                                    
+nginx -t && systemctl reload reload
 ```
