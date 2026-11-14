@@ -5,6 +5,7 @@ import express, { Request, Response, NextFunction } from "express";
 import expressWs from "express-ws";
 import logger from "morgan";
 import cors from "cors";
+import compression from "compression";
 import buildRoute from "@/core";
 import fs from "fs";
 import u from "@/utils";
@@ -55,6 +56,21 @@ export default async function startServe(randomPort: Boolean = false) {
 
   app.use(logger("dev"));
   app.use(cors({ origin: "*" }));
+  // ★ 响应 gzip 压缩（2026-11-14，修局域网/弱网下 tick 全量 state 打满带宽 →
+  //   技能点击排队超时）：JSON state 压缩率 ~70-90%，map_visual 大包 9.2MB → ~2-3MB。
+  //   流式响应（NDJSON / event-stream）必须跳过——compression 会缓冲破坏流语义。
+  app.use(
+    compression({
+      filter: (req, res) => {
+        const ct = String(res.getHeader("Content-Type") || "");
+        if (/event-stream|ndjson|octet-stream/i.test(ct)) return false;
+        // 分块流式响应不压
+        if (res.getHeader("Transfer-Encoding") === "chunked" && req.path.includes("stream")) return false;
+        return compression.filter(req, res);
+      },
+      threshold: 1024,
+    }),
+  );
   // JSON 请求体上限可通过 JSON_BODY_LIMIT 配置（默认 100mb）；
   // 显式声明 inflate: true 允许 body-parser 自动解压 gzip/deflate 请求体
   // （配合客户端 Content-Encoding: gzip）；注意该项默认为 true，

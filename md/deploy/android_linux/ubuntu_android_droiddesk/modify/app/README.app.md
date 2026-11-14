@@ -157,3 +157,9 @@ tower-pm2 start toonflow-game
 tower-pm2 logs toonflow-game 
 ps aux | grep "node /opt/toonflow" | grep -v grep                                                                                                                             
 ```
+
+```bash
+tower-pm2 stop toonflow-game
+ps aux | grep "node /opt/toonflow" | grep -v grep
+# kill all
+```

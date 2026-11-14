@@ -177,20 +177,36 @@ export async function executePluginActionWithState(
       || !!(resultState as any)?.forceSync;
     const scopeKey = pluginScopeKey(scope);
     const serializedNow = JSON.stringify(resultState);
+    // ★ O1b（2026-11-14，修弱网下「技能点击排队放不出来」）：
+    //   s.tick 每 tick 必变、_tickAtMs/_tickDeltaMs 每 tick 重写——计入「是否变化」
+    //   对比则挂机空转也永远全量回传（10Hz × 全量 state，慢链路打满带宽 → 浏览器
+    //   连接池被塞满 → 技能/插件数据请求全部排队超时）。304 对比剥离这些单调记账
+    //   字段：纯空转 → 与上次一致 → state:null（~1KB）；移动/战斗/特效等真实变化
+    //   仍回全量。落库与内存态仍用全量串（崩溃恢复不受影响）。
+    const stripVolatile = (st: any): any => {
+      if (!st || typeof st !== "object") return st;
+      const c = { ...st };
+      delete c.tick;
+      delete c._tickAtMs;
+      delete c._tickDeltaMs;
+      delete c.writeback;
+      return c;
+    };
+    const compareNow = JSON.stringify(stripVolatile(resultState));
     const nowMs = Date.now();
     const lastFlushAt = pluginStateFlushAt.get(scopeKey) || 0;
-    const changed = pluginStateLastJson.get(scopeKey) !== serializedNow;
+    const changed = pluginStateLastJson.get(scopeKey) !== compareNow;
     // ★ 内存态：每次请求后立即更新（权威状态），与落盘解耦
     setHotPluginState(scope, resultState);
     if (forceSync || (changed && nowMs - lastFlushAt >= PLUGIN_STATE_FLUSH_MS)) {
       await setPluginData(scope, PLUGIN_STATE_KEY, resultState);
-      pluginStateLastJson.set(scopeKey, serializedNow);
+      pluginStateLastJson.set(scopeKey, compareNow);
       pluginStateFlushAt.set(scopeKey, nowMs);
     }
-    // ★ O1 增量回传（304 语义，2026-11-01）：与上次落盘快照一致 → 前端已有同内容
-    //   state（~48KB → ~1KB），响应不携带全量。sys_* 命令 / phase 变化 / forceSync
-    //   永远带全量（前端消费路径不受影响）。
-    const stateUnchanged = !forceSync && pluginStateLastJson.get(scopeKey) === serializedNow;
+    // ★ O1 增量回传（304 语义，2026-11-01；2026-11-14 O1b 剥离单调字段）：与上次
+    //   快照一致 → 前端已有同内容 state（~48KB → ~1KB），响应不携带全量。
+    //   sys_* 命令 / phase 变化 / forceSync 永远带全量（前端消费路径不受影响）。
+    const stateUnchanged = !forceSync && pluginStateLastJson.get(scopeKey) === compareNow;
 
     return { result, resultState, prev, forceSync, stateUnchanged };
   };
