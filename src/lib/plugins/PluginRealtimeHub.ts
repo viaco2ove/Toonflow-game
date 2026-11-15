@@ -204,6 +204,21 @@ export interface RealtimeScope {
 /** 连接建立：注册 + 起 driver + 立即 sync（全量状态重同步） */
 export function addRealtimeConnection(scope: RealtimeScope, ws: WebSocket): void {
   const session = getSession(scope);
+  // ★ 2026-11-15 修复「同会话双连接导致状态打架」：SPA 刷新/重开页面时旧 iframe 的
+  //   WS 连接不会立刻断开（浏览器关 iframe 才断），于是同一会话有 2 个连接：
+  //   两个前端各自驱动 tick 与各自的内存态（前端 AI 状态在 iframe 内存里）→
+  //   同一角色出现两个「执行中」、操作互相覆盖、状态来回跳。
+  //   策略：新连接建立即踢掉同会话的旧连接（只保留最新一个页面）。
+  for (const old of Array.from(session.conns)) {
+    if (old === ws) continue;
+    try {
+      wsSend(old, JSON.stringify({ type: "kicked", reason: "new_connection", ts: Date.now() }));
+      old.close(4000, "replaced_by_new_connection");
+    } catch {
+      /* 旧连接已死，忽略 */
+    }
+    session.conns.delete(old);
+  }
   session.conns.add(ws);
   ensureDriver(scope, session);
   // sync：优先内存缓存（最新），miss 才读快照（进程重启后）
