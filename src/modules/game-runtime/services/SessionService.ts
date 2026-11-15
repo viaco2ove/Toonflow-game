@@ -50,6 +50,7 @@ import {
   applyOrchestratorResultToState,
   applyPlayerProfileFromMessageToState,
   canPlayerSpeakNow,
+  markForcePlayerTurnNext,
   resolveOpeningMessage,
   refreshStoryMemoryBestEffort,
   runtimeStoryRoles,
@@ -133,6 +134,34 @@ async function withSessionLock<T>(sessionId: string, fn: () => Promise<T>): Prom
       SESSION_LOCKS.delete(sessionId);
     }
   }
+}
+
+/**
+ * 插嘴：把会话的"连续未涉及用户发言"计数直接顶到编排师兜底阈值，
+ * 下一轮编排（/game/orchestration 或 continueSessionNarrative）会强制安排用户发言。
+ * 与编排链共用 withSessionLock，避免插嘴写入和编排落库互相覆盖 state。
+ */
+export async function interruptSessionSpeech(
+  sessionId: string,
+  userId: number,
+): Promise<{ ok: boolean; streak: number }> {
+  return withSessionLock(sessionId, async () => {
+    const db = getGameDb();
+    const row = await db("t_gameSession").where({ sessionId, userId }).first();
+    if (!row) {
+      throw new SessionServiceError(404, "会话不存在");
+    }
+    const state = parseJsonSafe<Record<string, any>>(row.stateJson, {}) || {};
+    // 复用编排师兜底逻辑：计数达到阈值后 doRunNarrativePlan 会强制交还发言权
+    const streak = markForcePlayerTurnNext(state);
+    const stateJson = toJsonText(state, {});
+    await db("t_gameSession").where({ sessionId, userId }).update({
+      stateJson,
+      updateTime: nowTs(),
+    });
+    console.log("[session:interrupt] 插嘴标记已写入，下一轮编排将安排用户发言", { sessionId, streak });
+    return { ok: true, streak };
+  });
 }
 
 // 保存回溯点到内存缓存

@@ -3252,7 +3252,18 @@ type RuntimeTurnState = {
   expectedRole: string;
   lastSpeakerRoleType: string;
   lastSpeaker: string;
+  /** 编排师兜底：连续未涉及用户发言的编排轮数（用户发言或发言权交还用户时清零） */
+  nonUserOrchestrateStreak: number;
 };
+
+// 编排师兜底阈值：连续 N 轮编排都未涉及用户发言时，下一轮强制编排一次用户发言。
+const ORCHESTRATE_FORCE_PLAYER_STREAK_LIMIT = 10;
+
+// 将连续编排计数规范化成 >= 0 的整数，防止脏数据（null/字符串/负数）污染回合状态。
+function normalizeNonUserOrchestrateStreak(input: unknown): number {
+  const value = Math.floor(Number(input) || 0);
+  return Number.isFinite(value) && value > 0 ? value : 0;
+}
 
 // 从世界对象里拿到用户与旁白角色对。
 function rolePairForWorld(world: any) {
@@ -3270,6 +3281,7 @@ export function readRuntimeTurnState(state: JsonRecord, world: any): RuntimeTurn
     expectedRole: normalizeScalarText(raw.expectedRole) || playerName,
     lastSpeakerRoleType: sanitizeRoleType(raw.lastSpeakerRoleType || ""),
     lastSpeaker: normalizeScalarText(raw.lastSpeaker),
+    nonUserOrchestrateStreak: normalizeNonUserOrchestrateStreak(raw.nonUserOrchestrateStreak),
   };
 }
 
@@ -3290,8 +3302,46 @@ export function setRuntimeTurnState(
     expectedRole: normalizeScalarText(next.expectedRole),
     lastSpeakerRoleType: sanitizeRoleType(next.lastSpeakerRoleType || ""),
     lastSpeaker: normalizeScalarText(next.lastSpeaker),
+    nonUserOrchestrateStreak: normalizeNonUserOrchestrateStreak(next.nonUserOrchestrateStreak),
   };
   return readRuntimeTurnState(state, world);
+}
+
+/**
+ * 编排师兜底计数：更新"连续未涉及用户发言的编排轮数"。
+ * 判定为本轮涉及用户（清零）的条件：
+ * - 发言者就是用户（roleType = player）
+ * - 或本轮把发言权交还给用户（awaitUser = true）
+ * 其余情况（旁白/NPC 连续推进）计数 +1。
+ * 在 plan 真正落地时调用（applyOrchestratorResultToState），随 stateJson 持久化。
+ */
+export function updateNonUserOrchestrateStreak(
+  state: JsonRecord,
+  result: { roleType?: string; awaitUser?: boolean },
+): number {
+  const raw = asRecord(state.turnState);
+  const involvesUser = sanitizeRoleType(result?.roleType) === "player" || result?.awaitUser === true;
+  const current = normalizeNonUserOrchestrateStreak(raw.nonUserOrchestrateStreak);
+  const next = involvesUser ? 0 : current + 1;
+  state.turnState = {
+    ...raw,
+    nonUserOrchestrateStreak: next,
+  };
+  return next;
+}
+
+/**
+ * 插嘴标记：把"连续未涉及用户发言"计数直接顶到兜底阈值，
+ * 下一轮编排（doRunNarrativePlan）就会强制安排用户发言。
+ * 供插嘴接口（/game/interruptSpeech）调用，与自动兜底共用同一套强制逻辑。
+ */
+export function markForcePlayerTurnNext(state: JsonRecord): number {
+  const raw = asRecord(state.turnState);
+  state.turnState = {
+    ...raw,
+    nonUserOrchestrateStreak: ORCHESTRATE_FORCE_PLAYER_STREAK_LIMIT,
+  };
+  return ORCHESTRATE_FORCE_PLAYER_STREAK_LIMIT;
 }
 
 // 将性别文本统一成男/女。
@@ -4985,6 +5035,17 @@ async function doRunNarrativePlan(input: OrchestratorInput): Promise<NarrativePl
   const allowControlHints = input.allowControlHints !== false;
   const allowStateDelta = input.allowStateDelta !== false;
   const turnState = readRuntimeTurnState(input.state, input.world);
+  // ★ 编排师兜底：连续 ORCHESTRATE_FORCE_PLAYER_STREAK_LIMIT 轮编排都未涉及用户发言时，
+  //   本轮强制编排一次用户发言（prompt 注入引导 + 解析后硬兜底改写），避免用户长期旁观看戏。
+  const forcePlayerTurn = turnState.nonUserOrchestrateStreak >= ORCHESTRATE_FORCE_PLAYER_STREAK_LIMIT;
+  if (forcePlayerTurn) {
+    console.log("[orchestrator:fallback] 触发强制用户发言兜底", {
+      streak: turnState.nonUserOrchestrateStreak,
+      forceLimit: ORCHESTRATE_FORCE_PLAYER_STREAK_LIMIT,
+      expectedRole: turnState.expectedRole,
+      expectedRoleType: turnState.expectedRoleType,
+    });
+  }
   const currentPhase = readCurrentChapterPhase(input.chapter, input.state);
   const currentEvent = readCurrentRuntimeEventContext(input.chapter, input.state);
 
@@ -5067,6 +5128,11 @@ async function doRunNarrativePlan(input: OrchestratorInput): Promise<NarrativePl
   const totalStartedAt = Date.now();
   const buildStartedAt = Date.now();
   const systemPrompt = buildOrchestratorSystemPrompt(orchestratorPrompt, compactMode);
+  // ★ 兜底注入：在系统提示末尾追加强制指令，让模型主动把话头递给用户，
+  //   产出自然的交接台词（提问/等待回应），比纯硬改写 plan 的观感更好。
+  const effectiveSystemPrompt = forcePlayerTurn
+    ? `${systemPrompt}\n\n【强制兜底】已连续 ${turnState.nonUserOrchestrateStreak} 轮编排未让用户发言。本轮必须把发言权交还给用户：安排当前角色/旁白用一句话自然地把话头递给用户（例如向用户提问、征求用户意见、等待用户行动），并在输出中把 await_user 设为 true、next_speaker 设为用户名（next_role_type=player）。`
+    : systemPrompt;
   const userPrompt = buildOrchestratorUserPrompt(payload, compactMode);
   const promptBuildMs = Date.now() - buildStartedAt;
   let orchestratorRuntimeError: unknown = null;
@@ -5098,7 +5164,7 @@ async function doRunNarrativePlan(input: OrchestratorInput): Promise<NarrativePl
         messages: [
           {
             role: "system",
-            content: systemPrompt,
+            content: effectiveSystemPrompt,
           },
           {
             role: "user",
@@ -5133,6 +5199,24 @@ async function doRunNarrativePlan(input: OrchestratorInput): Promise<NarrativePl
       orchestratorRuntime,
       isSkip,
     });
+    // ★ 兜底硬保障：即使模型没听指令，也直接改写 plan 强制交还发言权。
+    //   awaitUser=true 的 plan 在台词落库后会走 allowPlayerTurn（SessionService），
+    //   用户即可获得输入权；被强制的 plan 落地时计数自然清零。
+    if (forcePlayerTurn
+      && sanitizeRoleType(planResult.roleType) !== "player"
+      && planResult.awaitUser !== true) {
+      const fallbackPlayerName = normalizeScalarText(input.state?.player?.name || input.world?.playerRole?.name) || "用户";
+      console.log("[orchestrator:fallback] 模型未交还发言权，硬改写 plan", {
+        originalRole: normalizeScalarText(planResult.role),
+        originalRoleType: sanitizeRoleType(planResult.roleType),
+        // 进入该分支时 awaitUser 已被上面的守卫窄化为 false，直接记录原始值即可
+        originalAwaitUser: planResult.awaitUser as boolean,
+        nextRole: fallbackPlayerName,
+      });
+      planResult.awaitUser = true;
+      planResult.nextRole = fallbackPlayerName;
+      planResult.nextRoleType = "player";
+    }
     // ★ 阶段2 debug:把本轮激活的世界书条目挂到 plan result，供前端实时观察
     //   sticky = 当前轮次该条目剩余的"激活延续轮数"（命中后为 3，每轮 -1）
     planResult.activatedWorldBook = payload.worldContext?.worldBookMatched?.map((e) => {
@@ -5168,8 +5252,9 @@ async function doRunNarrativePlan(input: OrchestratorInput): Promise<NarrativePl
     throw err;
   } finally {
     // 不论成功、失败还是 fallback，最后都统一打 prompt 体积和耗时日志。
-    console.log("[orchestrator] request_chars=", systemPrompt.length + userPrompt.length);
-    console.log("[orchestrator] systemPrompt.length=", systemPrompt.length);
+    // 用 effectiveSystemPrompt 保证兜底注入的指令也计入日志体积。
+    console.log("[orchestrator] request_chars=", effectiveSystemPrompt.length + userPrompt.length);
+    console.log("[orchestrator] systemPrompt.length=", effectiveSystemPrompt.length);
     console.log("[orchestrator] userPrompt.length=", userPrompt.length);
     console.log("[orchestrator] roles=", payload.roles.length);
     console.log("[orchestrator] payloadMode=", orchestratorRuntime.payloadMode, "reasoningEffort=", orchestratorRuntime.reasoningEffort || "未指定");
@@ -5177,7 +5262,7 @@ async function doRunNarrativePlan(input: OrchestratorInput): Promise<NarrativePl
       payload,
       compactMode,
       orchestratorRuntime,
-      systemPrompt,
+      effectiveSystemPrompt,
       userPrompt,
       orchestratorRuntimeError,
       orchestratorTokenUsage,
@@ -6107,6 +6192,19 @@ export function applyOrchestratorResultToState(state: JsonRecord, result: Narrat
   applyStateDelta(state, sanitizeNarrativeStateDelta(result.stateDelta || {}, {
     allowStateDelta: true,
   }));
+  // ★ 编排师兜底计数：plan 落地时统计"连续未涉及用户发言的编排轮数"。
+  //   主编排路径（applySessionNarrativePlanToState）和续写路径（advanceNarrativeUntilPlayerTurn）
+  //   都经过这里，保证一条编排只计一次。
+  const streakAfter = updateNonUserOrchestrateStreak(state, result);
+  if (streakAfter > 0 && streakAfter % 5 === 0) {
+    console.log("[orchestrator:fallback] 连续未涉及用户发言的编排轮数", {
+      streak: streakAfter,
+      role: normalizeScalarText(result.role),
+      roleType: sanitizeRoleType(result.roleType),
+      awaitUser: result.awaitUser === true,
+      forceLimit: ORCHESTRATE_FORCE_PLAYER_STREAK_LIMIT,
+    });
+  }
   // ★ 世界书粘性表回写：main 编排路径里 buildPayload 把 nextSticky 挂在 result.__worldBookStickyNext，
   //   这里写回 state.vars.worldBookSticky，供下一轮编排、小游戏、发言器复用。
   const nextSticky = (result as any)?.__worldBookStickyNext;

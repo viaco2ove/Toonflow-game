@@ -184,6 +184,7 @@ import route180 from "./routes/voice/polishPrompt";
 import route181 from "./routes/voice/preview";
 import route182 from "./routes/voice/transcribe";
 import route183 from "./routes/voice/uploadAudio";
+import route184 from "./routes/game/interruptSpeech";
 
 export default async (app: Express) => {
   app.use("/ai/embedInstall", route1);
@@ -369,4 +370,5 @@ export default async (app: Express) => {
   app.use("/voice/preview", route181);
   app.use("/voice/transcribe", route182);
   app.use("/voice/uploadAudio", route183);
+  app.use("/game/interruptSpeech", route184);
 }
