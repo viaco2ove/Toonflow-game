@@ -832,7 +832,10 @@ async function handleDebugPlayerTurn(params: {
 async function handleDebugOrchestrationRequest(req: express.Request, res: express.Response) {
   const sessionId = asTrimmedText(req.body.sessionId);
   if (sessionId) {
-    const result = await orchestrateSessionTurn(sessionId);
+    // ★ 插嘴：前端持有的插嘴状态随编排请求携带（用户发言后由前端清除），
+    //   后端在本轮编排前直接置强制标记，安排编排师交还用户发言权。
+    const interruptSpeech = req.body?.interruptSpeech === true;
+    const result = await orchestrateSessionTurn(sessionId, { interruptSpeech });
     if (DebugLogUtil.isDebugLogEnabled()) {
       console.log("[orchestration/index.ts] orchestrateSessionTurn 返回 result:", JSON.stringify({
         hasPlan: !!result.plan,
@@ -971,6 +974,8 @@ export default router.post(
     playerContent: z.string().optional().nullable(),
     state: z.any().optional().nullable(),
     messages: z.array(debugMessageSchema).optional().nullable(),
+    // ★ 插嘴标记：前端插嘴状态随编排请求携带，本轮编排强制安排用户发言
+    interruptSpeech: z.boolean().optional().nullable(),
   }),
   async (req, res) => {
     const startTime = Date.now();

@@ -136,34 +136,6 @@ async function withSessionLock<T>(sessionId: string, fn: () => Promise<T>): Prom
   }
 }
 
-/**
- * 插嘴：把会话的"连续未涉及用户发言"计数直接顶到编排师兜底阈值，
- * 下一轮编排（/game/orchestration 或 continueSessionNarrative）会强制安排用户发言。
- * 与编排链共用 withSessionLock，避免插嘴写入和编排落库互相覆盖 state。
- */
-export async function interruptSessionSpeech(
-  sessionId: string,
-  userId: number,
-): Promise<{ ok: boolean; streak: number }> {
-  return withSessionLock(sessionId, async () => {
-    const db = getGameDb();
-    const row = await db("t_gameSession").where({ sessionId, userId }).first();
-    if (!row) {
-      throw new SessionServiceError(404, "会话不存在");
-    }
-    const state = parseJsonSafe<Record<string, any>>(row.stateJson, {}) || {};
-    // 复用编排师兜底逻辑：计数达到阈值后 doRunNarrativePlan 会强制交还发言权
-    const streak = markForcePlayerTurnNext(state);
-    const stateJson = toJsonText(state, {});
-    await db("t_gameSession").where({ sessionId, userId }).update({
-      stateJson,
-      updateTime: nowTs(),
-    });
-    console.log("[session:interrupt] 插嘴标记已写入，下一轮编排将安排用户发言", { sessionId, streak });
-    return { ok: true, streak };
-  });
-}
-
 // 保存回溯点到内存缓存
 function saveSessionRevisitToHotCache(
   sessionId: string,
@@ -4012,13 +3984,16 @@ export async function continueSessionNarrative(sessionIdInput: string): Promise<
   };
 }
 
-export async function orchestrateSessionTurn(sessionIdInput: string): Promise<SessionOrchestrationResult> {
+export async function orchestrateSessionTurn(
+  sessionIdInput: string,
+  options: { interruptSpeech?: boolean } = {},
+): Promise<SessionOrchestrationResult> {
   const sessionId = String(sessionIdInput || "").trim();
   if (!sessionId) {
     throw new SessionServiceError(400, "sessionId 不能为空");
   }
 
-  return withSessionLock(sessionId, async () => orchestrateSessionTurnInner(sessionId));
+  return withSessionLock(sessionId, async () => orchestrateSessionTurnInner(sessionId, options));
 }
 
 /**
@@ -4033,7 +4008,10 @@ function readActiveTaskIdFromStateOrch(state: any): string | null {
   return s ? s : null;
 }
 
-async function orchestrateSessionTurnInner(sessionId: string): Promise<SessionOrchestrationResult> {
+async function orchestrateSessionTurnInner(
+  sessionId: string,
+  options: { interruptSpeech?: boolean } = {},
+): Promise<SessionOrchestrationResult> {
   const db = getGameDb();
   console.log("[story:orchestrator:entry] orchestrateSessionTurnInner 被调用", { sessionId, timestamp: new Date().toISOString() });
 
@@ -4057,6 +4035,13 @@ async function orchestrateSessionTurnInner(sessionId: string): Promise<SessionOr
     rolePair,
     world,
   );
+  // ★ 插嘴：前端在编排请求上携带 interruptSpeech 标记（用户发言后由前端清除）。
+  //   这里直接把"连续未涉及用户发言"计数顶到兜底阈值，本轮编排（内存 state）立即生效，
+  //   强制编排师安排用户发言，不再依赖插嘴接口落库（会被编排链的 state 落库覆盖）。
+  if (options.interruptSpeech === true) {
+    const forcedStreak = markForcePlayerTurnNext(state);
+    console.log("[session:interrupt] 编排请求携带插嘴标记，本轮强制安排用户发言", { sessionId, forcedStreak });
+  }
   // ★ 编排入口：先同步 currentEvent，让所有 agent / 提示词 / 候选 plan 都看到"未完成的当前事件"
   syncRuntimeCurrentEventFromChapterProgress(state);
   const rawRecentMessages = await db("t_sessionMessage").where({ sessionId }).orderBy("id", "desc").limit(20);

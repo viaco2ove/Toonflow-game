@@ -2743,6 +2743,9 @@ export function normalizeSessionState(
         : String(rawTurnState.expectedRole || normalizedPlayerName).trim() || normalizedPlayerName,
       lastSpeakerRoleType: String(rawTurnState.lastSpeakerRoleType || "").trim(),
       lastSpeaker: String(rawTurnState.lastSpeaker || "").trim(),
+      // ★ 编排师兜底计数（连续未涉及用户发言的编排轮数）必须显式保留，
+      //   否则每次读 session 重建 turnState 时都会丢，导致兜底永远无法累计。
+      nonUserOrchestrateStreak: Math.max(0, Math.floor(Number(rawTurnState.nonUserOrchestrateStreak) || 0)),
     },
   };
 }
