@@ -139,7 +139,9 @@ const instanceMap = {
 
 type DefaultOwned = Omit<Owned, "manufacturer" | "instance">;
 
-const VOLCENGINE_TEXT_MANUFACTURERS = new Set(["volcengine", "doubao"]);
+// 火山系列厂商（volcengine / doubao 共用方舟 Ark API）。
+// 导出供 buildOptions 判断"透传厂商"使用：火山文本模型不限制模型名，未注册的模型名直接透传。
+export const VOLCENGINE_TEXT_MANUFACTURERS = new Set(["volcengine", "doubao"]);
 const AUTODL_TEXT_MANUFACTURERS = new Set(["autodl_chat", "autodl"]);
 const LEGACY_VOLCENGINE_TEXT_MODEL_ALIASES: Record<string, string> = {
   "Doubao-Seed-2.0-pro": "doubao-seed-2-0-pro-260215",

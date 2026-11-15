@@ -4,7 +4,7 @@ import { wrapLanguageModel } from "ai";
 import { devToolsMiddleware } from "@ai-sdk/devtools";
 import { parse } from "best-effort-json-parser";
 import { parseModelJsonObject, parseModelJsonArray } from "../jsonParserUtils";
-import { getModelList, normalizeTextModelName, createResponsesProtocolFetch } from "./modelList";
+import { getModelList, normalizeTextModelName, createResponsesProtocolFetch, VOLCENGINE_TEXT_MANUFACTURERS } from "./modelList";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { z } from "zod";
 import { writeAiTokenUsageLog } from "@/lib/aiTokenUsageLog";
@@ -282,21 +282,27 @@ const buildOptions = async (input: AIInput<any>, config: AIConfig = {}) => {
   const model = normalizeTextModelName(manufacturer, requestedModel);
   let owned;
   const modelList = await getModelList();
-  // ★ openai / other 是透传厂商：不限制模型名，用户填什么就调什么（OpenAI 兼容协议），
+  // ★ 透传厂商：不限制模型名，用户填什么就调什么（OpenAI 兼容协议），
   //   只要服务端（含各种代理/网关）能接受即可。查表仅用于拿默认配置（responseFormat 等）。
-  const isPassthroughManufacturer = manufacturer === "other" || manufacturer === "openai";
+  //   ★ 2026-11-15：火山系列（volcengine/doubao）纳入透传——方舟平台模型 ID 众多
+  //   （deepseek / kimi / qwen / 各种 flash-economy 等），不再逐一注册，未注册的模型名直接透传给 ark API。
+  const manufacturerKey = String(manufacturer || "").trim().toLowerCase();
+  const isPassthroughManufacturer =
+    manufacturerKey === "other"
+    || manufacturerKey === "openai"
+    || VOLCENGINE_TEXT_MANUFACTURERS.has(manufacturerKey);
   if (isPassthroughManufacturer) {
-    owned = modelList.find((m) => m.manufacturer === manufacturer);
+    // 大小写不敏感地找该厂商任意条目作模板，用于拿 instance / responseFormat 等默认配置
+    owned = modelList.find((m) => String(m.manufacturer || "").trim().toLowerCase() === manufacturerKey);
     // 透传厂商遇到未注册的模型名，responseFormat 降级为 "object"（json_object 模式），
     // 相比 "schema"（structured outputs）兼容性更好，绝大多数 OpenAI 兼容网关都支持
-    if (owned && !modelList.some((m) => m.manufacturer === manufacturer && m.model === model)) {
+    if (owned && !modelList.some((m) => String(m.manufacturer || "").trim().toLowerCase() === manufacturerKey && m.model === model)) {
       owned = { ...owned, model, responseFormat: "object" };
     }
   } else {
     owned = modelList.find((m) => m.model === model && m.manufacturer === manufacturer);
   }
   if (!owned) {
-    const manufacturerKey = String(manufacturer || "").trim().toLowerCase();
     if (manufacturerKey === "autodl_chat" || manufacturerKey === "autodl") {
       const fallback = modelList.find((item) => String(item.manufacturer || "").trim().toLowerCase() === manufacturerKey);
       if (fallback) {
