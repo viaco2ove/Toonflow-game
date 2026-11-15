@@ -113,8 +113,14 @@ export async function performPluginTickCore(opts: PluginTickCoreOptions): Promis
         const heal = hotHeal ? { dataValue: hotHeal.dataValue } : await getPluginData(healScope, PLUGIN_STATE_KEY);
         const healState = heal?.dataValue;
         const healPhase = String((healState as any)?.phase || "");
-        const healActive = !!healState && typeof healState === "object"
-          && (healPhase === "playing" || healPhase === "" || healPhase !== "over");
+        // ★ 2026-11-15 修正：healState 完全缺失（legacy 老会话从未落 plugin_state /
+        //   数据丢失）→ 放行。此前一律 409 会让老会话刷新页面后连开局都被挡死
+        //   （「当前没有进行中的小游戏」）。entry 自身有 phase 门闸：select 阶段
+        //   tick 直接空响应不推进，sys_party/ai_command 等操作在选人界面合法；
+        //   start 可全新开局（restoreSys 会找回背包/技能/队伍等库数据）。
+        //   仅 phase=over 的残留局仍 409（防僵尸局复活）。
+        const healActive = !healState
+          || (typeof healState === "object" && healPhase !== "over");
         if (!healActive) {
           return {
             status: 409,

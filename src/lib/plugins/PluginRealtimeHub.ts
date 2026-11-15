@@ -292,7 +292,13 @@ export async function performRealtimeAction(
   });
   wsSend(ws, ack);
   // state 变化 → 广播
-  if (r.state) schedulePush(scope, session, r.state);
+  // ★ 2026-11-15 技能释放优化：action（技能/攻击/物品/sys_*）的 state 跳过 50ms 节流
+  //   立即推——这些是玩家主动操作的确认帧，晚 50ms = 命中反馈滞后；driver tick 的
+  //   常规推送仍走 schedulePush 节流不变。直接推后清掉待发尾帧（同 lastState 幂等，防双帧）。
+  if (r.state) {
+    if (session.trailingTimer) { clearTimeout(session.trailingTimer); session.trailingTimer = null; }
+    pushToSession(session, r.state);
+  }
   // phase 变化（如 start→playing）确保 driver 状态正确；over/select 停自推进
   if (session.lastPhase === "playing") ensureDriver(scope, session);
   else stopDriverIfIdle(session);
