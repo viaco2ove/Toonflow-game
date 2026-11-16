@@ -41,6 +41,13 @@ function getLogDir(): string {
 
 const LOG_DIR = getLogDir();
 const MAX_SIZE = 1000 * 1024 * 1024;
+/** 轮转检查节流：最多每 5 秒做一次体积判定（避免每条日志都 stat）。 */
+const ROTATE_CHECK_INTERVAL_MS = 5000;
+/**
+ * 分片后缀上限。轮转时不再动旧文件（Windows 上 rename/截断 GB 级文件都不可靠），
+ * 而是换一个新的分片文件继续写：app-<date>.log → app-<date>.log.1 → .2 …
+ */
+const MAX_SHARD_INDEX = 99;
 const LEVELS: LogLevel[] = ["log", "info", "warn", "error", "debug"];
 
 function formatDateKey(date: Date = new Date()): string {
@@ -58,6 +65,8 @@ class Logger {
   private stream: fs.WriteStream | null = null;
   private currentDateKey = "";
   private currentLogFile = "";
+  /** 分片序号：0 = app-<date>.log，1 = app-<date>.log.1 …… */
+  private shardIndex = 0;
   private originalConsole: Partial<Record<LogLevel, ConsoleMethod>> = {};
   private originalStdoutWrite: typeof process.stdout.write | null = null;
   private originalStderrWrite: typeof process.stderr.write | null = null;
@@ -142,20 +151,84 @@ class Logger {
     } finally {
       this.writing = false;
     }
+    // ★ stdout 直写路径（morgan 等）同样要触发轮转判定，
+    //   否则文件涨过阈值后永远不会被轮转。
+    this.checkRotate();
   }
 
+  /**
+   * 日志轮转。
+   *
+   * ★ 2026-11-16 修复「所有接口整体慢 1 秒」：
+   *   旧实现是「读整个日志文件 → 截半 → 写回」。当天日志涨到 MAX_SIZE(1GB) 之后，
+   *   **每一条日志写入**都会触发一次 1GB 的同步读盘（readFileSync），
+   *   直接把写日志的调用方（= 所有 HTTP 请求的 morgan 输出）阻塞 ~1s。
+   *   实测：/other/version 空接口 1.3s；裸 node 服务器 11ms。
+   *
+   * 新实现：
+   *   1) 轮转判定节流（ROTATE_CHECK_INTERVAL_MS 内最多检查一次）；
+   *   2) 轮转动作改为「改名归档 + 新开文件」，不再读全文；
+   *   3) 轮转在 setImmediate 里异步执行，不阻塞写入路径。
+   */
+  private lastRotateCheckAt = 0;
+  private rotating = false;
+
   private checkRotate(): void {
+    const now = Date.now();
+    if (this.rotating) return;
+    if (now - this.lastRotateCheckAt < ROTATE_CHECK_INTERVAL_MS) return;
+    this.lastRotateCheckAt = now;
     try {
       this.ensureStreamReady();
-      if (!this.currentLogFile || !fs.existsSync(this.currentLogFile) || fs.statSync(this.currentLogFile).size < MAX_SIZE) return;
-      this.stream?.end();
-      // 单日日志达到阈值时，仅裁剪当天文件，避免无限增长
-      const content = fs.readFileSync(this.currentLogFile, "utf-8");
-      const half = content.slice(content.length >>> 1);
-      const firstNewline = half.indexOf("\n");
-      fs.writeFileSync(this.currentLogFile, firstNewline >= 0 ? half.slice(firstNewline + 1) : half);
-      this.openStreamForCurrentDate();
-    } catch {}
+      if (!this.currentLogFile || !fs.existsSync(this.currentLogFile)) return;
+      if (fs.statSync(this.currentLogFile).size < MAX_SIZE) return;
+    } catch {
+      return;
+    }
+    // 异步执行真正的轮转，避免把读盘延迟算在请求关键路径上
+    this.rotating = true;
+    setImmediate(() => {
+      void this.rotateNow()
+        .catch(() => {
+          /* 轮转失败不致命：继续往当前文件追加 */
+        })
+        .finally(() => {
+          this.rotating = false;
+        });
+    });
+  }
+
+  /**
+   * 轮转：换一个新的分片文件继续写，**完全不碰旧文件**。
+   *
+   * 为什么不用 rename/截断：Windows 上 GB 级文件被进程占用时 rename 会失败，
+   * 截断则要读全文（就是原来 1 秒延迟的元凶）。改用「换新文件」后
+   * 旧分片自然留在磁盘上（app-<date>.log.1/.2 …），无需任何大文件 IO。
+   */
+  private async rotateNow(): Promise<void> {
+    if (!this.currentLogFile) return;
+    const stream = this.stream;
+    this.stream = null;
+    if (stream && !stream.destroyed) {
+      await new Promise<void>((resolve) => {
+        stream.end(() => resolve());
+        setTimeout(resolve, 2000);
+      });
+      if (!stream.destroyed) stream.destroy();
+    }
+    this.shardIndex += 1;
+    if (this.shardIndex > MAX_SHARD_INDEX) {
+      // 分片用尽：回到基础文件（允许它继续涨，后续再人工清理）
+      this.shardIndex = 0;
+    }
+    this.currentLogFile = this.resolveCurrentLogFile();
+    this.openStreamForCurrentDate();
+  }
+
+  /** 当前应当写入的分片文件路径。 */
+  private resolveCurrentLogFile(): string {
+    const base = resolveDailyLogFile(formatDateKey());
+    return this.shardIndex > 0 ? `${base}.${this.shardIndex}` : base;
   }
 
   private migrateLegacyAppLog(): void {
@@ -179,7 +252,11 @@ class Logger {
 
   private openStreamForCurrentDate(): void {
     const nextDateKey = formatDateKey();
-    const nextLogFile = resolveDailyLogFile(nextDateKey);
+    if (this.currentDateKey !== nextDateKey) {
+      // 跨天：分片序号归零
+      this.shardIndex = 0;
+    }
+    const nextLogFile = this.resolveCurrentLogFile();
     if (this.currentDateKey === nextDateKey && this.currentLogFile === nextLogFile && this.stream && !this.stream.destroyed) {
       return;
     }

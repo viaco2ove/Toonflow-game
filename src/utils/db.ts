@@ -64,6 +64,13 @@ function getPositiveIntEnv(name: string, fallback: number): number {
 const SQLITE_BUSY_TIMEOUT_MS = getPositiveIntEnv("DB_BUSY_TIMEOUT_MS", 15000);
 const SQLITE_BUSY_RETRY_TIMES = getPositiveIntEnv("DB_BUSY_RETRY_TIMES", 8);
 const SQLITE_BUSY_RETRY_DELAY_MS = getPositiveIntEnv("DB_BUSY_RETRY_DELAY_MS", 500);
+// ★ 2026-11-16：池上限从 1 放宽（可用 DB_POOL_MAX 覆盖）。
+//   max:1 时任何长请求（编排/语音代理/长事务）霸占唯一连接 → 全站接口排队 20~46s
+//   （getUser 21s / listSession 46s / KnexTimeout ×17，2026-11-16 实测）。
+//   WAL 已开启（configureSqlite）→ 多连接读并发安全；写仍是全库串行，
+//   并发写靠 busy_timeout(15s) + 重试(8 次) 互相等待。min 保持 1（SQLite 文件句柄省着点用）。
+const DB_POOL_MIN = getPositiveIntEnv("DB_POOL_MIN", 1);
+const DB_POOL_MAX = getPositiveIntEnv("DB_POOL_MAX", 4);
 
 const db = knex({
   client: "sqlite3",
@@ -72,8 +79,23 @@ const db = knex({
   },
   acquireConnectionTimeout: SQLITE_BUSY_TIMEOUT_MS + 5000,
   pool: {
-    min: 1,
-    max: 1,
+    min: DB_POOL_MIN,
+    max: DB_POOL_MAX,
+    // ★ 2026-11-16：PRAGMA 是**每连接**生效的 —— busy_timeout 只在启动时对一个连接
+    //   设置过，池里其它连接默认 busy_timeout=0（撞写锁立即 SQLITE_BUSY），再走上层
+    //   withSqliteBusyRetry 硬扛重试（8 次 × 500ms sleep），并发下单请求被拖到 20s+。
+    //   afterCreate 让池里每个新连接都自带 busy_timeout。
+    //   ⚠️ 这里**不设 journal_mode**：WAL 是库级持久属性（configureSqlite 启动设一次即可），
+    //   且切 journal_mode 要全库锁——每次建连接都跑它会在有并发写时把 acquire 卡住最长
+    //   busy_timeout（15s），反而制造排队。
+    afterCreate: (conn: any, done: (err: Error | null, conn?: any) => void) => {
+      try {
+        conn.run(`PRAGMA busy_timeout = ${SQLITE_BUSY_TIMEOUT_MS}`);
+        done(null, conn);
+      } catch (e) {
+        done(e as Error);
+      }
+    },
   },
   useNullAsDefault: true,
   // 迁移文件统一为 CommonJS .js（不能用 .ts：esbuild 打包后 require 不识别 .ts）。

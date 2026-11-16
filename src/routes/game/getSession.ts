@@ -173,7 +173,7 @@ export default router.post(
   }),
   async (req, res) => {
     try {
-      const { sessionId, messageLimit, beforeMessageId } = req.body;
+      const { sessionId, messageLimit, beforeMessageId, includeRevisitData } = req.body;
       const db = getGameDb();
       const currentUserId = Number((req as any)?.user?.id || 0);
       if (!Number.isFinite(currentUserId) || currentUserId <= 0) {
@@ -287,7 +287,18 @@ export default router.post(
           rawMessages = await db("t_sessionMessage").where({ sessionId: sessionIdValue }).orderBy("id", "desc").limit(limit);
         }
       }
-      const messages = rawMessages.reverse().map((item: any) => normalizeMessageOutput(item));
+      const wantFullRevisit = includeRevisitData === true;
+      const messages = rawMessages.reverse().map((item: any) => {
+        const out = normalizeMessageOutput(item) as any;
+        // ★ 裁剪 revisitData：完整复盘数据单条可达 124KB（30 条 = 3MB+ 响应）。
+        //   前端只在「调试回溯」读它的 messageCount 字段（读不到时按消息序号兜底），
+        //   默认只保留这个锚点；需要完整的调用方传 includeRevisitData=true。
+        if (out && !wantFullRevisit && out.revisitData != null) {
+          const mc = (out.revisitData as any)?.messageCount;
+          out.revisitData = Number.isFinite(Number(mc)) ? { messageCount: Number(mc) } : null;
+        }
+        return out;
+      });
       // getSession 也必须和 storyInfo 一样，使用章节行数据回填当前章节标题。
       // 否则安卓首次进入故事会先读到旧 state.chapterTitle，短时间内显示成上一章。
       state.chapterId = activeChapterId || 0;
