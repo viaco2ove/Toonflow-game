@@ -148,18 +148,28 @@ git clean -fd
 ```bash
 cd /opt/toonflow/toonflow-game-app                                                                                                                                     
 rm -rf node_modules                                                                                                   
-yarn cache clean                                                                                                                                                                  
+yarn cache clean                                      
+rm -rf package-lock.json                                                                                                                   
 yarn install  --frozen-lockfile --ignore-engines
 yarn build
 tower-pm2 stop toonflow-game
 ps aux | grep "node /opt/toonflow" | grep -v grep
+```  
+分开的原因是判断一下是否成功停止了进程，成功就V1， 不成功就V2
+等它构建.....
+
+v1:
+```bash
 tower-pm2 start toonflow-game
 tower-pm2 logs toonflow-game 
 ps aux | grep "node /opt/toonflow" | grep -v grep                                                                                                                             
 ```
 
+v2：
 ```bash
 tower-pm2 stop toonflow-game
 ps aux | grep "node /opt/toonflow" | grep -v grep
 # kill all
+pkill -9 -f "node /opt/toonflow"
 ```
+next to V1;
