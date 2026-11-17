@@ -87,3 +87,7 @@ run.local.ps1
 # <<< init-aispace managed <<<
 /.aispace/
 /init-aispace-links.js
+/.codebuddy/
+/.claude/
+/.github/
+/.workbuddy-ai/
