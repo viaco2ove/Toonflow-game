@@ -91,7 +91,8 @@ adb exec-out screencap -p > shot.png
 | gradle 报 SDK location not found | `local.properties` 的 `sdk.dir` 要指向本机 SDK。当前为 `C:\Users\viaco\AppData\Local\Android\Sdk` |
 | APK 里还是旧页面 | 第 2 步没删旧 `assets/dist`，或第 1 步构建产物没更新。删干净重来 |
 | 白屏 | 大概率 `dist/index.html` 的资源路径是绝对路径。web 的 vite `base` 必须是 `./`（相对路径），否则 `file://` 下加载不到 |
-| 脚本提示「前台被抢占」但 `mFocusedApp` 还是 `com.toonflow.game/.MainActivity` | 手机锁屏或通知栏下拉，`mCurrentFocus` 被 `NotificationShade` 占走。解锁屏幕、收起通知（`adb shell cmd statusbar collapse`），再用 `am start -n com.toonflow.game/.MainActivity` 拉起即可 |
+| 脚本提示「前台被抢占」但 `mFocusedApp` 还是 `com.toonflow.game/.MainActivity` | 手机锁屏、通知栏下拉、或弹出「USB 用于」选择框等系统窗口抢走了 `mCurrentFocus`。在手机上点掉弹窗（选「传输文件」或「取消」）、解锁屏幕、收起通知，再重新拉起 |
+| 安装成功后突然 `adb: no devices/emulators found` | 手机被 USB 弹窗切到「仅充电」模式，adb 连接被断开。重新插拔数据线，弹窗时选「传输文件 / Android Auto」，必要时重新授权「允许 USB 调试」 |
 | 构建报 chunk 过大 | 只是 warning，不影响出包，可忽略 |
 | 端口冲突 | h5 的 vite dev server 是 5174，web 是 5173，别混用 |
 
