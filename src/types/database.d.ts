@@ -1,4 +1,4 @@
-// @db-hash 6d90973d0d9649f988e67ab2fb7e379d
+// @db-hash 79b1d85f0de86bf742f228c69afc609e
 //该文件由脚本自动生成，请勿手动修改
 
 export interface knex_migrations {
@@ -471,6 +471,7 @@ export interface t_worldBook {
   'selectiveKeys'?: string | null;
   'selectiveLogic'?: string | null;
   'sort'?: number | null;
+  'stickiness'?: number;
   'title'?: string | null;
   'updateTime'?: number | null;
   'worldId'?: number | null;
