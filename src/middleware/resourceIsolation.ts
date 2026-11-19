@@ -456,6 +456,8 @@ export async function enforceResourceIsolation(req: Request, res: Response, next
       "/game/addMessage",
       "/game/deleteMessage",
       "/game/deleteSession",
+      // 重玩：围绕正式会话读写（重生成角色卡+删档），路由内部已按 session.userId 校验
+      "/game/replaySession",
       "/game/commitNarrativeTurn",
       "/game/continueSession",
       "/game/revisitMessage",

@@ -123,7 +123,7 @@ const SESSION_REVISIT_HOT = new Map<string, SessionRevisitCacheItem[]>();
 
 const SESSION_LOCKS = new Map<string, Promise<any>>();
 
-async function withSessionLock<T>(sessionId: string, fn: () => Promise<T>): Promise<T> {
+export async function withSessionLock<T>(sessionId: string, fn: () => Promise<T>): Promise<T> {
   const prev = SESSION_LOCKS.get(sessionId) || Promise.resolve();
   const next = prev.then(() => fn(), (err) => { throw err; });
   SESSION_LOCKS.set(sessionId, next);
@@ -2466,7 +2466,12 @@ async function addSessionMessageInner(input: AddSessionMessageInput, sessionId: 
   // 对齐报告写入 state.alignReport 供前端"聊过"面板弹框预览；worldVersion 更新为最新。
   const publishedVersion = Number((world as any)?.version || 0);
   const sessionWorldVersion = Number(sessionRow.worldVersion || 0);
-  if (publishedVersion > 0 && sessionWorldVersion > 0 && sessionWorldVersion < publishedVersion) {
+  // 未记录版本的存量会话（旧链路 initStory 未写 worldVersion）：只要有发布记录就视为
+  // 可能落后，继续游玩时执行确定性对齐兜底（幂等、零 token）。
+  const sessionVersionLagged = sessionWorldVersion > 0
+    ? sessionWorldVersion < publishedVersion
+    : Number(sessionRow.worldPublishId || 0) > 0;
+  if (publishedVersion > 0 && sessionVersionLagged) {
     const alignChapterId = Number(state.chapterId || prevChapterId || 0);
     const alignChapter = alignChapterId > 0
       ? await loadPublishedChapter(Number(sessionRow.worldPublishId || 0), alignChapterId, db)

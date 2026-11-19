@@ -144,6 +144,10 @@ export default router.post(
         // ★ 回填 worldPublishId：runtime 路径（loadPublishedChapter）依赖它。
         //   没填则发布表查询恒返回 null，章节/cut 会落草稿表 fallback。
         worldPublishId: worldPublishId || null,
+        // ★ 记录创建时的发布版本：作者重新发布后（version+1），
+        //   listSession 才能比较出版本落后并提示"故事已更新"，
+        //   编排入口的确定性自动对齐也依赖这个字段。
+        worldVersion: Number(publishedWorldRow?.version || 0) || null,
         // 正式会话后续的 /game/introduction、/game/orchestration 都依赖 session.chapterId
         // 来恢复当前章节。这里不落库会导致正式游玩开场白阶段查章节得到 null。
         chapterId: Number(chapter.id || 0) || null,

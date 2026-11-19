@@ -1,55 +1,51 @@
-# 模型组保存与快速切换功能
+# 会话「重玩」功能：重新生成角色卡 + 删档重新开局
 
 ## Context
 
-设置页「模型配置」卡片里有 14 个模型槽位（编排师、章节判定、事件进度检测…语音识别）+ 编排师/记忆管理运行模式。用户调一套模型组合要逐个槽位配置，希望像「存档/读档」一样：输入名称+备注把当前全部模型配置保存为一个模型组，再通过可搜索下拉框一键切换。
+「聊过」列表的会话只能继续/观看，没有"从头再来"的入口。需求：卡片上加「重玩」按钮，二次确认（输入"重玩"两个字）后**重新生成角色卡等动态数据**、删除旧进度、重新开局游玩。
 
-数据基础（已探明）：全部槽位绑定存在 `t_setting.languageModel` 的 JSON 里（`{ 槽位key: configId, ..., __storyRuntimeSettings: { 运行模式 } }`）。模型组 = 该 JSON 的快照；应用 = 覆写回去。后端 SQLite/knex、一文件一路由；前端 Vue3 + 自研 store、无 UI 库（手写 CSS）。
-
-用户已确认：只改 Web 端（安卓不动，API 设计保持通用）；需要删除、重命名/改备注能力。
+已探明的关键事实：
+- 会话动态数据分布在 6 张表：`t_gameSession`（主行，动态态全在 stateJson）、`t_sessionMessage`、`t_sessionStateSnapshot`、`t_entityStateDelta`、`t_role_memory`、`t_plugin_session_data`。现有 `deleteSession` 只删前 3 张（孤儿数据问题），重玩要删全 6 张
+- 角色卡是**世界级**数据（`t_storyWorld.playerRole/narratorRole/settings.roles`，内嵌 parameterCardJson）；`ensureWorldRolesWithAiParameterCards({persist:true, forceRefresh:true})`（src/lib/roleParameterCard.ts:418）可 LLM 全量重生成并写回世界（发布时同款逻辑 worldPublish.ts:219）；卡变更会自动使开局快照缓存失效（hash 含角色卡 JSON）
+- 前端已有完整开局链路 `startFromWorld(world, "")`（initStory→introduction→流式开场白→orchestration），SceneHistory.vue 的 `restartFromBeginning`（L94-115）已示范"删档+重新开局"
+- **方案：后端接口只做「重生成角色卡 + 删旧会话数据」，新会话由前端现有 `startFromWorld` 链路创建**——零复制 initStory/开场白逻辑，新 sessionId 天然规避并发锁/revisit 缓存/后台回调竞态（回调有行存在性守卫）
 
 ## 后端（toonflow-game-app）
 
-### 1. 新建迁移 `src/migrations/20261120_000001_add_model_group_table.js`
-- 模仿现有迁移幂等风格（`hasTable` 判断后建表）
-- 表 `t_modelGroup`：`id`(PK) / `userId` / `name` / `remark`(nullable) / `languageModelJson`(text) / `createTime` / `updateTime`
-- `database.d.ts` 是启动时自动生成的，不手改
+### 1. 新路由 `src/routes/game/replaySession.ts`
+照 `deleteSession.ts` 套路（zod 校验 + userId 隔离 + success/error）：
+1. 读旧会话 `t_gameSession` where `{sessionId, userId}` → 404；取 `worldId`
+2. 读 `t_storyWorld` → `ensureWorldRolesWithAiParameterCards({ userId, world, persist: true, forceRefresh: true })`（重新生成全部角色卡写回世界；LLM 失败函数内部静默回退静态卡，不阻塞）
+3. `withSessionLock(sessionId, () => db.transaction(删 6 表))`：照 deleteSession 事务 + 补删 `t_role_memory`、`t_entityStateDelta`、`t_plugin_session_data`
+4. 事务外 `clearSessionRevisitCache(sessionId)`（SessionService.ts:174 已导出）
+5. 返回 `success({ worldId })`
 
-### 2. 新建 5 个路由（`src/routes/setting/`，照 `addProject.ts`/`configurationModel.ts` 套路：`validateFields(zod)` + `userId = Number((req as any)?.user?.id || 0)` 隔离 + `success()/error()`）
-| 文件 | 入参 | 行为 |
-|---|---|---|
-| `getModelGroups.ts` | `{}` | 返回该用户的组列表（不含 JSON 内容） |
-| `saveModelGroup.ts` | `{ id?, name, remark? }` | 无 id=新建：快照当前 `t_setting.languageModel` 整个 JSON 存入；有 id=覆盖保存：重新快照覆写该组（校验归属）。同 userId 内重名校验 |
-| `updateModelGroupInfo.ts` | `{ id, name, remark? }` | 仅改名/备注，不动快照 |
-| `applyModelGroup.ts` | `{ id }` | 读组 JSON → 逐项校验 configId 在 `t_config` 存在且属于该用户（`__storyRuntimeSettings` 等非数字值跳过校验）→ 失效条目剔除 → 覆写 `t_setting.languageModel`（upsert 模式照抄 `configurationModel.ts` L94-120）→ 返回 `{ appliedCount, missingSlots }` |
-| `delModelGroup.ts` | `{ id }` | 删除（`where userId` 校验归属） |
+### 2. `src/modules/game-runtime/services/SessionService.ts`
+`withSessionLock`（L126）加 `export`（当前模块私有），供路由在删除前排队等待在途编排完成。
 
-### 3. 注册 `src/router.ts`
-- 尾部追加 import（route185+）与 `app.use("/setting/xxx", routeN)`
-- 先用 `git log -p -- src/router.ts` 确认 `@routes-hash` 头是否有生成脚本维护；若无脚本则只追加路由、不动哈希头
+### 3. `src/router.ts` 注册 route190：`/game/replaySession`
 
 ## 前端（Toonflow-game-web）
 
-### 4. 类型 + API 层
-- `src/types/toonflow.ts`：加 `ModelGroupItem { id, name, remark, createTime, updateTime }`
-- `src/api/toonflow.ts`：`ToonflowApi` 加 5 个 POST 方法（对应上面 5 个 endpoint）
+### 4. `src/api/toonflow.ts`
+`replaySession(sessionId)` → POST `/game/replaySession`，返回 `{ worldId }`（axios 无超时限制，LLM 长调用不受影响）
 
-### 5. store（`src/composables/useToonflowStore.ts`）
-- state 加 `settingsModelGroups: ModelGroupItem[]`、`settingsActiveModelGroupId: number | null`（当前应用的组，「保存」按钮默认覆盖对象）
-- `ensureSettingsPanelData()`（L5068）的 `Promise.all` 加拉取 `getModelGroups`
-- 新 action：`saveSettingsModelGroup`（新建/覆盖，成功后刷新组列表）、`applySettingsModelGroup`（应用后 `ensureSettingsPanelData(true)` 强刷 + `state.notice` 提示「已切换到模型组 X」，missingSlots 非空时附加「N 个槽位未恢复（原配置已删除）」）、`updateSettingsModelGroupInfo`、`deleteSettingsModelGroup`（确认后删除）
+### 5. `src/composables/useToonflowStore.ts`
+新 action `replaySession(sessionId)`：
+```
+api.replaySession → refreshSessionListState()（旧会话出列表）
+→ 从 state.worlds 找 worldId 对应 world（找不到 throw）
+→ await startFromWorld(world, "")（现有完整开局链路，自动切到 play 页）
+```
+导出加入 apiFacade。
 
-### 6. 新组件 `src/components/SettingsModelGroupBar.vue`
-挂在 `SceneSettings.vue` 模型配置卡片标题行（L342「模型配置」标题右侧）。包含：
-- **可搜索下拉**（组合框）：input 显示当前选中组名 + 聚焦展开过滤列表；keyword 多字段过滤照抄 `SettingsModelManagerDialog.vue` 的成熟模式（L210 keyword ref + L582-592 computed 过滤）；列表项 = 名称 + 备注副行 + 两个小图标（编辑=改名/备注弹窗、删除=确认删除）；选中项立即应用
-- **保存按钮**（奥森字体图标 + 文字，样式用现有 `.button primary settings-solid-btn` 体系）→ 打开保存弹窗
-- **保存弹窗**（手写 modal 体系照抄 `SettingsModelManagerDialog` 编辑器 L1197-1560 的 `.modal-backdrop/.modal-panel/.field` 结构，「备注」输入框写法参考 L1528-1536）：名称（必填）+ 备注（可选）；已选中组时提供「覆盖保存到组 X / 另存为新组」选择，未选中则直接新建
-
-### 7. 样式 `src/styles.css`
-`.settings-model-group-*` 前缀新类，风格对齐现有 `.input/.button/.settings-*`
+### 6. `src/components/SceneHistory.vue`
+- `.history-card-actions` 内「世界书」与删除图标之间加「重玩」按钮（`.history-card-btn` 样式，`@click.stop`）
+- 确认弹窗：仿「故事已更新」modal（L201-231 结构 + scoped 样式复用 `.story-update-*`），内容：会话名、警告文案（删除当前进度、重新生成角色卡、重新开局）、输入框（placeholder「输入 重玩 以确认」）+ danger 确认按钮（`v-model` 值严格 `=== "重玩"` 时才 enabled）、busy 态（按钮文案「正在重新生成角色卡…」，禁用关闭）
+- 确认链路：`store.replaySession(item.sessionId)` → 成功自动进入新开局；失败 `store.state.notice`（项目惯例）
 
 ## 验证
 
-1. 后端 `yarn lint`；`yarn local` 起后端（60002），curl 走通：新建组 → 列表 → 修改某槽位配置 → 覆盖保存 → 应用组（检查 `t_setting.languageModel` 被覆写、`__storyRuntimeSettings` 保留）→ 改名 → 删除；错误路径：重名、组不存在、删除模型配置后应用（missingSlots 剔除）
-2. 前端 `yarn type-check`；`yarn dev`（5175，不 build）浏览器走查全流程：保存新组（含备注）、下拉搜索、选中即切换且模型行刷新、覆盖保存、改名、删除、切换后 notice 提示
-3. 检查 `t_modelGroup` 数据与 userId 隔离（另一个 token 看不到别人的组）
+1. 后端 `yarn lint`；起 `yarn local`，用 python urllib（UTF-8，避免 Git Bash curl 乱码）实测：取 admin 本地一个已发布世界的会话 → 调 replaySession → 断言：返回 worldId、`t_storyWorld` 角色卡 JSON 已更新、6 张表旧会话数据清零、重生成后再调 `/game/initStory` 能建新会话
+2. 前端 `yarn type-check`；`yarn dev` + `yarn local` 浏览器走查：聊过页重玩按钮 → 弹窗（输入错字按钮 disabled）→ 输入"重玩"→ busy 文案 → 自动进入游戏新开局（开场白流式）→ 会话列表刷新为新会话
+3. 测试数据清理（删除测试产生的会话/世界数据恢复原状）

@@ -140,7 +140,14 @@ export default router.post(
 
         const publishedVersion = publishedVersionMap.get(worldIdValue) || 0;
         const sessionWorldVersion = Number(item.worldVersion || 0);
-        const storyUpdated = publishedVersion > 0 && sessionWorldVersion > 0 && sessionWorldVersion < publishedVersion;
+        // 版本落后判定：
+        // - 有版本记录（新链路 initStory 会写入）：直接比较大小
+        // - 未记录版本的存量会话（worldVersion 为空）：只要存在发布记录（worldPublishId）
+        //   就视为可能落后，提示"故事已更新"；点继续游玩时编排入口的确定性对齐会兜底
+        const versionLagged = sessionWorldVersion > 0
+          ? sessionWorldVersion < publishedVersion
+          : Number(item.worldPublishId || 0) > 0;
+        const storyUpdated = publishedVersion > 0 && versionLagged;
         return {
           sessionId,
           worldId: worldIdValue,
