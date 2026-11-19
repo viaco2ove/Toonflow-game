@@ -1,4 +1,4 @@
-// @db-hash 79b1d85f0de86bf742f228c69afc609e
+// @db-hash 2d656dfa2d6c8f67f4909cf7ac6af890
 //该文件由脚本自动生成，请勿手动修改
 
 export interface knex_migrations {
@@ -153,6 +153,15 @@ export interface t_imageModel {
   'manufacturer'?: string | null;
   'model'?: string | null;
   'type'?: string | null;
+}
+export interface t_modelGroup {
+  'createTime'?: number | null;
+  'id'?: number;
+  'languageModelJson': string;
+  'name': string;
+  'remark'?: string | null;
+  'updateTime'?: number | null;
+  'userId': number;
 }
 export interface t_novel {
   'chapter'?: string | null;
@@ -491,6 +500,7 @@ export interface DB {
   "t_gameSession": t_gameSession;
   "t_image": t_image;
   "t_imageModel": t_imageModel;
+  "t_modelGroup": t_modelGroup;
   "t_novel": t_novel;
   "t_outline": t_outline;
   "t_plugin": t_plugin;
