@@ -54,30 +54,18 @@ export default router.post(
         .orderBy("s.id", "desc")
         .limit(limit * 2); // 多查一些，过滤后会留 limit 条
 
-      // 2. 过滤：有 player 消息 + 按 worldId 去重
+      // 2. 过滤：按 worldId 去重（保留最新会话）。
+      //    不再要求"有玩家发言消息"——新开局/重玩后的会话在玩家发言前也要出现在聊过列表。
       const sessionIds = rawSessions.map((item: any) => String(item.sessionId || "")).filter(Boolean);
-      const [playableMessageRows, latestMessageRows] = await Promise.all([
-        sessionIds.length
-          ? db("t_sessionMessage")
-              .whereIn("sessionId", sessionIds)
-              .andWhere("roleType", "player")
-              .andWhere("eventType", "on_message")
-              .select("sessionId")
-              .groupBy("sessionId")
-          : Promise.resolve([]),
-        sessionIds.length
-          ? db("t_sessionMessage as m1")
-              .whereIn("sessionId", sessionIds)
-              .whereRaw(
-                `m1.id = (SELECT MAX(m2.id) FROM t_sessionMessage m2 WHERE m2.sessionId = m1.sessionId)`,
-              )
-              .select("m1.sessionId", "m1.id", "m1.role", "m1.roleType", "m1.eventType", "m1.content", "m1.createTime")
-          : Promise.resolve([]),
-      ]);
+      const latestMessageRows = sessionIds.length
+        ? await db("t_sessionMessage as m1")
+            .whereIn("sessionId", sessionIds)
+            .whereRaw(
+              `m1.id = (SELECT MAX(m2.id) FROM t_sessionMessage m2 WHERE m2.sessionId = m1.sessionId)`,
+            )
+            .select("m1.sessionId", "m1.id", "m1.role", "m1.roleType", "m1.eventType", "m1.content", "m1.createTime")
+        : [];
 
-      const playableSessionIds = new Set<string>(
-        playableMessageRows.map((item: any) => String(item.sessionId || "")),
-      );
       const latestMessageMap = new Map<string, any>();
       latestMessageRows.forEach((item: any) => {
         if (item?.sessionId) latestMessageMap.set(String(item.sessionId), item);
@@ -85,8 +73,6 @@ export default router.post(
 
       const seenWorldIds = new Set<number>();
       const sessions = rawSessions.filter((item: any) => {
-        const sessionId = String(item.sessionId || "");
-        if (!playableSessionIds.has(sessionId)) return false;
         const wid = Number(item.worldId || 0);
         if (!Number.isFinite(wid) || wid <= 0) return false;
         if (seenWorldIds.has(wid)) return false;
