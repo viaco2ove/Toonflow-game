@@ -182,7 +182,8 @@ export async function executePluginActionWithState(
       || resultState?.phase === "over"
       || !!(resultState as any)?.forceSync;
     const scopeKey = pluginScopeKey(scope);
-    const serializedNow = JSON.stringify(resultState);
+    // ★ 2026-11-21：删除 serializedNow 死代码——每请求 JSON.stringify(95KB) 全量串
+    //   却无任何消费方（落盘走 setPluginData 内部序列化），ARM 盒上白付每拍 ~10ms。
     // ★ O1b（2026-11-14，修弱网下「技能点击排队放不出来」）：
     //   s.tick 每 tick 必变、_tickAtMs/_tickDeltaMs 每 tick 重写——计入「是否变化」
     //   对比则挂机空转也永远全量回传（10Hz × 全量 state，慢链路打满带宽 → 浏览器

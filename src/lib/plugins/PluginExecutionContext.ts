@@ -60,6 +60,9 @@ export interface CachedStoryRow {
   worldName: string;
 }
 
+/** manifest TTL 缓存（key: userId:pluginId）：见 preparePluginExecutionContext 内注释 */
+const manifestCache = new Map<string, { manifest: any; at: number }>();
+
 /**
  * ★ v5：把当前世界（worldId）的常驻世界书条目拼成摘要文本，
  * 供插件 agent（商城生成）参考故事世界观与物资设定。
@@ -144,7 +147,22 @@ export async function preparePluginExecutionContext(
   // 插件 id 解析：显式传入 → 会话指针 → 野外生存兜底
   const resolvedPluginId = String(opts.pluginId || "").trim() || statePluginId || DEFAULT_MCP_PLUGIN_ID;
 
-  const manifest = await loadPluginManifestFromFile(userId, resolvedPluginId);
+  // ★ 2026-11-21：manifest 每拍读盘缓存（t_plugin SELECT + manifest.json readFile）。
+  //   ARM 盒实测影子缓存落地后单拍仍 ~150ms——manifest 读盘是剩余大头之一。
+  //   TTL 30s：插件安装/更新后最多 30s 才被 tick 路径感知（install 流程直读文件不走此缓存）。
+  const manifestKey = `${userId}:${resolvedPluginId}`;
+  const nowMs0 = Date.now();
+  const mHit = manifestCache.get(manifestKey);
+  const manifest = (mHit && nowMs0 - mHit.at < 30_000)
+    ? mHit.manifest
+    : await loadPluginManifestFromFile(userId, resolvedPluginId).then((m) => {
+      manifestCache.set(manifestKey, { manifest: m, at: nowMs0 });
+      if (manifestCache.size > 32) {
+        const oldest = manifestCache.keys().next().value;
+        if (oldest !== undefined) manifestCache.delete(oldest);
+      }
+      return m;
+    });
   // ★ 修复「受伤立刻回满」：publicState.player_card 是 init 时的一次性快照
   //   （MiniGameController 进入小游戏时写入，之后不再更新）。若每 tick 都把
   //   快照喂给插件，插件 syncCardFromContext 会因签名不一致把快照上的满血/
