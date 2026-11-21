@@ -115,10 +115,15 @@ async function projectIdFromSession(sessionId: string): Promise<number | null> {
  * 正式游玩会话属于当前登录用户的私有资源。
  * 故事大厅允许游玩其他用户发布的故事，因此进入会话后不应该再按源故事项目归属拦截，
  * 而应该直接校验 session 是否归当前用户所有。
+ *
+ * 返回三态：「missing」= 会话 id 在库里根本不存在（应报 404 会话不存在，
+ * 不能误报成 403 无权访问——否则排查时会往权限方向白绕路）；
+ * false = 会话存在但不属于当前用户（403）；true = 归属校验通过。
  */
-async function ensureSessionOwned(sessionId: string, userId: number): Promise<boolean> {
-  const row = await u.db("t_gameSession").where({ sessionId, userId }).first("id");
-  return !!row;
+async function ensureSessionOwned(sessionId: string, userId: number): Promise<boolean | "missing"> {
+  const row = await u.db("t_gameSession").where({ sessionId }).first("userId");
+  if (!row) return "missing";
+  return Number(row.userId) === userId;
 }
 
 async function projectIdFromAsset(assetId: number): Promise<number | null> {
@@ -465,10 +470,21 @@ export async function enforceResourceIsolation(req: Request, res: Response, next
       "/game/orchestration",
       "/game/streamlines",
       "/game/streamlines/introduction",
+      // ★ storyInfo 也围绕正式会话读：不进这里会落到下方「项目归属」兜底——
+      //   会话 id 不存在时 collectProjectIds 解析不出 projectId → 403「无法确认资源归属项目」，
+      //   语义完全跑偏（2026-11-22 用户实测）。进白名单后走会话三态校验：
+      //   不存在 → 404「会话不存在」；存在非本人 → 403「无权访问该会话」；本人 → 放行。
+      "/game/storyInfo",
     ]);
     const sessionId = String((req.body || {}).sessionId ?? (req.query || {}).sessionId ?? "").trim();
     if (sessionId && sessionScopedGamePaths.has(path)) {
-      if (!(await ensureSessionOwned(sessionId, userId))) {
+      const owned = await ensureSessionOwned(sessionId, userId);
+      // ★ 不存在 ≠ 无权：库里查无此 id 报 404「会话不存在」（与 storyInfo 路由文案一致），
+      //   存在但不属于当前用户才是 403「无权访问该会话」。
+      if (owned === "missing") {
+        return res.status(404).send({ message: "会话不存在" });
+      }
+      if (!owned) {
         return res.status(403).send({ message: "无权访问该会话" });
       }
       return next();
