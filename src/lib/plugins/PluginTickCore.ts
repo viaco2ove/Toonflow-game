@@ -24,12 +24,42 @@ import {
 import {
   preparePluginExecutionContext,
   PluginSessionMissingError,
+  type CachedStoryRow,
 } from "@/lib/plugins/PluginExecutionContext";
 import {
   getPluginData,
   // ★ BUG-2 修复（2026-11-12）：plugin_state 内存态（权威）——DB 退化为快照。
   getHotPluginState,
 } from "@/lib/plugins/PluginSessionDataService";
+
+/**
+ * ★ 2026-11-21 故事行影子缓存 + 脏写门闸（修「一卡一卡」主矛盾，授权改造）。
+ *
+ * 实测（部署机 ARM 盒，2026-11-21）：单拍 tick 150~280ms，其中 entry 结算只占
+ * ~0.1ms（本地基准 40 怪 0.14ms），其余 99.9% 是 t_gameSession 351KB 故事行的
+ * SELECT+parse+serialize+UPDATE——而普通 tick 对该行**逐字节无改动**（插件真实
+ * 状态早已外置 t_plugin_session_data：内存权威 + 2s 节流落盘 + 304 回传去重；
+ * 行里只剩 writeback 补丁 / over 结算 / phase·status·指针这些罕见事件）。
+ *
+ * 读：每拍先 cheap 探测列（只取 updateTime/worldId，不读 blob 溢出页）——
+ *     与影子一致 → 复用已解析对象（跳过 SELECT+parse+worldName 两次查询+manifest
+ *     读盘）；失配（故事轮次/记忆 worker/MCP tool 都带 updateTime）→ 全量重读对齐。
+ * 写：仅当本拍真的改了行内容（writeback 消费 / over 结算 / 指针自愈 / 玩家卡清洗 /
+ *     phase·status 变化 / 非 tick 命令）才 serialize+UPDATE；普通拍直接跳过。
+ *
+ * 一致性论证：全部读写都在既有会话锁内（并发安全）；自写后把 updateTime 记入影子
+ * （下拍探测命中快路径）；任何外部写入方都带 updateTime（SessionMemoryWorker 原本
+ * 漏带，已补）→ 探测必然失配 → 全量重读，不会用脏缓存覆盖别人。今天每拍写的也是
+ * 相同内容，跳过写对外部读取方（getSession 等）零差异。
+ */
+interface StoryRowShadow {
+  updateTime: number;
+  worldId: number | null;
+  state: Record<string, any>;
+  worldName: string;
+  lastDiagAt: number;
+}
+const storyRowShadow = new Map<string, StoryRowShadow>();
 
 /** 一次 tick/动作执行的完整结果（HTTP 语义字段原样保留，WS 侧按需取用） */
 export interface PluginTickCoreResult {
@@ -84,9 +114,24 @@ export async function performPluginTickCore(opts: PluginTickCoreOptions): Promis
       const db = getGameDb();
 
       // ── 会话加载 + 插件执行上下文（与 MCP 共用）──
+      // ★ 2026-11-21：cheap 探测列 → 影子命中走快路径（见上方影子缓存注释）
+      const scopeKey = `${userId}:${sessionId}`;
+      let shadow = storyRowShadow.get(scopeKey) || null;
+      const probe = await db("t_gameSession").where({ sessionId, userId }).first("updateTime", "worldId");
+      if (!probe) {
+        const msg404 = "会话不存在";
+        storyRowShadow.delete(scopeKey);
+        return { status: 404, body: error(msg404), stateUnchanged: false, state: null, response: msg404, code: -1 };
+      }
+      const probeTime = Number((probe as any).updateTime) || 0;
+      const probeWorldId = (probe as any).worldId != null ? Number((probe as any).worldId) : null;
+      let cachedRow: CachedStoryRow | undefined;
+      if (shadow && shadow.updateTime === probeTime && shadow.worldId === probeWorldId) {
+        cachedRow = { state: shadow.state, worldId: shadow.worldId, worldName: shadow.worldName };
+      }
       let boot;
       try {
-        boot = await preparePluginExecutionContext({ userId, sessionId, pluginId, db });
+        boot = await preparePluginExecutionContext({ userId, sessionId, pluginId, db, cachedRow });
       } catch (e) {
         if (e instanceof PluginSessionMissingError) {
           return { status: 404, body: error(e.message), stateUnchanged: false, state: null, response: e.message, code: -1 };
@@ -95,12 +140,35 @@ export async function performPluginTickCore(opts: PluginTickCoreOptions): Promis
       }
       const { state, root, sessionNode, publicState, session } = boot;
       const ctx = boot.ctx;
+      if (!cachedRow) {
+        // 全量重读（首拍 / 外部写入方动过行）→ 影子对齐新行
+        shadow = {
+          updateTime: Number(boot.rowUpdateTime) || probeTime,
+          worldId: boot.rowWorldId ?? probeWorldId,
+          state,
+          worldName: boot.worldName,
+          lastDiagAt: shadow?.lastDiagAt || 0,
+        };
+        storyRowShadow.set(scopeKey, shadow);
+        if (storyRowShadow.size > 16) {
+          // 防泄漏：只缓存在玩会话（典型并发 1~3 个），超限逐出最旧
+          const oldest = storyRowShadow.keys().next().value;
+          if (oldest !== undefined) storyRowShadow.delete(oldest);
+        }
+      } else {
+        shadow!.worldName = boot.worldName || shadow!.worldName;
+      }
 
-      // ★ 诊断日志：地图串故事的排查锚点。worldName 决定 entry 读哪个 map_visual:<name> 模板。
-      console.log(
-        `[plugin/tick] [map-diag] action=${action} sessionId=${sessionId} worldId=${session?.worldId} worldName=${JSON.stringify(boot.worldName)}`,
-      );
+      // ★ 诊断日志降频（原每拍一条 stdout，慢盘盒子上也是每拍开销）：同会话 60s 一条
+      if (Date.now() - shadow!.lastDiagAt > 60_000) {
+        shadow!.lastDiagAt = Date.now();
+        console.log(
+          `[plugin/tick] [map-diag] action=${action} sessionId=${sessionId} worldId=${session?.worldId} worldName=${JSON.stringify(boot.worldName)}`,
+        );
+      }
 
+      // ★ 2026-11-21 脏写门闸：本拍是否真的改了故事行内容（见上方影子缓存注释）
+      let rowDirty = !!boot.playerCardCleaned;
       const statePluginId = boot.statePluginId;
       if (!statePluginId || statePluginId !== pluginId) {
         // ★ 自愈（v5.1）：编排器复写 stateJson 可能丢掉 miniGame.session.public_state.plugin_id
@@ -131,19 +199,20 @@ export async function performPluginTickCore(opts: PluginTickCoreOptions): Promis
             code: -1,
           };
         }
-        // 重建指针（本次请求内生效；落库见下方 sessionNode 写回）
+        // 重建指针（本次请求内生效；落库见下方脏写门闸）
         publicState.plugin_id = pluginId;
         publicState.plugin_type = publicState.plugin_type || "plugin";
         sessionNode.public_state = publicState;
         root.session = sessionNode;
         state.miniGame = root;
+        rowDirty = true;
         console.log(`[plugin/tick] 指针自愈：session=${sessionId} plugin=${pluginId}（stateJson 指针丢失但插件状态活跃）`);
       }
 
       const scope = { userId, sessionId, pluginId };
 
       // ── 执行 + 状态读写统一（M2）：本函数已持会话锁（须覆盖下方 stateJson 写回）→ lock:"none"
-      const { result, resultState, stateUnchanged } = await executePluginActionWithState({
+      const { result, resultState, stateUnchanged, hostStateMutated } = await executePluginActionWithState({
         ctx: ctx as any,
         scope,
         action,
@@ -154,14 +223,22 @@ export async function performPluginTickCore(opts: PluginTickCoreOptions): Promis
         hostState: state,
         lock: "none",
       });
+      // ★ writeback 补丁 / over 结算写回动了 state.player/npcs → 行必须落库
+      if (hostStateMutated) rowDirty = true;
 
       // ★ 始终写 session 节点：让前端 hasActiveMiniGameInRuntimeState() 能感知游戏进行中
+      const nextPhase = (resultState?.phase ?? "playing") as string;
       if (!sessionNode.status || sessionNode.status === "preparing") {
         sessionNode.status = "active";
+        rowDirty = true;
       }
-      sessionNode.phase = resultState?.phase ?? "playing";
+      if (sessionNode.phase !== nextPhase) rowDirty = true;
+      sessionNode.phase = nextPhase;
       // canonical game_type = "plugin"（#退出 拦截依赖）
-      if (!sessionNode.game_type) sessionNode.game_type = "plugin";
+      if (!sessionNode.game_type) {
+        sessionNode.game_type = "plugin";
+        rowDirty = true;
+      }
 
       // stateJson 只在「状态引用变更」时同步完整 public_state（指针语义）
       const needSync = action !== "tick" || resultState?.phase === "over";
@@ -173,13 +250,26 @@ export async function performPluginTickCore(opts: PluginTickCoreOptions): Promis
         publicState.plugin_state = null; // 指针语义
         if (Array.isArray(result?.actions)) publicState.plugin_actions = result.actions;
         if (typeof result?.response === "string") publicState.plugin_response = result.response;
+        rowDirty = true;   // 非 tick 命令 / over：指针与回执有变化，必须落库
       }
       sessionNode.public_state = publicState;
       root.session = sessionNode;
       state.miniGame = root;
-      await db("t_gameSession")
-        .where({ sessionId, userId })
-        .update({ stateJson: toJsonText(state, {}), updateTime: Date.now() });
+
+      // ★ 2026-11-21 脏写门闸：普通 tick 行内容逐字节无变化 → 跳过 351KB serialize+UPDATE
+      //（今天每拍写的也是相同内容+递增 updateTime，对外部读取方零差异；自写后影子对齐，
+      // 外部写入方仍会被 updateTime 探测发现）
+      if (rowDirty) {
+        const newUpdateTime = Date.now();
+        await db("t_gameSession")
+          .where({ sessionId, userId })
+          .update({ stateJson: toJsonText(state, {}), updateTime: newUpdateTime });
+        if (shadow) {
+          shadow.updateTime = newUpdateTime;
+          shadow.state = state;
+          shadow.worldName = boot.worldName || shadow.worldName;
+        }
+      }
 
       const response = publicState.plugin_response || String(result?.response || "");
       const code = Number(result?.code ?? 0);

@@ -42,6 +42,22 @@ export interface PluginExecutionContextBundle {
   resolvedPluginId: string;
   ctx: PluginGameContext;
   worldName: string;
+  /** ★ 2026-11-21 影子缓存配套：本行读取时的 updateTime（cachedRow 快路径下为 null——
+   *  调用方影子缓存里已有自己的值）。TickCore 用它做「外部写入方探测」的基准。 */
+  rowUpdateTime: number | null;
+  /** 本行 worldId（cachedRow 快路径下来自缓存） */
+  rowWorldId: number | null;
+  /** ★ 2026-11-21：玩家卡 dirty 自愈本轮清洗过 state.player（行内容变了，调用方需落库） */
+  playerCardCleaned: boolean;
+}
+
+/** ★ 2026-11-21 影子缓存配套：TickCore 传来的「本会话故事行」复用包——
+ *  带 it 时跳过 t_gameSession 全行 SELECT+parse（351KB）与 worldName 两次查询。
+ *  一致性由 TickCore 的 updateTime 探测保证（外部写入方必然带 updateTime → 失配 → 全量重读）。 */
+export interface CachedStoryRow {
+  state: Record<string, any>;
+  worldId: number | null;
+  worldName: string;
 }
 
 /**
@@ -50,6 +66,12 @@ export interface PluginExecutionContextBundle {
  */
 async function buildWorldBookDigest(db: any, worldId: number): Promise<string> {
   if (!Number.isFinite(worldId) || worldId <= 0) return "";
+  // ★ 2026-11-21：每 tick 都查 80 行世界书太贵（实测单拍 90~280ms 的组成之一）。
+  //   世界书编辑是低频操作 → 摘要按 worldId 做 60s TTL 缓存（商城生成引用的是
+  //   世界观设定，分钟级陈旧无感知）。
+  const nowMs = Date.now();
+  const hit = worldBookDigestCache.get(worldId);
+  if (hit && nowMs - hit.at < 60_000) return hit.text;
   try {
     const rows = await db("t_worldBook").where({ worldId }).orderBy("sort", "asc").limit(80);
     const list = Array.isArray(rows) ? rows : [];
@@ -58,11 +80,18 @@ async function buildWorldBookDigest(db: any, worldId: number): Promise<string> {
       `- ${String(r?.title || "").slice(0, 30)}：${String(r?.content || "").replace(/\s+/g, " ").slice(0, 200)}`;
     const constant = list.filter((r: any) => Number(r?.constant) === 1);
     const picked = (constant.length ? constant : list).slice(0, 12);
-    return picked.map(line).join("\n").slice(0, 2000);
+    const text = picked.map(line).join("\n").slice(0, 2000);
+    worldBookDigestCache.set(worldId, { text, at: nowMs });
+    if (worldBookDigestCache.size > 32) {
+      const oldest = worldBookDigestCache.keys().next().value;
+      if (oldest !== undefined) worldBookDigestCache.delete(oldest);
+    }
+    return text;
   } catch {
     return "";
   }
 }
+const worldBookDigestCache = new Map<number, { text: string; at: number }>();
 
 /**
  * 会话加载 + 插件执行上下文组装（tick 路由与 MCP 路由的唯一入口）。
@@ -76,14 +105,31 @@ export async function preparePluginExecutionContext(
     sessionId: string;
     pluginId?: string;
     db?: any;
+    /** ★ 2026-11-21 影子缓存快路径（见 CachedStoryRow）；MCP 路由不传，行为不变 */
+    cachedRow?: CachedStoryRow;
   },
 ): Promise<PluginExecutionContextBundle> {
   const db = opts.db || getGameDb();
   const { userId, sessionId } = opts;
-  const session = await db("t_gameSession").where({ sessionId, userId }).first();
-  if (!session) throw new PluginSessionMissingError("会话不存在");
-
-  const state = parseJsonSafe<Record<string, any>>(session.stateJson, {}) || {};
+  const cached = opts.cachedRow;
+  // ★ 2026-11-21：快路径跳过 t_gameSession 全行 SELECT+parse（351KB 实测读一次 367ms）。
+  //   行存在性由调用方（TickCore 影子缓存）在本拍 cheap 探测列时确认。
+  let state: Record<string, any>;
+  let sessionRow: any = null;
+  let rowWorldId: number | null = null;
+  let rowUpdateTime: number | null = null;
+  let playerCardCleaned = false;
+  if (cached) {
+    state = cached.state;
+    rowWorldId = cached.worldId;
+    sessionRow = { worldId: rowWorldId };   // 最小占位：消费方只读 worldId（map-diag 日志）
+  } else {
+    sessionRow = await db("t_gameSession").where({ sessionId, userId }).first();
+    if (!sessionRow) throw new PluginSessionMissingError("会话不存在");
+    state = parseJsonSafe<Record<string, any>>(sessionRow.stateJson, {}) || {};
+    rowWorldId = Number((sessionRow as any)?.worldId) || null;
+    rowUpdateTime = Number((sessionRow as any)?.updateTime) || null;
+  }
   const root = (state.miniGame && typeof state.miniGame === "object")
     ? { ...(state.miniGame as Record<string, any>) }
     : {};
@@ -123,6 +169,7 @@ export async function preparePluginExecutionContext(
     const cleaned = rawList.filter((x) => !String(x).includes("[object Object]"));
     if (cleaned.length !== rawList.length) {
       (livePlayerCard as any).items = cleaned;
+      playerCardCleaned = true;
       if (state.player && typeof state.player === "object") {
         if ("parameterCardJson" in state.player) {
           (state.player as any).parameterCardJson = livePlayerCard;
@@ -138,9 +185,13 @@ export async function preparePluginExecutionContext(
   //   entry.start 按 worldName 读 map_visual:<worldName> 模板（sessionId="all"），
   //   注入本会话 map_visual → 前端 loadLevelByName 优先渲染该故事的视觉世界。
   //   发布快照（t_storyWorld_published）优先，草稿表（t_storyWorld）兜底；缺失不阻断 tick。
+  //   ★ 2026-11-21：快路径直接用影子缓存里的 worldName（worldId 会话内不变，无需每拍两次查询）。
   let worldName = "";
+  if (cached && cached.worldName) {
+    worldName = cached.worldName;
+  } else
   try {
-    const wId = Number((session as any)?.worldId || 0);
+    const wId = Number(rowWorldId || 0);
     if (wId > 0) {
       let wrow: any = null;
       try { wrow = await db("t_storyWorld_published").where({ worldId: wId }).first(); } catch { /* 表缺失忽略 */ }
@@ -173,12 +224,25 @@ export async function preparePluginExecutionContext(
     playerCard: (livePlayerCard && typeof livePlayerCard === "object")
       ? livePlayerCard
       : undefined,
-    // ★ v5：常驻世界书条目摘要（商城 agent 生成物资时参考）
-    worldBookDigest: await buildWorldBookDigest(db, Number((session as any)?.worldId || 0)),
+    // ★ v5：常驻世界书条目摘要（商城 agent 生成物资时参考；内置 60s TTL 缓存）
+    worldBookDigest: await buildWorldBookDigest(db, Number(rowWorldId || 0)),
     // ★ v6：当前世界身份（故事绑定视觉地图模板）
-    worldId: Number((session as any)?.worldId || 0) || undefined,
+    worldId: Number(rowWorldId || 0) || undefined,
     worldName: worldName || undefined,
   };
 
-  return { session, state, root, sessionNode, publicState, statePluginId, resolvedPluginId, ctx, worldName };
+  return {
+    session: sessionRow,
+    state,
+    root,
+    sessionNode,
+    publicState,
+    statePluginId,
+    resolvedPluginId,
+    ctx,
+    worldName,
+    rowUpdateTime,
+    rowWorldId,
+    playerCardCleaned,
+  };
 }

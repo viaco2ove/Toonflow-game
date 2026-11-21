@@ -115,6 +115,9 @@ export interface ExecutePluginActionWithStateResult {
   forceSync: boolean;
   /** ★ O1 增量回传判定：true 时响应可省略全量 state（前端已有同内容快照） */
   stateUnchanged: boolean;
+  /** ★ 2026-11-21 影子缓存配套：本拍消费动了宿主 stateJson（writeback 补丁 / over 结算
+   *  写回）→ 调用方必须把故事行落库。普通 tick 此值为 false（行内容逐字节无变化）。 */
+  hostStateMutated: boolean;
 }
 
 /**
@@ -156,15 +159,18 @@ export async function executePluginActionWithState(
     // ── 宿主消费（原 tick.ts 逐行等价）： ──
     // ① writeback 增量补丁：插件对用户动态参数卡（背包/技能/金钱）的改动写回 stateJson，
     //    宿主消费后清空，避免重复消费。
+    let hostStateMutated = false;
     const wbPatch = (result as any)?.state?.writeback;
     if (hostState && wbPatch && typeof wbPatch === "object" && Object.keys(wbPatch).length > 0) {
       applyPlayerCardPatch(hostState, wbPatch);
       (result as any).state.writeback = null;
+      hostStateMutated = true;
     }
     // ② 结算写回：退出 / 死亡时把奖励写入用户与参展角色参数卡（只写一次）
     if (hostState && resultState && resultState.phase === "over" && resultState.result && !resultState.result.written) {
       applyFieldSurvivalWriteback(hostState, resultState.result, resultState.selections);
       resultState.result = { ...resultState.result, written: true };
+      hostStateMutated = true;
       // 写回动了 hostState.player/npcs（故事动态数据），调用方需据此落 stateJson
     }
 
@@ -208,7 +214,7 @@ export async function executePluginActionWithState(
     //   sys_* 命令 / phase 变化 / forceSync 永远带全量（前端消费路径不受影响）。
     const stateUnchanged = !forceSync && pluginStateLastJson.get(scopeKey) === compareNow;
 
-    return { result, resultState, prev, forceSync, stateUnchanged };
+    return { result, resultState, prev, forceSync, stateUnchanged, hostStateMutated };
   };
 
   if (lock === "none") return run();

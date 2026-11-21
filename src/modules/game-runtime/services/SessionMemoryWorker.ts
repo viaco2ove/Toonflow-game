@@ -132,6 +132,9 @@ async function processSessionMemory(row: any) {
       .where({ sessionId })
       .update({
         stateJson: toJsonText(state, {}),
+        // ★ 2026-11-21：补 updateTime（原本漏带）——PluginTickCore 影子缓存靠它探测
+        //   外部写入方；漏写会导致记忆 worker 的改动被 tick 的脏写门闸覆盖。
+        updateTime: nowTs(),
       });
   } catch (err) {
     state.memoryWorker = {
@@ -145,6 +148,7 @@ async function processSessionMemory(row: any) {
       .where({ sessionId })
       .update({
         stateJson: toJsonText(state, {}),
+        updateTime: nowTs(),
       });
   }
 }

@@ -126,9 +126,11 @@ yarn install
 
 ## 运行
 chcp 65001 >nul
-yarn dev
-or
+本地运行：
 yarn local
+
+dev运行
+yarn dev
 
 ## 打包
 yarn bulid
