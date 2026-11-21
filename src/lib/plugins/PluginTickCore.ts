@@ -126,6 +126,8 @@ export async function performPluginTickCore(opts: PluginTickCoreOptions): Promis
       //   外部写入方（故事轮次/记忆 worker/MCP）的写最多延迟一个新鲜期被发现；脏写覆盖
       //   外部写的风险窗口与旧行为同级（升级前每拍写、覆盖窗口 100ms），可接受。
       const scopeKey = `${userId}:${sessionId}`;
+      // ★ 临时分段计时（诊断构建，用完即删）：_seg0=锁内起点
+      const _seg0 = performance.now();
       let shadow = storyRowShadow.get(scopeKey) || null;
       const probeFresh = !!shadow && (Date.now() - shadow.lastProbeAt) < SHADOW_PROBE_FRESH_MS;
       let probeTime = 0;
@@ -231,6 +233,8 @@ export async function performPluginTickCore(opts: PluginTickCoreOptions): Promis
       }
 
       const scope = { userId, sessionId, pluginId };
+      // ★ 临时分段计时（诊断构建，用完即删）
+      const _seg1 = performance.now();
 
       // ── 执行 + 状态读写统一（M2）：本函数已持会话锁（须覆盖下方 stateJson 写回）→ lock:"none"
       const { result, resultState, stateUnchanged, hostStateMutated } = await executePluginActionWithState({
@@ -244,6 +248,7 @@ export async function performPluginTickCore(opts: PluginTickCoreOptions): Promis
         hostState: state,
         lock: "none",
       });
+      const _seg2 = performance.now();
       // ★ writeback 补丁 / over 结算写回动了 state.player/npcs → 行必须落库
       if (hostStateMutated) rowDirty = true;
 
@@ -294,6 +299,15 @@ export async function performPluginTickCore(opts: PluginTickCoreOptions): Promis
 
       const response = publicState.plugin_response || String(result?.response || "");
       const code = Number(result?.code ?? 0);
+      // ★ 临时分段计时（诊断构建，用完即删）
+      const g = globalThis as any;
+      if (!g.__segLogged || Date.now() - g.__segLogged > 2000) {
+        g.__segLogged = Date.now();
+        console.log(
+          `[tick-seg] probe+prepare=${(_seg1 - _seg0).toFixed(0)}ms exec=${(_seg2 - _seg1).toFixed(0)}ms tail=${(performance.now() - _seg2).toFixed(0)}ms` +
+          ` dirty=${rowDirty ? 1 : 0} unchanged=${stateUnchanged ? 1 : 0} action=${action}`,
+        );
+      }
       return {
         status: 200,
         body: success({

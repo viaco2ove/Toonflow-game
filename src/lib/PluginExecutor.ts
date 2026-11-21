@@ -69,7 +69,9 @@ export interface HandleActionResult {
  *  ★ 优化方案 2026-10-08：加 mtime 失效——文件被 esbuild 重建后自动重 import。
  *  ★ 修复 2026-10-16：光靠 mtime 失效**不够**（见 importEntryModule 注释），
  *  必须配合「影子模块」换 URL 才能真正拿到新代码。 */
-const entryModuleCache = new Map<string, { handle_action: Function; sourcePath: string; mtimeMs: number }>();
+const entryModuleCache = new Map<string, { handle_action: Function; sourcePath: string; mtimeMs: number; checkedAt?: number }>();
+/** ★ 2026-11-21 第四轮：mtime 重检节流（ms）——见 loadEntryModule 内注释 */
+const ENTRY_MTIME_CHECK_MS = 1000;
 
 /** 影子模块目录：把 entry.js 按 mtime 复制成唯一文件名的 .mjs 再 import，
  *  以此绕过 Node ESM 模块注册表「同 URL 只求值一次」的缓存。 */
@@ -264,6 +266,15 @@ export function getAllPluginCommands(): string[] {
 // ---------------------------------------------------------------------------
 
 async function loadEntryModule(pluginDir: string): Promise<{ handle_action: Function }> {
+  // ★ 2026-11-21 第四轮：mtime 检查节流——缓存命中后 ENTRY_MTIME_CHECK_MS 内直接返回，
+  //   跳过 existsSync×2 + statSync 三次**同步**文件调用。部署机 ARM 盒慢盘上每次 stat
+  //   ~10-30ms、每拍 3 次 = 30-90ms（tick 分段诊断的剩余大头）。热重载延迟 ≤1s：
+  //   rebuild 后最多 1s 生效（原语义是下一拍生效，玩家无感差异）。
+  const cachedEarly = entryModuleCache.get(pluginDir);
+  if (cachedEarly?.checkedAt && Date.now() - cachedEarly.checkedAt < ENTRY_MTIME_CHECK_MS) {
+    return { handle_action: cachedEarly.handle_action };
+  }
+
   // 优先 .js（编译后的），其次 .ts（需要运行时支持）
   const jsPath = path.join(pluginDir, "entry.js");
   const tsPath = path.join(pluginDir, "entry.ts");
@@ -278,6 +289,7 @@ async function loadEntryModule(pluginDir: string): Promise<{ handle_action: Func
   const stat = fs.statSync(sourcePath);
   const cached = entryModuleCache.get(pluginDir);
   if (cached && cached.sourcePath === sourcePath && cached.mtimeMs === stat.mtimeMs) {
+    cached.checkedAt = Date.now();
     return { handle_action: cached.handle_action };
   }
 
