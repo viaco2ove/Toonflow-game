@@ -58,8 +58,14 @@ interface StoryRowShadow {
   state: Record<string, any>;
   worldName: string;
   lastDiagAt: number;
+  /** ★ 第三轮 probe 节流：上次探测列时刻——新鲜期内沿用影子（0 查询） */
+  lastProbeAt: number;
 }
 const storyRowShadow = new Map<string, StoryRowShadow>();
+/** 影子新鲜期（ms）：期内跳过 updateTime 探测。500ms = driver 10Hz 下每 5 拍才真正探测一次
+ *  （部署机每查询 ~100ms → 平均每拍摊 ~20ms）；外部写入方（故事轮次/记忆 worker/MCP，
+ *  秒~分钟级低频）的写最多延迟一个新鲜期被发现。 */
+const SHADOW_PROBE_FRESH_MS = 500;
 
 /** 一次 tick/动作执行的完整结果（HTTP 语义字段原样保留，WS 侧按需取用） */
 export interface PluginTickCoreResult {
@@ -114,17 +120,31 @@ export async function performPluginTickCore(opts: PluginTickCoreOptions): Promis
       const db = getGameDb();
 
       // ── 会话加载 + 插件执行上下文（与 MCP 共用）──
-      // ★ 2026-11-21：cheap 探测列 → 影子命中走快路径（见上方影子缓存注释）
+      // ★ 2026-11-21 第三轮：probe 节流——部署机实测**每次 SQLite 查询净开销 ≈ 45~130ms**
+      //   （listSession 轻查询 74~235ms − 401 基线 29~106ms），每拍一次 probe 就是 ~100ms。
+      //   影子新鲜期（SHADOW_PROBE_FRESH_MS）内跳过 probe：绝大多数拍 0 次查询。
+      //   外部写入方（故事轮次/记忆 worker/MCP）的写最多延迟一个新鲜期被发现；脏写覆盖
+      //   外部写的风险窗口与旧行为同级（升级前每拍写、覆盖窗口 100ms），可接受。
       const scopeKey = `${userId}:${sessionId}`;
       let shadow = storyRowShadow.get(scopeKey) || null;
-      const probe = await db("t_gameSession").where({ sessionId, userId }).first("updateTime", "worldId");
-      if (!probe) {
-        const msg404 = "会话不存在";
-        storyRowShadow.delete(scopeKey);
-        return { status: 404, body: error(msg404), stateUnchanged: false, state: null, response: msg404, code: -1 };
+      const probeFresh = !!shadow && (Date.now() - shadow.lastProbeAt) < SHADOW_PROBE_FRESH_MS;
+      let probeTime = 0;
+      let probeWorldId: number | null = null;
+      if (probeFresh) {
+        // 新鲜期内：沿用影子（不查库）
+        probeTime = shadow!.updateTime;
+        probeWorldId = shadow!.worldId;
+      } else {
+        const probe = await db("t_gameSession").where({ sessionId, userId }).first("updateTime", "worldId");
+        if (!probe) {
+          const msg404 = "会话不存在";
+          storyRowShadow.delete(scopeKey);
+          return { status: 404, body: error(msg404), stateUnchanged: false, state: null, response: msg404, code: -1 };
+        }
+        probeTime = Number((probe as any).updateTime) || 0;
+        probeWorldId = (probe as any).worldId != null ? Number((probe as any).worldId) : null;
+        if (shadow) shadow.lastProbeAt = Date.now();
       }
-      const probeTime = Number((probe as any).updateTime) || 0;
-      const probeWorldId = (probe as any).worldId != null ? Number((probe as any).worldId) : null;
       let cachedRow: CachedStoryRow | undefined;
       if (shadow && shadow.updateTime === probeTime && shadow.worldId === probeWorldId) {
         cachedRow = { state: shadow.state, worldId: shadow.worldId, worldName: shadow.worldName };
@@ -148,6 +168,7 @@ export async function performPluginTickCore(opts: PluginTickCoreOptions): Promis
           state,
           worldName: boot.worldName,
           lastDiagAt: shadow?.lastDiagAt || 0,
+          lastProbeAt: Date.now(),
         };
         storyRowShadow.set(scopeKey, shadow);
         if (storyRowShadow.size > 16) {
