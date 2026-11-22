@@ -98,6 +98,18 @@ export interface SpriteGenerInput {
   systemPrompt?: string;
 }
 
+/**
+ * ★ 2026-11-22：通用插件 LLM 通道输入（插件 entry.ts 的 plugin-llm 传入）
+ *   宿主不认识插件业务 —— 只按下面的 prompt 调一次模型、把 JSON 直通返回。
+ *   插件自己的 agent（群聊编排器等）由插件仓定义提示词与入参组装。
+ */
+export interface PluginLlmInput {
+  /** systemPrompt：插件自带（宿主不持有任何插件提示词） */
+  systemPrompt?: string;
+  /** userPrompt：插件前端/后端组装好的动态入参 */
+  userPrompt?: string;
+}
+
 const num = (v: unknown, d: number, min: number, max: number): number => {
   const f = Number(v);
   if (!Number.isFinite(f)) return d;
@@ -237,9 +249,19 @@ const SPRITE_AGENT_NAME = "field-survival-sprite-gener";
  *  只输出一个决策 JSON，不进数据库。 */
 const AI_BRAIN_AGENT_NAME = "field-survival-ai-brain";
 
+/** ★ 2026-11-22：通用插件 LLM 通道（plugin-llm）
+ *   宿主**不认识**任何插件业务 agent —— 它只提供「按插件给的 systemPrompt/userPrompt
+ *   调一次大模型并把 JSON 直通返回」的能力。插件自己的 agent（提示词、编排规则、
+ *   入参组装、输出校验）全部写在插件仓里。
+ *   aiConfigKey 由插件透传（如 "storyOrchestratorModel" = 与宿主故事模式同一个模型）。 */
+const PLUGIN_LLM_AGENT_NAME = "plugin-llm";
+
 /** ★ AI 大脑决策超时：游戏内实时决策，15s 兜底走程序化 fallback（见插件 brain.ts）。
  *  前端 waitBrainResult 用 8s 先放弃，这里 15s 是宿主侧上限。 */
 const AI_BRAIN_AGENT_TIMEOUT_MS = 15000;
+
+/** ★ 通用插件 LLM 通道超时：插件自己决定要多久，这里给 60s 兜底（插件侧通常更早放弃）。 */
+const PLUGIN_LLM_AGENT_TIMEOUT_MS = 60000;
 
 /** ★ 实体形象生图 agent 超时：图片模型推理通常 30~90s，留足余量 */
 const SPRITE_AGENT_TIMEOUT_MS = 150000;
@@ -423,7 +445,7 @@ function mergeMap(current: Record<string, any>, patch: Record<string, any>): Rec
  */
 export async function runPluginAgent(
   agentName: string,
-  input: MapGenerInput & ShopGenerInput & SpeakerInput & QuestGenerInput & SpriteGenerInput,
+  input: MapGenerInput & ShopGenerInput & SpeakerInput & QuestGenerInput & SpriteGenerInput & PluginLlmInput,
   aiConfigKey = "storyMiniGameModel"
 ): Promise<{ ok: boolean; output?: Record<string, any>; error?: string }> {
   const agentKey = String(agentName || "").trim();
@@ -434,6 +456,7 @@ export async function runPluginAgent(
     SPRITE_AGENT_NAME,
     SPEAKER_AGENT_NAME,
     AI_BRAIN_AGENT_NAME,
+    PLUGIN_LLM_AGENT_NAME,
   ];
   if (knownPluginAgents.indexOf(agentKey) < 0) {
     return { ok: false, error: `未知插件 agent: ${agentName}` };
@@ -443,6 +466,7 @@ export async function runPluginAgent(
   const isQuest = agentKey === QUEST_AGENT_NAME;
   const isSprite = agentKey === SPRITE_AGENT_NAME;
   const isAiBrain = agentKey === AI_BRAIN_AGENT_NAME;
+  const isPluginLlm = agentKey === PLUGIN_LLM_AGENT_NAME;
 
   try {
     // 提示词来源：① 插件 input.systemPrompt（插件自带）→ ② task-speaker-agent 的宿主注册表
@@ -633,6 +657,45 @@ export async function runPluginAgent(
       return { ok: true, output: { text } };
     }
 
+    /* ★ 通用插件 LLM 通道（2026-11-22）：宿主不认识插件业务 agent ——
+     *   插件给 systemPrompt + userPrompt + 想要的模型 key，宿主只负责调模型、返回 JSON。
+     *   插件自己的 agent（群聊编排器等）的提示词、编排规则、输出校验全在插件仓。 */
+    if (isPluginLlm) {
+      const llmUserPrompt = String((input as any)?.userPrompt || "").trim();
+      if (!llmUserPrompt) {
+        return { ok: false, error: "plugin-llm 缺少 userPrompt" };
+      }
+      const llmConfig = await u.getPromptAi(aiConfigKey);
+      const llmResult = await withTimeout(
+        u.ai.text.invoke(
+          {
+            plainTextOutput: true,
+            messages: [
+              { role: "system", content: systemPrompt },
+              { role: "user", content: llmUserPrompt },
+            ],
+          },
+          llmConfig,
+        ),
+        PLUGIN_LLM_AGENT_TIMEOUT_MS,
+        `plugin-llm 调用超时（>${PLUGIN_LLM_AGENT_TIMEOUT_MS}ms）`,
+      );
+      const llmContent: string = String((llmResult as any)?.text ?? (llmResult as any)?.content ?? "");
+      // ★ 优先按 JSON 解析（插件要结构化输出时）；解析不了 → 把原文当纯文本返回
+      //   （插件也有"只要一段台词文本"的用法，如单聊角色发言——那种输出里没有 JSON）。
+      const llmParsed = extractJson(llmContent);
+      if (llmParsed) {
+        // ★ JSON 直通：插件侧做业务校验（角色合法性 / 顺序 / 裁剪）
+        return { ok: true, output: llmParsed };
+      }
+      const llmText = llmContent.trim();
+      if (!llmText) {
+        console.warn("[plugin-llm] LLM 输出为空");
+        return { ok: false, error: "LLM 输出为空", output: undefined };
+      }
+      return { ok: true, output: { text: llmText } };
+    }
+
     /* ★ AI 托管大脑：userPrompt 由插件前端构造（感知 + 短信往来 + ★ 未回复标记），
      *   宿主不拼 parts —— 拼出来的地图数据对决策毫无意义，还会挤掉短信上下文。 */
     if (isAiBrain) {
@@ -762,6 +825,6 @@ export async function runPluginAgent(
     return { ok: true, output };
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
-    return { ok: false, error: msg, output: isShop || isSpeaker || isQuest || isSprite ? undefined : fallbackMap(input) };
+    return { ok: false, error: msg, output: isShop || isSpeaker || isQuest || isSprite || isPluginLlm ? undefined : fallbackMap(input) };
   }
 }

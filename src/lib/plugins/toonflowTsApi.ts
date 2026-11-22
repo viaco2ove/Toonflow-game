@@ -48,7 +48,13 @@ export interface ToonflowTsApi {
   agent: {
     run(
       agentName: string,
-      input: Record<string, unknown>
+      input: Record<string, unknown>,
+      /**
+       * ★ 2026-11-22：模型配置 key 透传（如 "storyOrchestratorModel"）。
+       *   默认仍是 "storyMiniGameModel"（小游戏模型）——
+       *   群聊编排器要「与宿主故事模式同模型」，靠这个参数切到 storyOrchestratorModel。
+       */
+      aiConfigKey?: string,
     ): Promise<{ ok: boolean; output?: Record<string, any>; error?: string }>;
   };
 }
@@ -70,8 +76,8 @@ export function buildToonflowTsApi(scope: ToonflowTsApiScope): ToonflowTsApi {
       remove: (dataKey: string) => removePluginData(scope, dataKey),
     },
     agent: {
-      run: (agentName: string, input: Record<string, unknown>) =>
-        runPluginAgent(agentName, (input || {}) as any),
+      run: (agentName: string, input: Record<string, unknown>, aiConfigKey?: string) =>
+        runPluginAgent(agentName, (input || {}) as any, aiConfigKey),
     },
   };
 }

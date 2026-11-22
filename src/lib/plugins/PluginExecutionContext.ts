@@ -58,6 +58,10 @@ export interface CachedStoryRow {
   state: Record<string, any>;
   worldId: number | null;
   worldName: string;
+  /** ★ 2026-11-22：故事全局背景（快路径复用，避免每拍重查世界行） */
+  globalBackground?: string;
+  /** ★ 2026-11-23：故事动态背景（快路径复用） */
+  dynamicGlobalBackground?: string;
 }
 
 /** manifest TTL 缓存（key: userId:pluginId）：见 preparePluginExecutionContext 内注释 */
@@ -205,6 +209,10 @@ export async function preparePluginExecutionContext(
   //   发布快照（t_storyWorld_published）优先，草稿表（t_storyWorld）兜底；缺失不阻断 tick。
   //   ★ 2026-11-21：快路径直接用影子缓存里的 worldName（worldId 会话内不变，无需每拍两次查询）。
   let worldName = "";
+  /** ★ 2026-11-22：故事全局背景（settings.globalBackground）—— 供插件群聊编排器对齐宿主故事模式。 */
+  let globalBackground = String(cached?.globalBackground || "");
+  /** ★ 2026-11-23：故事动态背景（记忆管理器 memorySummary）—— 插件 agent 的"最近发生了什么"。 */
+  let dynamicGlobalBackground = String(cached?.dynamicGlobalBackground || "");
   if (cached && cached.worldName) {
     worldName = cached.worldName;
   } else
@@ -217,6 +225,17 @@ export async function preparePluginExecutionContext(
         try { wrow = await db("t_storyWorld").where({ id: wId }).first(); } catch { /* 表缺失忽略 */ }
       }
       worldName = String((wrow as any)?.name || (wrow as any)?.title || "").trim();
+      // ★ 全局背景：settings.globalBackground（与宿主 SessionService/MiniGameController 同口径）
+      try {
+        const settings = (wrow as any)?.settings;
+        const settingsObj = (typeof settings === "string" ? JSON.parse(settings || "{}") : settings) || {};
+        globalBackground = String(
+          settingsObj.globalBackground
+          || (wrow as any)?.globalBackground
+          || (wrow as any)?.intro
+          || "",
+        ).trim().slice(0, 2000);
+      } catch { /* settings 解析失败忽略 */ }
     }
   } catch { /* 世界名缺失不阻断 tick */ }
   // ★ 2026-10-26 修复「选人面板无角色」：
@@ -231,6 +250,14 @@ export async function preparePluginExecutionContext(
       `[plugin/ctx] ⚠️ ctx.roles 为空（state.player/npcs 与 publicState.roles 都无角色）` +
       `→ 插件选人面板将没有可选角色（sessionId=${sessionId}）`,
     );
+  }
+  // ★ 2026-11-23：动态背景直接读 state.memorySummary（记忆管理器维护；state 本函数已解析，零额外查询）
+  if (!dynamicGlobalBackground) {
+    dynamicGlobalBackground = String(
+      (state as Record<string, any>)?.dynamicWorldGlobalBackground
+      || (state as Record<string, any>)?.memorySummary
+      || "",
+    ).trim().slice(0, 1500);
   }
   const ctx: PluginGameContext = {
     pluginId: resolvedPluginId,
@@ -247,6 +274,10 @@ export async function preparePluginExecutionContext(
     // ★ v6：当前世界身份（故事绑定视觉地图模板）
     worldId: Number(rowWorldId || 0) || undefined,
     worldName: worldName || undefined,
+    // ★ 2026-11-22：故事全局背景（群聊编排器对齐宿主故事模式的入参）
+    globalBackground: globalBackground || undefined,
+    // ★ 2026-11-23：故事动态背景（state.memorySummary）
+    dynamicGlobalBackground: dynamicGlobalBackground || undefined,
   };
 
   return {

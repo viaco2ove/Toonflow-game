@@ -41,6 +41,11 @@ export interface PluginGameContext {
   worldId?: number;
   /** ★ v6：当前世界/故事名（entry 按它读 map_visual:<worldName> 模板并注入本会话） */
   worldName?: string;
+  /** ★ 2026-11-22：故事全局背景（t_storyWorld.settings.globalBackground）
+   *  供插件群聊编排器对齐宿主故事模式的发言上下文 */
+  globalBackground?: string;
+  /** ★ 2026-11-23：故事动态背景（记忆管理器 memorySummary）——"最近发生了什么" */
+  dynamicGlobalBackground?: string;
   /** 后端插件 API（toonflowTsApi：pluginData + agent），按 ctx 维度自动注入 */
   tsApi?: import("./plugins/toonflowTsApi").ToonflowTsApi;
 }

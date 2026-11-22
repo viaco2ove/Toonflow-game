@@ -57,6 +57,10 @@ interface StoryRowShadow {
   worldId: number | null;
   state: Record<string, any>;
   worldName: string;
+  /** ★ 2026-11-22：故事全局背景（快路径复用） */
+  globalBackground: string;
+  /** ★ 2026-11-23：故事动态背景（快路径复用） */
+  dynamicGlobalBackground: string;
   lastDiagAt: number;
   /** ★ 第三轮 probe 节流：上次探测列时刻——新鲜期内沿用影子（0 查询） */
   lastProbeAt: number;
@@ -149,7 +153,13 @@ export async function performPluginTickCore(opts: PluginTickCoreOptions): Promis
       }
       let cachedRow: CachedStoryRow | undefined;
       if (shadow && shadow.updateTime === probeTime && shadow.worldId === probeWorldId) {
-        cachedRow = { state: shadow.state, worldId: shadow.worldId, worldName: shadow.worldName };
+        cachedRow = {
+          state: shadow.state,
+          worldId: shadow.worldId,
+          worldName: shadow.worldName,
+          globalBackground: shadow.globalBackground,
+          dynamicGlobalBackground: shadow.dynamicGlobalBackground,
+        };
       }
       let boot;
       try {
@@ -169,6 +179,8 @@ export async function performPluginTickCore(opts: PluginTickCoreOptions): Promis
           worldId: boot.rowWorldId ?? probeWorldId,
           state,
           worldName: boot.worldName,
+          globalBackground: String(boot.ctx.globalBackground || ""),
+          dynamicGlobalBackground: String(boot.ctx.dynamicGlobalBackground || ""),
           lastDiagAt: shadow?.lastDiagAt || 0,
           lastProbeAt: Date.now(),
         };
@@ -294,6 +306,7 @@ export async function performPluginTickCore(opts: PluginTickCoreOptions): Promis
           shadow.updateTime = newUpdateTime;
           shadow.state = state;
           shadow.worldName = boot.worldName || shadow.worldName;
+          shadow.dynamicGlobalBackground = String(boot.ctx.dynamicGlobalBackground || shadow.dynamicGlobalBackground || "");
         }
       }
 

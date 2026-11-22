@@ -5767,6 +5767,16 @@ const RULEBOOKS: Record<string, MiniGameRulebook> = {
           // ★ v6：当前世界身份（故事绑定视觉地图模板，entry.init 即注入会话 map_visual）
           worldId: Number((ctx as any)?.world?.id || 0) || undefined,
           worldName: scalarText((ctx as any)?.world?.name || (ctx as any)?.world?.title || ""),
+          // ★ 2026-11-22：故事全局背景（群聊编排器对齐宿主故事模式的入参；
+          //   口径同 buildMiniGameGlobalContext.worldGlobalBackground）
+          globalBackground: (() => {
+            const w = ((ctx as any)?.world || {}) as Record<string, any>;
+            const wSettings = typeof w.settings === "string" ? parseJsonSafe(w.settings, {}) : (w.settings || {});
+            return limitText(
+              wSettings.globalBackground || w.globalBackground || w.intro || w.description || w.worldGlobalBackground,
+              2000,
+            );
+          })(),
         },
         "init",
         {},
