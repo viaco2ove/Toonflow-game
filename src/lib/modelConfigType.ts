@@ -37,6 +37,31 @@ function normalizeReasoningEffort(input: unknown): ModelReasoningEffort {
   return "minimal";
 }
 
+/** 语音合成「分段」模式允许的取值 */
+export type VoiceSegmentMode = "punctuation" | "chars";
+
+/**
+ * 规范化语音合成「分段」配置字段（t_config.segmentMode / segmentChars）
+ *
+ * 用途：addModel / updateModel 落库前统一校验：
+ * - segmentMode 仅接受 "punctuation"（按标点符号）/ "chars"（按字数），其他值存 null（走默认行为）
+ * - segmentChars 仅接受正整数，并 clamp 到 10~500，非法值存 null（前端兜底默认 100）
+ */
+export function normalizeVoiceSegmentFields(
+  segmentMode: unknown,
+  segmentChars: unknown,
+): { segmentMode: VoiceSegmentMode | null; segmentChars: number | null } {
+  const mode = trimText(segmentMode).toLowerCase();
+  const normalizedMode: VoiceSegmentMode | null = mode === "punctuation" || mode === "chars" ? mode : null;
+  const rawChars = Number(segmentChars);
+  let normalizedChars: number | null = null;
+  if (Number.isFinite(rawChars) && rawChars > 0) {
+    // clamp 到合理区间，避免填 1 字或超大值导致合成请求异常
+    normalizedChars = Math.min(500, Math.max(10, Math.round(rawChars)));
+  }
+  return { segmentMode: normalizedMode, segmentChars: normalizedChars };
+}
+
 export function isVoiceDesignModelConfig(input: {
   type?: unknown;
   modelType?: unknown;

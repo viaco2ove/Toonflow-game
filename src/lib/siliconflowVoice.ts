@@ -305,13 +305,20 @@ export async function synthesizeSiliconFlowCloneBuffer(options: {
   const finalUploadModel = uploadModel.trim() || model;
 
   // 1. 上传参考音频获取 uri
+  // SiliconFlow 声音克隆要求参考音频不超过 30 秒，超长会返回
+  // code 20015「audio longer than 30s is not supported」，这里统一先裁剪再上传。
+  const uploadBuffer = await prepareSiliconFlowReferenceAudio(referenceAudioBuffer, referenceAudioFilename);
+  const uploadFilename = uploadBuffer === referenceAudioBuffer
+    ? referenceAudioFilename
+    : referenceAudioFilename.replace(/\.[^.]+$/, "") + ".wav";
+
   // 注意：上传时不传 text，避免 SiliconFlow 用上传时的文本替代合成文本
   const customName = voiceName || `clone_${Date.now().toString(36)}`;
   const uri = await uploadSiliconFlowVoice({
     apiKey,
     model: finalUploadModel,
-    audioBuffer: referenceAudioBuffer,
-    filename: referenceAudioFilename,
+    audioBuffer: uploadBuffer,
+    filename: uploadFilename,
     customName,
   });
 
@@ -323,6 +330,52 @@ export async function synthesizeSiliconFlowCloneBuffer(options: {
     voice: uri,
     responseFormat,
   });
+}
+
+/**
+ * SiliconFlow 克隆参考音频的最长秒数。
+ * 官方限制：参考音频不得超过 30 秒（超限返回 code 20015）。
+ * 实测：正好 30s 仍会被拒（边界判定），因此实际裁剪目标要留出余量。
+ */
+export const SILICONFLOW_REFERENCE_MAX_SECONDS = 30;
+
+/** 实际裁剪目标时长：留出余量，确保远小于 30s 上限 */
+const SILICONFLOW_REFERENCE_TRIM_SECONDS = 25;
+
+/**
+ * 准备 SiliconFlow 克隆用的参考音频：超长则裁剪到限制以内。
+ *
+ * 返回值：
+ * - 与入参同一个 buffer：无需裁剪
+ * - 新的 buffer：已裁剪（转 16kHz / mono / 16bit PCM WAV）
+ */
+async function prepareSiliconFlowReferenceAudio(
+  referenceAudioBuffer: Buffer,
+  referenceAudioFilename: string,
+): Promise<Buffer> {
+  try {
+    const sourceExt = String(referenceAudioFilename || "").split(".").pop() || "wav";
+    const { trimAudioBufferToDuration } = await import("@/lib/audioNormalize");
+    const trimmed = await trimAudioBufferToDuration({
+      buffer: referenceAudioBuffer,
+      sourceExt,
+      maxSeconds: SILICONFLOW_REFERENCE_TRIM_SECONDS,
+      sampleRate: 16000,
+    });
+    if (trimmed) {
+      console.log(
+        `[SiliconFlowClone] 参考音频超过 ${SILICONFLOW_REFERENCE_MAX_SECONDS}s，已裁剪到 ${SILICONFLOW_REFERENCE_TRIM_SECONDS}s 后再上传（${trimmed.length} bytes）`,
+      );
+      return trimmed;
+    }
+  } catch (err) {
+    // 裁剪失败不阻断主流程，交给 SiliconFlow 返回原始错误
+    console.warn(
+      "[SiliconFlowClone] 参考音频裁剪失败，按原音频上传:",
+      err instanceof Error ? err.message : String(err),
+    );
+  }
+  return referenceAudioBuffer;
 }
 
 /**

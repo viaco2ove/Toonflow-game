@@ -1,4 +1,4 @@
-// @db-hash 2d656dfa2d6c8f67f4909cf7ac6af890
+// @db-hash 6940141670c63d8f1eae1af6191322df
 //该文件由脚本自动生成，请勿手动修改
 
 export interface knex_migrations {
@@ -104,6 +104,8 @@ export interface t_config {
   'outputPricePer1M'?: number | null;
   'reasoningEffort'?: string | null;
   'remark'?: string | null;
+  'segmentChars'?: number | null;
+  'segmentMode'?: string | null;
   'temperature'?: number | null;
   'topP'?: number | null;
   'type'?: string | null;

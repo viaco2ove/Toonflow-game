@@ -1,51 +1,46 @@
-# 会话「重玩」功能：重新生成角色卡 + 删档重新开局
+# 语音合成「分段」显式配置：按标点符号 / 按字数（默认100可填）
 
-## Context
+## Context（根因与目标）
 
-「聊过」列表的会话只能继续/观看，没有"从头再来"的入口。需求：卡片上加「重玩」按钮，二次确认（输入"重玩"两个字）后**重新生成角色卡等动态数据**、删除旧进度、重新开局游玩。
+用户希望 TTS 增加「分段」配置（按标点符号 / 按字数，字数默认100可填），配置挂在**语音合成模型配置**上（截图的「编辑模型」弹窗）。
 
-已探明的关键事实：
-- 会话动态数据分布在 6 张表：`t_gameSession`（主行，动态态全在 stateJson）、`t_sessionMessage`、`t_sessionStateSnapshot`、`t_entityStateDelta`、`t_role_memory`、`t_plugin_session_data`。现有 `deleteSession` 只删前 3 张（孤儿数据问题），重玩要删全 6 张
-- 角色卡是**世界级**数据（`t_storyWorld.playerRole/narratorRole/settings.roles`，内嵌 parameterCardJson）；`ensureWorldRolesWithAiParameterCards({persist:true, forceRefresh:true})`（src/lib/roleParameterCard.ts:418）可 LLM 全量重生成并写回世界（发布时同款逻辑 worldPublish.ts:219）；卡变更会自动使开局快照缓存失效（hash 含角色卡 JSON）
-- 前端已有完整开局链路 `startFromWorld(world, "")`（initStory→introduction→流式开场白→orchestration），SceneHistory.vue 的 `restartFromBeginning`（L94-115）已示范"删档+重新开局"
-- **方案：后端接口只做「重生成角色卡 + 删旧会话数据」，新会话由前端现有 `startFromWorld` 链路创建**——零复制 initStory/开场白逻辑，新 sessionId 天然规避并发锁/revisit 缓存/后台回调竞态（回调有行存在性守卫）
+现状根因（已探明）：
+- 听感上"所有平台都按标点分割"的真正来源是**前端流式逐句播放**：后端 `streamlines.ts` 按标点切出 sentence 事件 → 前端 `messageReveal.ts` 逐句调 `playMessageAudio(msg, false, true, sentence)`，每句单独合成一次。
+- 前端 `textUtils.ts` 的 `splitSpeechSegments` 分段参数全是**硬编码**（`is_need_symbol_segm=false`、`MAX_SEGMENT_CHARS=100`），且输入已是单句（≪100字）所以字数切分永不触发；注释里"未来由后台数据库配置"从未实现——这就是"mimo 按字数没效果"的原因。
+- 模型配置存 `t_config` 表（`select("*")` + 展开，新列自动带出）；保存走 `/setting/addModel`、`/setting/updateModel`（新字段仿 `remark` 的处理方式即可，不必动 `normalizeExternalModelConfig`）。
+
+配置语义：
+- **按标点符号**（默认，未配置的存量模型行为完全不变）：每个标点句单独合成；超长句按字数上限兜底切。
+- **按字数**：流式播放时把相邻句子**攒批到 N 字**（默认100）再一次合成（这是让字数模式真正生效的关键），超长无标点文本按 N 字切。
 
 ## 后端（toonflow-game-app）
 
-### 1. 新路由 `src/routes/game/replaySession.ts`
-照 `deleteSession.ts` 套路（zod 校验 + userId 隔离 + success/error）：
-1. 读旧会话 `t_gameSession` where `{sessionId, userId}` → 404；取 `worldId`
-2. 读 `t_storyWorld` → `ensureWorldRolesWithAiParameterCards({ userId, world, persist: true, forceRefresh: true })`（重新生成全部角色卡写回世界；LLM 失败函数内部静默回退静态卡，不阻塞）
-3. `withSessionLock(sessionId, () => db.transaction(删 6 表))`：照 deleteSession 事务 + 补删 `t_role_memory`、`t_entityStateDelta`、`t_plugin_session_data`
-4. 事务外 `clearSessionRevisitCache(sessionId)`（SessionService.ts:174 已导出）
-5. 返回 `success({ worldId })`
-
-### 2. `src/modules/game-runtime/services/SessionService.ts`
-`withSessionLock`（L126）加 `export`（当前模块私有），供路由在删除前排队等待在途编排完成。
-
-### 3. `src/router.ts` 注册 route190：`/game/replaySession`
+1. **新迁移** `src/migrations/20261122_000001_add_t_config_segment_fields.js`（仿 `20261120_000001` 风格）：`t_config` 加 `segmentMode`(text)、`segmentChars`(integer)，`hasColumn` 防重；down 删列。启动 `yarn local` 自动执行。
+2. **`src/types/database.d.ts`**：`t_config` 接口补 `segmentMode`/`segmentChars` 两字段。
+3. **`src/routes/setting/addModel.ts` / `updateModel.ts`**：zod 加 `segmentMode: z.enum(["punctuation","chars"]).nullable().optional()`、`segmentChars: z.number().int().nullable().optional()`；持久化仿 `remark`（`segmentChars` 规范化为正整数否则 null）。带注释。
+4. `getSetting.ts` / `getVoiceModelList.ts` 均为 `select("*")` + 展开返回，**无需改动**。
 
 ## 前端（Toonflow-game-web）
 
-### 4. `src/api/toonflow.ts`
-`replaySession(sessionId)` → POST `/game/replaySession`，返回 `{ worldId }`（axios 无超时限制，LLM 长调用不受影响）
-
-### 5. `src/composables/useToonflowStore.ts`
-新 action `replaySession(sessionId)`：
-```
-api.replaySession → refreshSessionListState()（旧会话出列表）
-→ 从 state.worlds 找 worldId 对应 world（找不到 throw）
-→ await startFromWorld(world, "")（现有完整开局链路，自动切到 play 页）
-```
-导出加入 apiFacade。
-
-### 6. `src/components/SceneHistory.vue`
-- `.history-card-actions` 内「世界书」与删除图标之间加「重玩」按钮（`.history-card-btn` 样式，`@click.stop`）
-- 确认弹窗：仿「故事已更新」modal（L201-231 结构 + scoped 样式复用 `.story-update-*`），内容：会话名、警告文案（删除当前进度、重新生成角色卡、重新开局）、输入框（placeholder「输入 重玩 以确认」）+ danger 确认按钮（`v-model` 值严格 `=== "重玩"` 时才 enabled）、busy 态（按钮文案「正在重新生成角色卡…」，禁用关闭）
-- 确认链路：`store.replaySession(item.sessionId)` → 成功自动进入新开局；失败 `store.state.notice`（项目惯例）
+5. **`src/types/toonflow.ts`**：`ModelConfigItem`、`ModelConfigPayload`、`VoiceModelConfig` 三个接口加 `segmentMode?: "punctuation" | "chars" | ""`、`segmentChars?: number | null`。
+6. **`src/components/SettingsModelManagerDialog.vue`**（编辑模型弹窗）：
+   - `form` 加 `segmentMode: "punctuation"`、`segmentChars: 100`；computed `shouldShowSegmentConfig = props.configType === "voice" && form.modelType === "tts"`（仿 `shouldShowTokenPricing`）。
+   - 模板「模型」字段之后新增「分段」field：`select`（按标点符号/按字数）+ 按字数时显示数字输入（type=number，默认100）+ `settings-field-hint` 提示（按标点=每句单独合成；按字数=攒够 N 字合成一次）。
+   - `openCreate`/`openEdit` 回填（`segmentMode==="chars"?…`；`segmentChars>0?:100`）；`submitEditor` payload 显示时传规范化值（clamp 10~500），隐藏时传 null。
+7. **`src/composables/useToonflowStore.ts`**：
+   - `voiceSegmentConfigFor(configId)`：从 `state.settingsVoiceConfigs` 查配置，缺省返回 `{mode:"punctuation", maxChars:100}`。
+   - `ensureVoiceSegmentConfigs()`：`settingsPanelLoaded` 为 false 时轻量拉一次 `api.getVoiceModels()`（inflight 去重），供游玩时兜底（现有 `ensureSettingsPanelData` 只在设置页/绑定弹窗触发）。
+8. **`src/composables/orchestrationVoiceFlow/textUtils.ts`**：`splitSpeechSegments(input, options?)` 改为参数化——`mode:"punctuation"` 按标点切 + `maxChars` 兜底；`mode:"chars"` 仅按 `maxChars` 切；缺省 `chars/100`（=现行为）。删除 `is_need_symbol_segm` 硬编码。
+9. **`voiceGenPlay.ts`**：`playMessageAudioWithBinding` 按 `binding.configId` 取 `voiceSegmentConfigFor` 传给两处 `splitSpeechSegments`（非流式整段播放路径自动生效）。
+10. **`messageReveal.ts` + `voiceGenPlay.ts` 新增 `createSentenceBatchPlayer`**（导出，带注释）：
+    - 按标点模式：行为与现在逐句播放完全一致。
+    - 按字数模式：`add(sentence, idx)` 攒批，speakable 长度 ≥ N 时 flush——`startSentencePlayback(start)` → `playMessageAudio(batchText)` → 按区间逐索引 `finishSentencePlayback`（播放状态表仅 debug 消费，已确认安全）；`flushRemaining()` 收尾；`discard()` 供取消分支把未合成区间标记结束。
+    - 流式循环（L180）与尾句循环（L231）改用 batch player；flush 前 `await store.ensureVoiceSegmentConfigs()`。
 
 ## 验证
 
-1. 后端 `yarn lint`；起 `yarn local`，用 python urllib（UTF-8，避免 Git Bash curl 乱码）实测：取 admin 本地一个已发布世界的会话 → 调 replaySession → 断言：返回 worldId、`t_storyWorld` 角色卡 JSON 已更新、6 张表旧会话数据清零、重生成后再调 `/game/initStory` 能建新会话
-2. 前端 `yarn type-check`；`yarn dev` + `yarn local` 浏览器走查：聊过页重玩按钮 → 弹窗（输入错字按钮 disabled）→ 输入"重玩"→ busy 文案 → 自动进入游戏新开局（开场白流式）→ 会话列表刷新为新会话
-3. 测试数据清理（删除测试产生的会话/世界数据恢复原状）
+1. 后端 `yarn lint`；起 `yarn local` 确认迁移日志；python urllib（UTF-8）调 `/setting/updateModel` 给某 voice 配置写 `segmentMode=chars, segmentChars=80` → `/setting/getSetting` 回读校验 → 恢复。
+2. 前端 `yarn type-check` 无新增错误。
+3. IAB 走查：设置→语音生成→模型数据管理→编辑语音合成模型 → 分段配置显示/保存/重新打开回显；切按标点符号再验证。
+4. 播放走查：将 TTS 模型设为按字数 → 自动朗读时 WebDebugLog 中 `resolveRuntimeVoiceUrl` 的 segment 应为攒批长文本；切回按标点符号恢复逐句。
+5. 走查后停前后端服务、恢复测试配置。
