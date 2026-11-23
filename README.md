@@ -22,7 +22,7 @@
 分类: 大模型驱动的文字冒险 / 角色扮演（LLM-driven Text RPG / AVG）
 
 # Toonflow
-[README.o1.md](README.Toonflow.md)
+[README.o1.md](md/README.Toonflow.md)
 Toonflow 是"Toonflow Game" 的前身，在当前项目更多是残留功能而不是主要功能。
   <p align="center">
     <b>
@@ -66,11 +66,11 @@ https://github.com/viaco2ove/Toonflow-game-android-h5.git
 ---
 # 🌟 主要功能
 多角色 ai 游戏
-![img.png](img.png)
+![img.png](md/img.png)
 
 ## 特殊功能
 - 在输入框输入“#小游戏” 可以进行查看钓鱼等小游戏的玩法。
-![img_1.png](img_1.png)
+![img_1.png](md/img_1.png)
 
 - 在输入框输入“@记忆管理 xxx” 可以要求ai 变更人物参数
 如：@记忆管理 睡觉恢复，可以恢复hp mp
@@ -100,7 +100,7 @@ https://github.com/viaco2ove/Toonflow-game-android-h5.git
 
 
 # 🌟 主要功能(old)
-[README.V1.md](README.V1.md)
+[README.V1.md](md/README.V1.md)
 ---
 
 ## web日志

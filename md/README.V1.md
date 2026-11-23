@@ -189,7 +189,7 @@ docker.md-compose -f docker.md/docker.md-compose.local.yml up -d --build
 
 ### 数据持久化
 
-默认日志目录会挂载到宿主机 `./logs` 目录。如需持久化上传文件或数据库，可在 `docker-compose.yml` 中添加 volumes：
+默认日志目录会挂载到宿主机 `../logs` 目录。如需持久化上传文件或数据库，可在 `docker-compose.yml` 中添加 volumes：
 
 ```yaml
 volumes:
@@ -438,7 +438,7 @@ pm2 monit             # 监控面板
 - **GitHub**：[Toonflow-web](https://github.com/HBAI-Ltd/Toonflow-web)
 - **Gitee**：[Toonflow-web](https://gitee.com/HBAI-Ltd/Toonflow-web)
 
-前端构建后，将 `dist` 目录内容复制到本项目的 `scripts/web` 目录即可集成。
+前端构建后，将 `dist` 目录内容复制到本项目的 `../scripts/web` 目录即可集成。
 
 ## 项目结构
 
@@ -598,4 +598,4 @@ Toonflow 基于 AGPL-3.0 协议开源发布，许可证详情：https://www.gnu.
   </tr>
 </table>
 
-完整的第三方依赖清单请查阅 `NOTICES.txt`
+完整的第三方依赖清单请查阅 `../NOTICES.txt`
