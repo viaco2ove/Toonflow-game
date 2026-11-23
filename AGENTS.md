@@ -7,7 +7,7 @@ This repo is an Electron + Node/Express + TypeScript app.
   - `src/routes/`: API modules by domain (`video`, `storyboard`, `script`, `project`, etc.).
   - `src/agents/`: AI orchestration logic for outline/script/storyboard flows.
   - `src/lib/`, `src/utils/`, `src/middleware/`, `src/types/`: shared utilities, DB/runtime helpers, middleware, types.
-- `scripts/`: desktop entry and build scripts (`scripts/main.ts`, `scripts/build.ts`).
+- `scripts/`: desktop entry and build scripts (`scripts/main.ts`, `scripts/build.js`).
 - `scripts/web/index.html`: bundled renderer UI (large generated file; edit carefully).
 - `env/`: environment templates for `dev/local/prod`.
 - `build/`: compiled output.
