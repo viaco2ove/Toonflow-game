@@ -22,7 +22,7 @@
 分类: 大模型驱动的文字冒险 / 角色扮演（LLM-driven Text RPG / AVG）
 
 # Toonflow
-[README.o1.md](md/README.Toonflow.md)
+[README.o1.md](README.Toonflow.md)
 Toonflow 是"Toonflow Game" 的前身，在当前项目更多是残留功能而不是主要功能。
   <p align="center">
     <b>

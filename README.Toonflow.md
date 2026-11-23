@@ -60,11 +60,11 @@ https://github.com/viaco2ove/Toonflow-game-android.git
 ---
 # 🌟 主要功能
 多角色 ai 游戏
-![img.png](../img.png)
+![img.png](img.png)
 
 ## 特殊功能
 - 在输入框输入“#小游戏” 可以进行查看钓鱼等小游戏的玩法。
-![img_1.png](../img_1.png)
+![img_1.png](img_1.png)
 
 - 在输入框输入“@记忆管理 xxx” 可以要求ai 变更人物参数
 如：@记忆管理 睡觉恢复，可以恢复hp mp
@@ -90,11 +90,11 @@ https://github.com/viaco2ove/Toonflow-game-android.git
 
 
 # 🌟 主要功能(old)
-[README.V1.md](../README.V1.md)
+[README.V1.md](README.V1.md)
 ---
 
 ## 本地模型安装
-[本地头像分离模型安装.md](modeapi/image/本地头像分离模型安装.md)
+[本地头像分离模型安装.md](md/modeapi/image/%E6%9C%AC%E5%9C%B0%E5%A4%B4%E5%83%8F%E5%88%86%E7%A6%BB%E6%A8%A1%E5%9E%8B%E5%AE%89%E8%A3%85.md)
 
 # 🚀 安装
 
@@ -188,7 +188,7 @@ docker.md-compose -f docker.md/docker.md-compose.local.yml up -d --build
 
 ### 数据持久化
 
-默认日志目录会挂载到宿主机 `../logs` 目录。如需持久化上传文件或数据库，可在 `docker-compose.yml` 中添加 volumes：
+默认日志目录会挂载到宿主机 `./logs` 目录。如需持久化上传文件或数据库，可在 `docker-compose.yml` 中添加 volumes：
 
 ```yaml
 volumes:
@@ -437,7 +437,7 @@ pm2 monit             # 监控面板
 - **GitHub**：[Toonflow-web](https://github.com/HBAI-Ltd/Toonflow-web)
 - **Gitee**：[Toonflow-web](https://gitee.com/HBAI-Ltd/Toonflow-web)
 
-前端构建后，将 `dist` 目录内容复制到本项目的 `../scripts/web` 目录即可集成。
+前端构建后，将 `dist` 目录内容复制到本项目的 `scripts/web` 目录即可集成。
 
 ## 项目结构
 
@@ -633,4 +633,4 @@ Toonflow 基于 AGPL-3.0 协议开源发布，许可证详情：https://www.gnu.
   </tr>
 </table>
 
-完整的第三方依赖清单请查阅 `../NOTICES.txt`
+完整的第三方依赖清单请查阅 `NOTICES.txt`
